@@ -11,24 +11,34 @@ ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "st", "messrs", "capt", "col", "prof",
 _SENT_END = re.compile(r"""[.!?]+["')\]]*(?=\s+)""")
 
 
+_WS = re.compile(r"\s*")
+_NONWS = re.compile(r"\S")
+_LAST_WORD = re.compile(r"[A-Za-z]+\.?$")
+_INITIAL = re.compile(r"(?:^|\s)[A-Z]\.$")
+_TAIL = 40  # abbreviation / initial checks only need the last few characters before the period
+
+
 def sentence_spans(text: str) -> list[tuple[int, int]]:
-    """Return (start, end) offsets of sentences; spans cover all non-whitespace text."""
+    """Return (start, end) offsets of sentences; spans cover all non-whitespace text. Linear in len(text)."""
     spans: list[tuple[int, int]] = []
     start = 0
     for m in _SENT_END.finditer(text):
+        if m.start() < start:
+            continue
         end = m.end()
-        before = text[start:m.start() + 1]
-        last_word = re.findall(r"[A-Za-z]+\.?$", before)
-        word = last_word[0].rstrip(".").lower() if last_word else ""
-        nxt = text[end:].lstrip()
+        before = text[max(start, m.start() + 1 - _TAIL):m.start() + 1]
+        last_word = _LAST_WORD.search(before)
+        word = last_word.group().rstrip(".").lower() if last_word else ""
+        nxt = _WS.match(text, end).end()
         if m.group().rstrip("\"')]") == ".":  # a lone period, not "?!" or an ellipsis
-            if word in ABBREVIATIONS or re.search(r"(?:^|\s)[A-Z]\.$", before):
+            if word in ABBREVIATIONS or _INITIAL.search(before):
                 continue  # "Mr.", initials such as "J. Smith"
-        if nxt[:1].islower():
+        if text[nxt:nxt + 1].islower():
             continue  # ellipsis, dialogue tag ('"Well?" said he.'), or other lowercase continuation
         spans.append((start, end))
-        start = end + (len(text[end:]) - len(text[end:].lstrip()))
-    if start < len(text) and text[start:].strip():
+        start = nxt
+    first = _NONWS.search(text, start)
+    if first:
         spans.append((start, len(text.rstrip())))
     return spans
 

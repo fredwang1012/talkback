@@ -4,6 +4,8 @@ from fastapi.testclient import TestClient
 
 from app import ingest_upload, main
 from app.config import settings
+from app.ratelimit import TokenBucket
+from app.ttschunks import chunk_paragraph, sentence_spans
 
 PARA_A = ("The quick brown fox jumped over the lazy dog near the old river bank today. "
           "It was a very long and rather exciting afternoon for everyone involved here.")
@@ -32,6 +34,8 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "access_token", "")
     monkeypatch.setattr(settings, "retrieval_backend", "local")
     main._upload_status.clear()
+    main._ingest_busy = False
+    monkeypatch.setattr(main, "upload_bucket", TokenBucket(1000, 60))
     main._index_for.cache_clear()
     return TestClient(main.app)
 
@@ -47,7 +51,7 @@ def test_pdf_goes_to_ready(client, tmp_path):
     assert r.status_code == 202
     book_id = r.json()["book_id"]
     assert r.json()["status"] == "processing"
-    assert book_id.startswith("u-my-test-book-") and len(book_id.rsplit("-", 1)[1]) == 4
+    assert book_id.startswith("u-my-test-book-") and len(book_id.rsplit("-", 1)[1]) == 8
     assert (tmp_path / "uploads" / f"{book_id}.pdf").read_bytes() == pdf
     assert client.get(f"/api/books/{book_id}/status").json() == {"status": "ready"}
     assert (tmp_path / "books" / book_id / "status.json").is_file()
@@ -74,7 +78,8 @@ def test_novel_upload_keeps_spoiler_rule(client):
     txt = "\n\n".join(f"Paragraph number {i} mentions item{i}." for i in range(12)).encode()
     book_id = post(client, "n.txt", txt, kind="novel").json()["book_id"]
     out = client.post("/api/retrieve", json={"book_id": book_id, "query": "item11", "reader_para": 3}).json()
-    assert all(p["para_end"] <= 3 for p in out["passages"]) if out["passages"] and "para_end" in out["passages"][0] else True
+    assert out["passages"]
+    assert all(p["para_end"] <= 3 for p in out["passages"])
     assert "item11" not in str(out["passages"])
 
 
@@ -141,10 +146,18 @@ def test_status_survives_restart(client, tmp_path):
     assert client.get(f"/api/books/{book_id}/status").json() == {"status": "ready"}
 
 
-def test_make_book_id():
-    i = ingest_upload.make_book_id("  Café Ünïcode: " + "x" * 80)
-    assert i.startswith("u-cafe-unicode-xxx") and len(i) <= 2 + 40 + 5
-    assert ingest_upload.make_book_id("!!!").startswith("u-book-")
+def test_make_book_dir(client, tmp_path):
+    i, d = ingest_upload.make_book_dir("  Café Ünïcode: " + "x" * 80)
+    assert i.startswith("u-cafe-unicode-xxx") and d.is_dir() and len(i) <= 2 + 40 + 9
+    assert len(i.rsplit("-", 1)[1]) == 8
+    assert ingest_upload.make_book_dir("!!!")[0].startswith("u-book-")
+
+
+def test_make_book_dir_retries_on_collision(client, monkeypatch, tmp_path):
+    seq = iter(["aaaaaaaa", "aaaaaaaa", "bbbbbbbb"])
+    monkeypatch.setattr(ingest_upload.secrets, "token_hex", lambda n: next(seq))
+    assert ingest_upload.make_book_dir("t")[0] == "u-t-aaaaaaaa"
+    assert ingest_upload.make_book_dir("t")[0] == "u-t-bbbbbbbb"
 
 
 # ---- PDF extraction heuristics ----

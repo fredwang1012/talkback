@@ -283,6 +283,8 @@ async def speak(req: SpeakRequest, request: Request):
 # ---------- user uploads (PDF / .txt -> narrator-only book) ----------
 
 _upload_status: dict[str, dict] = {}
+upload_bucket = TokenBucket(capacity=3, per_seconds=60)  # uploads per IP
+_ingest_busy = False  # only one ingest at a time: a 20 MB PDF is a lot of CPU and memory
 
 
 def _set_status(book_id: str, status: str, message: str | None = None) -> None:
@@ -290,44 +292,69 @@ def _set_status(book_id: str, status: str, message: str | None = None) -> None:
 
 
 async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str) -> None:
-    """Background ingest: CPU work in a thread, then (vertex only) index the chunks. Never raises."""
+    """Background ingest: CPU work in a thread, then (vertex only) index the chunks, then publish book.json.
+
+    book.json is written last, so a processing or failed upload is never listed or readable. Never raises.
+    """
+    global _ingest_busy
     try:
         book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext)
         if settings.retrieval_backend == "vertex":
             from .gcp.indexing import index_book
             embedder, store = _vertex_deps()
             await index_book(book, chunks, embedder, store)
+        await asyncio.to_thread(ingest_upload.publish_book, book)
         _index_for.cache_clear()
         _set_status(book_id, "ready")
-    except ingest_upload.UploadError as e:
-        _set_status(book_id, "error", str(e))
-    except Exception as e:  # never leak details to the client
-        logging.getLogger(__name__).warning("upload ingest failed: %s", type(e).__name__)
-        _set_status(book_id, "error", "The file could not be processed.")
+    except Exception as e:
+        ingest_upload.discard_book(book_id)
+        if isinstance(e, ingest_upload.UploadError):
+            _set_status(book_id, "error", str(e))
+        else:  # never leak details to the client
+            logging.getLogger(__name__).warning("upload ingest failed: %s", type(e).__name__)
+            _set_status(book_id, "error", "The file could not be processed.")
+    finally:
+        _ingest_busy = False
 
 
 @app.post("/api/books/upload", status_code=202, dependencies=[Depends(require_access)])
-async def upload_book(background: BackgroundTasks, file: UploadFile = File(...),
+async def upload_book(request: Request, background: BackgroundTasks, file: UploadFile = File(...),
                       title: str = Form(..., min_length=1, max_length=120),
                       author: str = Form("", max_length=120),
                       kind: Literal["novel", "textbook"] = Form(...)):
+    global _ingest_busy
+    if not upload_bucket.allow(client_ip(request)):
+        raise HTTPException(429, "Too many uploads; wait a moment.")
+    if _ingest_busy:
+        raise HTTPException(429, "Another book is still being processed; try again shortly.")
+    try:
+        declared = int(request.headers.get("content-length", "0"))
+    except ValueError:
+        declared = 0
+    if declared > ingest_upload.MAX_UPLOAD_BYTES + ingest_upload.MULTIPART_SLACK:
+        raise HTTPException(413, "File is too large (20 MB maximum).")
     title = title.strip()
     if not title:
         raise HTTPException(422, "Title is required.")
     ext = Path(file.filename or "").suffix.lower()
     if ext not in (".pdf", ".txt"):
         raise HTTPException(400, "Upload a .pdf or .txt file.")
-    data = await file.read(ingest_upload.MAX_UPLOAD_BYTES + 1)  # bounded read
-    if len(data) > ingest_upload.MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "File is too large (20 MB maximum).")
-    if ext == ".pdf" and not data.startswith(b"%PDF"):
-        raise HTTPException(400, "That does not look like a PDF.")
-    book_id = ingest_upload.make_book_id(title)
-    path = ingest_upload.upload_path(book_id, ext)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    _set_status(book_id, "processing")
-    background.add_task(_ingest, book_id, title, author.strip(), kind, data, ext)
+    _ingest_busy = True  # no await between the check above and here
+    try:
+        data = await file.read(ingest_upload.MAX_UPLOAD_BYTES + 1)  # bounded read
+        if len(data) > ingest_upload.MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "File is too large (20 MB maximum).")
+        if ext == ".pdf" and not data.startswith(b"%PDF"):
+            raise HTTPException(400, "That does not look like a PDF.")
+        book_id, _ = ingest_upload.make_book_dir(title)
+        path = ingest_upload.upload_path(book_id, ext)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        _set_status(book_id, "processing")
+        background.add_task(_ingest, book_id, title, author.strip(), kind, data, ext)
+    except BaseException:
+        _ingest_busy = False
+        raise
     return {"book_id": book_id, "status": "processing"}
 
 
