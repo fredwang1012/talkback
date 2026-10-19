@@ -92,7 +92,7 @@ function AddBook({ onReady }: { onReady: () => void }) {
         {state.phase === "ready" && `Ready: ${state.title}`}
       </div>
       {state.phase === "error" && <p className="add-book-error" role="alert">{state.message}</p>}
-      <p className="add-book-note">Uploads are kept on this machine and are not shared.</p>
+      <p className="add-book-note">The file stays on this computer. With cloud search on, the book's text is sent to Google Cloud to make it searchable.</p>
     </section>
   );
 }

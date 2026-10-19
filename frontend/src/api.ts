@@ -258,10 +258,18 @@ export async function pollBookStatus(
   id: string, signal?: AbortSignal, intervalMs = 1500, maxMs = 10 * 60 * 1000,
 ): Promise<BookStatus | null> {
   const deadline = Date.now() + maxMs;
+  let failures = 0;
   while (!signal?.aborted) {
-    const s = await fetchBookStatus(id);
+    let s: BookStatus | undefined;
+    try {
+      s = await fetchBookStatus(id);
+      failures = 0;
+    } catch (e) {
+      if (signal?.aborted) return null;
+      if (++failures > 3) throw e; // tolerate up to 3 failed calls in a row
+    }
     if (signal?.aborted) return null;
-    if (s.status !== "processing") return s;
+    if (s && s.status !== "processing") return s;
     if (Date.now() + intervalMs > deadline) throw new Error("This is taking too long. Check the backend and try again.");
     await new Promise<void>((resolve) => {
       const t = setTimeout(done, intervalMs);
@@ -271,8 +279,7 @@ export async function pollBookStatus(
   }
   return null;
 }
-
-export const fetchVoices =() => getJson<Record<string, string>>("/api/voices");
+export const fetchVoices = () => getJson<Record<string, string>>("/api/voices");
 
 /** Chunk ids that have a pre-rendered avatar clip (stretch feature). Empty when there are none or the call fails. */
 export async function fetchAvatars(bookId: string): Promise<string[]> {

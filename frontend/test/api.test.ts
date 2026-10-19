@@ -93,6 +93,20 @@ describe("pollBookStatus", () => {
     expect(fetchMock).toHaveBeenCalledTimes(n);
   });
 
+  it("tolerates 3 failed status calls in a row, then gives up on the 4th", async () => {
+    vi.useFakeTimers();
+    const seq = [false, false, true, false, false, false, false];
+    const fetchMock = vi.fn(async () => {
+      const ok = seq.shift();
+      return ok ? new Response(JSON.stringify({ status: "processing" }), { status: 200 }) : new Response("{}", { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const p = pollBookStatus("b1").catch((e: Error) => e.message);
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(await p).toContain("Status check failed (500)");
+    expect(fetchMock).toHaveBeenCalledTimes(7); // success in the middle reset the counter
+  });
+
   it("gives up after the time limit", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ status: "processing" }), { status: 200 })));
