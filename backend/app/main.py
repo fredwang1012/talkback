@@ -12,7 +12,7 @@ from typing import Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -40,6 +40,18 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Talkback", lifespan=lifespan)
+@app.middleware("http")
+async def limit_upload_size(request: Request, call_next):
+    """Reject oversized uploads from the Content-Length header, before the multipart body is read or spooled."""
+    if request.method == "POST" and request.url.path == "/api/books/upload":
+        declared = request.headers.get("content-length")
+        if declared is None:
+            return JSONResponse({"detail": "Content-Length is required."}, status_code=411)
+        if not declared.isdigit() or int(declared) > ingest_upload.MAX_UPLOAD_BYTES + ingest_upload.MULTIPART_SLACK:
+            return JSONResponse({"detail": "File is too large (20 MB maximum)."}, status_code=413)
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -284,19 +296,46 @@ async def speak(req: SpeakRequest, request: Request):
 
 _upload_status: dict[str, dict] = {}
 upload_bucket = TokenBucket(capacity=3, per_seconds=60)  # uploads per IP
-_ingest_busy = False  # only one ingest at a time: a 20 MB PDF is a lot of CPU and memory
+
+
+class IngestGuard:
+    """Allows one ingest at a time (a 20 MB PDF is a lot of CPU and memory). A hold older than STALE_SECONDS
+    (e.g. the background task never ran) can be taken over; release only works for the current holder's token."""
+    STALE_SECONDS = 15 * 60
+
+    def __init__(self, clock=time.monotonic):
+        self.clock, self._since, self._token = clock, None, 0
+
+    @property
+    def busy(self) -> bool:
+        return self._since is not None
+
+    def acquire(self) -> int | None:
+        if self._since is not None:
+            if self.clock() - self._since < self.STALE_SECONDS:
+                return None
+            logging.getLogger(__name__).warning("ingest guard was held for over 15 minutes; taking it over")
+        self._token += 1
+        self._since = self.clock()
+        return self._token
+
+    def release(self, token: int) -> None:
+        if token == self._token:
+            self._since = None
+
+
+_ingest_guard = IngestGuard()
 
 
 def _set_status(book_id: str, status: str, message: str | None = None) -> None:
     _upload_status[book_id] = ingest_upload.write_status(book_id, status, message)
 
 
-async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str) -> None:
+async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str, token: int) -> None:
     """Background ingest: CPU work in a thread, then (vertex only) index the chunks, then publish book.json.
 
     book.json is written last, so a processing or failed upload is never listed or readable. Never raises.
     """
-    global _ingest_busy
     try:
         book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext)
         if settings.retrieval_backend == "vertex":
@@ -314,7 +353,7 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
             logging.getLogger(__name__).warning("upload ingest failed: %s", type(e).__name__)
             _set_status(book_id, "error", "The file could not be processed.")
     finally:
-        _ingest_busy = False
+        _ingest_guard.release(token)
 
 
 @app.post("/api/books/upload", status_code=202, dependencies=[Depends(require_access)])
@@ -322,26 +361,19 @@ async def upload_book(request: Request, background: BackgroundTasks, file: Uploa
                       title: str = Form(..., min_length=1, max_length=120),
                       author: str = Form("", max_length=120),
                       kind: Literal["novel", "textbook"] = Form(...)):
-    global _ingest_busy
     if not upload_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many uploads; wait a moment.")
-    if _ingest_busy:
+    token = _ingest_guard.acquire()  # no await between the check and the hold
+    if token is None:
         raise HTTPException(429, "Another book is still being processed; try again shortly.")
     try:
-        declared = int(request.headers.get("content-length", "0"))
-    except ValueError:
-        declared = 0
-    if declared > ingest_upload.MAX_UPLOAD_BYTES + ingest_upload.MULTIPART_SLACK:
-        raise HTTPException(413, "File is too large (20 MB maximum).")
-    title = title.strip()
-    if not title:
-        raise HTTPException(422, "Title is required.")
-    ext = Path(file.filename or "").suffix.lower()
-    if ext not in (".pdf", ".txt"):
-        raise HTTPException(400, "Upload a .pdf or .txt file.")
-    _ingest_busy = True  # no await between the check above and here
-    try:
-        data = await file.read(ingest_upload.MAX_UPLOAD_BYTES + 1)  # bounded read
+        title = title.strip()
+        if not title:
+            raise HTTPException(422, "Title is required.")
+        ext = Path(file.filename or "").suffix.lower()
+        if ext not in (".pdf", ".txt"):
+            raise HTTPException(400, "Upload a .pdf or .txt file.")
+        data = await file.read(ingest_upload.MAX_UPLOAD_BYTES + 1)  # bounded read (size is also checked up front by middleware)
         if len(data) > ingest_upload.MAX_UPLOAD_BYTES:
             raise HTTPException(413, "File is too large (20 MB maximum).")
         if ext == ".pdf" and not data.startswith(b"%PDF"):
@@ -351,9 +383,9 @@ async def upload_book(request: Request, background: BackgroundTasks, file: Uploa
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         _set_status(book_id, "processing")
-        background.add_task(_ingest, book_id, title, author.strip(), kind, data, ext)
+        background.add_task(_ingest, book_id, title, author.strip(), kind, data, ext, token)  # releases the guard
     except BaseException:
-        _ingest_busy = False
+        _ingest_guard.release(token)
         raise
     return {"book_id": book_id, "status": "processing"}
 

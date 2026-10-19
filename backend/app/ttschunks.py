@@ -8,7 +8,7 @@ MAX_CHARS = 280
 DEFAULT_VOICE = "default"
 ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "st", "messrs", "capt", "col", "prof", "no", "vs", "etc", "sr", "jr", "gen", "lt"}
 
-_SENT_END = re.compile(r"""[.!?]+["')\]]*(?=\s+)""")
+_SENT_END = re.compile(r"""(?<![.!?])[.!?]++["')\]]*+(?=\s)""")  # lookbehind + possessive: linear on punctuation runs
 
 
 _WS = re.compile(r"\s*")

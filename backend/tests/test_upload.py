@@ -34,7 +34,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "access_token", "")
     monkeypatch.setattr(settings, "retrieval_backend", "local")
     main._upload_status.clear()
-    main._ingest_busy = False
+    monkeypatch.setattr(main, "_ingest_guard", main.IngestGuard())
     monkeypatch.setattr(main, "upload_bucket", TokenBucket(1000, 60))
     main._index_for.cache_clear()
     return TestClient(main.app)

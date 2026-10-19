@@ -1,9 +1,11 @@
 """Upload hardening: paragraph merging, visibility, caps, ids, rate limits, headings."""
+import asyncio
 import random
 import re
 import time
 
 import pymupdf as fitz
+import pytest
 
 from app import ingest_upload, main
 from app.ratelimit import TokenBucket
@@ -161,28 +163,99 @@ def test_upload_rate_limit(client, monkeypatch):
 
 
 def test_one_ingest_at_a_time(client):
-    main._ingest_busy = True
+    token = main._ingest_guard.acquire()
     r = post(client, "a.txt", b"hello there")
     assert r.status_code == 429 and "still being processed" in r.json()["detail"]
-    main._ingest_busy = False
+    main._ingest_guard.release(token)
     assert post(client, "a.txt", b"hello there").status_code == 202
-    assert main._ingest_busy is False  # released after the background task
+    assert not main._ingest_guard.busy  # released after the background task
 
 
-def test_validation_failure_releases_busy_flag(client):
+def test_validation_failure_releases_guard(client):
     assert post(client, "a.pdf", b"not a pdf").status_code == 400
-    assert main._ingest_busy is False
+    assert not main._ingest_guard.busy
 
 
-def test_content_length_precheck(client, monkeypatch, tmp_path):
+def test_stale_guard_is_taken_over():
+    now = [0.0]
+    g = main.IngestGuard(clock=lambda: now[0])
+    t1 = g.acquire()
+    assert t1 is not None and g.acquire() is None
+    now[0] = main.IngestGuard.STALE_SECONDS - 1
+    assert g.acquire() is None
+    now[0] = main.IngestGuard.STALE_SECONDS + 1
+    t2 = g.acquire()
+    assert t2 is not None and t2 != t1
+    g.release(t1)  # the old, stale holder must not free the new holder's guard
+    assert g.busy
+    g.release(t2)
+    assert not g.busy
+
+
+def test_guard_released_when_ingest_raises(client, monkeypatch):
+    token = main._ingest_guard.acquire()
+
+    def boom(*a, **k):
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(main, "_set_status", boom)  # makes the error handler itself fail
+    monkeypatch.setattr(ingest_upload, "process_upload", boom)
+    with pytest.raises(RuntimeError):
+        asyncio.run(main._ingest("u-x-00000000", "t", "", "novel", b"hi", ".txt", token))
+    assert not main._ingest_guard.busy
+
+
+def test_oversized_content_length_rejected_before_endpoint(client, monkeypatch, tmp_path):
     monkeypatch.setattr(ingest_upload, "MAX_UPLOAD_BYTES", 100)
     monkeypatch.setattr(ingest_upload, "MULTIPART_SLACK", 0)
 
-    async def no_read(*a, **k):
-        raise AssertionError("body must not be read")
+    class Boom:
+        def allow(self, key):
+            raise AssertionError("endpoint must not be entered")
 
-    monkeypatch.setattr("starlette.datastructures.UploadFile.read", no_read)
+    monkeypatch.setattr(main, "upload_bucket", Boom())
     r = post(client, "a.txt", b"x" * 300)
     assert r.status_code == 413
-    assert main._ingest_busy is False
+    assert not main._ingest_guard.busy
     assert not (tmp_path / "uploads").exists()
+
+
+def test_missing_content_length_is_411(client):
+    def body():
+        yield b"--b--"
+
+    r = client.post("/api/books/upload", content=body(), headers={"content-type": "multipart/form-data; boundary=b"})
+    assert r.status_code == 411
+
+
+# ---- linear-time guarantees ----
+
+def test_punctuation_run_is_linear():
+    t = time.perf_counter()
+    assert sentence_spans("." * 200_000) == [(0, 200_000)]
+    assert sentence_spans("?!" * 100_000 + " x") != []
+    assert time.perf_counter() - t < 1.0
+    t = time.perf_counter()
+    pieces = ingest_upload.split_paragraph("." * 200_000)
+    assert sum(len(x) for x in pieces) == 200_000 and all(len(x) <= ingest_upload.MAX_PARAGRAPH_CHARS for x in pieces)
+    book = Book(id="b", title="t", author="a", kind="textbook", license="x", sections=[Section(id="s1", title="", start_para=0)],
+                paragraphs=[Paragraph(idx=0, section_id="s1", text="." * 200_000)], narrator=Narrator(voice="marcus"))
+    chunk_paragraph(book.paragraphs[0], book)
+    assert time.perf_counter() - t < 1.0
+
+
+def test_merge_lines_is_linear():
+    n = 100_000
+    lines = [ingest_upload.Line("some wrapped words and", 72.0, 300.0, 100.0 + i, 110.0 + i, 72.0, 300.0, 0, False)
+             for i in range(n)]
+    t = time.perf_counter()
+    paras = ingest_upload.merge_lines(lines)
+    assert time.perf_counter() - t < 2.0
+    assert len(paras) == 1 and paras[0].count("wrapped") == n
+
+
+def test_merge_lines_dehyphenates_and_splits():
+    L = ingest_upload.Line
+    lines = [L("an exam-", 72, 300, 100, 110, 72, 300, 0, False), L("ple. Done.", 72, 300, 111, 121, 72, 300, 0, False),
+             L("New one.", 92, 300, 122, 132, 72, 300, 0, False)]
+    assert ingest_upload.merge_lines(lines) == ["an example. Done.", "New one."]

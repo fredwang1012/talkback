@@ -26,7 +26,7 @@ from .schema import Book, Narrator, Paragraph, Section
 from .ttschunks import chunk_paragraph, sentence_spans, split_long
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
-MULTIPART_SLACK = 64 * 1024  # form-encoding overhead allowed on top of the file cap when checking Content-Length
+MULTIPART_SLACK = 1024 * 1024  # form-encoding overhead allowed on top of the file cap when checking Content-Length
 MAX_PAGES = 2000
 MAX_CHARS = 5_000_000
 MAX_PARAGRAPH_CHARS = 5_000
@@ -102,10 +102,24 @@ def _starts_paragraph(prev: Line, cur: Line) -> bool:
     return prev.x1 < prev.left + SHORT_FRACTION * (prev.right - prev.left)
 
 
-def _append(cur: str, text: str) -> str:
-    if cur.endswith("-") and len(cur) > 1 and cur[-2].isalpha() and text[:1].islower():
-        return cur[:-1] + text
-    return f"{cur} {text}"
+def merge_lines(lines: list[Line]) -> list[str]:
+    """Group consecutive lines into paragraphs (linear: each paragraph's parts are joined once)."""
+    paras: list[str] = []
+    parts: list[str] = []
+    prev: Line | None = None
+    for ln in lines:
+        if prev is not None and _starts_paragraph(prev, ln):
+            paras.append(" ".join(parts))
+            parts = []
+        if parts and parts[-1].endswith("-") and len(parts[-1]) > 1 and parts[-1][-2].isalpha() \
+                and ln.text[:1].islower():
+            parts[-1] = parts[-1][:-1] + ln.text  # de-hyphenate "exam-" + "ple"
+        else:
+            parts.append(ln.text)
+        prev = ln
+    if parts:
+        paras.append(" ".join(parts))
+    return paras
 
 
 def pdf_to_text(data: bytes) -> str:
@@ -167,21 +181,7 @@ def pdf_to_text(data: bytes) -> str:
             for t, x0, y0, x1, y1 in blk:
                 all_lines.append(Line(t, x0, x1, y0, y1, left, right, pno, alone))
 
-    paras: list[str] = []
-    cur = ""
-    prev: Line | None = None
-    for ln in all_lines:
-        if prev is None:
-            cur = ln.text
-        elif _starts_paragraph(prev, ln):
-            paras.append(cur)
-            cur = ln.text
-        else:
-            cur = _append(cur, ln.text)
-        prev = ln
-    if cur:
-        paras.append(cur)
-    text = "\n\n".join(paras)
+    text = "\n\n".join(merge_lines(all_lines))
     if not text.strip():
         raise UploadError("No extractable text was found. Scanned (image-only) PDFs are not supported.")
     return text
