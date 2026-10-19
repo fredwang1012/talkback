@@ -146,6 +146,9 @@ export async function streamAnswer(
   }
   if (!res.body) throw new Error("The answer stream was empty.");
   const reader = res.body.getReader();
+  // timedFetch stops watching the signal once headers arrive, so cancel the body ourselves on barge-in
+  const onAbort = () => { reader.cancel().catch(() => {}); };
+  if (signal?.aborted) onAbort(); else signal?.addEventListener("abort", onAbort);
   const decoder = new TextDecoder();
   let buf = "";
   const handle = (line: string) => {
@@ -155,19 +158,25 @@ export async function streamAnswer(
     if (msg.type === "sentence" && typeof msg.text === "string") onSentence(msg.text);
     else if (msg.type === "error") throw new Error(msg.message || "The answer failed.");
   };
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let nl: number;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl);
-      buf = buf.slice(nl + 1);
-      handle(line);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (signal?.aborted) throw new DOMException("aborted", "AbortError");
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        handle(line);
+      }
     }
+    buf += decoder.decode();
+    handle(buf); // a last line without a newline
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    reader.cancel().catch(() => {}); // always release the connection, whatever the exit path
   }
-  buf += decoder.decode();
-  handle(buf); // a last line without a newline
 }
 
 /** Synthesises one sentence in a voice (cached server-side) and returns where to fetch the audio. */

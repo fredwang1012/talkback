@@ -59,6 +59,47 @@ describe("streamAnswer", () => {
   });
 });
 
+function pendingBodyResponse() {
+  const cancel = vi.fn();
+  const body = new ReadableStream<Uint8Array>({
+    start(c) { c.enqueue(new TextEncoder().encode('{"type":"sentence","text":"A."}\n')); },
+    cancel,
+  });
+  return { res: new Response(body), cancel };
+}
+
+describe("streamAnswer cancellation", () => {
+  it("aborting after headers cancels the body and settles promptly", async () => {
+    const { res, cancel } = pendingBodyResponse();
+    vi.stubGlobal("fetch", vi.fn(async () => res));
+    const ctl = new AbortController();
+    const got: string[] = [];
+    const p = streamAnswer("b", "q", 1, "s", (t) => got.push(t), ctl.signal).catch((e: Error) => e);
+    await vi.waitFor(() => expect(got).toEqual(["A."])); // now read() is pending
+    ctl.abort();
+    expect(((await p) as Error).name).toBe("AbortError");
+    expect(cancel).toHaveBeenCalled();
+  });
+
+  it("an error line cancels the body", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(c) { c.enqueue(new TextEncoder().encode('{"type":"error","message":"boom"}\n')); },
+      cancel,
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body)));
+    await expect(streamAnswer("b", "q", 1, "s", () => {})).rejects.toThrow("boom");
+    expect(cancel).toHaveBeenCalled();
+  });
+
+  it("a throwing onSentence cancels the body", async () => {
+    const { res, cancel } = pendingBodyResponse();
+    vi.stubGlobal("fetch", vi.fn(async () => res));
+    await expect(streamAnswer("b", "q", 1, "s", () => { throw new Error("bad"); })).rejects.toThrow("bad");
+    expect(cancel).toHaveBeenCalled();
+  });
+});
+
 describe("speak", () => {
   it("posts text and voice", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ voice: "v", audio_url: "/media/x.wav", timestamps: null, cached: false })));

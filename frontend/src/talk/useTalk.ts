@@ -67,6 +67,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         setLogs((l) => [...l.slice(-299), { id: ++logSeq.current, dir, type, at: Date.now(), raw }]);
       },
     });
+    let answerVoice = "";
     const talk = new TalkController({
       session: client,
       reader: {
@@ -79,8 +80,12 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       },
       retrieve: (query, para, speaker) => fetchRetrieve(bookId, query, para, speaker),
       ...(ANSWER_VIA_GEMINI ? {
-        answer: (query, para, speaker, onSentence, signal) => streamAnswer(bookId, query, para, speaker, onSentence, signal),
-        speaker: createSentenceSpeaker((text) => speak(text, latest.current.voiceFor(latest.current.speakerId))),
+        // the voice is fixed when the answer starts, so a mid-answer speaker switch cannot change it
+        answer: (query, para, speaker, onSentence, signal) => {
+          answerVoice = latest.current.voiceFor(speaker);
+          return streamAnswer(bookId, query, para, speaker, onSentence, signal);
+        },
+        speaker: createSentenceSpeaker((text) => speak(text, answerVoice)),
       } : {}),
       voiceFor: (id) => latest.current.voiceFor(id),
       onState: setState,
