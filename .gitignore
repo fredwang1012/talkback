@@ -31,3 +31,5 @@ data/books/u-*/
 data/portraits/*/
 data/samples/
 data/voices.json
+logs/
+*.log
