@@ -12,7 +12,7 @@ from typing import Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -22,6 +22,7 @@ from .config import settings
 from .personas import build_answer_prompt, build_instructions
 from .ratelimit import TokenBucket
 from .schema import Book
+from .uploadlimit import UploadSizeLimit
 
 def _warm_up() -> None:
     """Load the embedding model and every book's index before the first question (the model takes ~17 s to load)."""
@@ -40,18 +41,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Talkback", lifespan=lifespan)
-@app.middleware("http")
-async def limit_upload_size(request: Request, call_next):
-    """Reject oversized uploads from the Content-Length header, before the multipart body is read or spooled."""
-    if request.method == "POST" and request.url.path == "/api/books/upload":
-        declared = request.headers.get("content-length")
-        if declared is None:
-            return JSONResponse({"detail": "Content-Length is required."}, status_code=411)
-        if not declared.isdigit() or int(declared) > ingest_upload.MAX_UPLOAD_BYTES + ingest_upload.MULTIPART_SLACK:
-            return JSONResponse({"detail": "File is too large (20 MB maximum)."}, status_code=413)
-    return await call_next(request)
-
-
+app.add_middleware(UploadSizeLimit)  # added before CORS so CORS headers still wrap its 4xx replies
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -299,12 +289,17 @@ upload_bucket = TokenBucket(capacity=3, per_seconds=60)  # uploads per IP
 
 
 class IngestGuard:
-    """Allows one ingest at a time (a 20 MB PDF is a lot of CPU and memory). A hold older than STALE_SECONDS
-    (e.g. the background task never ran) can be taken over; release only works for the current holder's token."""
+    """Allows one ingest at a time (a 20 MB PDF is a lot of CPU and memory).
+
+    A hold older than STALE_SECONDS may be taken over only if its background task never started (it is dead).
+    A task that started and has not released is still running (a thread cannot be killed), so it keeps the guard
+    and new uploads keep getting 429. Release only works for the current holder's token.
+    """
     STALE_SECONDS = 15 * 60
 
     def __init__(self, clock=time.monotonic):
         self.clock, self._since, self._token = clock, None, 0
+        self._started = self._warned = False
 
     @property
     def busy(self) -> bool:
@@ -314,10 +309,21 @@ class IngestGuard:
         if self._since is not None:
             if self.clock() - self._since < self.STALE_SECONDS:
                 return None
-            logging.getLogger(__name__).warning("ingest guard was held for over 15 minutes; taking it over")
+            log = logging.getLogger(__name__)
+            if self._started:
+                if not self._warned:
+                    self._warned = True
+                    log.warning("an ingest has been running for over 15 minutes; new uploads stay blocked")
+                return None
+            log.warning("ingest guard was held for over 15 minutes by a task that never started; taking it over")
         self._token += 1
         self._since = self.clock()
+        self._started = self._warned = False
         return self._token
+
+    def mark_started(self, token: int) -> None:
+        if token == self._token:
+            self._started = True
 
     def release(self, token: int) -> None:
         if token == self._token:
@@ -336,6 +342,7 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
 
     book.json is written last, so a processing or failed upload is never listed or readable. Never raises.
     """
+    _ingest_guard.mark_started(token)
     try:
         book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext)
         if settings.retrieval_backend == "vertex":

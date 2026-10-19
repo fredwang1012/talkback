@@ -220,12 +220,97 @@ def test_oversized_content_length_rejected_before_endpoint(client, monkeypatch, 
     assert not (tmp_path / "uploads").exists()
 
 
-def test_missing_content_length_is_411(client):
+async def drive(headers, chunks):
+    """Call the ASGI app directly for POST /api/books/upload; returns (status, number of body chunks consumed)."""
+    sent, consumed = [], 0
+    queue = list(chunks)
+
+    async def receive():
+        nonlocal consumed
+        if not queue:
+            return {"type": "http.disconnect"}
+        consumed += 1
+        return {"type": "http.request", "body": queue.pop(0), "more_body": bool(queue)}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST", "scheme": "http",
+             "path": "/api/books/upload", "raw_path": b"/api/books/upload", "query_string": b"", "root_path": "",
+             "headers": [(k.encode(), v.encode()) for k, v in headers], "client": ("1.2.3.4", 1), "server": ("t", 80)}
+    await main.app(scope, receive, send)
+    return next(m["status"] for m in sent if m["type"] == "http.response.start"), consumed
+
+
+class BoomBucket:
+    def allow(self, key):
+        raise AssertionError("endpoint must not be entered")
+
+
+def test_missing_content_length_is_411(client, monkeypatch):
+    monkeypatch.setattr(main, "upload_bucket", BoomBucket())
+    assert asyncio.run(drive([("content-type", "multipart/form-data; boundary=b")], [b"--b--"]))[0] == 411
+
+
+def test_transfer_encoding_is_rejected(client, monkeypatch):
+    monkeypatch.setattr(main, "upload_bucket", BoomBucket())
+    headers = [("content-type", "multipart/form-data; boundary=b"), ("content-length", "5"),
+               ("transfer-encoding", "chunked")]
+    assert asyncio.run(drive(headers, [b"--b--"]))[0] == 400
+    # and through the real client (chunked body from a generator)
     def body():
         yield b"--b--"
-
     r = client.post("/api/books/upload", content=body(), headers={"content-type": "multipart/form-data; boundary=b"})
-    assert r.status_code == 411
+    assert r.status_code == 400
+
+
+def test_body_longer_than_declared_is_cut_off(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(ingest_upload, "MAX_UPLOAD_BYTES", 100)
+    monkeypatch.setattr(ingest_upload, "MULTIPART_SLACK", 0)
+    monkeypatch.setattr(main, "upload_bucket", BoomBucket())
+    headers = [("content-type", "multipart/form-data; boundary=b"), ("content-length", "10")]
+    crlf = bytes((13, 10))
+    opening = b'--b' + crlf + b'Content-Disposition: form-data; name="file"; filename="a.txt"' + crlf + crlf
+    chunks = [opening] + [b"x" * 60] * 50  # a well-formed multipart start, then far more bytes than declared
+    status, consumed = asyncio.run(drive(headers, chunks))
+    assert status == 413
+    assert consumed <= 3  # stopped reading right after the cap was crossed
+    assert not (tmp_path / "uploads").exists()
+
+
+def test_non_ascii_digit_content_length_is_not_a_500(client, monkeypatch):
+    monkeypatch.setattr(main, "upload_bucket", BoomBucket())
+    headers = [("content-type", "multipart/form-data; boundary=b"), ("content-length", "²")]
+    # headers are latin-1 on the wire: ² is a superscript two, str.isdigit() is True but int() raises
+    scope_headers = [(k.encode("latin-1"), v.encode("latin-1")) for k, v in headers]
+    assert "²".isdigit()
+    sent = []
+
+    async def go():
+        async def receive():
+            return {"type": "http.disconnect"}
+
+        async def send(m):
+            sent.append(m)
+
+        scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST", "scheme": "http",
+                 "path": "/api/books/upload", "raw_path": b"/api/books/upload", "query_string": b"", "root_path": "",
+                 "headers": scope_headers, "client": ("1.2.3.4", 1), "server": ("t", 80)}
+        await main.app(scope, receive, send)
+
+    asyncio.run(go())
+    assert sent[0]["status"] == 400
+
+
+def test_live_holder_is_not_taken_over():
+    now = [0.0]
+    g = main.IngestGuard(clock=lambda: now[0])
+    t1 = g.acquire()
+    g.mark_started(t1)  # the ingest is running (possibly slow or hung)
+    now[0] = main.IngestGuard.STALE_SECONDS * 3
+    assert g.acquire() is None and g.acquire() is None and g.busy
+    g.release(t1)
+    assert g.acquire() is not None
 
 
 # ---- linear-time guarantees ----
