@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from . import books, ingest_upload, retrieval, tts_cache, voices
 from .boson import BosonClient, BosonError
 from .config import settings
+from .gcp import usage
 from .personas import build_answer_prompt, build_instructions
 from .ratelimit import TokenBucket
 from .schema import Book
@@ -110,9 +111,11 @@ async def realtime_token(request: Request):
     if not token_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many connection attempts; wait a moment.")
     try:
-        return await boson.mint_client_secret(600)
+        secret = await boson.mint_client_secret(600)
     except (BosonError, RuntimeError) as e:
         raise boson_http_error(e)
+    usage.record("boson_realtime_session", "boson-realtime", sessions=1)
+    return secret
 
 
 # ---------- TTS ----------

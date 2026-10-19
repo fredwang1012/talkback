@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .boson import BosonClient
 from .config import settings
+from .gcp import usage
 from .textnorm import normalize_for_tts
 
 MODEL = "higgs-tts-3"
@@ -94,6 +95,7 @@ async def get_or_create(client: BosonClient, tts_text: str, voice: str, plain: s
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             return {"audio_url": f"/media/tts/{key}.{FORMAT}", "timestamps": meta["timestamps"], "cached": True}
         resp = await client.create_speech(tts_text, voice, timestamps=True, response_format=FORMAT)
+        usage.record("boson_tts", MODEL, chars=len(tts_text))  # cache miss = real billable Boson call
         data = resp.json()
         audio_path.write_bytes(base64.b64decode(data["audio"]))  # the envelope holds base64 audio, not raw bytes
         aligned = align_timestamps(data.get("timestamps"), plain)

@@ -18,6 +18,7 @@ from pydantic import BaseModel
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 from app.config import settings  # noqa: E402
+from app.gcp import usage as usage_log  # noqa: E402
 
 CACHE = ROOT / "data" / "cache" / "llm"
 CACHE.mkdir(parents=True, exist_ok=True)
@@ -78,7 +79,10 @@ async def call_structured(model: str, system: str, user: str, schema_model: type
     usage["in"] += resp.usage.input_tokens
     usage["out"] += resp.usage.output_tokens
     pin, pout = PRICES[model]
-    usage["usd"] += (resp.usage.input_tokens * pin + resp.usage.output_tokens * pout) / 1e6
+    cost = (resp.usage.input_tokens * pin + resp.usage.output_tokens * pout) / 1e6
+    usage["usd"] += cost
+    usage_log.record("anthropic", model, input_tokens=resp.usage.input_tokens,
+                     output_tokens=resp.usage.output_tokens, usd=round(cost, 6))  # real calls only, never cache hits
 
     if resp.stop_reason == "refusal":
         raise LLMRefusal(f"{model} refused: {getattr(resp, 'stop_details', None)}")
