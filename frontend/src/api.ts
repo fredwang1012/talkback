@@ -220,7 +220,59 @@ export async function cloneVoice(audio: Blob, filename: string, transcript: stri
   return res.json() as Promise<CloneResult>;
 }
 
-export const fetchVoices = () => getJson<Record<string, string>>("/api/voices");
+export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+export type BookKind = "novel" | "textbook";
+export type BookStatus = { status: "processing" | "ready" | "error"; message?: string };
+
+/** Sends a PDF or .txt for ingest. Resolves with the new book id; ingest continues server-side (poll fetchBookStatus). */
+export async function uploadBook(file: File, title: string, author: string, kind: BookKind): Promise<{ book_id: string }> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  form.append("title", title);
+  form.append("author", author);
+  form.append("kind", kind);
+  // no Content-Type: the browser adds the multipart boundary
+  const res = await timedFetch("/api/books/upload", { method: "POST", headers: authHeaders(), body: form }, 120000);
+  if (!res.ok) {
+    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    throw new Error(detail ?? `Upload failed (${res.status})`);
+  }
+  return res.json() as Promise<{ book_id: string }>;
+}
+
+export async function fetchBookStatus(id: string): Promise<BookStatus> {
+  const res = await timedFetch(`/api/books/${encodeURIComponent(id)}/status`, { headers: authHeaders() });
+  if (!res.ok) {
+    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    throw new Error(detail ?? `Status check failed (${res.status})`);
+  }
+  return res.json() as Promise<BookStatus>;
+}
+
+/**
+ * Polls a book's ingest status until it is ready or errored, then resolves with that status.
+ * Stops quietly (resolves null) when `signal` aborts; rejects if it is still processing after `maxMs`.
+ * A failed status call rejects too, so the caller can show the message.
+ */
+export async function pollBookStatus(
+  id: string, signal?: AbortSignal, intervalMs = 1500, maxMs = 10 * 60 * 1000,
+): Promise<BookStatus | null> {
+  const deadline = Date.now() + maxMs;
+  while (!signal?.aborted) {
+    const s = await fetchBookStatus(id);
+    if (signal?.aborted) return null;
+    if (s.status !== "processing") return s;
+    if (Date.now() + intervalMs > deadline) throw new Error("This is taking too long. Check the backend and try again.");
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(done, intervalMs);
+      function done() { clearTimeout(t); signal?.removeEventListener("abort", done); resolve(); }
+      signal?.addEventListener("abort", done);
+    });
+  }
+  return null;
+}
+
+export const fetchVoices =() => getJson<Record<string, string>>("/api/voices");
 
 /** Chunk ids that have a pre-rendered avatar clip (stretch feature). Empty when there are none or the call fails. */
 export async function fetchAvatars(bookId: string): Promise<string[]> {
