@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchRealtimeKey, fetchRetrieve } from "../api";
+import { fetchRealtimeKey, fetchRetrieve, speak, streamAnswer } from "../api";
 import { MicCapture } from "../audio/capture";
 import { RingPlayer } from "../audio/playback";
 import { spend } from "../spend";
 import type { LogEntry } from "../ui/DebugDrawer";
 import { detectLanguage, type Detected } from "./language";
+import { createSentenceSpeaker } from "./sentencePlayer";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
 import { TalkController, type Latency, type ReaderControl, type TalkState } from "./TalkController";
+
+/** true: Gemini (via /api/answer) writes the answer and Boson TTS speaks it; false: Realtime answers itself. */
+export const ANSWER_VIA_GEMINI = true;
 
 export type TalkUi = {
   state: TalkState;
@@ -74,6 +78,10 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         resumeAt: (i) => latest.current.reader.resumeAt(i),
       },
       retrieve: (query, para, speaker) => fetchRetrieve(bookId, query, para, speaker),
+      ...(ANSWER_VIA_GEMINI ? {
+        answer: (query, para, speaker, onSentence, signal) => streamAnswer(bookId, query, para, speaker, onSentence, signal),
+        speaker: createSentenceSpeaker((text) => speak(text, latest.current.voiceFor(latest.current.speakerId))),
+      } : {}),
       voiceFor: (id) => latest.current.voiceFor(id),
       onState: setState,
       onToast: setToast,
