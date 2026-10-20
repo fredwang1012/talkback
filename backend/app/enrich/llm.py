@@ -2,8 +2,8 @@
 
 `LLM.complete_json(system, user, schema_model, tier)` returns a validated pydantic object. Tiers: "fast" (Haiku /
 Gemini Flash) and "smart" (Sonnet / Gemini Flash). With Claude, an out-of-credit error (insufficient_quota, billing,
-402, "credit balance is too low") switches the rest of the job to Gemini; running out of Claude credit never breaks an
-upload. Token usage is priced per provider and reported through `on_usage`.
+402, "credit balance is too low"), auth errors (401/403) and persistent overload/5xx switch the rest of the job to
+Gemini; Claude being unavailable never breaks an upload. Token usage is priced per provider and reported through `on_usage`.
 """
 import asyncio
 import logging
@@ -32,8 +32,19 @@ class LLMRefusal(Exception):
     """The model refused to answer."""
 
 
-class QuotaError(Exception):
+class ProviderUnavailable(Exception):
+    """The provider cannot serve the job (credit, auth, persistent overload); with Claude the job moves to Gemini."""
+
+    def __init__(self, reason: str, detail: str = ""):
+        super().__init__(detail or reason)
+        self.reason = reason
+
+
+class QuotaError(ProviderUnavailable):
     """The provider's credit or quota is exhausted (never retried)."""
+
+    def __init__(self, detail: str = ""):
+        super().__init__("out of credit", detail)
 
 
 class SpendLimit(Exception):
@@ -61,6 +72,25 @@ def price_usd(provider: str, tier: str, in_tokens: int, out_tokens: int) -> floa
 def estimate_usd(provider: str, tier: str, in_chars: float, out_tokens: float) -> float:
     """Cost of in_chars of input and out_tokens of output in total."""
     return price_usd(provider, tier, int(in_chars / CHARS_PER_TOKEN), int(out_tokens))
+
+
+def unavailable_reason(exc: BaseException) -> str | None:
+    """Why Claude is unusable for the rest of the job (None: an ordinary error, no switch).
+
+    Out of credit, bad or unauthorised key (401/403), still rate limited (429) or overloaded / failing (5xx, 529,
+    connection errors) after the SDK's own retries.
+    """
+    import anthropic
+    if is_quota_error(exc):
+        return "out of credit"
+    if isinstance(exc, anthropic.APIStatusError):
+        if exc.status_code in (401, 403):
+            return "authentication failed"
+        if exc.status_code == 429 or exc.status_code >= 500:
+            return f"unavailable (HTTP {exc.status_code})"
+    if isinstance(exc, (anthropic.APIConnectionError, anthropic.APITimeoutError)):
+        return "unreachable"
+    return None
 
 
 def is_quota_error(exc: BaseException) -> bool:
@@ -97,8 +127,11 @@ class ClaudeProvider:
                 output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
             )
         except Exception as e:
-            if is_quota_error(e):
+            reason = unavailable_reason(e)
+            if reason == "out of credit":
                 raise QuotaError(str(e)) from e
+            if reason:
+                raise ProviderUnavailable(reason, str(e)) from e
             raise
         n_in, n_out = resp.usage.input_tokens, resp.usage.output_tokens
         if resp.stop_reason == "refusal":
@@ -202,14 +235,14 @@ class LLM:
                 self.peak = max(self.peak, self.in_flight)
                 try:
                     raw = await self.provider(name).complete(system, user, schema, tier, max_tokens, effort)
-                except QuotaError as e:
+                except ProviderUnavailable as e:
                     if name == "claude" and self.fallback:
                         if not self.switched:
                             self.switched = True
-                            log.warning("Claude credit exhausted (%s); switching the rest of the job to Gemini", type(e).__name__)
+                            log.warning("Claude is unusable (%s); switching the rest of the job to Gemini", e.reason)
                         self.active = "gemini"
                         continue
-                    raise RuntimeError("The model provider is out of credit.") from e
+                    raise RuntimeError(f"The model provider is unavailable ({e.reason}).") from e
                 finally:
                     self.in_flight -= 1
             try:

@@ -104,13 +104,22 @@ async def enrich_book(book_id: str, report: Report, *, llm: LLM | None = None, i
     cap = settings.upload_book_cap_usd * BOOK_CAP_MARGIN
 
     def on_usage(provider: str, model: str, n_in: int, n_out: int, usd: float) -> None:
-        total = spend.add(book_id, provider, usd)
+        total = spend.add(book_id, provider, usd, flush_now=False)  # file writes happen off the loop (see flush)
+        if llm.calls % 25 == 0:
+            asyncio.get_running_loop().create_task(asyncio.to_thread(spend.flush))
         if total >= settings.upload_total_cap_usd:
             raise SpendLimit("upload budget used")
         if llm.usd > cap:
             raise SpendLimit("book cap")
 
     llm.on_usage = on_usage
+    try:
+        return await _run(book_id, path, report, llm, indexer)
+    finally:
+        await asyncio.shield(asyncio.to_thread(spend.flush))
+
+
+async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Indexer | None) -> bool:
     stage = STAGES[0]
     try:
         book = Book.model_validate_json(path.read_text(encoding="utf-8"))

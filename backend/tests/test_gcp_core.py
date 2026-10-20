@@ -81,7 +81,7 @@ async def test_sentences_across_chunks(tmp_data):
     meta = SimpleNamespace(prompt_token_count=12, candidates_token_count=7)
     out, models = await collect([chunk("Hello th"), chunk("ere. How"), chunk(" are you? Fine", meta)])
     assert out == ["Hello there.", "How are you?", "Fine"]
-    assert models.config.max_output_tokens == 300
+    assert models.config.max_output_tokens == 700
     assert models.config.thinking_config.thinking_budget == 0
     assert models.config.system_instruction == "sys"
     line = usage_lines(tmp_data)[-1]

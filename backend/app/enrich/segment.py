@@ -13,6 +13,8 @@ from typing import Awaitable, Callable, Literal
 from pydantic import BaseModel, ConfigDict
 
 from ..schema import EMOTIONS, Book, Paragraph, Segment
+from .llm import SpendLimit
+from .tasks import gather_or_cancel
 
 FAST = "fast"
 Emotion = Literal[
@@ -214,13 +216,19 @@ async def segment_book(book: Book, call: CallFn, refusal_exc: type[Exception] = 
 
     async def one(b: list[Paragraph]) -> None:
         nonlocal finished
-        for p, r in zip(b, await segment_batch(book, b, call, refusal_exc, model)):
+        try:
+            results = await segment_batch(book, b, call, refusal_exc, model)
+        except SpendLimit:
+            raise  # stops the whole stage: siblings are cancelled
+        except Exception:  # any other provider failure: the narrator reads this batch
+            results = [(narrator_only(p.text), "fallback") for p in b]
+        for p, r in zip(b, results):
             done[p.idx] = r
         finished += 1
         if on_progress:
             on_progress(finished / len(todo))
 
-    await asyncio.gather(*(one(b) for b in todo))
+    await gather_or_cancel(one(b) for b in todo)
     counts: dict[str, int] = {}
     for p in book.paragraphs:
         segs, how = done.get(p.idx) or (narrator_only(p.text), "skipped")

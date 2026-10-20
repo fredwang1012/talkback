@@ -9,6 +9,8 @@ from typing import Awaitable, Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..schema import Book, Character, Narrator
+from .llm import SpendLimit
+from .tasks import gather_or_cancel
 
 VOICES = ("chloe", "eleanor", "jake", "marcus", "nora", "oliver")
 VOICE_TAGS = ("", "<|prosody:pitch_low|>", "<|prosody:pitch_high|>", "<|prosody:speed_slow|>", "<|prosody:speed_fast|>")
@@ -47,9 +49,57 @@ Rules:
 - Personas are at most 3 sentences, written to be spoken in first person by a roleplay actor: temperament, how they talk, verbal tics. Use only facts from the text. Do not reveal plot twists or the ending in any persona.
 - Paragraphs are numbered [0], [1], ... Use those numbers for first_para."""
 
-UPLOAD_SYSTEM = SYSTEM.replace(
-    "(at most 8).", f"(at most {MAIN_MAX}), listed by importance: speaking lines first, then plot role. "
-    "Minor speakers are not characters; the narrator reads them.")
+class MainCharacter(BaseModel):
+    """A main character as identified by the upload cast call (no persona: personas are written separately)."""
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(description="lowercase slug, e.g. 'hagrid'")
+    name: str
+    aliases: list[str] = Field(description="every way the text refers to this character")
+    first_para: int = Field(description="index of the first paragraph where this character appears (speaks or is mentioned)")
+    gender: Literal["male", "female", "unknown"]
+    voice: Voice
+    voice_tags: VoiceTag
+
+
+class MainCast(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    characters: list[MainCharacter]
+    narrator_voice: Voice
+    narrator_is_character: str | None = Field(description="character id if the narrator is a character in the story (first-person), else null")
+
+
+UPLOAD_SYSTEM = f"""You are casting an audiobook with a text-to-speech system. Read the story and name its main characters.
+
+Rules:
+- Include only characters who speak or matter to the plot (at most {MAIN_MAX}), listed by importance: speaking lines first, then plot role. Minor speakers are not characters; the narrator reads them. Include a first-person narrator as a character too, and set narrator_is_character to that character's id.
+- The narrator's voice must equal that character's voice.
+- Available voices: chloe (female, friendly, clear), eleanor (female, calm, professional), jake (male, energetic, dramatic), marcus (male, enthusiastic, professorial), nora (female, calm, narrative), oliver (male, calm, thoughtful, reflective).
+- Give each character the voice that fits their gender, age and temperament. Voices may be shared only when there are more characters than voices; then differentiate with voice_tags (pitch_low, pitch_high, speed_slow, speed_fast). Use "" when no tag is needed.
+- aliases: every name the text uses for them, as written. Never use a bare common word, or a name shared with another character.
+- Paragraphs are numbered [0], [1], ... Use those numbers for first_para."""
+
+PERSONA_PARAS = 40  # a persona is written from the paragraphs up to first_para + this many (earliest lines only)
+
+
+class PersonaResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    persona: str
+
+
+PERSONA_SYSTEM = """You describe how one character comes across in their earliest lines of a story, for a roleplay actor who will speak as them.
+Write at most 3 sentences about MANNER only: temperament, diction, how they address others, verbal tics. Describe them ONLY as they come across in the text given.
+Do not state plot facts, secrets, relationships, events or outcomes, and do not use outside knowledge of the book or anything that comes later."""
+
+
+def persona_cutoff(book: Book, first_para: int) -> int:
+    return min(len(book.paragraphs) - 1, first_para + PERSONA_PARAS)
+
+
+def persona_user(book: Book, name: str, aliases: list[str], first_para: int) -> str:
+    """The ONLY text a persona sees: paragraphs from just before first_para up to first_para + PERSONA_PARAS."""
+    end = persona_cutoff(book, first_para)
+    text = "\n\n".join(book.paragraphs[i].text for i in range(max(0, first_para - 5), end + 1))
+    return f'Character: {name} (also called: {", ".join(aliases)})\n\nText:\n\n{text}'
 
 
 def numbered(book: Book) -> str:
@@ -84,7 +134,7 @@ def locate_first_para(book: Book, aliases: list[str], fallback: int) -> int:
     return max(0, min(fallback, len(book.paragraphs) - 1))
 
 
-def apply_cast(book: Book, result: CastResult, max_main: int | None = None, mark_main: bool = False) -> None:
+def apply_cast(book: Book, result: CastResult | MainCast, max_main: int | None = None, mark_main: bool = False) -> None:
     """Write characters and narrator into `book`; only the first `max_main` characters are kept (importance order)."""
     chars: list[Character] = []
     seen: set[str] = set()
@@ -95,7 +145,7 @@ def apply_cast(book: Book, result: CastResult, max_main: int | None = None, mark
         aliases = sorted({c.name, *c.aliases}, key=len, reverse=True)
         chars.append(Character(id=c.id, name=c.name, aliases=aliases,
                                first_para=locate_first_para(book, aliases, c.first_para),
-                               voice=c.voice, voice_tags=c.voice_tags, persona=c.persona,
+                               voice=c.voice, voice_tags=c.voice_tags, persona=getattr(c, "persona", ""),
                                main=True if mark_main else None))
     chars.sort(key=lambda c: c.first_para)
     is_char = result.narrator_is_character if result.narrator_is_character in seen else None
@@ -104,8 +154,23 @@ def apply_cast(book: Book, result: CastResult, max_main: int | None = None, mark
     book.narrator = Narrator(voice=narrator_voice, is_character=is_char)
 
 
-async def cast_novel(book: Book, call: Callable[..., Awaitable[CastResult]], tier: str = "smart") -> None:
-    """One call, then apply: at most MAIN_MAX main characters, all marked main."""
+async def cast_novel(book: Book, call: Callable[..., Awaitable], tier: str = "smart",
+                     persona_tier: str = "fast") -> None:
+    """Cast call (who, voices, first_para), then one cheap persona call per character from their earliest text only."""
     user = f'Title: "{book.title}" by {book.author}\n\n{numbered_sample(book)}'
-    result = await call(tier, UPLOAD_SYSTEM, user, CastResult, max_tokens=6000, effort="medium")
+    result = await call(tier, UPLOAD_SYSTEM, user, MainCast, max_tokens=4000, effort="medium")
     apply_cast(book, result, MAIN_MAX, mark_main=True)
+
+    async def persona(c: Character) -> None:
+        try:
+            r = await call(persona_tier, PERSONA_SYSTEM, persona_user(book, c.name, c.aliases, c.first_para),
+                           PersonaResult, max_tokens=600, effort="low")
+            c.persona = r.persona.strip()
+        except SpendLimit:
+            raise
+        except Exception:  # a plain fallback beats a failed upload
+            c.persona = ""
+        if not c.persona:
+            c.persona = f"{c.name} speaks in their own way."
+
+    await gather_or_cancel(persona(c) for c in book.characters)

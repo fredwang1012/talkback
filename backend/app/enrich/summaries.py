@@ -9,7 +9,6 @@ The stored summary at paragraph P (a checkpoint) = condensed end-notes of the un
 + the latest checkpoint note of P's unit (the one at P). Spoiler invariant: no summary text derives from a paragraph
 after its `upto_para`. A condensation of completed units uses only their end notes, which came from text before P.
 """
-import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Awaitable, Callable
@@ -17,7 +16,8 @@ from typing import Awaitable, Callable
 from pydantic import BaseModel, ConfigDict
 
 from ..schema import Book, Summary
-from .llm import LLMRefusal
+from .llm import SpendLimit
+from .tasks import gather_or_cancel
 
 log = logging.getLogger("talkback.enrich")
 
@@ -142,11 +142,13 @@ async def build_summaries(book: Book, call: CallFn, on_progress: Callable[[float
             text = trim_words(r.summary, NOTE_WORDS + 30)
             if text:
                 notes[(ui, c)] = text
-        except (RuntimeError, ValueError, LLMRefusal) as e:  # refusal/out of tokens/bad JSON: checkpoint skipped
-            log.warning("summary note skipped (%s)", type(e).__name__)  # SpendLimit is not caught: it stops the job
+        except SpendLimit:
+            raise  # stops the stage: siblings are cancelled
+        except Exception as e:  # refusal/out of tokens/bad JSON/provider failure: this checkpoint is skipped
+            log.warning("summary note skipped (%s)", type(e).__name__)
         tick()
 
-    await asyncio.gather(*(note(ui, u, c) for ui, u in enumerate(us) for c in u.checkpoints))
+    await gather_or_cancel(note(ui, u, c) for ui, u in enumerate(us) for c in u.checkpoints)
 
     def end_note(ui: int) -> str | None:
         """The unit's end note; if that call failed, its latest earlier checkpoint (still only earlier text)."""
@@ -169,11 +171,13 @@ async def build_summaries(book: Book, call: CallFn, on_progress: Callable[[float
                 r = await call(TIER, CONDENSE_SYSTEM, "\n\n".join(f"Chapter {i + 1}: {n}" for i, n in enumerate(ns)),
                                NoteResult, max_tokens=800, effort="low")
                 condensed[ui] = trim_words(r.summary, STORY_WORDS + 30) or fallback_condense(ns)
-            except (RuntimeError, ValueError, LLMRefusal):
+            except SpendLimit:
+                raise
+            except Exception:
                 condensed[ui] = fallback_condense(ns)
             tick()
 
-    await asyncio.gather(*(condense(ui) for ui in range(len(us))))
+    await gather_or_cancel(condense(ui) for ui in range(len(us)))
     if on_progress:
         on_progress(1.0)
 
