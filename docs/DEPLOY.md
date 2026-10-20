@@ -11,21 +11,24 @@ build and deploy as part of the work.
 Already in place: Artifact Registry repo `talkback`, service account `talkback-api@frederick-talkback.iam.gserviceaccount.com`
 with its roles, bucket `gs://frederick-talkback-data`.
 
-1. Create the two secrets (once). The script checks for them and stops, printing these commands, if either is missing:
+1. Create the three secrets (once). The script checks for them and stops, printing these commands, if any is missing:
    ```
    printf %s "$BOSON_API_KEY" | gcloud secrets create boson-api-key --data-file=- --project frederick-talkback
+   printf %s "$ANTHROPIC_API_KEY" | gcloud secrets create anthropic-api-key --data-file=- --project frederick-talkback
    export TALKBACK_ACCESS_TOKEN=$(openssl rand -hex 16)
    printf %s "$TALKBACK_ACCESS_TOKEN" | gcloud secrets create talkback-access-token --data-file=- --project frederick-talkback
    ```
 2. `scripts/deploy_cloudrun.sh` prints its plan and does nothing; `scripts/deploy_cloudrun.sh --yes` runs it:
    - refuses a dirty git tree unless `--allow-dirty` is passed;
-   - syncs `data/books` (skipping `u-*` user uploads) to the bucket with `gcloud storage rsync`. Portraits,
+   - syncs `data/books` (skipping `u-*` user uploads and every `cast_settings.json`, so settings saved on the live site survive) to the bucket with `gcloud storage rsync`. Portraits,
      `data/uploads` and `data/samples` are never synced and nothing is deleted from the bucket (it also holds books
      uploaded via the deployed app). Portraits are personal: upload any you want public by hand, e.g.
      `gcloud storage cp data/portraits/<file> gs://frederick-talkback-data/portraits/`;
    - builds `us-central1-docker.pkg.dev/frederick-talkback/talkback/api:<git short sha>` with Cloud Build;
-   - deploys service `talkback` with `RETRIEVAL_BACKEND=vertex`, the secrets as `BOSON_API_KEY` and
-     `TALKBACK_ACCESS_TOKEN`, and the bucket mounted at `/app/data` (the whole data dir).
+   - deploys service `talkback` with `RETRIEVAL_BACKEND=vertex`, the secrets as `BOSON_API_KEY`, `ANTHROPIC_API_KEY` and
+     `TALKBACK_ACCESS_TOKEN`, the env vars `UPLOAD_LLM=claude`, `UPLOAD_ENRICH=true`, `UPLOAD_CONFIRM=false`,
+     `UPLOAD_BOOK_CAP_USD=4`, `UPLOAD_TOTAL_CAP_USD=15` and `USAGE_LOG_FILE=false` (usage lines go to Cloud Logging
+     only; appending to `usage.jsonl` on the gcsfuse mount rewrites the whole object each time), and the bucket mounted at `/app/data` (the whole data dir).
 3. Health check path: `/api/health`.
 
 The image contains no `data/`, `.env`, logs, `node_modules` or `.venv` (see `.dockerignore`) and no torch: the `embed`

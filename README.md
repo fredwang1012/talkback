@@ -29,7 +29,8 @@ Copy `.env.example` to `.env` (gitignored) and fill it in:
 | Variable | Needed for |
 | --- | --- |
 | `BOSON_API_KEY` | Audio, Talk mode, voice cloning. Never reaches the browser; the server mints short-lived keys. |
-| `ANTHROPIC_API_KEY` | Offline preprocessing only (cast, segments, summaries). Not used at runtime. |
+| `ANTHROPIC_API_KEY` | Preprocessing and, when `UPLOAD_LLM=claude`, character processing of uploaded novels (falls back to Gemini when unset). |
+| `USAGE_LOG_FILE` | Default `true`: append billable calls to `data/cache/usage.jsonl`. The Cloud Run deploy sets `false` (Cloud Logging only). |
 | `BOSON_BASE_URL` | Defaults to `https://api.boson.ai`. |
 | `TALKBACK_ACCESS_TOKEN` | Optional. For public deployments: voices then need an access code typed into the page. |
 
