@@ -15,6 +15,7 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 
 from .schema import Book
+from .synonyms import expand_tokens
 
 DEFAULT_K = 8                  # passages per Gemini answer (/api/answer)
 MAX_PASSAGE_CHARS = 12000      # hard cap on passage text per Gemini answer
@@ -25,6 +26,7 @@ CHUNK_OVERLAP_CHARS = 250      # neighbouring chunks share about one trailing pa
 RECENCY_WINDOW = 15
 RECENCY_BOOST = 0.05
 W_EMBED, W_BM25 = 0.6, 0.4
+EXPAND_WEIGHT = 0.25           # weight of synonym-expansion BM25 scores vs the original query terms (local mode only)
 RECENT_PARAS = 2
 
 _WORD = re.compile(r"\w+", re.UNICODE)
@@ -111,10 +113,20 @@ class Index:
     def mode(self) -> str:
         return "hybrid" if self.embeddings is not None and self.embedder is not None else "bm25"
 
+    def _bm25_scores(self, query: str) -> np.ndarray:
+        """BM25 over the query terms; in local (bm25-only) mode, plus down-weighted scores for related words."""
+        toks = tokenize(query)
+        bm = np.asarray(self._bm25.get_scores(toks), dtype=float)
+        if self.mode == "bm25":
+            extra = expand_tokens(toks)
+            if extra:
+                bm = bm + EXPAND_WEIGHT * np.asarray(self._bm25.get_scores(extra), dtype=float)
+        return bm
+
     def scores(self, query: str) -> np.ndarray:
         """Hybrid score for every chunk (before eligibility filtering). Min-max normalised BM25 + cosine."""
         n = len(self.chunks)
-        bm = np.asarray(self._bm25.get_scores(tokenize(query)), dtype=float) if self._bm25 and query.strip() else np.zeros(n)
+        bm = self._bm25_scores(query) if self._bm25 and query.strip() else np.zeros(n)
         lo, hi = (bm.min(), bm.max()) if n else (0, 0)
         bm_norm = (bm - lo) / (hi - lo) if hi > lo else np.zeros(n)
         if self.mode == "bm25" or not query.strip():
