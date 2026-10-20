@@ -44,6 +44,9 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [labOpen, setLabOpen] = useState(false);
   const [recapOpen, setRecapOpen] = useState(false);
   const [cast, setCast] = useState<Cast>(emptyCast);
+  const castEdited = useRef(false); // a local edit happened: late server loads must not overwrite it
+  const [animating, setAnimating] = useState<Set<string>>(new Set()); // lives here so closing the panel keeps the spinner
+  const [animErrors, setAnimErrors] = useState<Record<string, string>>({});
   const [castError, setCastError] = useState<string | null>(null);
   const [faces, setFaces] = useState<Face[]>([]);
   const [cloned, setCloned] = useState<Record<string, string>>({});
@@ -69,9 +72,11 @@ export default function Reader({ bookId }: { bookId: string }) {
       setIndex(demo ? firstChunkAtOrAfter(flat, DEMO_START_PARA) : loadPosition(b.id, flat.length));
       if (demo && b.characters.some((c) => c.id === DEMO_SPEAKER)) setSpeakerId(DEMO_SPEAKER); // pinned to the demo character
       // the cast lives on the server; the old series-wide localStorage voices are moved into it once
+      castEdited.current = false;
       fetchCast(b.id).then(async (c) => {
+        if (castEdited.current) return; // the visitor already edited: their state is the newest
         const migrated = await migrateOldOverrides(b, c);
-        setCast(migrated ?? c);
+        if (!castEdited.current) setCast(migrated ?? c);
       }).catch(() => { /* no cast: books keep their own voices */ });
     }).catch((e: Error) => setError(e.message));
     fetchHealth().then(setHealth).catch(() => setHealth(null));
@@ -243,10 +248,10 @@ export default function Reader({ bookId }: { bookId: string }) {
   const saver = useMemo(
     () => createCastSaver(bookId, () => setCastError(null), setCastError),
     [bookId]);
-  const changeCast = (next: Cast) => { setCast(next); setCastError(null); void saver(next); };
+  const changeCast = (next: Cast) => { castEdited.current = true; setCast(next); setCastError(null); void saver(next); };
   const changeStyle = (next: ReadingStyle) => { setStyle(next); saveStyle(bookId, next); };
   const changeTalk = (next: TalkChoice) => { setTalkChoice(next); saveTalkChoice(bookId, next); };
-  const reloadCast = () => { fetchCast(bookId).then(setCast).catch(() => {}); };
+  const reloadCast = () => { void saver.flush().then(() => fetchCast(bookId)).then((c) => { setCast(c); }).catch(() => {}); };
   const reloadFaces = () => { fetchFaces().then(setFaces).catch(() => {}); fetchVoices().then(setCloned).catch(() => {}); };
   const preview = async (speaker: string, voice: string) => {
     const chunk = chunks.find((c) => c.speaker === speaker) ?? chunks[0];
@@ -301,7 +306,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       </div>
       {labOpen && (
         <VoiceLab book={book} cast={cast} onCast={changeCast} castError={castError} style={style} onStyle={changeStyle}
-                  cloned={cloned} onCloned={setCloned} faces={faces} onFaces={setFaces}
+                  cloned={cloned} onCloned={setCloned} animating={animating} setAnimating={setAnimating} animErrors={animErrors} setAnimErrors={setAnimErrors} faces={faces} onFaces={setFaces}
                   onFacesChanged={() => { reloadFaces(); reloadCast(); }}
                   onPreview={preview} audioAvailable={audioAvailable} onClose={() => setLabOpen(false)} />
       )}

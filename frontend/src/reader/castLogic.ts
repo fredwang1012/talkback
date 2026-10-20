@@ -113,7 +113,11 @@ export function createCastSaver(
     }
     running = false;
   }
-  return (cast: Cast) => { pending = cast; return run(); };
+  let current: Promise<void> = Promise.resolve();
+  const push = (cast: Cast) => { pending = cast; if (!running) current = run(); return current; };
+  /** Resolves when every queued save has been sent. */
+  push.flush = async () => { await current; };
+  return push;
 }
 
 // ---------- migration of the old series-wide voice overrides ----------

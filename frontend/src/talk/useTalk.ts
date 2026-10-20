@@ -116,6 +116,9 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
 
   useEffect(() => { controller.current?.setAutoResume(autoResume); }, [autoResume, enabled]);
   useEffect(() => { void controller.current?.setSpeaker(speakerId); }, [speakerId, enabled]);
+  // the same speaker with a different resolved voice must reach an open realtime session too
+  const voiceKey = voiceFor(speakerId);
+  useEffect(() => { void controller.current?.refreshVoice(); }, [voiceKey, enabled]);
 
   return {
     state, caption, toast, level, latency, speaking, question, language, clip, logs,

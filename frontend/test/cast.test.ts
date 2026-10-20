@@ -139,6 +139,15 @@ describe("saving the cast", () => {
     expect(saved).toHaveBeenLastCalledWith(c);
   });
 
+  it("flush waits for the queued save", async () => {
+    const save = vi.fn(async (_id: string, c: Cast) => { await new Promise((r) => setTimeout(r, 5)); return c; });
+    const push = createCastSaver("hp1", vi.fn(), vi.fn(), save);
+    void push(blank());
+    void push(withAssignment(blank(), "narrator", { voice: "nora" }));
+    await push.flush();
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
   it("reports a failed save", async () => {
     const onError = vi.fn();
     await createCastSaver("hp1", vi.fn(), onError, async () => { throw new Error("nope"); })(blank());

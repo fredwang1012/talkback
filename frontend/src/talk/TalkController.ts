@@ -123,6 +123,11 @@ export class TalkController {
     try { await this.d.session.setVoice(this.d.voiceFor(id)); } catch { /* the next ensureOpen reconnects with the right voice */ }
   }
 
+  /** The resolved voice of the current speaker changed (Talk voice pick, cast edit, late cast load): re-apply it. */
+  async refreshVoice(): Promise<void> {
+    try { await this.d.session.setVoice(this.d.voiceFor(this.speakerId)); } catch { /* the next ensureOpen reconnects */ }
+  }
+
   dispose(): void {
     this.off();
     this.clearResumeTimer();

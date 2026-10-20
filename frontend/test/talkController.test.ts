@@ -273,6 +273,19 @@ describe("TalkController core loop", () => {
     expect(h.session.calls.some((c) => c === "open:marcus")).toBe(false);
   });
 
+  it("refreshVoice re-applies a changed voice for the same speaker", async () => {
+    const session = new FakeSession();
+    let voice = "marcus";
+    const talk = new TalkController({
+      session, reader: new FakeReader(), retrieve: async () => ({ instructions: "I" }), voiceFor: () => voice,
+    } as unknown as ConstructorParameters<typeof TalkController>[0]);
+    await talk.setSpeaker("harry");
+    voice = "chloe"; // Talk voice pick, cast edit or late cast load
+    await talk.refreshVoice();
+    expect(session.calls.filter((c) => c.startsWith("voice:"))).toEqual(["voice:marcus", "voice:chloe"]);
+    talk.dispose();
+  });
+
   it("survives ten consecutive cycles without getting stuck", async () => {
     const h = setup();
     for (let i = 0; i < 10; i++) {
