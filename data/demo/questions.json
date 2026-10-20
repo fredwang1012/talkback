@@ -1,5 +1,83 @@
 [
   {
+    "book_id": "alice-in-wonderland",
+    "title": "Alice's Adventures in Wonderland",
+    "positions": [
+      {
+        "fraction": 0.38,
+        "section_id": "s7",
+        "chapter": "CHAPTER VII. A Mad Tea-Party",
+        "reader_para": 304,
+        "already_read": [
+          {
+            "question": "What happened to the Duchess's baby?",
+            "answer": "The Duchess flung the baby to Alice as she left to play croquet; it turned into a pig and trotted away into the wood."
+          },
+          {
+            "question": "Why does the Cheshire Cat say it is mad?",
+            "answer": "It says a dog growls when angry and wags its tail when pleased, while the Cat does the opposite, so it must be mad."
+          },
+          {
+            "question": "Who does the Cat say lives in the two directions it points?",
+            "answer": "A Hatter lives one way and a March Hare the other; the Cat says they are both mad."
+          }
+        ],
+        "earlier_book": [],
+        "future": [
+          {
+            "question": "What riddle does the Hatter ask Alice at the tea-party?",
+            "expected": "should decline"
+          },
+          {
+            "question": "What happens when Alice goes to play croquet with the Queen?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "cat",
+          "name": "Cheshire Cat",
+          "question": "Cheshire Cat, how do you know that everyone here is mad, and am I mad too?"
+        }
+      },
+      {
+        "fraction": 0.72,
+        "section_id": "s10",
+        "chapter": "CHAPTER X. The Lobster Quadrille",
+        "reader_para": 572,
+        "already_read": [
+          {
+            "question": "Why were the gardeners painting the roses red?",
+            "answer": "They had planted a white rose-tree by mistake and feared the Queen would have them beheaded if she found out."
+          },
+          {
+            "question": "What does the Duchess keep doing as she walks with Alice at the croquet-ground?",
+            "answer": "She keeps drawing a moral from everything, saying \"and the moral of that is...\", and agrees with whatever Alice says."
+          },
+          {
+            "question": "What lessons did the Mock Turtle say he took at school?",
+            "answer": "The regular course: Reeling and Writhing, and Arithmetic (Ambition, Distraction, Uglification and Derision), plus Mystery, Seaography and Drawling."
+          }
+        ],
+        "earlier_book": [],
+        "future": [
+          {
+            "question": "Who stole the Queen's tarts?",
+            "expected": "should decline"
+          },
+          {
+            "question": "How does Alice's adventure end?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "queen",
+          "name": "Queen of Hearts",
+          "question": "Your Majesty, what do you make of the gardeners who painted your roses the wrong colour?"
+        }
+      }
+    ]
+  },
+  {
     "book_id": "hp1-sorcerers-stone",
     "title": "Harry Potter and the Sorcerer's Stone",
     "positions": [
