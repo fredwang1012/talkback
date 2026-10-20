@@ -35,6 +35,10 @@ data/portraits/*
 data/raw/*
 !data/raw/.gitkeep
 !data/raw/alice.txt
+!data/raw/wizard-of-oz.txt
+!data/raw/peter-pan.txt
+!data/raw/wind-in-the-willows.txt
+!data/raw/a-christmas-carol.txt
 data/samples/
 data/voices.json
 data/voice_faces.json
