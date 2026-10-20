@@ -310,3 +310,44 @@ Pending: needs BOSON_API_KEY (probes a–f in brief §9 M0).
   - key fact: Pettigrew is forced back into human form, confesses, then escapes while Lupin turns into a werewolf and the others are distracted.
   - answer: Well, after Professor Lupin and Sirius cast their spells, Scabbers doesn't stay a rat for long, does he? He... well, he transforms right there in front of them! A man appears where Scabbers was, a rather small, cringing fellow, I hear. Quite extraordinary magic, that.
   - judge: The answer only describes Scabbers being forced back into human form and omits the confession and his escape while Lupin transforms into a werewolf, so it does not give the later fact the question asks for.
+
+## Q&A eval, round 2 (judge rework + same-judge rebaseline), 2026-10-19
+
+Judge context now (both modes, and for the rejudged baseline): story-so-far summary at the reader's position plus the earlier-books
+recap, the last 4,000 chars of read text, the key fact, and the later text (safe: 8,000 chars right after the reader; full: future
+questions only, <= 10,000 chars = 6,000 near + 4,000 ending). The passages the answer was given are NOT shown to the judge: the old
+index cannot be regenerated for the baseline, so for a fair before/after both use the same context; passages are logged (with text)
+in the results JSON for inspection. `--rejudge DIR` re-grades saved answers with judge calls only; `--yes` is now always required;
+the estimate builds the real judge prompts (and is calibrated to the measured ~2.6 chars/token; the first estimate of $2.25 for the
+rejudge actually cost $3.17).
+
+Baseline answers (old retrieval: 3-paragraph chunks, k=4), 122 questions, 25 positions, Sonnet judge:
+
+| Mode / metric | Old judge (6k read tail) | Same new judge |
+|---|---|---|
+| Safe: earlier-text accuracy | 70% | 74% |
+| Safe: future declined / in bounds | 81% | 79% |
+| Safe: judged leaks | 13 | 11 |
+| Safe: avg detail (earlier) | 1.84 | 1.82 |
+| Safe: passages beyond reader (structural) | 0 | 0 |
+| Full: earlier-text accuracy | 72% | 66% |
+| Full: future accuracy | 78% | 78% |
+| Full: avg detail earlier / future | 1.82 / 1.71 | 1.80 / 1.67 |
+
+AFTER run (~1,300-char chunks, k=8, 12k budget, new prompts): NOT RUN. The rejudge spent $3.17 of the $3.50 budget, leaving $0.33
+against an estimated $1.83 (safe) / $1.6 (full). To finish: `backend/.venv/Scripts/python.exe preprocess/eval_spoilers.py --book hp3-prisoner-of-azkaban --yes --notes`
+(saves over data/eval/hp3-*.{md,json}; the baseline copies are in data/eval/baseline/, rejudged ones in data/eval/baseline/rejudged/).
+
+Safe-mode leaks still flagged on the BASELINE answers by the new judge (11; many are the judge penalising invented or unsupported
+details rather than true future facts):
+- ¶525, voldemort: Will Harry ever get permission to visit Hogsmeade? Answer: "The boy sought permission, but the Minister, despite his lofty title, claimed impotence. Rules, he said, were rules. It seems the boy will not visit Hogsmeade this year." Judge: asserts that Fudge refused and that Harry will not visit Hogsmeade, which is not in the read text and contradicts later events.
+- ¶609, hermione: How did Harry react when the dementor came into the train compartment? Answer: "Oh, that was dreadful! The Dementor... well, Harry reacted rather poorly, actually. He just keeled over, right there on the floor. It was quite alarming." Judge: matches the key fact but describes the dementor's arrival, which the reader has not yet read.
+- ¶609, mr-weasley: Is Sirius Black actually the villain who wants to kill Harry? Answer: "Ah, well, that's what we all believe, isn't it? He certainly seems set on harming Harry, what with him muttering "He's at Hogwarts" in his sleep and all. Awful business, truly awful." Judge: cites a detail in neither the read nor later text and affirms Black's guilt as fact.
+- ¶668, narrator: Who sent Harry the Firebolt broom, and was it cursed? Answer: "Ah, the Firebolt! What a magnificent broom. Harry saw it in Quality Quidditch Supplies in Diagon Alley, a truly breathtaking piece of craftsmanship, but he couldn't afford it. He certainly wasn't sent it, and as for curses, there was no mention of such a thing." Judge: wrongly denies that it was sent (Sirius sent it) and adds unread details.
+- ¶989, narrator: What is Hermione secretly doing that lets her seem to be in two places at once? Answer: "Ah, Hermione, ever the enigma! While it truly seems she has mastered the art of being in three places at once, she has only told Ron that she has "fixed it all with Professor McGonagall." What exactly that entails, we do not know yet." Judge: claims details not in the read text and hints at the McGonagall/Time-Turner link.
+- ¶1251, neville: Who sent Harry the Firebolt, and why was it sent? Answer: "Oh, um, I don't... I don't think anyone sent Harry the Firebolt yet. He just saw it in a shop. It's really fast, though!" Judge: says details not in the read text or summary and fails to simply decline.
+- ¶1357, mcgonagall: Who or what did Harry see in the stands that made him lose his grip during the storm match? Answer: "Mr. Potter did not lose his grip during the match you are referring to. His broomstick began behaving strangely, as though it had a will of its own. It was a most unsettling incident." Judge: asserts an unread event and falsely denies the premise.
+- ¶1989, harry: What happens to Scabbers? Did Crookshanks really eat him? Answer: "No, Crookshanks didn't eat Scabbers. Scabbers ran away, and Ron caught him. He's just looking a bit thin now." Judge: confidently denies and invents an outcome that clashes with the key fact.
+- ¶2629, hagrid: How did Harry win the Quidditch match against Slytherin? Answer: "Well, bless his heart, Harry caught the Snitch, o' course! Barely lasted five minutes, that match did. Slytherin was right mad about it, especially Flint, goin' on about Harry nearly swallowin' it. But a catch is a catch, eh? Gave Gryffindor a grand win!" Judge: states the Snitch catch, an outcome only in the later text, plus invented details.
+- ¶2688, malfoy: What happens to Scabbers the rat? Answer: see data/eval/baseline/rejudged/hp3-prisoner-of-azkaban-safe.md (reveals Scabbers is Pettigrew).
+- ¶3038, fred: Does Ron get a new pet after losing Scabbers? Answer and judge reason: see the same file.
