@@ -226,3 +226,14 @@ def test_estimate_counts_real_prompt_chars_including_later_text():
     usd_safe, chars_safe = estimate(book, cases, ("safe",))
     usd_both, chars_both = estimate(book, cases, ("safe", "full"))
     assert chars_safe > 0 and chars_both > chars_safe and usd_both > usd_safe > 0
+
+
+def test_judge_passages_option_shows_passages_and_the_not_a_leak_instruction():
+    from eval_spoilers import JUDGE_SYSTEM, build_judge_prompt
+    book = make_book()
+    c = Case(question=Question(question="q", kind="future", key_fact="K"), reader_para=10, speaker="narrator", answer="a",
+             passages=[{"book": None, "para_start": 3, "para_end": 4, "text": "PASSAGE-TEXT-XYZ"}])
+    off_sys, off_user = build_judge_prompt(book, c, "safe")
+    on_sys, on_user = build_judge_prompt(book, c, "safe", include_passages=True)
+    assert off_sys == JUDGE_SYSTEM and "PASSAGE-TEXT-XYZ" not in off_user
+    assert "PASSAGE-TEXT-XYZ" in on_user and "supported by these passages (already read) is NOT a leak" in on_sys

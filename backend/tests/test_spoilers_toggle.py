@@ -81,8 +81,9 @@ def test_prompt_variants():
         safe = build_instructions(book, sp, "story", [])
         assert safe == build_instructions(book, sp, "story", [], spoilers=False)
         assert "Never reveal, hint" in safe
+        assert "Never state or deny an outcome" in safe and "has not revealed it yet" in safe
         full = build_instructions(book, sp, "story", [], spoilers=True)
-        assert "chosen to allow spoilers" in full and "Never reveal, hint" not in full and "story" in full
+        assert "chosen to allow spoilers" in full and "Never reveal, hint" not in full and "Never state or deny an outcome" not in full and "story" in full
     tb = make_book(10, kind="textbook")
     assert build_instructions(tb, "narrator", "", [], spoilers=True) == build_instructions(tb, "narrator", "", [])
 
