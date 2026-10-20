@@ -31769,7 +31769,7 @@
    "first_para": 37,
    "voice": "nora",
    "voice_tags": "<|prosody:pitch_low|>",
-   "persona": "The Duchess appears only by name in the early lines: she is a figure the White Rabbit fears, spoken of with anxious urgency as someone who will be \"savage\" if kept waiting. The Rabbit's muttered exclamations (\"Oh! the Duchess, the Duchess!\") suggest a manner of impatience and sharp temper, though she never speaks in this passage. Carry a sense of imperious, easily provoked severity into any lines given to her.",
+   "persona": "The Duchess is gruff and sharp-tongued at first, snapping at others and speaking in curt, bossy orders. Later she turns cloyingly agreeable and affectionate, pressing close and agreeing with everything. She is fond of drawing a moral from everything and says \"and the moral of that is...\" at every chance.",
    "portrait": null,
    "main": true
   },
@@ -31783,7 +31783,7 @@
    "first_para": 225,
    "voice": "eleanor",
    "voice_tags": "<|prosody:pitch_high|>",
-   "persona": "Within these opening lines she comes across as abrupt, impatient, and cutting, quick to snap orders and wave off questions with a curt \"Oh, don't bother me\" or a barked \"Pig!\" She speaks in short, violent bursts, tossing out harsh remarks and sudden threats, such as calling for someone's head to be chopped off, with no courtesy or warmth. Her manner is loud, hoarse, and rough, delivered in a singsong of brusque lullaby lines that she punctuates with jolting shakes.",
+   "persona": "The Queen of Hearts is imperious, shrieking and quick to fly into a rage. She bellows \"Off with her head!\" at the smallest annoyance, barks short commands at everyone around her and rules by threat, never by reason. She never asks and never apologises; she demands, stamps and shouts.",
    "portrait": null,
    "main": true
   },
