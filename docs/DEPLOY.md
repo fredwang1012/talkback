@@ -1,5 +1,10 @@
 # Deploying Talkback
 
+You do not need any of this to run Talkback locally (see the README Quickstart). This is how the author deployed it. The
+project id `frederick-talkback`, the bucket `frederick-talkback-data` and the service account below are the author's own
+GCP resources and are baked into `scripts/deploy_cloudrun.sh` as constants; substitute your own project, region and bucket
+(edit the constants at the top of the script) before deploying anywhere else.
+
 One container serves everything: the FastAPI API, cached audio (`/media`), portraits, and the built frontend (the
 backend mounts `frontend/dist` at `/` when it exists). Same origin, so the browser needs no CORS setup.
 

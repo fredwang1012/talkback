@@ -12,7 +12,7 @@ Pipeline (brief section 8, item 8):
    detail 1-3. Full mode (spoilers=true, whole-book retrieval): accuracy on earlier AND future questions against the stored
    key fact (plus an excerpt of the later text), detail 1-3, no leak scoring; counts answers that used passages past the reader.
 Also checked deterministically, with no LLM: every retrieved passage must end at or before the reader's paragraph.
-Target: 0 leaks. Reports -> data/eval/<book>-safe.md and -full.md (+ .json results), summary appended to NOTES.md with --notes.
+Target: 0 leaks. Reports -> data/eval/<book>-safe.md and -full.md (+ .json results), summary appended to docs/internal/NOTES.md with --notes.
 Spends Anthropic credit: prints the estimate (built from the real judge prompts) and runs nothing without --yes.
 --rejudge DIR re-grades saved answers (judge calls only) into DIR/rejudged/.
 """
@@ -412,10 +412,10 @@ async def main() -> None:
     ap.add_argument("--n", type=int, default=100, help="total questions (4 per reader position)")
     ap.add_argument("--mode", choices=["safe", "full", "both"], default="both")
     ap.add_argument("--judge-model", default=JUDGE_MODEL)
-    ap.add_argument("--label", default="after (~1,300-char chunks, k=8)", help="label for the report and NOTES.md summary")
+    ap.add_argument("--label", default="after (~1,300-char chunks, k=8)", help="label for the report and docs/internal/NOTES.md summary")
     ap.add_argument("--yes", action="store_true", help="required: nothing paid runs without it")
     ap.add_argument("--dry-run", action="store_true", help="print the cost estimate and stop")
-    ap.add_argument("--notes", action="store_true", help="append the summary to NOTES.md")
+    ap.add_argument("--notes", action="store_true", help="append the summary to docs/internal/NOTES.md")
     ap.add_argument("--rejudge", metavar="DIR", help="re-grade the saved answers in DIR/<book>-<mode>.json (judge calls only); writes DIR/rejudged/")
     ap.add_argument("--answer", choices=["auto", "gemini", "sonnet"], default="auto",
                     help="who answers: the real /api/answer path (gemini) or a Sonnet stand-in; auto = gemini when the server uses it")
@@ -488,7 +488,7 @@ async def main() -> None:
         out.with_suffix(".json").write_text(results_json(cases, stats), encoding="utf-8")
         print(report)
         if args.notes:
-            with (ROOT / "NOTES.md").open("a", encoding="utf-8") as f:
+            with (ROOT / "docs" / "internal" / "NOTES.md").open("a", encoding="utf-8") as f:
                 f.write("\n" + report)
         leaked = leaked or (mode == "safe" and not rejudge_dir and bool(stats["llm_leaks"] or stats["structural_leaks"]))
     llm.print_usage()

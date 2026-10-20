@@ -1,6 +1,6 @@
 # Talkback — project conventions
 
-Read `docs/BRIEF.md` for the full spec; work milestone by milestone (M0–M10), commit after each, log findings in `NOTES.md`.
+The original spec and build logs are in `docs/internal/` (`BRIEF.md`, `NOTES.md`, `BLOCKED.md`); judges do not need them. Log new findings in `docs/internal/NOTES.md`.
 
 ## Commands
 - Backend (Python 3.12, uv): `cd backend && uv sync && uv run uvicorn app.main:app --port 8000`; tests `uv run pytest`
