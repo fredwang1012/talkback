@@ -69,6 +69,32 @@ browser, so one choice covers all seven books. Audio is made on demand; nothing 
   voice / no face. `/api/tts` resolves a chunk's voice as request override, then the cast voice for its speaker, then
   the book's voice. Every endpoint above is gated by the access code.
 
+## Uploaded novels: characters after upload (`app/enrich/`)
+
+An uploaded **novel** is readable with the narrator seconds after upload (text ingest, TTS chunks, retrieval chunks).
+Then a background job enriches it; textbooks skip it. Stages, each saving `book.json` atomically so voices and recap
+switch on progressively: **cast** (one Sonnet-tier call, at most 8 main characters with voices from the presets and a
+`first_para` computed from the text; other speakers are read by the narrator) -> **segment** (Haiku-tier, 10 paragraphs
+per call, `UPLOAD_CONCURRENCY`=24 calls at once, verbatim check, narrator fallback; only main characters are speakers;
+quotation marks a model drops are restored from the text) -> **summaries** (chapter notes in parallel: a checkpoint
+every ~40 paragraphs and at each chapter end, each written only from that chapter's text up to the checkpoint; the
+stored summary at paragraph P = condensed end-notes of completed chapters + the chapter's checkpoint at P, so nothing
+derives from text after `upto_para`; chapters over 200 paragraphs are cut into units) -> **index** (Vertex re-index with
+speakers when `RETRIEVAL_BACKEND=vertex`). Typical time is 3 to 5 minutes for a novel.
+
+- **Status** (`GET /api/books/{id}/status`): `{status: "ready", enrich: {status, stage, progress 0..1, message, estimate_usd?}}`.
+  `enrich.status` is `awaiting_confirmation | running | done | refused | error`; `stage` is
+  `queued | cast | segment | summaries | index | done`. A failed or refused enrichment leaves the book readable with the
+  narrator and a plain message. A server restart mid-job reports "interrupted".
+- **LLM provider** (`app/enrich/llm.py`): `UPLOAD_LLM=claude|gemini` (default claude; developer-only). Gemini is 2.5 Flash on
+  Vertex with JSON output. With Claude, `insufficient_quota`, billing, HTTP 402 or "credit balance too low" switches
+  the rest of the job to Gemini (logged). `preprocess/` scripts use the same code with `LLM_PROVIDER=claude|gemini`.
+- **Cost controls**: an estimate from text length per provider; a book estimated above $4 is refused ("This book is too
+  long to process with characters; it will be read by the narrator."); real spend from usage tokens is added to
+  `data/usage/upload_spend.json` (atomic) and everything stops at $15 cumulative. `UPLOAD_CONFIRM=true` (testing mode)
+  sets `awaiting_confirmation` with `estimate_usd` and waits for `POST /api/books/{id}/enrich` (access-gated); the default
+  starts straight away with no cost UI. One enrichment runs at a time.
+
 ## Retrieval sizes
 
 - Chunks (`retrieval.make_chunks`): paragraph-aligned, about 1,400 characters (min 900, max 2,000; a single longer paragraph

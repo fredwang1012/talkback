@@ -85,6 +85,16 @@ cd frontend && npm run dev          # http://localhost:5173
 Without `BOSON_API_KEY` the reader works silently (play moves at an estimated reading pace). Add the key and restart the
 backend to get audio and Talk mode.
 
+## Uploading your own books
+
+Add a PDF or .txt from the library page. A **novel** can be read with the narrator right away; characters, voices and the
+recap follow in the background (about 3 to 5 minutes), with progress shown on the page. A **textbook** gets the narrator
+only. Settings in `.env` (all optional): `UPLOAD_LLM=claude|gemini` (which model does the work; Claude falls back to
+Gemini automatically when its credit runs out), `LLM_PROVIDER=claude|gemini` (the same switch for the `preprocess/`
+scripts), `UPLOAD_CONFIRM=true` (testing mode: show the cost estimate and ask before processing). A book that would cost
+more than $4 to process is read by the narrator only, and processing stops for good at $15 total. See
+`docs/ARCHITECTURE.md`.
+
 ## The 90-second demo
 
 Open `http://localhost:5173/?demo=1#/read/hp1-sorcerers-stone` after pre-rendering the demo stretch
