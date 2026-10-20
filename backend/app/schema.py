@@ -21,6 +21,7 @@ class Segment(BaseModel):
     speaker: str  # character id or "narrator"
     text: str
     emotion: Emotion | None = None
+    style: Literal["whispering", "shouting"] | None = None  # Boson style tag; rule-detected (app/delivery.py) or LLM
 
 
 class TtsChunk(BaseModel):
