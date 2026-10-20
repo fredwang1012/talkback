@@ -22,6 +22,7 @@ from . import books, cast, faces, ingest_upload, retrieval, tts_cache, voices
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
+from .enrich import pipeline as enrich_pipeline
 from .gcp import usage
 from .personas import build_answer_prompt, build_instructions
 from .ratelimit import TokenBucket
@@ -407,12 +408,53 @@ def _set_status(book_id: str, status: str, message: str | None = None) -> None:
     _upload_status[book_id] = ingest_upload.write_status(book_id, status, message)
 
 
+def _set_enrich(book_id: str, **fields) -> None:
+    """Record the novel enrichment sub-status next to the (ready) ingest status."""
+    enrich = {k: v for k, v in fields.items() if v is not None}
+    _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", enrich=enrich)
+
+
+_enrich_lock = asyncio.Lock()  # one enrichment at a time (cost control and rate limits)
+
+
+async def _enrich_indexer(book: Book) -> None:
+    """Final stage: refresh the Vertex index with the speakers (the local index needs no change)."""
+    if settings.retrieval_backend == "vertex":
+        from .gcp.indexing import index_book, load_chunks
+        embedder, store = _vertex_deps()
+        await index_book(book, await asyncio.to_thread(load_chunks, book), embedder, store)
+
+
+async def _run_enrichment(book_id: str) -> None:
+    _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
+    try:
+        async with _enrich_lock:
+            await enrich_pipeline.enrich_book(book_id, lambda **f: _set_enrich(book_id, **f), indexer=_enrich_indexer)
+    finally:
+        _index_for.cache_clear()
+
+
+async def _plan_enrichment(book_id: str, book: Book) -> None:
+    """After the text ingest of a novel: refuse (caps), wait for confirmation (testing mode) or start."""
+    est = enrich_pipeline.estimate(book)
+    reason = enrich_pipeline.check_caps(est)
+    if reason:
+        _set_enrich(book_id, status="refused", message=reason)
+    elif settings.upload_confirm:
+        _set_enrich(book_id, status="awaiting_confirmation", estimate_usd=round(est, 2),
+                    message="Characters, voices and recap need processing.")
+    else:
+        await _run_enrichment(book_id)
+
+
 async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str, token: int) -> None:
     """Background ingest: CPU work in a thread, then (vertex only) index the chunks, then publish book.json.
 
     book.json is written last, so a processing or failed upload is never listed or readable. Never raises.
+    A novel is then enriched (cast, dialogue, summaries) while it is already readable with the narrator.
     """
     _ingest_guard.mark_started(token)
+    ready: Book | None = None
     try:
         book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext)
         if settings.retrieval_backend == "vertex":
@@ -422,6 +464,7 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
         await asyncio.to_thread(ingest_upload.publish_book, book)
         _index_for.cache_clear()
         _set_status(book_id, "ready")
+        ready = book
     except Exception as e:
         ingest_upload.discard_book(book_id)
         if isinstance(e, ingest_upload.UploadError):
@@ -431,6 +474,12 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
             _set_status(book_id, "error", "The file could not be processed.")
     finally:
         _ingest_guard.release(token)
+    if ready is not None and kind == "novel" and settings.upload_enrich:
+        try:
+            await _plan_enrichment(book_id, ready)
+        except Exception as e:  # the book stays readable with the narrator
+            logging.getLogger(__name__).warning("enrichment planning failed: %s", type(e).__name__)
+            _set_enrich(book_id, status="error", message=enrich_pipeline.FAILED)
 
 
 @app.post("/api/books/upload", status_code=202, dependencies=[Depends(require_access)])
@@ -474,9 +523,30 @@ def book_status(book_id: str):
         st = ingest_upload.read_status(book_id)
         if st and st.get("status") == "processing":  # not in memory: the server restarted mid-ingest
             st = {"status": "error", "message": "Processing was interrupted; please upload again."}
+        elif st and (st.get("enrich") or {}).get("status") == "running":  # restarted mid-enrichment
+            st = {"status": "ready", "enrich": {"status": "error", "stage": st["enrich"].get("stage"),
+                  "message": "Character processing was interrupted; the book is still readable with the narrator."}}
     if st is None:
         raise HTTPException(404, "Book not found")
     return st
+
+
+@app.post("/api/books/{book_id}/enrich", status_code=202, dependencies=[Depends(require_access)])
+async def start_enrichment(book_id: str, background: BackgroundTasks):
+    """Testing mode (UPLOAD_CONFIRM): start the character processing the reader just confirmed."""
+    st = book_status(book_id)
+    if (st.get("enrich") or {}).get("status") != "awaiting_confirmation":
+        raise HTTPException(409, "This book is not waiting for confirmation.")
+    book = books.load_book(book_id)
+    if book is None:
+        raise HTTPException(404, "Book not found")
+    reason = enrich_pipeline.check_caps(enrich_pipeline.estimate(book))  # caps are re-checked at start
+    if reason:
+        _set_enrich(book_id, status="refused", message=reason)
+        return _upload_status[book_id]
+    _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
+    background.add_task(_run_enrichment, book_id)
+    return _upload_status[book_id]
 
 
 # ---------- avatars (stretch) ----------

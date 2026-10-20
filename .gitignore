@@ -19,6 +19,7 @@ __pycache__/
 
 # Generated data
 data/cache/
+data/usage/
 scripts/captures/*.wav
 scripts/captures/*.log
 .playwright-mcp/

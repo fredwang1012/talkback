@@ -272,8 +272,9 @@ def discard_book(book_id: str) -> None:
         (d / name).unlink(missing_ok=True)
 
 
-def write_status(book_id: str, status: str, message: str | None = None) -> dict:
-    out = {"status": status} | ({"message": message} if message else {})
+def write_status(book_id: str, status: str, message: str | None = None, enrich: dict | None = None) -> dict:
+    """status.json: {status, message?, enrich?}. `enrich` is the novel enrichment sub-status (see enrich/pipeline.py)."""
+    out = {"status": status} | ({"message": message} if message else {}) | ({"enrich": enrich} if enrich else {})
     d = settings.data_dir / "books" / book_id
     d.mkdir(parents=True, exist_ok=True)
     (d / "status.json").write_text(json.dumps(out), encoding="utf-8")

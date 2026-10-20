@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.5-flash"
     vs_collection: str = "chunks"
 
+    # Uploaded novels: cast, dialogue split and summaries by an LLM after the text ingest (app/enrich).
+    upload_enrich: bool = True
+    upload_llm: Literal["claude", "gemini"] = "claude"   # developer-only; claude falls back to gemini when out of credit
+    upload_confirm: bool = False      # testing mode: show the estimate and wait for POST /api/books/{id}/enrich
+    upload_concurrency: int = 24      # parallel LLM calls during enrichment
+    upload_book_cap_usd: float = 4.0      # refuse a book whose estimate is above this
+    upload_total_cap_usd: float = 15.0    # hard stop on cumulative upload enrichment spend (data/usage)
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
