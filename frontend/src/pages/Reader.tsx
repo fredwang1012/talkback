@@ -14,7 +14,7 @@ import PlayerBar from "../reader/PlayerBar";
 import RecapPanel from "../reader/RecapPanel";
 import { ReaderEngine, type AudioLike } from "../reader/ReaderEngine";
 import Stage from "../reader/Stage";
-import { toggleMode } from "../reader/talkbackLogic";
+import { toggleMode, validSpeaker } from "../reader/talkbackLogic";
 import TalkbackView, { ModeToggle } from "../reader/TalkbackView";
 import { loadSpoilers, saveSpoilers } from "../reader/spoilers";
 import VoiceLab from "../reader/VoiceLab";
@@ -270,6 +270,12 @@ export default function Reader({ bookId }: { bookId: string }) {
     } catch (e) { setAudioError(e instanceof Error ? e.message : String(e)); }
   };
 
+  useEffect(() => {
+    if (!book) return;
+    const ok = validSpeaker(book, para, spoilers, speakerId);
+    if (ok !== speakerId) setSpeakerId(ok);
+  }, [book, para, spoilers, speakerId]);
+
   if (error && error.includes(": 401")) {
     return (
       <form className="code-form state-line" onSubmit={(e) => {
@@ -307,7 +313,7 @@ export default function Reader({ bookId }: { bookId: string }) {
                           lipSyncable={lipSyncable} lipSync={lipSync}
                           onLipSync={(on) => { setLipSync(on); try { localStorage.setItem("talkback:lipsync", on ? "1" : "0"); } catch { /* storage blocked */ } }}
                           portrait={book.characters.find((c) => c.id === speakerId)?.portrait ?? book.narrator?.portrait ?? null}
-                          onBack={() => changeMode("read")} />
+                          onBack={() => changeMode("read")} onRecap={() => setRecapOpen(true)} onVoices={() => setLabOpen(true)} />
           ) : (
             <BookText book={book} chunks={chunks} index={index} word={word}
                       onPick={(i) => { lastManualScroll.current = Date.now(); seek(i); }} />

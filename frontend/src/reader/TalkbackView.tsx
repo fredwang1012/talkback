@@ -25,6 +25,8 @@ type Props = {
   onLipSync: (on: boolean) => void;
   portrait: string | null;
   onBack: () => void;
+  onRecap: () => void;
+  onVoices: () => void;
 };
 
 const STATUS_TEXT: Record<TalkbackStatus, string> = {
@@ -49,7 +51,7 @@ export function ModeToggle({ mode, onMode, talkAvailable }: { mode: "read" | "ta
 
 export default function TalkbackView({
   book, para, speakerId, onSpeaker, pinned, talk, faces, faceFor, autoVoiceFor, choice, onChoice, voices,
-  spoilers, onSpoilers, lipSyncable, lipSync, onLipSync, portrait, onBack,
+  spoilers, onSpoilers, lipSyncable, lipSync, onLipSync, portrait, onBack, onRecap, onVoices,
 }: Props) {
   const novel = showSpoilerToggle(book);
   const fullBook = novel && spoilers;
@@ -83,6 +85,8 @@ export default function TalkbackView({
     <section className="talkback" aria-label="Talkback conversation">
       <div className="tb-top">
         <button className="link-btn" onClick={onBack}>Back to reading</button>
+        <button className="link-btn" onClick={onRecap}>Recap</button>
+        <button className="link-btn" onClick={onVoices}>Voices</button>
         <div className={`badge${fullBook ? " spoilers-on" : ""}`}>
           <strong>You're at {chapter ?? `paragraph ${para + 1}`}.</strong>
           {fullBook && <> Spoilers on — whole book.</>}

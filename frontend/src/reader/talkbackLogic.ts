@@ -22,6 +22,12 @@ export function speakerChoices(book: Book, para: number, spoilers: boolean): { i
   return [{ id: "narrator", name: "Narrator" }, ...met.map((c: Character) => ({ id: c.id, name: c.name }))];
 }
 
+/** The speaker to keep: the current one if still offered, else the narrator (spoilers off, position moved back, no longer main). */
+export function validSpeaker(book: Book, para: number, spoilers: boolean, id: string): string {
+  if (id === "narrator") return id;
+  return speakerChoices(book, para, spoilers && book.kind === "novel").some((c) => c.id === id) ? id : "narrator";
+}
+
 export const showSpoilerToggle = (book: Pick<Book, "kind">) => book.kind === "novel";
 
 export function speakerName(book: Book, id: string): string {

@@ -148,7 +148,11 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     pttDown: useCallback(() => { void controller.current?.pttDown(); }, []),
     pttUp: useCallback(() => { void controller.current?.pttUp(); }, []),
     messages,
-    ask: useCallback((text: string) => { via.current = "typed"; void controller.current?.ask(text); }, []),
+    ask: useCallback((text: string) => {
+      via.current = "typed";
+      void controller.current?.ask(text); // onTranscript fires synchronously inside ask, before its first await
+      via.current = "voice"; // an ignored (empty) ask must not label the next spoken question as typed
+    }, []),
     stop: useCallback(() => { void controller.current?.stop(); }, []),
     clearMessages: useCallback(() => { void controller.current?.stop(); setMessages(() => []); }, [setMessages]),
     setSpeaker: useCallback((id: string) => { void controller.current?.setSpeaker(id); }, []),

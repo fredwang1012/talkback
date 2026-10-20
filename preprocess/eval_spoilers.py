@@ -163,10 +163,10 @@ async def generate_cases(book: Book, positions: list[int], call: CallFn) -> list
 
 
 def pick_speakers(book: Book, cases: list[Case], seed: int = 11) -> None:
-    """Alternate between the narrator and any character already met at that position."""
+    """Alternate between the narrator and any main character already met at that position (non-main speakers are refused by the server)."""
     rng = random.Random(seed)
     for c in cases:
-        met = [ch.id for ch in book.characters if ch.first_para <= c.reader_para]
+        met = [ch.id for ch in book.characters if ch.first_para <= c.reader_para and ch.main is not False]
         c.speaker = rng.choice(["narrator", *met])
 
 

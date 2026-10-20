@@ -508,3 +508,5 @@ However, I, Percy Weasley, did try to offer some comforting words, assuring him 
   - key fact: Pettigrew is forced back into human form, confesses, then escapes while Lupin turns into a werewolf and the others are distracted.
   - answer: Ah, well, that's quite a story! After Professor Lupin and Sirius Black revealed that Scabbers was, in fact, Peter Pettigrew, they used their wands together in the Shrieking Shack to make him change back into his human form. It was quite a sight, watching the little rat transform into a cringing man right before everyone's eyes! He looked rather grubby and small, I recall, very much like a rat still, even as a person.
   - judge: The answer only covers the forced transformation back into human form and omits the key facts that Pettigrew confesses and then escapes while Lupin turns into a werewolf, so it does not give what happens afterward.
+
+- Spoiler eval `pick_speakers` now picks only the narrator and main characters (non-main speakers get 403 from the server), so future eval runs draw different speakers than the numbers above.

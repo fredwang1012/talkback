@@ -51,7 +51,7 @@ function view(book: Book, talk: TalkUi, spoilers = false, p = 7) {
   act(() => root.render(createElement(TalkbackView, {
     book, para: p, speakerId: "narrator", onSpeaker: () => {}, pinned: null, talk, faces: [], faceFor: () => undefined,
     autoVoiceFor: () => "marcus", choice: { voice: null, face: null }, onChoice: () => {}, voices: [], spoilers,
-    onSpoilers: () => {}, lipSyncable: false, lipSync: false, onLipSync: () => {}, portrait: null, onBack: () => {},
+    onSpoilers: () => {}, lipSyncable: false, lipSync: false, onLipSync: () => {}, portrait: null, onBack: () => {}, onRecap: () => {}, onVoices: () => {},
   })));
 }
 

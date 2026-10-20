@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Book } from "../src/api";
 import { MAX_MESSAGES, addQuestion, appendSentence, finishAnswer, loadChat, resetChatMemory, saveChat } from "../src/talk/chatLog";
-import { chapterAt, showSpoilerToggle, speakerChoices, spaceStartsTalk, talkbackStatus, toggleMode } from "../src/reader/talkbackLogic";
+import { chapterAt, validSpeaker, showSpoilerToggle, speakerChoices, spaceStartsTalk, talkbackStatus, toggleMode } from "../src/reader/talkbackLogic";
 import { TalkController, type ReaderControl, type TalkSession } from "../src/talk/TalkController";
 
 const book = {
@@ -24,6 +24,14 @@ describe("talkback logic", () => {
     expect(speakerChoices({ ...book, kind: "textbook" } as Book, 5, true)).toEqual([]);
     expect(showSpoilerToggle({ kind: "textbook" })).toBe(false);
     expect(showSpoilerToggle({ kind: "novel" })).toBe(true);
+  });
+  it("falls back to the narrator when the speaker is no longer offered", () => {
+    expect(validSpeaker(book, 5, false, "h")).toBe("h");
+    expect(validSpeaker(book, 5, false, "s")).toBe("narrator"); // not met yet
+    expect(validSpeaker(book, 5, true, "s")).toBe("s");
+    expect(validSpeaker(book, 1, false, "h")).toBe("narrator"); // position moved back
+    const minor = { ...book, characters: [{ id: "h", name: "H", first_para: 3, main: false }] } as unknown as Book;
+    expect(validSpeaker(minor, 5, true, "h")).toBe("narrator");
   });
   it("maps controller state to the four visible states", () => {
     expect(talkbackStatus("talk-idle", false)).toBe("idle");
