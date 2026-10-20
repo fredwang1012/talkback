@@ -21,6 +21,7 @@ import VoiceLab from "../reader/VoiceLab";
 import { spend, type SpendSnapshot } from "../spend";
 import { useTalk } from "../talk/useTalk";
 import { DebugDrawer } from "../ui/DebugDrawer";
+import { debugEnabled } from "../ui/debugFlag";
 import {
   clampIndex, flattenChunks, loadPosition, readerPara, savePosition, silentDurationMs,
 } from "../reader/position";
@@ -340,7 +341,7 @@ export default function Reader({ bookId }: { bookId: string }) {
         <RecapPanel bookId={book.id} para={para} voice={audioAvailable ? narratorVoice : null}
                     onClose={() => setRecapOpen(false)} />
       )}
-      <DebugDrawer entries={talk.logs} spend={spendNow} />
+      {debugEnabled() && <DebugDrawer entries={talk.logs} spend={spendNow} />}
       {mode === "read" && <PlayerBar
         playing={playing} loading={loading} onToggle={toggle} onRecap={() => setRecapOpen(true)}
         onPrev={() => { lastManualScroll.current = 0; step(-1); }} onNext={() => { lastManualScroll.current = 0; step(1); }}

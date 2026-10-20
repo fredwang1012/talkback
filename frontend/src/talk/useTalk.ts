@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchRealtimeKey, fetchRetrieve, lipSync, speak, streamAnswer, type Health } from "../api";
+import { fetchRealtimeKey, fetchRetrieve, lipSync, lipSyncStream, speak, streamAnswer, type Health } from "../api";
 import { MicCapture } from "../audio/capture";
 import { RingPlayer } from "../audio/playback";
 import { spend } from "../spend";
 import type { LogEntry } from "../ui/DebugDrawer";
 import { addQuestion, appendSentence, finishAnswer, loadChat, saveChat, setPendingText, type ChatMessage } from "./chatLog";
 import { detectLanguage, type Detected } from "./language";
+import { chooseLipSyncMode, openAvatarStream } from "./avatarStream";
 import { createSentenceSpeaker } from "./sentencePlayer";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
 import { TalkController, type Latency, type ReaderControl, type TalkState } from "./TalkController";
@@ -114,8 +115,17 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
           const voice = answerVoice;
           const r = await speak(text, voice);
           if (latest.current.wantLipSync && latest.current.canLipSync(voice)) {
-            try { return { ...r, video_url: await lipSync(r.audio_url, voice) }; }
-            catch { /* render failed: the speaking loop stands in */ }
+            try {
+              if (chooseLipSyncMode() === "stream") {
+                // resolves at the first playable fragment (seconds, not the whole render); the sound starts with it
+                const c = await openAvatarStream({
+                  post: (signal) => lipSyncStream(r.audio_url, voice, signal),
+                  MediaSourceCtor: MediaSource, createObjectURL: (o) => URL.createObjectURL(o), revokeObjectURL: (u) => URL.revokeObjectURL(u),
+                });
+                return { ...r, video_url: c.url, release: c.release };
+              }
+              return { ...r, video_url: await lipSync(r.audio_url, voice) };
+            } catch { /* render failed: the speaking loop stands in */ }
           }
           return r;
         }, undefined, setClip),

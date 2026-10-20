@@ -18,7 +18,7 @@ export interface AudioLike {
   pause(): void;
 }
 
-type Clip = { audio_url: string; video_url?: string | null };
+type Clip = { audio_url: string; video_url?: string | null; release?: () => void }; // release frees a streamed video
 
 export function createSentenceSpeaker(
   speak: (text: string) => Promise<Clip>,
@@ -46,11 +46,11 @@ export function createSentenceSpeaker(
       const p = synth(text);
       let res: Clip;
       try { res = await p; } finally { pending.delete(text); }
-      if (my !== epoch) return;
+      if (my !== epoch) { res.release?.(); return; }
       await new Promise<void>((resolve, reject) => {
         const audio = createAudio(res.audio_url);
-        const settle = () => { if (current?.audio === audio) current = null; onClip(null); resolve(); };
-        const fail = (e: Error) => { if (current?.audio === audio) current = null; onClip(null); reject(e); };
+        const settle = () => { if (current?.audio === audio) current = null; onClip(null); res.release?.(); resolve(); };
+        const fail = (e: Error) => { if (current?.audio === audio) current = null; onClip(null); res.release?.(); reject(e); };
         current = { audio, settle };
         audio.onended = settle;
         audio.onerror = () => fail(new Error("Could not play the answer audio."));
@@ -60,6 +60,7 @@ export function createSentenceSpeaker(
     },
     stop() {
       epoch++;
+      for (const p of pending.values()) p.then((r) => r.release?.(), () => {}); // prefetched streams nobody will play
       pending.clear();
       const c = current;
       current = null;
