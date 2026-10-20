@@ -34,6 +34,7 @@ data/portraits/*
 !data/portraits/.gitkeep
 data/raw/*
 !data/raw/.gitkeep
+!data/raw/alice.txt
 data/samples/
 data/voices.json
 data/voice_faces.json
