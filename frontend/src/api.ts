@@ -244,8 +244,13 @@ export type EnrichStatus = {
   stage?: string;       // queued | cast | segment | summaries | index | done
   progress?: number;    // 0..1
   message?: string;
+  degraded?: boolean;    // done, but without a working LLM (simple fallback cast)
   estimate_usd?: number; // only in testing mode (UPLOAD_CONFIRM)
 };
+/** The line shown when enrichment finished: the full-success wording only when an LLM really did the work. */
+export function enrichDoneNote(e: EnrichStatus): string {
+  return e.degraded && e.message ? e.message : "characters, voices and recap are ready";
+}
 export type BookStatus = {
   status: "processing" | "ready" | "error"; message?: string; enrich?: EnrichStatus;
   kind?: BookKind; kind_detected?: KindDetected;

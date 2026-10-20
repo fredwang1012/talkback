@@ -738,3 +738,30 @@ def test_missing_quotation_marks_are_restored_verbatim():
     assert segs[0].text == '"My dear Mr. Bennet,"' and segs[1].speaker == "narrator"
     # real wording changes still fail
     assert validate_segments(para, [it("m", "My dear Mr. Bennet!")], {"m"}) is None
+
+
+# ---------- no working LLM: honest fallback ----------
+
+class DeadProvider:
+    async def complete(self, system, user, schema, tier, max_tokens, effort) -> Raw:
+        raise RuntimeError("The model provider is unavailable (no credentials).")
+
+
+def test_no_llm_uses_fallback_cast_and_says_so(data_dir):
+    raw = "\n\n".join(['Chapter 1'] + [f'"Come in," said Alice. "No," replied Bob, "go away." para{i}' for i in range(6)])
+    make_book_on_disk(data_dir, raw)
+    events: list[dict] = []
+    llm = LLM("claude", {"claude": DeadProvider()}, fallback=False)
+    ok = asyncio.run(pipeline.enrich_book("u-test-aaaaaaaa", lambda **f: events.append(f), llm=llm))
+    assert ok
+    done = events[-1]
+    assert done["status"] == "done" and done["degraded"] is True
+    assert done["message"] == pipeline.FALLBACK_DONE and "no LLM key" in done["message"]
+    assert {c.id for c in saved(data_dir).characters} == {"alice", "bob"}
+
+
+def test_full_success_is_not_marked_degraded(data_dir):
+    make_book_on_disk(data_dir)
+    ok, events, _ = run_pipeline("u-test-aaaaaaaa")
+    assert ok and not events[-1].get("degraded")
+    assert events[-1]["message"] == "Characters, recap and search are ready."

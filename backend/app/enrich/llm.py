@@ -93,6 +93,17 @@ def unavailable_reason(exc: BaseException) -> str | None:
     return None
 
 
+def no_llm_available(exc: BaseException | None) -> bool:
+    """True when `exc` means no model can run at all: no credentials, or every provider unusable (not a one-off error)."""
+    while exc is not None:
+        if type(exc).__name__ in ("DefaultCredentialsError", "RefreshError", "PermissionDenied", "Unauthenticated"):
+            return True
+        if isinstance(exc, RuntimeError) and "provider is unavailable" in str(exc):
+            return True
+        exc = exc.__cause__
+    return False
+
+
 def is_quota_error(exc: BaseException) -> bool:
     """Anthropic out-of-credit shapes: HTTP 402, error.type insufficient_quota/billing_error, or the credit message."""
     import anthropic

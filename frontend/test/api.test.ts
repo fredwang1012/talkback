@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchBooks, pollBookStatus, pollEnrichment, startEnrichment, timedFetch, uploadBook } from "../src/api";
+import { enrichDoneNote, fetchBooks, pollBookStatus, pollEnrichment, startEnrichment, timedFetch, uploadBook } from "../src/api";
 import { setAccessToken } from "../src/accessToken";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -156,5 +156,15 @@ describe("novel enrichment polling", () => {
   it("startEnrichment surfaces the server message", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ detail: "This book is not waiting for confirmation." }), { status: 409 })));
     await expect(startEnrichment("b1")).rejects.toThrow("not waiting");
+  });
+});
+
+describe("enrichDoneNote", () => {
+  it("says so when the fallback was used", () => {
+    const msg = "Characters detected with a simple fallback (no LLM key configured).";
+    expect(enrichDoneNote({ status: "done", degraded: true, message: msg })).toBe(msg);
+  });
+  it("keeps the success wording otherwise", () => {
+    expect(enrichDoneNote({ status: "done", message: "Characters, recap and search are ready." })).toBe("characters, voices and recap are ready");
   });
 });
