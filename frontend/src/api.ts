@@ -31,6 +31,7 @@ export type Book = {
   title: string;
   author: string;
   kind: "novel" | "textbook";
+  kind_detected?: KindDetected | null;
   license: string;
   attribution: string | null;
   sections: { id: string; title: string; start_para: number }[];
@@ -40,6 +41,7 @@ export type Book = {
   series?: string | null;
   series_index?: number | null;
 };
+export type KindDetected = { kind: "novel" | "textbook"; confidence: number; method: string };
 export type BookSummary = {
   id: string;
   title: string;
@@ -233,6 +235,8 @@ export async function cloneVoice(audio: Blob, filename: string, transcript: stri
 
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 export type BookKind = "novel" | "textbook";
+/** What the upload form can send: "auto" lets the server decide. */
+export type UploadKind = BookKind | "auto";
 /** Novel enrichment (characters, voices, recap) that runs after a novel is readable. Absent for textbooks. */
 export type EnrichStatus = {
   status: "awaiting_confirmation" | "running" | "done" | "refused" | "error";
@@ -241,10 +245,13 @@ export type EnrichStatus = {
   message?: string;
   estimate_usd?: number; // only in testing mode (UPLOAD_CONFIRM)
 };
-export type BookStatus = { status: "processing" | "ready" | "error"; message?: string; enrich?: EnrichStatus };
+export type BookStatus = {
+  status: "processing" | "ready" | "error"; message?: string; enrich?: EnrichStatus;
+  kind?: BookKind; kind_detected?: KindDetected;
+};
 
 /** Sends a PDF or .txt for ingest. Resolves with the new book id; ingest continues server-side (poll fetchBookStatus). */
-export async function uploadBook(file: File, title: string, author: string, kind: BookKind): Promise<{ book_id: string }> {
+export async function uploadBook(file: File, title: string, author: string, kind: UploadKind): Promise<{ book_id: string }> {
   const form = new FormData();
   form.append("file", file, file.name);
   form.append("title", title);
@@ -409,4 +416,16 @@ export async function saveCast(bookId: string, cast: Cast): Promise<Cast> {
   });
   if (!res.ok) throw await readError(res, "Could not save the cast");
   return res.json() as Promise<Cast>;
+}
+
+/** Moves an uploaded book to the other shelf. Moving a textbook to Novels may start character processing. */
+export async function changeKind(id: string, kind: BookKind): Promise<BookStatus> {
+  const res = await timedFetch(`/api/books/${encodeURIComponent(id)}/kind`, {
+    method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify({ kind }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    throw new Error(detail ?? `Could not move the book (${res.status})`);
+  }
+  return res.json() as Promise<BookStatus>;
 }

@@ -94,6 +94,16 @@ speakers when `RETRIEVAL_BACKEND=vertex`). Typical time is 3 to 5 minutes for a 
   `data/usage/upload_spend.json` (atomic) and everything stops at $15 cumulative. `UPLOAD_CONFIRM=true` (testing mode)
   sets `awaiting_confirmation` with `estimate_usd` and waits for `POST /api/books/{id}/enrich` (access-gated); the default
   starts straight away with no cost UI. One enrichment runs at a time.
+- **Kind detection** (`app/enrich/detect.py`): upload `kind=auto` (default) classifies the extracted text with one
+  fast-tier call on ~3,000 chars from the start, middle and end (`{kind, confidence}`), counted in the upload spend; on
+  failure, when `UPLOAD_ENRICH=false` or the budget is used up, a heuristic decides (dialogue-quote ratio, Figure/Table/
+  Exercise/Review questions/Chapter summary markers, numbered headings like `3.2 `; ties go to novel). The book stores
+  `kind` and `kind_detected {kind, confidence, method}`; the status and `/api/books` expose them.
+- **Changing kind**: `POST /api/books/{id}/kind {kind}` (access-gated; `u-` uploads only, 403 otherwise; 409 while
+  enrichment runs or another change is in flight). textbook -> novel starts enrichment with the same caps and
+  `UPLOAD_CONFIRM` behaviour unless the book already has characters; novel -> textbook only flips the kind (the cast
+  stays in the file, the UI ignores it). The check-and-claim is synchronous and `_run_enrichment` skips books with a job
+  in flight, so concurrent requests start one paid job.
 
 ## Retrieval sizes
 

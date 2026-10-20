@@ -89,7 +89,9 @@ backend to get audio and Talk mode.
 
 Add a PDF or .txt from the library page. A **novel** can be read with the narrator right away; characters, voices and the
 recap follow in the background (about 3 to 5 minutes), with progress shown on the page. A **textbook** gets the narrator
-only. Settings in `.env` (all optional): `UPLOAD_LLM=claude|gemini` (which model does the work; Claude falls back to
+only. The kind defaults to **Auto-detect** (one cheap model call on a sample, a heuristic when that is unavailable);
+the library shows **Novels** (series grouped) and **Textbooks** shelves, and each uploaded book has a "Move to
+Textbooks / Novels" button (moving a textbook to Novels starts the character processing). Settings in `.env` (all optional): `UPLOAD_LLM=claude|gemini` (which model does the work; Claude falls back to
 Gemini automatically when its credit runs out), `LLM_PROVIDER=claude|gemini` (the same switch for the `preprocess/`
 scripts), `UPLOAD_CONFIRM=true` (testing mode: show the cost estimate and ask before processing). A book that would cost
 more than $4 to process is read by the narrator only, and processing stops for good at $15 total. See
