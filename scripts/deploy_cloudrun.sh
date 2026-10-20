@@ -82,7 +82,7 @@ fi
 #    --exclude is one regex on the path relative to the source: u-* uploads, and cast_settings.json at any depth
 #    (settings saved on the live site must survive a deploy). No --delete-unmatched-destination-objects:
 #    the bucket also holds books uploaded through the deployed app.
-gcloud storage rsync --recursive --exclude='^u-.*|(^|.*/)cast_settings\.json$' "data/books" "gs://${BUCKET}/books"
+gcloud storage rsync --recursive --exclude='^u-.*' --exclude='.*cast_settings[.]json$' "data/books" "gs://${BUCKET}/books"
 # Portraits are not synced (per-person folders are personal); upload them by hand if wanted, see docs/DEPLOY.md.
 
 # 3. Build.
