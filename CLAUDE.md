@@ -11,6 +11,6 @@ Read `docs/BRIEF.md` for the full spec; work milestone by milestone (M0–M10), 
 - Spoiler rule: retrieval chunk eligible only if `para_end <= reader_para`; summaries `upto_para <= reader_para`. Enforced in the backend and unit-tested.
 - TTS input chunks <= 280 chars, sentence-aligned; same voice per speaker on every chunk.
 - Realtime: mint a fresh ephemeral key per connection; `connect()` must be idempotent (StrictMode); tolerate unknown events.
-- Claude (Anthropic API) is used only offline in `preprocess/`. Haiku 5.5: no temperature/top_p/top_k, no prefill, select content blocks by type.
+- Claude (Anthropic API) is used offline in `preprocess/` and at runtime for uploaded-novel enrichment (`backend/app/enrich/`, `UPLOAD_LLM=claude`, Gemini fallback). Haiku 5.5: no temperature/top_p/top_k, no prefill, select content blocks by type.
 - Branch on `error.type`: retry `rate_limit_error`/5xx; never retry `insufficient_quota`.
 - Files copied from the Boson tutorial keep their Apache-2.0 header (see `frontend/THIRD_PARTY_NOTICES.md`).
