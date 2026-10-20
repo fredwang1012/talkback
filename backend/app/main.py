@@ -23,6 +23,7 @@ from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
 from .enrich import pipeline as enrich_pipeline
+from .enrich.detect import detect_kind
 from .gcp import usage
 from .personas import build_answer_prompt, build_instructions
 from .ratelimit import TokenBucket
@@ -404,8 +405,8 @@ class IngestGuard:
 _ingest_guard = IngestGuard()
 
 
-def _set_status(book_id: str, status: str, message: str | None = None) -> None:
-    _upload_status[book_id] = ingest_upload.write_status(book_id, status, message)
+def _set_status(book_id: str, status: str, message: str | None = None, **kind_info) -> None:
+    _upload_status[book_id] = ingest_upload.write_status(book_id, status, message, **kind_info)
 
 
 def _set_enrich(book_id: str, **fields) -> None:
@@ -434,8 +435,8 @@ async def _run_enrichment(book_id: str) -> None:
         _index_for.cache_clear()
 
 
-async def _plan_enrichment(book_id: str, book: Book) -> None:
-    """After the text ingest of a novel: refuse (caps), wait for confirmation (testing mode) or start."""
+def _decide_enrichment(book_id: str, book: Book) -> bool:
+    """Refuse (caps), wait for confirmation (testing mode) or mark as queued. True when the job should now run."""
     est = enrich_pipeline.estimate(book)
     reason = enrich_pipeline.check_caps(est)
     if reason:
@@ -444,6 +445,14 @@ async def _plan_enrichment(book_id: str, book: Book) -> None:
         _set_enrich(book_id, status="awaiting_confirmation", estimate_usd=round(est, 2),
                     message="Characters, voices and recap need processing.")
     else:
+        _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
+        return True
+    return False
+
+
+async def _plan_enrichment(book_id: str, book: Book) -> None:
+    """After the text ingest of a novel: refuse (caps), wait for confirmation (testing mode) or start."""
+    if _decide_enrichment(book_id, book):
         await _run_enrichment(book_id)
 
 
@@ -456,14 +465,20 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
     _ingest_guard.mark_started(token)
     ready: Book | None = None
     try:
-        book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext)
+        raw, detected = None, None
+        if kind == "auto":  # decide novel or textbook from the extracted text
+            raw = await asyncio.to_thread(ingest_upload.extract_text, data, ext)
+            kind, confidence, method = await detect_kind(raw, book_id=book_id)
+            detected = {"kind": kind, "confidence": confidence, "method": method}
+        book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext,
+                                               raw, detected)
         if settings.retrieval_backend == "vertex":
             from .gcp.indexing import index_book
             embedder, store = _vertex_deps()
             await index_book(book, chunks, embedder, store)
         await asyncio.to_thread(ingest_upload.publish_book, book)
         _index_for.cache_clear()
-        _set_status(book_id, "ready")
+        _set_status(book_id, "ready", **({"kind": kind, "kind_detected": detected} if detected else {}))
         ready = book
     except Exception as e:
         ingest_upload.discard_book(book_id)
@@ -486,7 +501,7 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
 async def upload_book(request: Request, background: BackgroundTasks, file: UploadFile = File(...),
                       title: str = Form(..., min_length=1, max_length=120),
                       author: str = Form("", max_length=120),
-                      kind: Literal["novel", "textbook"] = Form(...)):
+                      kind: Literal["auto", "novel", "textbook"] = Form("auto")):
     if not upload_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many uploads; wait a moment.")
     token = _ingest_guard.acquire()  # no await between the check and the hold
@@ -546,6 +561,41 @@ async def start_enrichment(book_id: str, background: BackgroundTasks):
         return _upload_status[book_id]
     _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
     background.add_task(_run_enrichment, book_id)
+    return _upload_status[book_id]
+
+
+class KindBody(BaseModel):
+    kind: Literal["novel", "textbook"]
+
+
+@app.post("/api/books/{book_id}/kind", status_code=202, dependencies=[Depends(require_access)])
+async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks):
+    """Move an uploaded book between the Novels and Textbooks shelves.
+
+    textbook -> novel starts enrichment (same caps and UPLOAD_CONFIRM behaviour as an upload) unless the book already
+    has its characters; novel -> textbook only changes the kind (the characters stay in the file, the UI ignores them).
+    """
+    if not book_id.startswith("u-"):
+        raise HTTPException(403, "Only books you uploaded can be moved.")
+    book = books.load_book(book_id)
+    if book is None:
+        raise HTTPException(404, "Book not found")
+    try:
+        st = book_status(book_id)
+    except HTTPException:  # an upload from before status files
+        st = {"status": "ready"}
+    if (st.get("enrich") or {}).get("status") == "running":
+        raise HTTPException(409, "This book is still being processed; try again when it finishes.")
+    if book.kind == body.kind:
+        return st
+    book = book.model_copy(deep=True)  # load_book's result is cached and must not be mutated
+    book.kind = body.kind
+    await asyncio.to_thread(books.save_book, settings.data_dir / "books" / book_id / "book.json", book)
+    _index_for.cache_clear()
+    _set_status(book_id, "ready", kind=body.kind)
+    if body.kind == "novel" and settings.upload_enrich and not book.characters:
+        if _decide_enrichment(book_id, book):
+            background.add_task(_run_enrichment, book_id)
     return _upload_status[book_id]
 
 

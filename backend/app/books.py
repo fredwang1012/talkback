@@ -79,6 +79,7 @@ def list_books() -> list[dict]:
             continue
         out.append({
             "id": book.id, "title": book.title, "author": book.author, "kind": book.kind,
+            "kind_detected": book.kind_detected.model_dump() if book.kind_detected else None,
             "license": book.license, "attribution": book.attribution,
             "paragraphs": len(book.paragraphs), "sections": len(book.sections),
             "characters": len(book.characters), "cover": portrait_url(book.id, "cover"),

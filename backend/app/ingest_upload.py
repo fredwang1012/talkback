@@ -232,25 +232,26 @@ def _cap_paragraphs(sections: list[Section], paragraphs: list[Paragraph]) -> lis
     return out
 
 
-def build_book(book_id: str, title: str, author: str, kind: str, raw: str) -> Book:
+def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_detected: dict | None = None) -> Book:
     sections, paragraphs = parse(raw, None, None, HEADING_REGEX)
     paragraphs = _cap_paragraphs(sections, paragraphs)
     if not paragraphs:
         raise UploadError("No paragraphs were found in the file.")
-    book = Book(id=book_id, title=title, author=author, kind=kind, license=LICENSE,
+    book = Book(id=book_id, title=title, author=author, kind=kind, kind_detected=kind_detected, license=LICENSE,
                 sections=sections, paragraphs=paragraphs, narrator=Narrator(voice=NARRATOR_VOICE))
     for p in book.paragraphs:
         p.tts_chunks = chunk_paragraph(p, book)
     return book
 
 
-def process_upload(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str):
+def process_upload(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str,
+                   raw: str | None = None, kind_detected: dict | None = None):
     """CPU-bound part of ingest (run in a thread): returns (book, retrieval chunks).
 
     Writes the retrieval chunks but NOT book.json: call `publish_book` once everything else (indexing) succeeded,
     so a half-processed upload is never listed or readable.
     """
-    book = build_book(book_id, title, author, kind, extract_text(data, ext))
+    book = build_book(book_id, title, author, kind, raw if raw is not None else extract_text(data, ext), kind_detected)
     chunks = retrieval.make_chunks(book)
     retrieval.save_index(settings.data_dir / "books" / book_id / "index", chunks, None)
     return book, chunks
@@ -272,9 +273,22 @@ def discard_book(book_id: str) -> None:
         (d / name).unlink(missing_ok=True)
 
 
-def write_status(book_id: str, status: str, message: str | None = None, enrich: dict | None = None) -> dict:
-    """status.json: {status, message?, enrich?}. `enrich` is the novel enrichment sub-status (see enrich/pipeline.py)."""
+KIND_KEYS = ("kind", "kind_detected")
+
+
+def write_status(book_id: str, status: str, message: str | None = None, enrich: dict | None = None,
+                 **kind_info) -> dict:
+    """status.json: {status, message?, enrich?, kind?, kind_detected?}.
+
+    `enrich` is the novel enrichment sub-status (see enrich/pipeline.py). `kind`/`kind_detected` are carried over from
+    the previous status unless given.
+    """
+    prev = read_status(book_id) or {}
     out = {"status": status} | ({"message": message} if message else {}) | ({"enrich": enrich} if enrich else {})
+    for k in KIND_KEYS:
+        v = kind_info[k] if k in kind_info else prev.get(k)
+        if v is not None:
+            out[k] = v
     d = settings.data_dir / "books" / book_id
     d.mkdir(parents=True, exist_ok=True)
     (d / "status.json").write_text(json.dumps(out), encoding="utf-8")
