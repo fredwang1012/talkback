@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import type { Book, Face as FaceT, Health } from "../api";
-import { PRESETS } from "./castLogic";
 import type { TalkUi } from "../talk/useTalk";
 import type { TalkState } from "../talk/TalkController";
 import { splitCharacters } from "./position";
@@ -21,7 +20,6 @@ type Props = {
   needsCode: boolean;
   onCode: (code: string, remember: boolean) => void;
   onOpenLab: () => void;
-  voiceFor: (speakerId: string) => string; // the voice answers use (Talk choice, else the reading cast)
   faceFor: (speakerId: string) => FaceT | undefined; // the face shown in Talk mode
   readingFace: FaceT | null; // face of whoever is reading aloud right now in read mode
   spoilers: boolean; // full-book mode (novels): answers may use the whole book
@@ -73,7 +71,7 @@ function Waveform() {
   );
 }
 
-export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, onMode, pinned, needsCode, onCode, onOpenLab, voiceFor, faceFor, readingFace, spoilers }: Props) {
+export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, spoilers }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
   const [remember, setRemember] = useState(true);
   const tutor = book.kind === "textbook";
@@ -88,9 +86,9 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
   const portrait = speaker ? speaker.portrait : book.narrator?.portrait ?? null;
   // In read mode the reading cast's face is shown while it reads; otherwise the Talk avatar choice decides.
   const face = readingFace ?? faceFor(speakerId);
-  const voiceLabel = (v: string) => (PRESETS.includes(v) ? v : "your cloned voice");
   const faceSpeaking = readingFace ? true : talk.speaking;
   const thinking = ["transcribing", "retrieving", "answering"].includes(talk.state) && !talk.speaking;
+  const talkTo = (id: string) => { onSpeaker(id); onMode("talk"); };
   const pressed = useRef(false); // survives re-renders between press and release
 
   const press = () => { if (!pressed.current) { pressed.current = true; talk.pttDown(); } };
@@ -122,14 +120,18 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
       <section aria-label="Who to talk to">
         <ul className="cast-list">
           <li>
-            <button aria-pressed={speakerId === "narrator"} disabled={!!pinned} onClick={() => onSpeaker("narrator")}>
-              <span className="who"><Face src={faceFor("narrator")?.image ?? book.narrator?.portrait ?? null} name={tutor ? "Tutor" : "Narrator"} />{tutor ? "Tutor" : "Narrator"}</span> <small>{voiceLabel(voiceFor("narrator"))}</small>
+            <button className="talk-to" disabled={!audioAvailable || !!pinned} onClick={() => talkTo("narrator")}
+                    title={audioAvailable ? undefined : "Talkback needs the Boson API key on the server"}>
+              <Face src={faceFor("narrator")?.image ?? book.narrator?.portrait ?? null} name={tutor ? "Tutor" : "Narrator"} />
+              <span className="who-text"><strong>Talk to {tutor ? "the Tutor" : "the Narrator"}</strong>
+                <small>{tutor ? "Explains the chapter in plain words" : "Tells the story"}</small></span>
             </button>
           </li>
           {met.map((c) => (
             <li key={c.id}>
-              <button aria-pressed={speakerId === c.id} disabled={!!pinned && pinned !== c.id} onClick={() => onSpeaker(c.id)}>
-                <span className="who"><Face src={faceFor(c.id)?.image ?? c.portrait} name={c.name} />{c.name}</span> <small>{voiceLabel(voiceFor(c.id))}</small>
+              <button className="talk-to" disabled={!audioAvailable || (!!pinned && pinned !== c.id)} onClick={() => talkTo(c.id)}>
+                <Face src={faceFor(c.id)?.image ?? c.portrait} name={c.name} />
+                <span className="who-text"><strong>Talk to {c.name}</strong><small>{c.persona}</small></span>
               </button>
             </li>
           ))}

@@ -320,7 +320,7 @@ export default function Reader({ bookId }: { bookId: string }) {
                  avatarPlaying={playing && !loading} onMode={changeMode}
                  pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
                  needsCode={needsCode} onCode={(c, rem) => { setAccessToken(c, rem); setCode(c); }} onOpenLab={() => setLabOpen(true)}
-                 voiceFor={talkVoiceFor} faceFor={talkFaceFor}
+                 faceFor={talkFaceFor}
                  readingFace={readingFace} spoilers={spoilers} />
         )}
       </div>

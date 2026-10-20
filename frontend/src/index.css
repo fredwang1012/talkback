@@ -396,3 +396,8 @@ button:disabled { cursor: not-allowed; }
   .topbar .mode-top { min-width: 0; flex: 1; }
 }
 @media (prefers-reduced-motion: reduce) { .tb-face { transition: none; } .tb-face.thinking { animation: none; } }
+.cast-list .talk-to { justify-content: flex-start; text-align: left; gap: 10px; }
+.cast-list .talk-to:hover:not(:disabled) { border-color: var(--brass); background: var(--ground-raised); }
+.cast-list .talk-to:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.cast-list .who-text { display: flex; flex-direction: column; min-width: 0; }
+.cast-list .who-text small { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
