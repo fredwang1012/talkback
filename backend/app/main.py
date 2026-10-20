@@ -662,24 +662,27 @@ async def lipsync(req: LipSyncRequest, request: Request):
     key = f"{m.group(1)}-{hashlib.sha256(face.read_bytes()).hexdigest()[:16]}"
     clip = _lipsync_dir() / f"{key}.mp4"
     lock = _avatar_locks.setdefault(key, asyncio.Lock())
-    async with lock:
-        if not clip.is_file():
-            if not avatar_bucket.allow(client_ip(request)):
-                raise HTTPException(429, "Too many lip-sync renders; wait a moment.")
-            data = audio.read_bytes()
-            try:
-                vid = await boson.create_video(base64.b64encode(face.read_bytes()).decode(), base64.b64encode(data).decode(),
-                                               image_mime=faces.FACE_EXTS[face.suffix.lstrip(".").lower()],
-                                               seconds=len(data) / 16000)  # 128 kbit/s mp3
-                await boson.wait_video(vid, interval=1, timeout=120)
-                video = await boson.download_video(vid)
-            except (BosonError, RuntimeError) as e:
-                raise boson_http_error(e)
-            clip.parent.mkdir(parents=True, exist_ok=True)
-            tmp = clip.with_suffix(".tmp")
-            tmp.write_bytes(video)
-            tmp.replace(clip)
-    _avatar_locks.pop(key, None)
+    try:
+        async with lock:
+            if not clip.is_file():
+                if not avatar_bucket.allow(client_ip(request)):
+                    raise HTTPException(429, "Too many lip-sync renders; wait a moment.")
+                data = audio.read_bytes()
+                try:
+                    vid = await boson.create_video(base64.b64encode(face.read_bytes()).decode(), base64.b64encode(data).decode(),
+                                                   image_mime=faces.FACE_EXTS[face.suffix.lstrip(".").lower()],
+                                                   seconds=len(data) / 16000)  # 128 kbit/s mp3
+                    await boson.wait_video(vid, interval=1, timeout=120)
+                    video = await boson.download_video(vid)
+                except (BosonError, RuntimeError) as e:
+                    raise boson_http_error(e)
+                clip.parent.mkdir(parents=True, exist_ok=True)
+                tmp = clip.with_suffix(".tmp")
+                tmp.write_bytes(video)
+                tmp.replace(clip)
+    finally:
+        if not lock.locked() and _avatar_locks.get(key) is lock:
+            del _avatar_locks[key]
     return {"video_url": f"/media/avatar/{clip.name}"}
 
 

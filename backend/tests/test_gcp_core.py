@@ -124,3 +124,25 @@ def test_record_never_touches_the_real_usage_log(monkeypatch):
     usage.record("boson_avatar", "m", seconds=1)
     after = (real.stat().st_size, real.stat().st_mtime_ns) if real.exists() else None
     assert after == before
+
+
+def test_record_skips_file_when_usage_log_file_off(tmp_path, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "usage_log_file", False)
+    usage.record("embed", "m", chars=1)
+    assert not (tmp_path / "cache" / "usage.jsonl").exists()
+
+
+def test_record_in_event_loop_appends_off_the_loop(tmp_path, monkeypatch):
+    import asyncio
+    from app.config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "usage_log_file", True)
+    monkeypatch.setattr(usage, "_offload", True)
+
+    async def go():
+        usage.record("embed", "m", chars=3)
+        await asyncio.sleep(0.2)
+    asyncio.run(go())
+    assert '"chars": 3' in (tmp_path / "cache" / "usage.jsonl").read_text(encoding="utf-8")

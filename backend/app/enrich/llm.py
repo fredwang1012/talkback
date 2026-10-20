@@ -261,10 +261,17 @@ class LLM:
         return await self.complete_json(system, user, schema_model, model, max_tokens=max_tokens, effort=effort)
 
 
-def make_llm(provider: str | None = None, **kw) -> LLM:
-    """LLM for `provider` (default settings.upload_llm). Claude without an API key starts on Gemini."""
+def effective_provider(provider: str | None = None) -> str:
+    """The provider that will really run: `provider` (default settings.upload_llm), or Gemini when Claude has no key."""
     name = provider or settings.upload_llm
     if name == "claude" and not settings.anthropic_api_key:
+        return "gemini"
+    return name
+
+
+def make_llm(provider: str | None = None, **kw) -> LLM:
+    """LLM for `provider` (default settings.upload_llm). Claude without an API key starts on Gemini."""
+    name = effective_provider(provider)
+    if name != (provider or settings.upload_llm):
         log.warning("ANTHROPIC_API_KEY is not set; using Gemini")
-        name = "gemini"
     return LLM(name, **kw)

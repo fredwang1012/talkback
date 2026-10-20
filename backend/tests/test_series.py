@@ -134,3 +134,23 @@ def test_page_lines_drops_headings_and_rejoins_drop_cap():
     mod = _ingest_series()
     assert [t for t, *_ in mod.page_lines(page, first=True)] == ["Mr. and Mrs. Smith lived here."]
     assert [t for t, *_ in mod.page_lines(FakePage([("Plain text.", 14.4, "Serif")]), first=False)] == ["Plain text."]
+
+
+def test_series_index_sees_new_books_after_save(tmp_path, monkeypatch):
+    from app import books
+    from app.config import settings
+    from app.schema import Book
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    books._series_index = None
+
+    def put(bid, idx):
+        d = tmp_path / "books" / bid
+        d.mkdir(parents=True, exist_ok=True)
+        b = Book(id=bid, title=bid, author="a", paragraphs=[], sections=[], characters=[], kind="novel", license="x", series="S", series_index=idx)
+        books.save_book(d / "book.json", b)
+        return b
+    put("one", 1)
+    two = put("two", 2)
+    assert [b.id for b in books.earlier_in_series(two)] == ["one"]
+    put("zero", 0)  # saved after the index was built
+    assert [b.id for b in books.earlier_in_series(two)] == ["zero", "one"]

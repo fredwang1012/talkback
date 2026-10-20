@@ -23,6 +23,7 @@ def _never_write_real_usage_log(monkeypatch, tmp_path_factory):
         return Path(settings.data_dir) / "cache" / "usage.jsonl"
 
     monkeypatch.setattr(usage, "_log_path", log_path)
+    monkeypatch.setattr(usage, "_offload", False)
 
 
 @pytest.fixture(autouse=True)

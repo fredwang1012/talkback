@@ -19,7 +19,7 @@ from . import cast as cast_mod
 from . import segment as seg_mod
 from . import spend
 from . import summaries as sum_mod
-from .llm import LLM, LLMRefusal, SpendLimit, estimate_usd, make_llm
+from .llm import LLM, LLMRefusal, SpendLimit, effective_provider, estimate_usd, make_llm
 
 log = logging.getLogger("talkback.enrich")
 
@@ -47,7 +47,7 @@ def _offset(stage: str) -> float:
 
 def estimate(book: Book, provider: str | None = None) -> float:
     """Estimated USD for enriching `book` with `provider`, from text length (includes a safety margin)."""
-    provider = provider or settings.upload_llm
+    provider = effective_provider(provider)
     total = sum(len(p.text) for p in book.paragraphs)
     # cast: one call (a long book is sampled), Sonnet-tier
     usd = estimate_usd(provider, "smart", min(total, cast_mod.CAST_MAX_CHARS) + len(cast_mod.UPLOAD_SYSTEM), 3000)
@@ -129,20 +129,20 @@ async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Inde
         await cast_mod.cast_novel(book, llm)
         if book.narrator and book.narrator.is_character:
             rebuild_chunks(book)  # a first-person narrator reads in that character's voice
-        books.save_book(path, book)
+        await asyncio.to_thread(books.save_book, path, book)
         _Throttle(report, stage)(1.0)
 
         stage = "segment"
         report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
         counts = await seg_mod.segment_book(book, llm, LLMRefusal, seg_mod.FAST, _Throttle(report, stage))
         rebuild_chunks(book)
-        books.save_book(path, book)
+        await asyncio.to_thread(books.save_book, path, book)
         log.info("segmented %s: %s", book_id, counts)
 
         stage = "summaries"
         report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
         book.summaries = await sum_mod.build_summaries(book, llm, _Throttle(report, stage))
-        books.save_book(path, book)
+        await asyncio.to_thread(books.save_book, path, book)
 
         stage = "index"
         report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
