@@ -17,7 +17,8 @@ export function readerPara(chunks: FlatChunk[], index: number): number {
 }
 
 /** Characters the reader has met. Everything else stays locked (spoiler rule, mirrored from the backend) unless the reader chose full-book mode. */
-export function splitCharacters(characters: Character[], para: number, fullBook = false) {
+export function splitCharacters(all: Character[], para: number, fullBook = false) {
+  const characters = all.filter((c) => c.main !== false); // only main characters can be talked to
   if (fullBook) return { met: characters, locked: [] as Character[] }; // spoilers on: everyone is available
   return {
     met: characters.filter((c) => c.first_para <= para),

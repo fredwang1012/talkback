@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { Book, Face as FaceT, Health } from "../api";
-import { PRESETS, type TalkChoice } from "./castLogic";
+import { PRESETS } from "./castLogic";
 import type { TalkUi } from "../talk/useTalk";
 import type { TalkState } from "../talk/TalkController";
 import { splitCharacters } from "./position";
+import { FaceView } from "./FaceView";
 
 type Props = {
   book: Book;
@@ -15,25 +16,15 @@ type Props = {
   audioAvailable: boolean;
   avatarSrc: string | null; // pre-rendered clip for the line being read, when there is one
   avatarPlaying: boolean;
-  mode: "read" | "talk";
-  onMode: (m: "read" | "talk") => void;
+  onMode: (m: "read" | "talk") => void; // "Talkback" link
   pinned: string | null; // demo mode: talk only to this character
   needsCode: boolean;
-  onCode: (code: string) => void;
+  onCode: (code: string, remember: boolean) => void;
   onOpenLab: () => void;
-  faces: FaceT[]; // the face library
   voiceFor: (speakerId: string) => string; // the voice answers use (Talk choice, else the reading cast)
-  autoVoiceFor: (speakerId: string) => string; // the reading-cast voice, shown beside "Auto"
   faceFor: (speakerId: string) => FaceT | undefined; // the face shown in Talk mode
   readingFace: FaceT | null; // face of whoever is reading aloud right now in read mode
-  lipSyncable: boolean; // the shown face is bound to the answer voice, so the server can lip-sync it
-  choice: TalkChoice;
-  onChoice: (c: TalkChoice) => void;
-  voices: { value: string; label: string }[]; // presets and cloned voices
   spoilers: boolean; // full-book mode (novels): answers may use the whole book
-  onSpoilers: (on: boolean) => void;
-  lipSync: boolean;
-  onLipSync: (on: boolean) => void;
 };
 
 const STATUS: Record<TalkState, string> = {
@@ -52,19 +43,6 @@ function Face({ src, name }: { src: string | null; name: string }) {
       {src ? <img src={src} alt="" /> : name.charAt(0)}
     </span>
   );
-}
-
-/** A muted looping clip of a voice's face (speaking or idle). */
-function FaceLoop({ src }: { src: string }) {
-  return <video key={src} src={src} muted loop autoPlay playsInline preload="auto" />;
-}
-
-/** The face for the medallion: a lip-synced clip, else the speaking loop while speaking, else the idle loop or portrait. */
-function FaceView({ face, speaking, clip }: { face: FaceT; speaking: boolean; clip: string | null }) {
-  if (clip) return <video key={clip} src={clip} muted autoPlay playsInline />; // the audio element plays the sound
-  if (speaking && face.talk) return <FaceLoop src={face.talk} />;
-  if (face.idle) return <FaceLoop src={face.idle} />;
-  return <img src={face.image} alt="" />;
 }
 
 /** Muted on purpose: the page's own audio element stays the single source of sound, so it cannot double up. */
@@ -95,8 +73,9 @@ function Waveform() {
   );
 }
 
-export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, mode, onMode, pinned, needsCode, onCode, onOpenLab, faces, voiceFor, autoVoiceFor, faceFor, readingFace, lipSyncable, choice, onChoice, voices, spoilers, onSpoilers, lipSync, onLipSync }: Props) {
+export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, onMode, pinned, needsCode, onCode, onOpenLab, voiceFor, faceFor, readingFace, spoilers }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
+  const [remember, setRemember] = useState(true);
   const tutor = book.kind === "textbook";
   const fullBook = !tutor && spoilers;
   const { met, locked } = splitCharacters(book.characters, para, fullBook);
@@ -119,18 +98,6 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
 
   return (
     <aside className="stage" aria-label="Stage">
-      <div className="mode" role="group" aria-label="Mode">
-        <button aria-pressed={mode === "read"} onClick={() => onMode("read")}>Read</button>
-        <button
-          aria-pressed={mode === "talk"}
-          disabled={!audioAvailable}
-          title={audioAvailable ? "Press T to switch" : "Talk needs the Boson API key on the server"}
-          onClick={() => onMode("talk")}
-        >
-          Talk
-        </button>
-      </div>
-
       <div className="speaker">
         <div className={`medallion${live ? " live" : ""}${thinking ? " thinking" : ""}${talk.speaking ? " speaking" : ""}`} aria-hidden="true">
           {avatarSrc ? <AvatarVideo src={avatarSrc} playing={avatarPlaying} />
@@ -152,13 +119,6 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
               {locked.length > 0 && <> {locked.length} more {locked.length === 1 ? "character appears" : "characters appear"} later.</>}
             </>}
       </div>
-      {!tutor && (
-        <button className="spoiler-toggle" aria-pressed={spoilers} onClick={() => onSpoilers(!spoilers)}
-                title="Let answers use the whole book, including what comes later">
-          Spoilers: {spoilers ? "on" : "off"}
-        </button>
-      )}
-
       <section aria-label="Who to talk to">
         <ul className="cast-list">
           <li>
@@ -187,37 +147,17 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
       </section>
 
       {needsCode && (
-        <form className="code-form" onSubmit={(e) => { e.preventDefault(); if (codeDraft.trim()) onCode(codeDraft.trim()); }}>
+        <form className="code-form" onSubmit={(e) => { e.preventDefault(); if (codeDraft.trim()) onCode(codeDraft.trim(), remember); }}>
           <label htmlFor="access-code">This server needs an access code for voices</label>
           <div>
             <input id="access-code" type="password" autoComplete="off" value={codeDraft} onChange={(e) => setCodeDraft(e.target.value)} />
             <button type="submit">Unlock voices</button>
           </div>
+          <label className="remember"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> Remember on this device</label>
         </form>
       )}
-      <div className="talk-pick">
-        <label htmlFor="talk-voice">Voice</label>
-        <select id="talk-voice" value={choice.voice ?? ""} onChange={(e) => onChoice({ ...choice, voice: e.target.value || null })}>
-          <option value="">Auto ({voiceLabel(autoVoiceFor(speakerId))})</option>
-          {choice.voice && !voices.some((v) => v.value === choice.voice) && <option value={choice.voice}>{choice.voice}</option>}
-          {voices.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
-        </select>
-        <label htmlFor="talk-avatar">Avatar</label>
-        <select id="talk-avatar" value={choice.face ?? ""} onChange={(e) => onChoice({ ...choice, face: e.target.value || null })}>
-          <option value="">Auto</option>
-          <option value="none">None</option>
-          {choice.face && choice.face !== "none" && !faces.some((f) => f.id === choice.face) && <option value={choice.face}>(removed face)</option>}
-          {faces.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-        </select>
-      </div>
       <button className="link-btn" onClick={onOpenLab}>Voices, faces and cloning</button>
-      {face && lipSyncable && (
-        <label className="lipsync">
-          <input type="checkbox" checked={lipSync} onChange={(e) => onLipSync(e.target.checked)} />
-          Lip-synced face (answers start about 10 seconds later)
-        </label>
-      )}
-
+      {audioAvailable && <button className="link-btn" onClick={() => onMode("talk")}>Open Talkback, a full conversation view</button>}
       <div className="mic">
         <button
           className={`mic-button${live ? " live" : ""}`}

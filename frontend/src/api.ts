@@ -25,6 +25,7 @@ export type Character = {
   voice_tags: string;
   persona: string;
   portrait: string | null;
+  main?: boolean | null; // false = a minor speaker: read aloud, but not someone to talk to
 };
 export type Book = {
   id: string;

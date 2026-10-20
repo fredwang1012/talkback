@@ -94,3 +94,18 @@ def test_cast_needs_the_access_code(env, monkeypatch):  # noqa: F811
     h = {"X-Talkback-Token": "s3cret"}
     assert client.get("/api/books/demo/cast", headers=h).status_code == 200
     assert client.put("/api/books/demo/cast", json={}, headers=h).status_code == 200
+
+
+def test_non_main_characters_cannot_be_talked_to_and_are_not_counted(env):  # noqa: F811
+    client, _ = env
+    p = settings.data_dir / "books" / "demo" / "book.json"
+    book = json.loads(p.read_text(encoding="utf-8"))
+    total = len(book["characters"])
+    minor = book["characters"][1]["id"]
+    book["characters"][1]["main"] = False
+    p.write_text(json.dumps(book), encoding="utf-8")
+    body = {"book_id": "demo", "query": "x", "reader_para": 0, "speaker_id": minor, "spoilers": True}
+    assert client.post("/api/retrieve", json=body).status_code == 403
+    assert client.post("/api/answer", json=body).status_code == 403
+    assert client.get("/api/books").json()[0]["characters"] == total - 1
+    assert next(c for c in client.get("/api/books/demo").json()["characters"] if c["id"] == minor)["main"] is False

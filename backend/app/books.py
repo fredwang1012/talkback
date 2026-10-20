@@ -106,7 +106,7 @@ def list_books() -> list[dict]:
             "kind_detected": book.kind_detected.model_dump() if book.kind_detected else None,
             "license": book.license, "attribution": book.attribution,
             "paragraphs": len(book.paragraphs), "sections": len(book.sections),
-            "characters": len(book.characters), "cover": portrait_url(book.id, "cover"),
+            "characters": sum(1 for c in book.characters if c.main is not False), "cover": portrait_url(book.id, "cover"),
             "series": book.series, "series_index": book.series_index,
         })
     return sorted(out, key=lambda b: (b["series"] or "", b["series_index"] or 0, b["id"]))

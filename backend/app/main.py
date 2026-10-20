@@ -275,6 +275,8 @@ def _resolve_talk(book_id: str, speaker_id: str, reader_para: int, spoilers: boo
         raise HTTPException(404, "Unknown speaker")
     reader_para = min(reader_para, len(book.paragraphs) - 1)
     speaker = next((c for c in book.characters if c.id == speaker_id), None)
+    if speaker and speaker.main is False:
+        raise HTTPException(403, f"{speaker.name} is not a main character, so you cannot talk to them.")
     if speaker and book.kind == "novel" and not spoilers and speaker.first_para > reader_para:
         raise HTTPException(403, f"{speaker.name} has not appeared yet at this point in the story.")  # server-side gate
     return book, speaker, reader_para
