@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchBooks, pollBookStatus, timedFetch, uploadBook } from "../src/api";
+import { fetchBooks, pollBookStatus, pollEnrichment, startEnrichment, timedFetch, uploadBook } from "../src/api";
 import { setAccessToken } from "../src/accessToken";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -113,5 +113,48 @@ describe("pollBookStatus", () => {
     const p = pollBookStatus("b1", undefined, 1500, 6000).catch((e: Error) => e.message);
     await vi.advanceTimersByTimeAsync(10000);
     expect(await p).toContain("taking too long");
+  });
+});
+
+describe("novel enrichment polling", () => {
+  const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+
+  it("reports progress while running and stops when done", async () => {
+    vi.useFakeTimers();
+    const seq = [
+      { status: "ready", enrich: { status: "running", stage: "cast", progress: 0.05, message: "Finding the main characters" } },
+      { status: "ready", enrich: { status: "running", stage: "segment", progress: 0.4, message: "Splitting the dialogue by character" } },
+      { status: "ready", enrich: { status: "done", stage: "done", progress: 1 } },
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => reply(seq.shift())));
+    const seen: number[] = [];
+    const p = pollEnrichment("b1", (s) => seen.push(s.enrich?.progress ?? -1));
+    await vi.advanceTimersByTimeAsync(10000);
+    expect((await p)?.enrich?.status).toBe("done");
+    expect(seen).toEqual([0.05, 0.4]);
+  });
+
+  it("stops at the confirmation step with the estimate, and for books without enrichment", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => reply({ status: "ready", enrich: { status: "awaiting_confirmation", estimate_usd: 1.23 } })));
+    expect((await pollEnrichment("b1"))?.enrich?.estimate_usd).toBe(1.23);
+    vi.stubGlobal("fetch", vi.fn(async () => reply({ status: "ready" })));
+    expect(await pollEnrichment("b1")).toEqual({ status: "ready" });
+  });
+
+  it("startEnrichment posts to the enrich endpoint with the access token", async () => {
+    setAccessToken("sesame");
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: "ready", enrich: { status: "running" } }), { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+    expect((await startEnrichment("b 1")).enrich?.status).toBe("running");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/books/b%201/enrich");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>)["X-Talkback-Token"]).toBe("sesame");
+    setAccessToken("");
+  });
+
+  it("startEnrichment surfaces the server message", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ detail: "This book is not waiting for confirmation." }), { status: 409 })));
+    await expect(startEnrichment("b1")).rejects.toThrow("not waiting");
   });
 });

@@ -99,6 +99,9 @@ button:disabled { cursor: not-allowed; }
 }
 .add-book-go:disabled { opacity: 0.6; }
 .add-book-status { min-height: 1.5em; margin-top: 12px; color: var(--ink-soft); }
+.add-book-status progress { display: block; width: 100%; margin-top: 6px; }
+.add-book-confirm { margin-top: 12px; }
+.add-book-confirm p { margin: 0 0 10px; color: var(--ink-soft); }
 .add-book-error { margin: 12px 0 0; color: var(--seal-bright); }
 .add-book-note { margin: 12px 0 0; color: var(--ink-faint); font-size: 0.85rem; }
 .licence { margin-top: 56px; color: var(--ink-faint); font-size: 0.85rem; line-height: 1.6; max-width: 70ch; }

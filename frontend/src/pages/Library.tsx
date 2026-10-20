@@ -1,11 +1,18 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { fetchBooks, MAX_UPLOAD_BYTES, pollBookStatus, uploadBook, type BookKind, type BookSummary } from "../api";
+import {
+  fetchBooks, MAX_UPLOAD_BYTES, pollBookStatus, pollEnrichment, startEnrichment, uploadBook,
+  type BookKind, type BookStatus, type BookSummary,
+} from "../api";
 
 type UploadState =
   | { phase: "idle" }
   | { phase: "uploading" | "processing"; text: string }
-  | { phase: "ready"; title: string }
+  | { phase: "enriching"; title: string; message: string; progress: number }
+  | { phase: "confirm"; bookId: string; title: string; estimate: number }
+  | { phase: "ready"; title: string; note?: string }
   | { phase: "error"; message: string };
+
+const pct = (p: number | undefined) => Math.round(Math.max(0, Math.min(1, p ?? 0)) * 100);
 
 function AddBook({ onReady }: { onReady: () => void }) {
   const [file, setFile] = useState<File | null>(null);
@@ -18,12 +25,46 @@ function AddBook({ onReady }: { onReady: () => void }) {
 
   useEffect(() => () => abortRef.current?.abort(), []); // stop polling on unmount
 
-  const busy = state.phase === "uploading" || state.phase === "processing";
+  const busy = state.phase === "uploading" || state.phase === "processing" || state.phase === "enriching";
 
   function pick(f: File | null) {
     setFile(f);
     if (f) setTitle(f.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim().slice(0, 120));
     setState({ phase: "idle" });
+  }
+
+  /** Novels keep processing after they are readable: show the stage and progress, or the estimate to confirm. */
+  async function follow(bookId: string, name: string, first: BookStatus, ctl: AbortController) {
+    let st: BookStatus | null = first;
+    if (st.enrich?.status === "running") {
+      const show = (s: BookStatus) => setState({
+        phase: "enriching", title: name, message: s.enrich?.message ?? "Adding characters", progress: s.enrich?.progress ?? 0,
+      });
+      show(st);
+      st = await pollEnrichment(bookId, show, ctl.signal);
+      if (!st || ctl.signal.aborted) return;
+    }
+    const e = st.enrich;
+    if (st.status === "error") setState({ phase: "error", message: st.message || "The book could not be processed." });
+    else if (e?.status === "awaiting_confirmation") setState({ phase: "confirm", bookId, title: name, estimate: e.estimate_usd ?? 0 });
+    else if (e?.status === "done") { setState({ phase: "ready", title: name, note: "characters, voices and recap are ready" }); onReady(); }
+    else if (e?.status === "refused" || e?.status === "error") setState({ phase: "ready", title: name, note: e.message });
+    else setState({ phase: "ready", title: name });
+  }
+
+  async function confirm() {
+    if (state.phase !== "confirm") return;
+    const { bookId, title: name } = state;
+    const ctl = new AbortController();
+    abortRef.current?.abort();
+    abortRef.current = ctl;
+    setState({ phase: "enriching", title: name, message: "Starting", progress: 0 });
+    try {
+      const st = await startEnrichment(bookId);
+      if (!ctl.signal.aborted) await follow(bookId, name, st, ctl);
+    } catch (err) {
+      if (!ctl.signal.aborted) setState({ phase: "error", message: (err as Error).message });
+    }
   }
 
   async function submit(e: FormEvent) {
@@ -47,10 +88,10 @@ function AddBook({ onReady }: { onReady: () => void }) {
       const result = await pollBookStatus(book_id, ctl.signal);
       if (!result || ctl.signal.aborted) return;
       if (result.status === "ready") {
-        setState({ phase: "ready", title: name });
         setFile(null); setTitle(""); setAuthor("");
         if (fileRef.current) fileRef.current.value = "";
-        onReady();
+        onReady(); // the book is readable (narrator only) from here on
+        await follow(book_id, name, result, ctl);
       } else {
         setState({ phase: "error", message: result.message || "The book could not be processed." });
       }
@@ -89,8 +130,22 @@ function AddBook({ onReady }: { onReady: () => void }) {
       </form>
       <div className="add-book-status" role="status">
         {(state.phase === "uploading" || state.phase === "processing") && state.text}
-        {state.phase === "ready" && `Ready: ${state.title}`}
+        {state.phase === "enriching" && (
+          <>
+            <span>{state.title} can be read now. {state.message} ({pct(state.progress)}%)</span>
+            <progress max={100} value={pct(state.progress)} aria-label="Character processing progress" />
+          </>
+        )}
+        {state.phase === "ready" && `Ready: ${state.title}${state.note ? `. ${state.note}` : ""}`}
       </div>
+      {state.phase === "confirm" && (
+        <div className="add-book-confirm">
+          <p>{state.title} can be read now with the narrator. Add the characters' voices and the recap?</p>
+          <button type="button" className="add-book-go" onClick={confirm}>
+            Process with characters (~${state.estimate.toFixed(2)})
+          </button>
+        </div>
+      )}
       {state.phase === "error" && <p className="add-book-error" role="alert">{state.message}</p>}
       <p className="add-book-note">The file stays on this computer. With cloud search on, the book's text is sent to Google Cloud to make it searchable.</p>
     </section>

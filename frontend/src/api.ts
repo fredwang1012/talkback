@@ -233,7 +233,15 @@ export async function cloneVoice(audio: Blob, filename: string, transcript: stri
 
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 export type BookKind = "novel" | "textbook";
-export type BookStatus = { status: "processing" | "ready" | "error"; message?: string };
+/** Novel enrichment (characters, voices, recap) that runs after a novel is readable. Absent for textbooks. */
+export type EnrichStatus = {
+  status: "awaiting_confirmation" | "running" | "done" | "refused" | "error";
+  stage?: string;       // queued | cast | segment | summaries | index | done
+  progress?: number;    // 0..1
+  message?: string;
+  estimate_usd?: number; // only in testing mode (UPLOAD_CONFIRM)
+};
+export type BookStatus = { status: "processing" | "ready" | "error"; message?: string; enrich?: EnrichStatus };
 
 /** Sends a PDF or .txt for ingest. Resolves with the new book id; ingest continues server-side (poll fetchBookStatus). */
 export async function uploadBook(file: File, title: string, author: string, kind: BookKind): Promise<{ book_id: string }> {
@@ -261,12 +269,13 @@ export async function fetchBookStatus(id: string): Promise<BookStatus> {
 }
 
 /**
- * Polls a book's ingest status until it is ready or errored, then resolves with that status.
- * Stops quietly (resolves null) when `signal` aborts; rejects if it is still processing after `maxMs`.
- * A failed status call rejects too, so the caller can show the message.
+ * Polls a book's status until `settled(status)` is true, then resolves with that status.
+ * Stops quietly (resolves null) when `signal` aborts; rejects if it is still unsettled after `maxMs`.
+ * A failed status call rejects too (after 3 in a row), so the caller can show the message.
  */
-export async function pollBookStatus(
-  id: string, signal?: AbortSignal, intervalMs = 1500, maxMs = 10 * 60 * 1000,
+async function pollStatus(
+  id: string, settled: (s: BookStatus) => boolean, signal: AbortSignal | undefined, intervalMs: number, maxMs: number,
+  onUpdate?: (s: BookStatus) => void,
 ): Promise<BookStatus | null> {
   const deadline = Date.now() + maxMs;
   let failures = 0;
@@ -280,7 +289,10 @@ export async function pollBookStatus(
       if (++failures > 3) throw e; // tolerate up to 3 failed calls in a row
     }
     if (signal?.aborted) return null;
-    if (s && s.status !== "processing") return s;
+    if (s) {
+      if (settled(s)) return s;
+      onUpdate?.(s);
+    }
     if (Date.now() + intervalMs > deadline) throw new Error("This is taking too long. Check the backend and try again.");
     await new Promise<void>((resolve) => {
       const t = setTimeout(done, intervalMs);
@@ -290,6 +302,34 @@ export async function pollBookStatus(
   }
   return null;
 }
+
+/** Polls until the book is ready (readable) or errored. */
+export function pollBookStatus(
+  id: string, signal?: AbortSignal, intervalMs = 1500, maxMs = 10 * 60 * 1000,
+): Promise<BookStatus | null> {
+  return pollStatus(id, (s) => s.status !== "processing", signal, intervalMs, maxMs);
+}
+
+/**
+ * After a book is ready: polls until its enrichment is done, refused, errored or waiting for confirmation
+ * (resolves with that status; `onUpdate` sees every running status). Textbooks resolve at once.
+ */
+export function pollEnrichment(
+  id: string, onUpdate?: (s: BookStatus) => void, signal?: AbortSignal, intervalMs = 2500, maxMs = 45 * 60 * 1000,
+): Promise<BookStatus | null> {
+  return pollStatus(id, (s) => s.status !== "ready" || s.enrich?.status !== "running", signal, intervalMs, maxMs, onUpdate);
+}
+
+/** Testing mode: confirm the cost estimate and start the character processing. */
+export async function startEnrichment(id: string): Promise<BookStatus> {
+  const res = await timedFetch(`/api/books/${encodeURIComponent(id)}/enrich`, { method: "POST", headers: authHeaders() });
+  if (!res.ok) {
+    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    throw new Error(detail ?? `Could not start processing (${res.status})`);
+  }
+  return res.json() as Promise<BookStatus>;
+}
+
 export const fetchVoices = () => getJson<Record<string, string>>("/api/voices");
 
 /** A cloned voice's face: portrait plus optional muted loops (speaking, idle). Shown for any speaker using the voice. */
