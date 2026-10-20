@@ -50,3 +50,6 @@ data/eval/
 scripts/captures/*.mp3
 scripts/captures/*.mp4
 .iap-client.json
+data/faces.json
+data/*.migrated
+data/portraits/
