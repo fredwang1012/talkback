@@ -82,3 +82,13 @@ Build from the Dockerfile with variables `BOSON_API_KEY` and `TALKBACK_ACCESS_TO
 (the image has no data in it). Without Vertex configured, leave `RETRIEVAL_BACKEND` unset (BM25 only, since the image
 has no embed extra). Add `--extra embed` to the Dockerfile's `uv sync` for local multilingual embeddings at the cost
 of a much larger image (torch).
+
+## Access control (Google sign-in via IAP)
+The `talkback` service is private: Cloud Run IAP with a custom OAuth client (personal Gmail projects have no organization, so the
+Google-managed client cannot be used). The old `TALKBACK_ACCESS_TOKEN` code is no longer deployed.
+- Allow someone (they must also be a test user on the OAuth consent screen while it is in Testing):
+  `gcloud beta iap web add-iam-policy-binding --member=user:EMAIL --role=roles/iap.httpsResourceAccessor --resource-type=cloud-run --service=talkback --region=us-central1 --project=frederick-talkback`
+- Remove: same command with `remove-iam-policy-binding`.
+- The OAuth client JSON lives in the gitignored `.iap-client.json`; the client needs the redirect URI
+  `https://iap.googleapis.com/v1/oauth/clientIds/<CLIENT_ID>:handleRedirect`.
+- Turn the gate off (e.g. for a public demo): `gcloud beta run services update talkback --region us-central1 --project frederick-talkback --no-iap` and add `allUsers` as `roles/run.invoker`; on again with `--iap` and remove `allUsers`.

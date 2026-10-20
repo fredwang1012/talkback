@@ -49,3 +49,4 @@ data/eval/
 # probe recordings
 scripts/captures/*.mp3
 scripts/captures/*.mp4
+.iap-client.json

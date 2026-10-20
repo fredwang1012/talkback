@@ -17,3 +17,4 @@ logs
 .superpowers
 .talkback-access-code
 .claude/
+.iap-client.json
