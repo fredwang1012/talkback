@@ -426,12 +426,25 @@ async def _enrich_indexer(book: Book) -> None:
         await index_book(book, await asyncio.to_thread(load_chunks, book), embedder, store)
 
 
+_enrich_jobs: set[str] = set()   # books with an enrichment job queued or running
+_kind_claims: set[str] = set()   # books whose kind change is being handled (check-and-claim, see change_kind)
+
+
 async def _run_enrichment(book_id: str) -> None:
-    _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
+    if book_id in _enrich_jobs:  # defence in depth: never two paid jobs for one book
+        return
+    _enrich_jobs.add(book_id)
     try:
+        _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
         async with _enrich_lock:
+            book = books.load_book(book_id)
+            if book is not None and book.characters:  # already enriched: nothing to pay for
+                _set_enrich(book_id, status="done", stage="done", progress=1.0,
+                            message="Characters, recap and search are ready.")
+                return
             await enrich_pipeline.enrich_book(book_id, lambda **f: _set_enrich(book_id, **f), indexer=_enrich_indexer)
     finally:
+        _enrich_jobs.discard(book_id)
         _index_for.cache_clear()
 
 
@@ -584,19 +597,24 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
         st = book_status(book_id)
     except HTTPException:  # an upload from before status files
         st = {"status": "ready"}
-    if (st.get("enrich") or {}).get("status") == "running":
+    # Check and claim in one synchronous block (no await before the claim): concurrent requests cannot both pass.
+    if (st.get("enrich") or {}).get("status") == "running" or book_id in _enrich_jobs or book_id in _kind_claims:
         raise HTTPException(409, "This book is still being processed; try again when it finishes.")
     if book.kind == body.kind:
         return st
-    book = book.model_copy(deep=True)  # load_book's result is cached and must not be mutated
-    book.kind = body.kind
-    await asyncio.to_thread(books.save_book, settings.data_dir / "books" / book_id / "book.json", book)
-    _index_for.cache_clear()
-    _set_status(book_id, "ready", kind=body.kind)
-    if body.kind == "novel" and settings.upload_enrich and not book.characters:
-        if _decide_enrichment(book_id, book):
-            background.add_task(_run_enrichment, book_id)
-    return _upload_status[book_id]
+    _kind_claims.add(book_id)
+    try:
+        book = book.model_copy(deep=True)  # load_book's result is cached and must not be mutated
+        book.kind = body.kind
+        await asyncio.to_thread(books.save_book, settings.data_dir / "books" / book_id / "book.json", book)
+        _index_for.cache_clear()
+        _set_status(book_id, "ready", kind=body.kind)
+        if body.kind == "novel" and settings.upload_enrich and not book.characters:
+            if _decide_enrichment(book_id, book):  # sets status "running" (queued) before the claim is released
+                background.add_task(_run_enrichment, book_id)
+        return _upload_status[book_id]
+    finally:
+        _kind_claims.discard(book_id)
 
 
 # ---------- avatars (stretch) ----------

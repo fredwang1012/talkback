@@ -220,3 +220,32 @@ def test_change_kind_refused_while_enrichment_runs(client):
     r = client.post(f"/api/books/{book_id}/kind", json={"kind": "novel"})
     assert r.status_code == 409
     assert books.load_book(book_id).kind == "textbook"
+
+
+def test_concurrent_kind_changes_start_only_one_enrichment(client):
+    import httpx
+    book_id = upload(client, kind="textbook").json()["book_id"]
+    assert not client.fake.calls
+
+    async def go():
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await asyncio.gather(*[c.post(f"/api/books/{book_id}/kind", json={"kind": "novel"}) for _ in range(4)])
+
+    codes = sorted(r.status_code for r in asyncio.run(go()))
+    assert codes.count(202) == 1 and set(codes) <= {202, 409}
+    assert client.fake.calls.count("MainCast") == 1
+    assert client.get(f"/api/books/{book_id}/status").json()["enrich"]["status"] == "done"
+
+
+def test_run_enrichment_skips_in_flight_and_already_enriched(client):
+    book_id = upload(client, kind="novel").json()["book_id"]  # enriched on upload
+    n = client.fake.calls.count("MainCast")
+    asyncio.run(main._run_enrichment(book_id))  # already has characters
+    assert client.fake.calls.count("MainCast") == n
+    main._enrich_jobs.add(book_id)
+    try:
+        asyncio.run(main._run_enrichment(book_id))
+    finally:
+        main._enrich_jobs.discard(book_id)
+    assert client.fake.calls.count("MainCast") == n
