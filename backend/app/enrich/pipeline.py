@@ -120,49 +120,68 @@ async def enrich_book(book_id: str, report: Report, *, llm: LLM | None = None, i
         await asyncio.shield(asyncio.to_thread(spend.flush))
 
 
-async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Indexer | None) -> bool:
-    stage = STAGES[0]
+async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save: Callable[[Book], Awaitable[None]] | None = None,
+                     indexer: Indexer | None = None, allow_fallback: bool = True) -> bool:
+    """Cast, segment and summarise `book` in place; `save` runs after each stage. Returns True when degraded.
+
+    `state["stage"]` always names the stage in progress (for the caller's error message). Raises on failure.
+    With allow_fallback=False a missing LLM is an error instead of a name-based cast.
+    """
     degraded = False
+
+    async def checkpoint() -> None:
+        if save is not None:
+            await save(book)
+
+    stage = state["stage"] = "cast"
+    report(status="running", stage=stage, progress=0.0, message=MESSAGES[stage])
+    try:
+        await cast_mod.cast_novel(book, llm)
+    except (asyncio.CancelledError, SpendLimit):
+        raise
+    except Exception as e:
+        if not allow_fallback or not no_llm_available(e):
+            raise
+        # no working LLM at all: a simple name-based cast beats none
+        log.warning("cast by LLM failed (%s); using the fallback cast", type(e).__name__)
+        book.characters, book.narrator = [], None
+        cast_mod.fallback_cast(book)
+        degraded = True
+    if book.narrator and book.narrator.is_character:
+        rebuild_chunks(book)  # a first-person narrator reads in that character's voice
+    await checkpoint()
+    _Throttle(report, stage)(1.0)
+
+    stage = state["stage"] = "segment"
+    report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
+    counts = await seg_mod.segment_book(book, llm, LLMRefusal, seg_mod.FAST, _Throttle(report, stage))
+    rebuild_chunks(book)
+    await checkpoint()
+    log.info("segmented book: %s", counts)
+    if counts.get("fallback") and not (counts.get("llm") or counts.get("retry")):
+        degraded = True
+
+    stage = state["stage"] = "summaries"
+    report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
+    book.summaries = await sum_mod.build_summaries(book, llm, _Throttle(report, stage))
+    await checkpoint()
+
+    stage = state["stage"] = "index"
+    report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
+    if indexer is not None:
+        await indexer(book)
+    return degraded
+
+
+async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Indexer | None) -> bool:
+    state = {"stage": STAGES[0]}
+
+    async def save(book: Book) -> None:
+        await asyncio.to_thread(books.save_book, path, book)
+
     try:
         book = Book.model_validate_json(path.read_text(encoding="utf-8"))
-
-        stage = "cast"
-        report(status="running", stage=stage, progress=0.0, message=MESSAGES[stage])
-        try:
-            await cast_mod.cast_novel(book, llm)
-        except (asyncio.CancelledError, SpendLimit):
-            raise
-        except Exception as e:
-            if not no_llm_available(e):
-                raise
-            # no working LLM at all: a simple name-based cast beats none
-            log.warning("cast by LLM failed for %s (%s); using the fallback cast", book_id, type(e).__name__)
-            book.characters, book.narrator = [], None
-            cast_mod.fallback_cast(book)
-            degraded = True
-        if book.narrator and book.narrator.is_character:
-            rebuild_chunks(book)  # a first-person narrator reads in that character's voice
-        await asyncio.to_thread(books.save_book, path, book)
-        _Throttle(report, stage)(1.0)
-
-        stage = "segment"
-        report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
-        counts = await seg_mod.segment_book(book, llm, LLMRefusal, seg_mod.FAST, _Throttle(report, stage))
-        rebuild_chunks(book)
-        await asyncio.to_thread(books.save_book, path, book)
-        log.info("segmented %s: %s", book_id, counts)
-        if counts.get("fallback") and not (counts.get("llm") or counts.get("retry")):
-            degraded = True
-
-        stage = "summaries"
-        report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
-        book.summaries = await sum_mod.build_summaries(book, llm, _Throttle(report, stage))
-        await asyncio.to_thread(books.save_book, path, book)
-
-        stage = "index"
-        report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
-        if indexer is not None:
-            await indexer(book)
+        degraded = await run_stages(book, report, llm, state=state, save=save, indexer=indexer)
         report(status="done", stage="done", progress=1.0, degraded=degraded or None,
                message=FALLBACK_DONE if degraded else "Characters, recap and search are ready.")
         log.info("enriched %s: $%.4f in %d calls", book_id, llm.usd, llm.calls)
@@ -170,9 +189,9 @@ async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Inde
     except asyncio.CancelledError:
         raise
     except SpendLimit as e:
-        log.warning("enrichment of %s stopped in %s: %s", book_id, stage, e)
-        report(status="error", stage=stage, message=BUDGET_USED if "budget" in str(e) else TOO_LONG)
+        log.warning("enrichment of %s stopped in %s: %s", book_id, state["stage"], e)
+        report(status="error", stage=state["stage"], message=BUDGET_USED if "budget" in str(e) else TOO_LONG)
     except Exception as e:
-        log.warning("enrichment of %s failed in %s: %s", book_id, stage, type(e).__name__)
-        report(status="error", stage=stage, message=FAILED)
+        log.warning("enrichment of %s failed in %s: %s", book_id, state["stage"], type(e).__name__)
+        report(status="error", stage=state["stage"], message=FAILED)
     return False

@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     upload_book_cap_usd: float = 4.0      # refuse a book whose estimate is above this
     upload_total_cap_usd: float = 15.0    # hard stop on cumulative upload enrichment spend (data/usage)
 
+    # Public processing API (see docs/DEPLOY.md). PUBLIC_API=true runs the server side: only /api/health and
+    # /api/public/*, Gemini only. PUBLIC_API_URL (client side, set in .env.example) points a local app at it.
+    public_api: bool = False
+    public_api_url: str = ""
+    public_book_cap_usd: float = 4.0            # refuse a book whose estimate is above this
+    public_total_cap_usd: float = 10.0          # cumulative enrichment spend, persisted
+    public_answer_daily_cap_usd: float = 2.0    # Gemini answers per UTC day, persisted
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

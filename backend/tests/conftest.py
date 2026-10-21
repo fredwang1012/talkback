@@ -38,3 +38,12 @@ def _no_llm_enrichment_unless_a_test_says_otherwise(monkeypatch, tmp_path_factor
     """Uploaded novels are enriched by an LLM; tests never reach one (or write the real spend file) by accident."""
     monkeypatch.setattr(settings, "upload_enrich", False, raising=False)
     monkeypatch.setattr(settings, "upload_confirm", False, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _public_api_off_unless_a_test_says_otherwise(monkeypatch):
+    """A developer's .env (PUBLIC_API_URL, PUBLIC_API) never changes what the tests exercise."""
+    from app import public_client
+    monkeypatch.setattr(settings, "public_api_url", "", raising=False)
+    monkeypatch.setattr(settings, "public_api", False, raising=False)
+    monkeypatch.setattr(public_client, "_probe", None)

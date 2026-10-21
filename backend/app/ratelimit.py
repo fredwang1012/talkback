@@ -1,5 +1,9 @@
 import time
 
+from fastapi import Request
+
+from .config import settings
+
 
 class TokenBucket:
     """Per-key in-memory token bucket. Good enough to stop a public deploy minting unlimited Boson keys."""
@@ -19,3 +23,13 @@ class TokenBucket:
             return False
         self._state[key] = (tokens - 1, now)
         return True
+
+
+def client_ip(request: Request) -> str:
+    """Peer address. With TRUST_PROXY (Cloud Run is the only ingress) use the right-most X-Forwarded-For entry:
+    the front end appends the real client there, while anything to its left is client-supplied and spoofable."""
+    if settings.trust_proxy:
+        parts = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+        if parts:
+            return parts[-1]
+    return request.client.host if request.client else "unknown"
