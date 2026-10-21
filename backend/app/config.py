@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     public_ip_daily_cap_usd: float = 2.0        # enrichment estimates per client address per UTC day, persisted
     public_answer_daily_cap_usd: float = 2.0    # Gemini answers per UTC day, persisted
 
+    # Per-account separation for the live Cloud Run deploy (Google sign-in via IAP). Off everywhere else.
+    per_user: bool = False
+    iap_audience: str = ""        # /projects/PROJECT_NUMBER/locations/REGION/services/SERVICE
+    owner_emails: str = ""        # comma list; the first one inherits the pre-existing shared data
+    owner_only_books: str = ""    # comma list of globs on book ids visible only to owner emails (e.g. "hp*")
+
+    @property
+    def owner_email_list(self) -> list[str]:
+        return [e.strip().lower() for e in self.owner_emails.split(",") if e.strip()]
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

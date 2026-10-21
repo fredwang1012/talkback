@@ -20,6 +20,7 @@ import wave
 from pathlib import Path
 
 from .boson import BosonClient
+from . import users
 from .config import settings
 
 FACE_EXTS = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
@@ -41,11 +42,11 @@ class FaceInputError(ValueError):
 
 
 def _store() -> Path:
-    return settings.data_dir / "faces.json"
+    return users.faces_json()
 
 
 def face_dir() -> Path:
-    return settings.data_dir / "portraits" / "faces"
+    return users.faces_dir()
 
 
 def _legacy_dir() -> Path:
@@ -96,6 +97,8 @@ def _migrate_legacy() -> None:
     Never raises: a corrupt or unwritable legacy file is logged and skipped so faces and lip-sync keep working.
     Single instance (--max-instances 1), so no cross-process race; ids derive from the voice id, so a re-run
     overwrites instead of duplicating."""
+    if settings.per_user:  # the legacy single-user file is handled by users.migrate_to_owner
+        return
     try:
         _do_migrate_legacy()
     except Exception:
