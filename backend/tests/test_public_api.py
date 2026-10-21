@@ -269,8 +269,9 @@ def test_answer_reservation_blocks_concurrent_admission(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "public_answer_daily_cap_usd", 1.0)
     b = public_api.DailyBudget()
-    assert b.reserve(0.6) and not b.reserve(0.6)          # the second would pass a spent-only check
-    b.settle(0.6, 0.1)
+    t = b.reserve(0.6)
+    assert t and b.reserve(0.6) is None                   # the second would pass a spent-only check
+    b.settle(t, 0.1)
     assert b.reserve(0.6) and b.spent() == 0.1
 
 
@@ -336,3 +337,57 @@ def test_result_ttl_counts_from_completion(pub):
     wait_done(pub, job)
     public_api._jobs[job].created -= public_api.JOB_TTL_SECONDS * 3      # old start, fresh finish
     assert pub.get(f"/api/public/enrich/{job}").status_code == 200
+
+
+def test_unsettled_reservation_and_slot_expire(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "public_answer_daily_cap_usd", 1.0)
+    now = [0.0]
+    b = public_api.DailyBudget(clock=lambda: now[0])
+    assert b.reserve(0.9) and b.reserve(0.5) is None      # the body of the first one never ran: nobody settles it
+    now[0] = public_api.ANSWER_SLOT_SECONDS + 1
+    assert b.reserve(0.9) and b.spent() == 0              # expired without a charge
+    monkeypatch.setattr(public_api, "_streams", {"old": time.monotonic() - public_api.ANSWER_SLOT_SECONDS - 1,
+                                                 **{f"s{i}": time.monotonic() for i in range(3)}})
+    assert public_api._take_stream_slot() and len(public_api._streams) == 4
+
+
+def test_response_that_never_starts_releases_its_reservation(pub):
+    # the background task settles when the body generator never ran (client gone before the first read)
+    import asyncio
+    from starlette.requests import Request
+    body = public_api.AnswerRequest(title="T", query="q")
+    req = Request({"type": "http", "method": "POST", "headers": [], "client": ("1.2.3.4", 1), "path": "/"})
+
+    async def go():
+        resp = await public_api.public_answer(body, req)
+        assert public_api.answer_budget.reserved > 0 and public_api._streams
+        await resp.background()                           # never iterated resp.body_iterator
+    asyncio.run(go())
+    assert public_api.answer_budget.reserved == 0 and public_api._streams == {}
+    assert public_api.answer_budget.spent() == 0          # no model call was made
+
+
+def test_ipv6_rotation_and_mapped_addresses_share_one_key(pub, monkeypatch):
+    from app.ratelimit import normalize_ip
+    assert normalize_ip("203.0.113.9") == "203.0.113.9"
+    assert normalize_ip("::ffff:203.0.113.9") == "203.0.113.9"
+    assert normalize_ip("2001:db8:1:2:aaaa::1") == normalize_ip("2001:db8:1:2:bbbb::ffff") == "2001:db8:1:2::/64"
+    assert normalize_ip("2001:db8:1:3::1") != normalize_ip("2001:db8:1:2::1")
+    assert normalize_ip("not an ip") == "not an ip"
+    ib = public_api.IpBudget()
+    monkeypatch.setattr(settings, "public_ip_daily_cap_usd", 1.0)
+    assert ib.charge("2001:db8:1:2:aaaa::1", 0.9) and not ib.charge("2001:db8:1:2:bbbb::2", 0.9)
+    assert ib.charge("2001:db8:1:3::1", 0.9)
+    monkeypatch.setattr(settings, "trust_proxy", True)
+    monkeypatch.setattr(public_api, "enrich_bucket", TokenBucket(1, 3600))
+    r1 = pub.post("/api/public/enrich", json=enrich_body(), headers={"x-forwarded-for": "2001:db8:9:9:1::1"})
+    r2 = pub.post("/api/public/enrich", json=enrich_body(), headers={"x-forwarded-for": "2001:db8:9:9:2::2"})
+    assert r1.status_code == 202 and r2.status_code == 429
+
+
+def test_main_app_client_ip_is_unchanged():
+    from app.ratelimit import client_ip
+    from starlette.requests import Request
+    r = Request({"type": "http", "headers": [], "client": ("2001:db8::1", 1)})
+    assert client_ip(r) == "2001:db8::1"
