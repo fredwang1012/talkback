@@ -98,6 +98,26 @@ Google-managed client cannot be used). The old `TALKBACK_ACCESS_TOKEN` code is n
   `https://iap.googleapis.com/v1/oauth/clientIds/<CLIENT_ID>:handleRedirect`.
 - Turn the gate off (e.g. for a public demo): `gcloud beta run services update talkback --region us-central1 --project frederick-talkback --no-iap` and add `allUsers` as `roles/run.invoker`; on again with `--iap` and remove `allUsers`.
 
+## Per-account data (`PER_USER`)
+The deploy script sets `PER_USER=true`, `IAP_AUDIENCE=/projects/272822965835/locations/us-central1/services/talkback`,
+`OWNER_EMAILS=fredwang1012@gmail.com` and `OWNER_ONLY_BOOKS=hp*`. Local runs leave `PER_USER` unset and keep one shared
+`data/` namespace exactly as before.
+- The user is the email in the IAP JWT (`x-goog-iap-jwt-assertion`), verified against Google's IAP public keys and the
+  audience above. The plain `x-goog-authenticated-user-email` header is ignored. No valid JWT (for example when the
+  gate is switched off for a demo) means the shared anonymous namespace `public`.
+- Per account, under `data/users/<sha256(email)[:16]>/` (anonymous: `data/users/public/`): `voices.json`, `faces.json`,
+  `faces/` (served only to their owner at `/portraits/faces/...`), `cast/<book>.json`. Uploaded books stay in
+  `data/books/u-*` with an `owner.txt` holding the owner's namespace; other accounts get 404 for them. Built-in books are shared,
+  except ids matching `OWNER_ONLY_BOOKS`, which only `OWNER_EMAILS` can list or open. Spend caps stay global; rate limits are per account.
+- Sign out: the library header links to `/?gcp-iap-mode=CLEAR_LOGIN_COOKIE` (IAP's logout).
+- Migration: on the first start with `PER_USER=true` the shared `voices.json`, `faces.json`, `portraits/faces/*` and every
+  `cast_settings.json` are copied to the first owner's namespace, and `u-*` uploads without an owner get the owner.
+  It only copies files that are missing, so it is idempotent, never deletes the originals and never overwrites later edits;
+  failures are logged, not fatal. To preview or run it by hand against a copy of the bucket:
+  `uv run --project backend python scripts/migrate_per_user.py --data-dir <dir>` (dry run) and add `--apply`.
+- Check after deploying: sign in as the owner (cloned narrator and face present, `hp*` books listed), then as another
+  allowed account (neither visible, only the public sample books).
+
 ## Public processing API (`talkback-public`)
 
 A second, much smaller Cloud Run service from the same image. It lets a fresh clone that has only a `BOSON_API_KEY` get

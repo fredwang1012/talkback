@@ -10,6 +10,10 @@ PROJECT=frederick-talkback
 REGION=us-central1
 SERVICE=talkback
 BUCKET=frederick-talkback-data
+PROJECT_NUMBER=272822965835
+# Cloud Run IAP JWT audience: /projects/PROJECT_NUMBER/locations/REGION/services/SERVICE (IAP signed-headers docs)
+IAP_AUDIENCE="/projects/${PROJECT_NUMBER}/locations/${REGION}/services/${SERVICE}"
+OWNER_EMAILS="fredwang1012@gmail.com"
 SA="talkback-api@${PROJECT}.iam.gserviceaccount.com"
 REPO="${REGION}-docker.pkg.dev/${PROJECT}/talkback"
 
@@ -40,6 +44,8 @@ This script deploys Talkback to Cloud Run. Nothing has been done yet. It will:
   5. gcloud run deploy ${SERVICE} in ${REGION} as ${SA}
        RETRIEVAL_BACKEND=vertex, TRUST_PROXY=true, UPLOAD_LLM=gemini, UPLOAD_ENRICH=true, UPLOAD_CONFIRM=false,
        UPLOAD_BOOK_CAP_USD=4, UPLOAD_TOTAL_CAP_USD=15, USAGE_LOG_FILE=false (usage goes to Cloud Logging only),
+       PER_USER=true, IAP_AUDIENCE=${IAP_AUDIENCE}, OWNER_EMAILS=${OWNER_EMAILS}, OWNER_ONLY_BOOKS=hp* (per-account data;
+       on first start the shared voice/face/cast data is copied to the owner, see docs/DEPLOY.md),
        secret BOSON_API_KEY, bucket mounted at /app/data, min 0 / max 1 instance, no CPU throttling, 1Gi, 1 CPU,
        300 s timeout, --no-allow-unauthenticated --iap (Google sign-in; only emails granted roles/iap.httpsResourceAccessor get in)
 Re-run with --yes to proceed.
@@ -82,7 +88,7 @@ gcloud run deploy "${SERVICE}" \
   --region "${REGION}" \
   --image "${IMAGE}" \
   --service-account "${SA}" \
-  --set-env-vars "RETRIEVAL_BACKEND=vertex,TRUST_PROXY=true,GCP_PROJECT=${PROJECT},GCP_REGION=${REGION},CORS_ORIGINS=http://localhost:5173,UPLOAD_LLM=gemini,UPLOAD_ENRICH=true,UPLOAD_CONFIRM=false,UPLOAD_BOOK_CAP_USD=4,UPLOAD_TOTAL_CAP_USD=15,USAGE_LOG_FILE=false" \
+  --set-env-vars "RETRIEVAL_BACKEND=vertex,TRUST_PROXY=true,GCP_PROJECT=${PROJECT},GCP_REGION=${REGION},CORS_ORIGINS=http://localhost:5173,UPLOAD_LLM=gemini,UPLOAD_ENRICH=true,UPLOAD_CONFIRM=false,UPLOAD_BOOK_CAP_USD=4,UPLOAD_TOTAL_CAP_USD=15,USAGE_LOG_FILE=false,PER_USER=true,IAP_AUDIENCE=${IAP_AUDIENCE},OWNER_EMAILS=${OWNER_EMAILS},OWNER_ONLY_BOOKS=hp*" \
   --set-secrets "BOSON_API_KEY=boson-api-key:latest" \
   --execution-environment gen2 \
   --add-volume "name=data,type=cloud-storage,bucket=${BUCKET}" \
