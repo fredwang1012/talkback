@@ -12,7 +12,9 @@ Five fully processed public-domain samples ship in the repo, so you can try ever
 *Alice's Adventures in Wonderland*, *The Wonderful Wizard of Oz*, *Peter Pan*, *The Wind in the Willows* and
 *A Christmas Carol*.
 
-## Quickstart (5 minutes)
+## Quickstart (judges)
+
+All you need is a Boson API key. Nothing else to sign up for.
 
 **Prerequisites**
 
@@ -26,7 +28,7 @@ Five fully processed public-domain samples ship in the repo, so you can try ever
 ```bash
 git clone <this repo> && cd talkback
 
-cp .env.example .env            # then edit .env and set only BOSON_API_KEY=...
+cp .env.example .env            # then edit .env and set BOSON_API_KEY=... (leave everything else as it is)
 
 cd frontend && npm install && npm run build && cd ..
 
@@ -49,7 +51,7 @@ nothing else to start. (On Windows PowerShell use `Copy-Item .env.example .env`.
 5. Toggle **Spoilers**: off (the default) means the character only knows what you have read; on lets them know the whole
    book.
 6. Upload your own book from the library page: a .txt from [Project Gutenberg](https://www.gutenberg.org) works well.
-   Narration starts right away; characters, dialogue voices and the recap follow in the background.
+   Narration starts right away; characters, dialogue voices and the recap follow in the background (see below).
 
 Keys while reading: Space (hold) talk, K play/pause, left/right previous/next sentence, [ and ] speed, T switch
 Read/Talk, backtick opens the debug drawer (shows a running estimate of this session's spend).
@@ -67,10 +69,25 @@ Without a Boson key the reader still works silently (play moves at an estimated 
 | Key | Needed? | What it enables | Without it |
 | --- | --- | --- | --- |
 | `BOSON_API_KEY` | **Required** | Read-aloud audio (TTS 3), Talkback voice conversations (Realtime), faces (Avatar), voice cloning. Also writes Talkback answers in the default local mode. Stays on the server; the browser only gets short-lived keys. | The reader is silent; no Talkback, faces or cloning. |
+| `PUBLIC_API_URL` | Pre-set in `.env.example` | Full upload processing and Gemini-written typed answers through the author's hosted service, with no key of your own (see below). | Uploads are processed with simple local fallbacks; typed answers go through Boson Realtime. |
 | `ANTHROPIC_API_KEY` | Optional | Better character, dialogue and recap processing when you upload a novel. | Uploads are read by the narrator, and characters are found by a simple name-based fallback. The app says so: "Characters detected with a simple fallback (no LLM key configured)". |
 | Google Cloud (`RETRIEVAL_BACKEND=vertex`, `GCP_PROJECT`, `GCP_BUCKET`, `gcloud auth application-default login`) | Optional | Gemini-written answers plus Vertex AI Vector Search (hybrid vector + full-text retrieval), and Gemini as an upload-processing model. | Local BM25 search over the book (no embedding model needed) and answers written through Boson Realtime. Works well for the sample book. |
 
 All the optional settings are listed, commented out, in `.env.example`.
+
+### Full upload processing and Gemini answers (no extra key)
+
+`.env.example` already sets `PUBLIC_API_URL` to a small processing service the author runs on Google Cloud. With only a Boson
+key, an uploaded novel is sent there while it is processed (main characters, dialogue split by character, chapter notes for
+the recap), and typed Talkback questions are answered by Gemini. Your machine still does the spoiler filtering: the service
+only ever receives passages you are already allowed to see, and it keeps no book text (results are held in memory for 30
+minutes, request bodies are never logged).
+
+The service has hard spend limits and can be switched off. If it is closed, unreachable, or over its free limit, nothing
+breaks: the upload is processed locally with a simple name-based cast and narrator reading, and the page says why
+("processing service unavailable" or "the free processing limit has been reached"); typed questions go through Boson
+Realtime. The five sample books are already fully processed, so they are never affected. Voice conversations always run
+on your Boson key. Remove `PUBLIC_API_URL` from `.env` to never contact the service.
 
 ## How Higgs Audio is used
 
