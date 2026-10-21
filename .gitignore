@@ -58,3 +58,4 @@ scripts/captures/*.mp4
 data/faces.json
 data/*.migrated
 data/portraits/
+.claude/
