@@ -159,9 +159,6 @@ export default function Reader({ bookId }: { bookId: string }) {
   // the face of whoever reads aloud right now (read mode)
   const readingFace = book && playing && !loading && current
     ? faceById(readingFaceId(book, cast, style, current.speaker)) ?? null : null;
-  // any face assigned to the narrator, a character or the one-voice style: the stage keeps its big circle
-  const reserveFace = !!book && [style.face, cast.narrator.face, ...Object.values(cast.characters).map((a) => a.face)]
-    .some((id) => !!id && id !== "none" && faces.some((f) => f.id === id));
   const voiceOptions = useMemo(
     () => [...PRESETS.map((v) => ({ value: v, label: v })), ...Object.entries(cloned).map(([n, v]) => ({ value: v, label: `${n} (cloned)` }))],
     [cloned]);
@@ -356,7 +353,7 @@ export default function Reader({ bookId }: { bookId: string }) {
                  needsCode={needsCode} onCode={(c, rem) => { setAccessToken(c, rem); setCode(c); }} onOpenLab={() => setLabOpen(true)}
                  faceFor={talkFaceFor}
                  readingFace={readingFace} spoilers={spoilers}
-                 readSpeaking={readSpeaking} levelRef={levelRef} reserveFace={reserveFace} />
+                 readSpeaking={readSpeaking} levelRef={levelRef} />
         )}
       </div>
       {labOpen && (

@@ -25,7 +25,6 @@ type Props = {
   spoilers: boolean; // full-book mode (novels): answers may use the whole book
   readSpeaking: boolean; // read mode: the audio is audibly speaking right now (not in a pause)
   levelRef: { current: number }; // read mode: live loudness of the audio, for the still-image pulse
-  reserveFace: boolean; // the book has a face assigned somewhere: keep the big circle so the layout never jumps
 };
 
 const STATUS: Record<TalkState, string> = {
@@ -74,7 +73,7 @@ function Waveform() {
   );
 }
 
-export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, spoilers, readSpeaking, levelRef, reserveFace }: Props) {
+export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, spoilers, readSpeaking, levelRef }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
   const [remember, setRemember] = useState(true);
   const tutor = book.kind === "textbook";
@@ -90,7 +89,7 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
   // In read mode the reading cast's face is shown while it reads; otherwise the Talk avatar choice decides.
   const face = readingFace ?? faceFor(speakerId);
   const faceSpeaking = readingFace ? true : talk.speaking;
-  const big = !!face || !!avatarSrc || reserveFace; // a real face gets a big circle; no face keeps the small monogram
+  const big = !!face || !!avatarSrc; // a real face grows the circle (animated); no face keeps the small monogram
   const thinking = ["transcribing", "retrieving", "answering"].includes(talk.state) && !talk.speaking;
   const talkTo = (id: string) => { onSpeaker(id); onMode("talk"); };
   const pressed = useRef(false); // survives re-renders between press and release
