@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[2]  # talkback/
@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     iap_audience: str = ""        # /projects/PROJECT_NUMBER/locations/REGION/services/SERVICE
     owner_emails: str = ""        # comma list; the first one inherits the pre-existing shared data
     owner_only_books: str = ""    # comma list of globs on book ids visible only to owner emails (e.g. "hp*")
+
+    @model_validator(mode="after")
+    def _per_user_needs_audience(self):
+        if self.per_user and not self.iap_audience.strip():
+            raise ValueError("PER_USER=true requires IAP_AUDIENCE (/projects/NUMBER/locations/REGION/services/NAME); "
+                             "without it every visitor would be anonymous.")
+        return self
 
     @property
     def owner_email_list(self) -> list[str]:

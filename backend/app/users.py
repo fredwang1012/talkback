@@ -4,6 +4,7 @@ The user is identified by VERIFYING the IAP JWT (header x-goog-iap-jwt-assertion
 x-goog-authenticated-user-email header is never trusted. No valid JWT -> the shared anonymous namespace "public".
 With PER_USER=false every path helper returns today's shared location, so local runs are unchanged.
 """
+import asyncio
 import fnmatch
 import hashlib
 import json
@@ -16,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import HTTPException, Request
+from google.auth.exceptions import TransportError
 
 from .config import settings
 
@@ -27,6 +29,8 @@ IAP_ISSUER = "https://cloud.google.com/iap"
 PUBLIC_NS = "public"
 RESULT_TTL = 300.0
 CERTS_TTL = 3600.0
+CERTS_FAIL_TTL = 30.0   # after a failed cert fetch, do not hit the network again for this long
+REFETCH_MIN_INTERVAL = 30.0   # an unknown key id may trigger a cert refresh at most this often
 
 
 @dataclass(frozen=True)
@@ -59,16 +63,34 @@ class _CertsRequest:
     """google-auth transport that caches the IAP public keys for an hour (verify_token would refetch every call)."""
 
     def __init__(self, inner):
-        self.inner, self.cache = inner, {}
+        self.inner, self.cache, self.failed_at, self.refreshed_at = inner, {}, {}, -1e9
 
     def __call__(self, url, method="GET", body=None, headers=None, timeout=None, **kw):
+        now = time.monotonic()
         hit = self.cache.get(url)
-        if hit and time.monotonic() - hit[0] < CERTS_TTL:
+        if hit and now - hit[0] < CERTS_TTL:
             return hit[1]
-        resp = self.inner(url, method=method, body=body, headers=headers, timeout=timeout or 10, **kw)
-        if getattr(resp, "status", 200) == 200:
-            self.cache[url] = (time.monotonic(), resp)
+        if now - self.failed_at.get(url, -1e9) < CERTS_FAIL_TTL:
+            raise TransportError("IAP certs unavailable (recent fetch failed)")
+        try:
+            resp = self.inner(url, method=method, body=body, headers=headers, timeout=timeout or 10, **kw)
+        except Exception as e:
+            self.failed_at[url] = now
+            raise TransportError("IAP cert fetch failed") from e
+        if getattr(resp, "status", 200) != 200:
+            self.failed_at[url] = now
+        else:
+            self.cache[url] = (now, resp)
         return resp
+
+    def refresh(self) -> bool:
+        """Drop the cached certs so the next call refetches (rate limited). True when it did."""
+        now = time.monotonic()
+        if now - self.refreshed_at < REFETCH_MIN_INTERVAL:
+            return False
+        self.refreshed_at = now
+        self.cache.clear()
+        return True
 
 
 _certs_request: _CertsRequest | None = None
@@ -100,7 +122,14 @@ def verify_email(token: str) -> str | None:
     email, ttl = None, 30.0   # failures are cached briefly too, so junk tokens cannot hammer the verifier
     try:
         from google.oauth2 import id_token
-        claims = id_token.verify_token(token, _transport(), audience=settings.iap_audience, certs_url=IAP_CERTS_URL)
+        try:
+            claims = id_token.verify_token(token, _transport(), audience=settings.iap_audience, certs_url=IAP_CERTS_URL)
+        except ValueError as e:
+            tr = _transport()
+            if "key id" in str(e) and hasattr(tr, "refresh") and tr.refresh():   # Google rotated its keys
+                claims = id_token.verify_token(token, tr, audience=settings.iap_audience, certs_url=IAP_CERTS_URL)
+            else:
+                raise
         if claims.get("iss") != IAP_ISSUER:
             raise ValueError("bad issuer")
         mail = claims.get("email")
@@ -118,19 +147,34 @@ def verify_email(token: str) -> str | None:
 
 
 def identify_headers(headers) -> Identity:
+    """LOCAL without PER_USER. No IAP header (the gate is off) -> anonymous. A header that fails verification
+    is an error (401), never a silent downgrade to anonymous."""
     if not settings.per_user:
         return LOCAL
-    email = verify_email(headers.get(IAP_HEADER, ""))
-    return Identity(email, ns_for(email)) if email else ANONYMOUS
+    token = headers.get(IAP_HEADER, "")
+    if not token:
+        return ANONYMOUS
+    email = verify_email(token)
+    if not email:
+        raise HTTPException(401, "Sign-in could not be verified.")
+    return Identity(email, ns_for(email))
 
 
 def identify(request: Request) -> Identity:
-    return identify_headers(request.headers)
+    ident = getattr(request.state, "identity", None)
+    return ident if ident is not None else identify_headers(request.headers)
+
+
+async def identify_async(headers) -> Identity:
+    """identify_headers off the event loop (a first verification fetches Google's keys over the network)."""
+    return await asyncio.to_thread(identify_headers, headers)
 
 
 async def bind_identity(request: Request) -> None:
     """App-wide dependency: async so the contextvar lands in the request's context (sync endpoints copy it)."""
-    _current.set(identify(request))
+    ident = await identify_async(request.headers)
+    request.state.identity = ident
+    _current.set(ident)
 
 
 def current() -> Identity:
@@ -155,6 +199,11 @@ def voices_json(ident: Identity | None = None) -> Path:
 
 def faces_json(ident: Identity | None = None) -> Path:
     return user_root(ident) / "faces.json"
+
+
+def lipsync_dir(ident: Identity | None = None) -> Path:
+    ident = ident or current()
+    return user_root(ident) / "lipsync" if ident.ns else settings.data_dir / "cache" / "avatar" / "talk"
 
 
 def faces_dir(ident: Identity | None = None) -> Path:
@@ -226,17 +275,9 @@ def migrate_to_owner(data_dir: Path, owner_email: str, dry_run: bool = False, sa
                 shutil.copy2(src, dst)
 
     copy(data_dir / "voices.json", root / "voices.json")
-    faces_src = data_dir / "portraits" / "faces"
-    fj = data_dir / "faces.json"
-    if fj.is_file() and not (root / "faces.json").exists():
-        try:
-            for e in json.loads(fj.read_text(encoding="utf-8")).values():
-                stem = Path(e["file"]).stem
-                for name in (e["file"], f"{stem}-talk.mp4", f"{stem}-idle.mp4"):
-                    copy(faces_src / name, root / "faces" / name)
-            copy(fj, root / "faces.json")   # written last: its presence marks the faces as migrated
-        except Exception as e:
-            acts.append(f"skip faces: {type(e).__name__}")
+    _migrate_faces(data_dir, root, copy, acts, dry_run)
+    for clip in sorted((data_dir / "cache" / "avatar" / "talk").glob("*.mp4")):
+        copy(clip, root / "lipsync" / clip.name)
     books = data_dir / "books"
     for d in sorted(books.glob("*")) if books.is_dir() else []:
         copy(d / "cast_settings.json", root / "cast" / f"{d.name}.json")
@@ -247,6 +288,51 @@ def migrate_to_owner(data_dir: Path, owner_email: str, dry_run: bool = False, sa
     for a in acts:
         say("per-user migration: %s%s", "(dry run) " if dry_run else "", a)
     return acts
+
+
+def _migrate_faces(data_dir: Path, root: Path, copy, acts: list[str], dry_run: bool) -> None:
+    """faces.json + portraits/faces/* -> the owner. Also folds a legacy voice_faces.json (voice id -> file in
+    portraits/voices/, the pre-library binding) that was never folded into faces.json, so the owner keeps the
+    face <-> voice binding. Voices that already have a face are left alone."""
+    faces_src = data_dir / "portraits" / "faces"
+    src_json, dst_json = data_dir / "faces.json", root / "faces.json"
+    legacy = data_dir / "voice_faces.json"
+    try:
+        base = dst_json if dst_json.is_file() else src_json
+        entries = json.loads(base.read_text(encoding="utf-8")) if base.is_file() else {}
+        changed = not dst_json.is_file() and src_json.is_file()
+        if not dst_json.is_file():
+            for e in entries.values():
+                stem = Path(e["file"]).stem
+                for name in (e["file"], f"{stem}-talk.mp4", f"{stem}-idle.mp4"):
+                    copy(faces_src / name, root / "faces" / name)
+        if legacy.is_file():
+            names = {}
+            vj = data_dir / "voices.json"
+            if vj.is_file():
+                names = {v: n for n, v in json.loads(vj.read_text(encoding="utf-8")).items()}
+            have = {e.get("voice") for e in entries.values()}
+            for voice, fname in json.loads(legacy.read_text(encoding="utf-8")).items():
+                src = data_dir / "portraits" / "voices" / fname
+                if voice in have or not src.is_file():
+                    continue
+                fid = "v" + hashlib.sha256(voice.encode()).hexdigest()[:16]
+                dest = f"{fid}{src.suffix}"
+                copy(src, root / "faces" / dest)
+                for kind in ("talk", "idle"):
+                    copy(src.with_name(f"{src.stem}-{kind}.mp4"), root / "faces" / f"{fid}-{kind}.mp4")
+                entries[fid] = {"name": names.get(voice, voice), "file": dest, "voice": voice}
+                acts.append(f"bind legacy voice_faces.json {voice} -> {fid}")
+                changed = True
+        if changed:
+            acts.append(f"write {dst_json.relative_to(data_dir).as_posix()}")
+            if not dry_run:   # written last: its presence marks the faces as migrated
+                dst_json.parent.mkdir(parents=True, exist_ok=True)
+                tmp = dst_json.with_name(dst_json.name + ".tmp")
+                tmp.write_text(json.dumps(entries, indent=1), encoding="utf-8")
+                tmp.replace(dst_json)
+    except Exception as e:
+        acts.append(f"skip faces: {type(e).__name__}")
 
 
 def migrate_on_startup() -> None:
