@@ -108,11 +108,22 @@ is 404: no frontend, no media, no portraits, no book data. It uses Gemini only (
 memory for 30 minutes, never logs request bodies (they may contain book text), and never decides what a reader may see:
 the local app sends already spoiler-filtered passages.
 
-Limits, all enforced by the service: per-book estimate at most $4 (`PUBLIC_BOOK_CAP_USD`), cumulative enrichment spend at
-most $10 (`PUBLIC_TOTAL_CAP_USD`, persisted), Gemini answers at most $2 per UTC day (`PUBLIC_ANSWER_DAILY_CAP_USD`,
-persisted), 3 books per IP per hour, 20 answers per IP per minute, 3 MB of book text (6,000 paragraphs), two jobs at a
-time. A cap answers `402` and a rate limit `429`, each with `{"detail", "code"}`. Raise or lower a cap by redeploying with
-a different env value (the persisted counters live in the bucket's `usage/` folder; delete the file to reset them).
+Limits, all enforced by the service:
+- Per book: estimate at most $1.5 (`PUBLIC_BOOK_CAP_USD`); a running job also stops at 1.25 times that.
+- Cumulative enrichment spend at most $10 (`PUBLIC_TOTAL_CAP_USD`, persisted). Admission counts the unspent estimates of
+  running jobs, so concurrent jobs cannot overshoot it.
+- Per client address: 1 book per hour, and at most $2 of enrichment estimates per UTC day (`PUBLIC_IP_DAILY_CAP_USD`,
+  persisted; addresses are stored as short hashes). The estimate is charged at admission and settled to real spend at the end.
+- Gemini answers at most $2 per UTC day (`PUBLIC_ANSWER_DAILY_CAP_USD`, persisted). Each answer reserves a worst-case
+  cost (estimated input plus 700 output tokens) at admission and is settled to the real cost afterwards; a stream that
+  fails or is dropped before Gemini reports usage is charged the reservation. At most 4 answer streams run at once.
+- 20 answers per IP per minute, 3 MB of book text (6,000 paragraphs), two enrichment jobs at a time. Results are kept 30
+  minutes after the job finishes.
+A cap answers `402` and a rate limit or full slot `429`, each with `{"detail", "code"}`. Counters live in the bucket's
+`usage/` folder: `upload_spend.json` (cumulative enrichment), `public_answer_spend.json` (answers, today),
+`public_ip_spend.json` (per address, today). To reset one, delete that file
+(`gcloud storage rm gs://frederick-talkback-public/usage/<file>`) and restart the instance by redeploying or waiting
+for it to idle out (counters are also cached in memory). To change a cap, redeploy with a different env value.
 
 ### One-time setup
 

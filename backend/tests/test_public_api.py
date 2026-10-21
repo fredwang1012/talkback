@@ -55,6 +55,8 @@ def pub(tmp_path, monkeypatch):
     monkeypatch.setattr(public_api, "poll_bucket", TokenBucket(10_000, 60))
     monkeypatch.setattr(public_api, "answer_bucket", TokenBucket(100, 60))
     monkeypatch.setattr(public_api, "answer_budget", public_api.DailyBudget())
+    monkeypatch.setattr(public_api, "ip_budget", public_api.IpBudget())
+    monkeypatch.setattr(public_api, "_streams", {})
     monkeypatch.setattr(spend, "_state", None)
     monkeypatch.setattr(public_api, "make_llm", lambda *a, **k: LLM("gemini", {"gemini": FakeProvider()}))
     monkeypatch.setattr(public_api, "get_public_answerer", lambda: FakeAnswerer())
@@ -120,7 +122,7 @@ def test_unknown_and_expired_jobs_are_404(pub):
     assert pub.get("/api/public/enrich/nope").status_code == 404
     job = pub.post("/api/public/enrich", json=enrich_body()).json()["job_id"]
     wait_done(pub, job)
-    public_api._jobs[job].created -= public_api.JOB_TTL_SECONDS + 5
+    public_api._jobs[job].finished -= public_api.JOB_TTL_SECONDS + 5
     r = pub.get(f"/api/public/enrich/{job}")
     assert r.status_code == 404 and r.json()["code"] == "unknown_job"
 
@@ -176,6 +178,7 @@ def test_daily_answer_cap_is_persisted_and_resets_next_day(pub, monkeypatch):
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
     path.write_text(json.dumps({"day": yesterday, "usd": 99}))
     monkeypatch.setattr(public_api, "answer_budget", public_api.DailyBudget())
+    monkeypatch.setattr(settings, "public_answer_daily_cap_usd", 2.0)
     assert pub.post("/api/public/answer", json=body).status_code == 200
 
 
@@ -258,3 +261,78 @@ def test_request_bodies_are_never_logged(pub, monkeypatch, caplog):
     bad["paragraphs"][0]["idx"] = 5
     assert MARKER not in pub.post("/api/public/enrich", json=bad).text
     assert caplog.records and MARKER not in caplog.text
+
+
+# ---------- reservations and abuse limits ----------
+
+def test_answer_reservation_blocks_concurrent_admission(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "public_answer_daily_cap_usd", 1.0)
+    b = public_api.DailyBudget()
+    assert b.reserve(0.6) and not b.reserve(0.6)          # the second would pass a spent-only check
+    b.settle(0.6, 0.1)
+    assert b.reserve(0.6) and b.spent() == 0.1
+
+
+def test_failed_or_abandoned_answer_charges_the_reservation(pub, monkeypatch):
+    monkeypatch.setattr(public_api, "get_public_answerer", lambda: FakeAnswerer(fail=True))   # no usage ever arrives
+    body = {"title": "T", "query": "q"}
+    pub.post("/api/public/answer", json=body)
+    worst = public_api.price_usd("gemini", "fast", 1, public_api.MAX_OUTPUT_TOKENS)
+    assert public_api.answer_budget.spent() >= worst and public_api.answer_budget.reserved == 0
+    assert public_api._streams == {}
+    monkeypatch.setattr(public_api, "get_public_answerer", lambda: FakeAnswerer())
+    before = public_api.answer_budget.spent()
+    pub.post("/api/public/answer", json=body)
+    assert 0 < public_api.answer_budget.spent() - before < worst      # real usage (1000 in, 100 out) is cheaper
+
+
+def test_concurrent_answer_streams_are_capped(pub):
+    for i in range(public_api.MAX_ANSWER_STREAMS):
+        assert public_api._take_stream_slot()
+    r = pub.post("/api/public/answer", json={"title": "T", "query": "q"})
+    assert r.status_code == 429 and r.json()["code"] == "busy"
+    assert public_api.answer_budget.reserved == 0                  # the refused request holds no reservation
+
+
+def test_per_ip_daily_dollar_cap_is_persisted(pub, monkeypatch):
+    monkeypatch.setattr(settings, "trust_proxy", True)
+    a, b = {"x-forwarded-for": "1.1.1.1"}, {"x-forwarded-for": "2.2.2.2"}
+    est = pipeline.estimate(public_api.EnrichRequest(**enrich_body()).to_book(), "gemini")
+    assert est > 0
+    monkeypatch.setattr(settings, "public_ip_daily_cap_usd", 1.0)
+    assert public_api.ip_budget.charge("1.1.1.1", 1.0 - est / 2)         # this address is nearly at its cap
+    r = pub.post("/api/public/enrich", json=enrich_body(), headers=a)
+    assert r.status_code == 402 and r.json()["code"] == "ip_cap"
+    monkeypatch.setattr(public_api, "ip_budget", public_api.IpBudget())      # restart: read from the file
+    assert pub.post("/api/public/enrich", json=enrich_body(), headers=a).status_code == 402
+    assert pub.post("/api/public/enrich", json=enrich_body(), headers=b).status_code == 202
+    assert "1.1.1.1" not in (settings.data_dir / "usage" / "public_ip_spend.json").read_text()
+
+
+def test_one_book_per_ip_per_hour_by_default():
+    assert public_api.enrich_bucket.capacity == 1 and settings.public_book_cap_usd == 1.5
+
+
+def test_running_jobs_reserve_their_estimate(pub, monkeypatch):
+    j = public_api.Job("x", 6.0)
+    public_api._jobs["x"] = j
+    assert public_api._reserved_usd() == 6.0
+    j.usd = 4.0
+    assert public_api._reserved_usd() == 2.0
+    j.usd = 4.0
+    j.estimate_usd = 6.0
+    monkeypatch.setattr(settings, "public_total_cap_usd", 5.0)
+    monkeypatch.setattr(settings, "public_book_cap_usd", 100.0)
+    r = pub.post("/api/public/enrich", json=enrich_body())          # 0 spent + 2.0 reserved + estimate < 5 is fine...
+    assert r.status_code == 202
+    j.usd = 0.0
+    monkeypatch.setattr(settings, "public_total_cap_usd", 5.5)
+    assert pub.post("/api/public/enrich", json=enrich_body(), headers={}).status_code in (402, 429)
+
+
+def test_result_ttl_counts_from_completion(pub):
+    job = pub.post("/api/public/enrich", json=enrich_body()).json()["job_id"]
+    wait_done(pub, job)
+    public_api._jobs[job].created -= public_api.JOB_TTL_SECONDS * 3      # old start, fresh finish
+    assert pub.get(f"/api/public/enrich/{job}").status_code == 200

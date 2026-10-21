@@ -83,6 +83,8 @@ the recap), and typed Talkback questions are answered by Gemini. Your machine st
 only ever receives passages you are already allowed to see, and it keeps no book text (results are held in memory for 30
 minutes, request bodies are never logged).
 
+The text of a book you upload is sent to the author's processing service (Gemini on Google Cloud Vertex AI) and held in memory for up to 30 minutes after processing; it is not stored.
+
 The service has hard spend limits and can be switched off. If it is closed, unreachable, or over its free limit, nothing
 breaks: the upload is processed locally with a simple name-based cast and narrator reading, and the page says why
 ("processing service unavailable" or "the free processing limit has been reached"); typed questions go through Boson
