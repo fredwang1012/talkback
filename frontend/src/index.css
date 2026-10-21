@@ -525,7 +525,8 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
 
 /* ---- Read mode: bigger face circle when a real face is set, audio-driven talk/idle ---- */
 .speaker.big { flex-direction: column; text-align: center; gap: 12px; }
-.medallion.big { width: 176px; height: 176px; font-size: 4rem; }
+.medallion.big { width: 176px; height: 176px; font-size: 4rem; flex-shrink: 0; }
+.stage > * { flex-shrink: 0; }
 .read-face { position: relative; width: 100%; height: 100%; will-change: transform; }
 .read-face > img, .read-face > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
 .read-face .rf-talk { opacity: 0; transition: opacity 80ms linear; }
