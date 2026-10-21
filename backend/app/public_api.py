@@ -48,7 +48,8 @@ JOB_TTL_SECONDS = 30 * 60
 JOB_MAX_SECONDS = 25 * 60
 MAX_RUNNING_JOBS = 2
 MAX_ANSWER_STREAMS = 4
-ANSWER_SLOT_SECONDS = 300      # a stream slot or reservation is never held longer than this (guards a leak)
+ANSWER_SLOT_SECONDS = 300      # an UNSTARTED stream slot or reservation is dropped after this (guards a leak)
+ANSWER_DEADLINE_SECONDS = 120  # hard limit on one answer stream; a started one is released only when it ends
 MAX_OUTPUT_TOKENS = 700        # GeminiAnswerer max_output_tokens: the most one answer can cost in output
 MAX_JOBS_KEPT = 50
 
@@ -271,6 +272,7 @@ class DailyBudget:
         self.day, self.usd, self.path = None, 0.0, None
         self.clock = clock
         self._held: dict[str, tuple[float, float]] = {}    # token -> (usd, taken at)
+        self._started: set[str] = set()                    # tokens whose stream is running: never aged out
         self.lock = threading.Lock()
 
     @property
@@ -290,7 +292,7 @@ class DailyBudget:
         if self.day != today:
             self.day, self.usd = today, 0.0
         now = self.clock()
-        for t in [t for t, (_, at) in self._held.items() if now - at > ANSWER_SLOT_SECONDS]:
+        for t in [t for t, (_, at) in self._held.items() if now - at > ANSWER_SLOT_SECONDS and t not in self._started]:
             del self._held[t]
 
     def spent(self) -> float:
@@ -307,11 +309,17 @@ class DailyBudget:
             self._held[token] = (usd, self.clock())
             return token
 
+    def mark_started(self, token: str) -> None:
+        with self.lock:
+            if token in self._held:
+                self._started.add(token)
+
     def settle(self, token: str, actual: float) -> None:
         """Release the reservation (if it is still held) and charge the real cost."""
         with self.lock:
             self._sync()
             self._held.pop(token, None)
+            self._started.discard(token)
             self.usd = round(self.usd + actual, 6)
             spend._write({"day": self.day, "usd": self.usd}, self.path)
 
@@ -371,11 +379,12 @@ class IpBudget:
 
 ip_budget = IpBudget()
 _streams: dict[str, float] = {}   # answer stream slots: token -> start time
+_started_slots: set[str] = set()  # slots whose stream is running (not aged out; the stream deadline ends them)
 
 
 def _take_stream_slot() -> str | None:
     now = time.monotonic()
-    for t in [t for t, at in _streams.items() if now - at > ANSWER_SLOT_SECONDS]:
+    for t in [t for t, at in _streams.items() if now - at > ANSWER_SLOT_SECONDS and t not in _started_slots]:
         del _streams[t]
     if len(_streams) >= MAX_ANSWER_STREAMS:
         return None
@@ -530,17 +539,34 @@ async def public_answer(req: AnswerRequest, request: Request):
             actual = cost if state["started"] else 0.0
         answer_budget.settle(token, actual)
         _streams.pop(slot, None)
+        _started_slots.discard(slot)
 
     def on_usage(n_in: int, n_out: int) -> None:
         state.update({"in": n_in, "out": n_out, "seen": True})
 
     async def stream():
         state["started"] = True
+        answer_budget.mark_started(token)
+        _started_slots.add(slot)
+        deadline = asyncio.get_running_loop().time() + ANSWER_DEADLINE_SECONDS
         gen = get_public_answerer().stream_sentences(system, user, on_usage=on_usage)
         try:
             try:
-                async for sentence in gen:
+                it = gen.__aiter__()
+                while True:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    try:
+                        async with asyncio.timeout(max(remaining, 0.0)):
+                            sentence = await it.__anext__()
+                    except StopAsyncIteration:
+                        break
                     yield json.dumps({"type": "sentence", "text": sentence}, ensure_ascii=False) + "\n"
+                    if deadline - asyncio.get_running_loop().time() <= 0:
+                        raise TimeoutError
+            except TimeoutError:
+                log.warning("public answer cut at its deadline")
+                yield json.dumps({"type": "error", "message": "The answer took too long; please try again."}) + "\n"
+                return
             except Exception as e:  # never leak details (they may quote the book)
                 log.warning("public answer failed: %s", type(e).__name__)
                 yield json.dumps({"type": "error", "message": "The answer could not be generated; please try again."}) + "\n"

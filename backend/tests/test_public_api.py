@@ -57,6 +57,7 @@ def pub(tmp_path, monkeypatch):
     monkeypatch.setattr(public_api, "answer_budget", public_api.DailyBudget())
     monkeypatch.setattr(public_api, "ip_budget", public_api.IpBudget())
     monkeypatch.setattr(public_api, "_streams", {})
+    monkeypatch.setattr(public_api, "_started_slots", set())
     monkeypatch.setattr(spend, "_state", None)
     monkeypatch.setattr(public_api, "make_llm", lambda *a, **k: LLM("gemini", {"gemini": FakeProvider()}))
     monkeypatch.setattr(public_api, "get_public_answerer", lambda: FakeAnswerer())
@@ -391,3 +392,42 @@ def test_main_app_client_ip_is_unchanged():
     from starlette.requests import Request
     r = Request({"type": "http", "headers": [], "client": ("2001:db8::1", 1)})
     assert client_ip(r) == "2001:db8::1"
+
+
+def test_started_reservation_and_slot_survive_the_expiry_window(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "public_answer_daily_cap_usd", 1.0)
+    now = [0.0]
+    b = public_api.DailyBudget(clock=lambda: now[0])
+    tok = b.reserve(0.9)
+    b.mark_started(tok)                                    # a slow consumer is still reading the stream
+    now[0] = public_api.ANSWER_SLOT_SECONDS * 10
+    assert b.reserve(0.5) is None and b.reserved == 0.9    # still held: spend cannot exceed the cap
+    b.settle(tok, 0.2)
+    assert b.reserved == 0 and b.reserve(0.5)
+    monkeypatch.setattr(public_api, "_streams", {"run": time.monotonic() - public_api.ANSWER_SLOT_SECONDS - 5})
+    monkeypatch.setattr(public_api, "_started_slots", {"run"})
+    for _ in range(3):
+        assert public_api._take_stream_slot()
+    assert "run" in public_api._streams
+
+
+def test_stream_is_cut_at_the_deadline_and_settles(pub, monkeypatch):
+    import asyncio
+
+    class Stuck:
+        async def stream_sentences(self, system, user, on_usage=None):
+            yield "First."
+            await asyncio.sleep(30)
+            yield "never"
+
+    monkeypatch.setattr(public_api, "get_public_answerer", lambda: Stuck())
+    monkeypatch.setattr(public_api, "ANSWER_DEADLINE_SECONDS", 0.3)
+    t0 = time.time()
+    r = pub.post("/api/public/answer", json={"title": "T", "query": "q"})
+    assert time.time() - t0 < 10
+    types = [json.loads(x)["type"] for x in r.text.splitlines()]
+    assert types == ["sentence", "error"]
+    assert public_api.answer_budget.reserved == 0 and public_api._streams == {} and public_api._started_slots == set()
+    worst = public_api.price_usd("gemini", "fast", 1, public_api.MAX_OUTPUT_TOKENS)
+    assert public_api.answer_budget.spent() >= worst       # no usage arrived: the worst case is charged
