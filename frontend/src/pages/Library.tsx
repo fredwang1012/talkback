@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
-  changeKind, fetchBooks, MAX_UPLOAD_BYTES, pollBookStatus, pollEnrichment, startEnrichment, uploadBook,
+  accountLabel, changeKind, fetchBooks, fetchMe, SIGN_OUT_URL, type Me, MAX_UPLOAD_BYTES, pollBookStatus, pollEnrichment, startEnrichment, uploadBook,
   type BookStatus, type BookSummary, type UploadKind,
   enrichDoneNote,
 } from "../api";
@@ -208,10 +208,11 @@ export default function Library() {
   const [notes, setNotes] = useState<Record<string, MoveNote>>({});
   const [moving, setMoving] = useState(false);
   const [hasCode, setHasCode] = useState(() => getAccessToken() !== "");
+  const [me, setMe] = useState<Me | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const load = () => fetchBooks().then(setBooks).catch((e: Error) => setError(e.message));
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); fetchMe().then(setMe); }, []);
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const setNote = (id: string, note: MoveNote | null) =>
@@ -273,6 +274,9 @@ export default function Library() {
     <main className="library">
       <header className="masthead">
         <h1>Talkback</h1>
+        {accountLabel(me) && (
+          <p className="account">{accountLabel(me)} · <a href={SIGN_OUT_URL}>Sign out</a></p>
+        )}
         <p>Books read aloud in full cast. Stop anywhere, ask a question out loud, and the story picks up from the same sentence.</p>
       </header>
 

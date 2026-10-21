@@ -519,3 +519,6 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
   .chapter-nav select { order: -1; flex: 1 1 100%; }
   .chapter-nav button { flex: 1; }
 }
+
+.masthead .account { font-size: 0.85rem; margin: 0 0 0.5rem; color: var(--ink-soft); }
+.masthead .account a { color: inherit; }
