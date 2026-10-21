@@ -8,8 +8,9 @@ far, so it never spoils the story, and the reading resumes from the same sentenc
 Avatar** (including streaming lip-sync), you can clone a voice and give it a face, and you can upload your own novel or
 textbook (a .txt or PDF) with automatic novel-vs-textbook detection.
 
-A fully processed public-domain sample ships in the repo, *Alice's Adventures in Wonderland*, so you can try everything
-with nothing but a Boson API key.
+Five fully processed public-domain samples ship in the repo, so you can try everything with nothing but a Boson API key:
+*Alice's Adventures in Wonderland*, *The Wonderful Wizard of Oz*, *Peter Pan*, *The Wind in the Willows* and
+*A Christmas Carol*.
 
 ## Quickstart (5 minutes)
 
@@ -188,13 +189,15 @@ frontend/   React + Vite: library, reader, Stage (Talk), voice lab, debug drawer
 preprocess/ offline scripts (ingest_series, summaries, cast, segment, chunk_tts, eval_spoilers, prerender_tts, prerender_avatar)
 scripts/    run_all.py, index_vertex.py, usage.py, clone_voice.py, make_face_loops.py, deploy_cloudrun.sh, probes
 infra/      budget_stop: the Cloud Run function behind the author's $50 hard stop
-data/       raw texts, generated books and indexes (books/alice-in-wonderland ships), caches (cache/ is gitignored)
+data/       raw texts, generated books and indexes (the five public-domain sample books ship), caches (cache/ is gitignored)
 docs/       ARCHITECTURE.md, DEMO.md, DEPLOY.md (author's Cloud Run setup); internal/ holds planning notes
 ```
 
 ## Credits and licences
 
-*Alice's Adventures in Wonderland* by Lewis Carroll is in the public domain (text from Project Gutenberg). The Harry
+*Alice's Adventures in Wonderland* (Lewis Carroll), *The Wonderful Wizard of Oz* (L. Frank Baum), *Peter Pan* (J. M. Barrie),
+*The Wind in the Willows* (Kenneth Grahame) and *A Christmas Carol* (Charles Dickens) are in the public domain in the
+United States (texts from Project Gutenberg, eBooks #11, #55, #16, #289 and #46). The Harry
 Potter books are copyrighted, are used only from the owner's own copy and are not distributed with this repository. Audio
 and realtime code in `frontend/src/audio` and parts of `src/realtime` are adapted from
 [boson-ai/higgs-realtime-tutorial](https://github.com/boson-ai/higgs-realtime-tutorial) (Apache-2.0); see

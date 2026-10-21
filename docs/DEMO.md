@@ -14,6 +14,12 @@
 
 Reader position = chapter start; jump there in the reader (paragraph index shown). Future questions should be declined by the app.
 
+Other sample books that ship with the repo (all public domain, fully processed with characters, recap and search):
+- The Wonderful Wizard of Oz: Dorothy, Scarecrow, Tin Woodman, Cowardly Lion, Oz, the Witches and Glinda.
+- Peter Pan: Wendy, Peter, John, Michael, the Darlings, Captain Hook and Smee.
+- The Wind in the Willows: Mole, Rat, Badger, Toad, Otter, the Sea Rat and others.
+- A Christmas Carol (five staves, shown as Parts I to V): Scrooge, Marley, Fred, the Cratchits and Fezziwig.
+
 ### Alice's Adventures in Wonderland
 
 #### CHAPTER VII. A Mad Tea-Party (paragraph 304, about 38% in)
