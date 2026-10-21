@@ -13,6 +13,8 @@ import BookText from "../reader/BookText";
 import PlayerBar from "../reader/PlayerBar";
 import RecapPanel from "../reader/RecapPanel";
 import { ReaderEngine, type AudioLike } from "../reader/ReaderEngine";
+import { AudioLevelMeter } from "../reader/audioLevel";
+import { SPEECH_IDLE, stepSpeech } from "../reader/speechLevel";
 import Stage from "../reader/Stage";
 import { toggleMode, validSpeaker } from "../reader/talkbackLogic";
 import TalkbackView, { ModeToggle } from "../reader/TalkbackView";
@@ -65,6 +67,9 @@ export default function Reader({ bookId }: { bookId: string }) {
   useEffect(() => spend.subscribe(setSpendNow), []);
   const lastManualScroll = useRef(0);
   const engineRef = useRef<ReaderEngine | null>(null);
+  const meterRef = useRef<AudioLevelMeter | null>(null);
+  const levelRef = useRef(0); // live loudness of the read-aloud audio (read-mode face)
+  const [readSpeaking, setReadSpeaking] = useState(false);
   const indexRef = useRef(0);
   const playingRef = useRef(false);
   indexRef.current = index;
@@ -114,14 +119,32 @@ export default function Reader({ bookId }: { bookId: string }) {
       setLoading(s.state === "loading");
       setAudioError(s.state === "error" ? s.error : null);
     });
+    const meter = new AudioLevelMeter();
+    meterRef.current = meter;
+    let speech = SPEECH_IDLE, last = performance.now();
     let raf = 0;
     const tick = () => {
+      const now = performance.now();
+      const snap = engine.snapshot();
+      const lvl = meter.level(engine.currentAudio(), snap.state === "playing");
+      if (lvl === null) { // no Web Audio: fall back to "speaking while playing"
+        levelRef.current = 0;
+        speech = { ...SPEECH_IDLE, speaking: snap.state === "playing" };
+      } else {
+        levelRef.current = lvl;
+        speech = snap.state === "playing" ? stepSpeech(speech, lvl, now - last) : SPEECH_IDLE;
+      }
+      last = now;
+      setReadSpeaking((cur) => (cur === speech.speaking ? cur : speech.speaking));
       const w = engine.activeWord();
       setWord((cur) => (cur?.charStart === w?.charStart && cur?.charEnd === w?.charEnd ? cur : w));
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => { cancelAnimationFrame(raf); off(); engine.dispose(); engineRef.current = null; setWord(null); };
+    return () => {
+      cancelAnimationFrame(raf); off(); engine.dispose(); engineRef.current = null; setWord(null);
+      meter.dispose(); meterRef.current = null; levelRef.current = 0; setReadSpeaking(false);
+    };
   }, [book, chunks, audioAvailable, demo]);
 
 
@@ -136,6 +159,9 @@ export default function Reader({ bookId }: { bookId: string }) {
   // the face of whoever reads aloud right now (read mode)
   const readingFace = book && playing && !loading && current
     ? faceById(readingFaceId(book, cast, style, current.speaker)) ?? null : null;
+  // any face assigned to the narrator, a character or the one-voice style: the stage keeps its big circle
+  const reserveFace = !!book && [style.face, cast.narrator.face, ...Object.values(cast.characters).map((a) => a.face)]
+    .some((id) => !!id && id !== "none" && faces.some((f) => f.id === id));
   const voiceOptions = useMemo(
     () => [...PRESETS.map((v) => ({ value: v, label: v })), ...Object.entries(cloned).map(([n, v]) => ({ value: v, label: `${n} (cloned)` }))],
     [cloned]);
@@ -210,6 +236,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   }, [chunks.length]);
   const step = useCallback((d: number) => seek(index + d), [seek, index]);
   const toggle = useCallback(() => {
+    meterRef.current?.unlock(); // the AudioContext may only start from a user gesture
     if (engineRef.current) engineRef.current.toggle();
     else setPlaying((p) => !p);
   }, []);
@@ -328,7 +355,8 @@ export default function Reader({ bookId }: { bookId: string }) {
                  pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
                  needsCode={needsCode} onCode={(c, rem) => { setAccessToken(c, rem); setCode(c); }} onOpenLab={() => setLabOpen(true)}
                  faceFor={talkFaceFor}
-                 readingFace={readingFace} spoilers={spoilers} />
+                 readingFace={readingFace} spoilers={spoilers}
+                 readSpeaking={readSpeaking} levelRef={levelRef} reserveFace={reserveFace} />
         )}
       </div>
       {labOpen && (
