@@ -49,7 +49,8 @@ JOB_MAX_SECONDS = 25 * 60
 MAX_RUNNING_JOBS = 2
 MAX_ANSWER_STREAMS = 4
 ANSWER_SLOT_SECONDS = 300      # an UNSTARTED stream slot or reservation is dropped after this (guards a leak)
-ANSWER_DEADLINE_SECONDS = 120  # hard limit on one answer stream; a started one is released only when it ends
+ANSWER_DEADLINE_SECONDS = 120  # hard limit on one answer stream
+STARTED_GRACE_SECONDS = 60     # a started reservation or slot that outlives deadline + grace is leaked: charged in full
 MAX_OUTPUT_TOKENS = 700        # GeminiAnswerer max_output_tokens: the most one answer can cost in output
 MAX_JOBS_KEPT = 50
 
@@ -272,7 +273,7 @@ class DailyBudget:
         self.day, self.usd, self.path = None, 0.0, None
         self.clock = clock
         self._held: dict[str, tuple[float, float]] = {}    # token -> (usd, taken at)
-        self._started: set[str] = set()                    # tokens whose stream is running: never aged out
+        self._started: dict[str, float] = {}               # tokens whose stream is running -> start time
         self.lock = threading.Lock()
 
     @property
@@ -292,8 +293,19 @@ class DailyBudget:
         if self.day != today:
             self.day, self.usd = today, 0.0
         now = self.clock()
-        for t in [t for t, (_, at) in self._held.items() if now - at > ANSWER_SLOT_SECONDS and t not in self._started]:
-            del self._held[t]
+        changed = False
+        for t, (usd, at) in list(self._held.items()):
+            if t in self._started:
+                if now - self._started[t] > ANSWER_DEADLINE_SECONDS + STARTED_GRACE_SECONDS:
+                    # leaked while running (its settle never came): count the full reservation as spent, never drop it
+                    del self._held[t]
+                    del self._started[t]
+                    self.usd = round(self.usd + usd, 6)
+                    changed = True
+            elif now - at > ANSWER_SLOT_SECONDS:
+                del self._held[t]           # never started: no model call was made, no charge
+        if changed:
+            spend._write({"day": self.day, "usd": self.usd}, self.path)
 
     def spent(self) -> float:
         with self.lock:
@@ -312,14 +324,16 @@ class DailyBudget:
     def mark_started(self, token: str) -> None:
         with self.lock:
             if token in self._held:
-                self._started.add(token)
+                self._started[token] = self.clock()
 
     def settle(self, token: str, actual: float) -> None:
-        """Release the reservation (if it is still held) and charge the real cost."""
+        """Release the reservation and charge the real cost. Idempotent: a token that is no longer held (settled
+        before, or expired and already charged in full) charges nothing."""
         with self.lock:
             self._sync()
-            self._held.pop(token, None)
-            self._started.discard(token)
+            if self._held.pop(token, None) is None:
+                return
+            self._started.pop(token, None)
             self.usd = round(self.usd + actual, 6)
             spend._write({"day": self.day, "usd": self.usd}, self.path)
 
@@ -379,13 +393,17 @@ class IpBudget:
 
 ip_budget = IpBudget()
 _streams: dict[str, float] = {}   # answer stream slots: token -> start time
-_started_slots: set[str] = set()  # slots whose stream is running (not aged out; the stream deadline ends them)
+_started_slots: dict[str, float] = {}  # slots whose stream is running -> start time
 
 
 def _take_stream_slot() -> str | None:
     now = time.monotonic()
-    for t in [t for t, at in _streams.items() if now - at > ANSWER_SLOT_SECONDS and t not in _started_slots]:
-        del _streams[t]
+    for t, at in list(_streams.items()):
+        started = _started_slots.get(t)
+        if (started is None and now - at > ANSWER_SLOT_SECONDS) or (
+                started is not None and now - started > ANSWER_DEADLINE_SECONDS + STARTED_GRACE_SECONDS):
+            del _streams[t]
+            _started_slots.pop(t, None)
     if len(_streams) >= MAX_ANSWER_STREAMS:
         return None
     token = secrets.token_hex(8)
@@ -539,7 +557,7 @@ async def public_answer(req: AnswerRequest, request: Request):
             actual = cost if state["started"] else 0.0
         answer_budget.settle(token, actual)
         _streams.pop(slot, None)
-        _started_slots.discard(slot)
+        _started_slots.pop(slot, None)
 
     def on_usage(n_in: int, n_out: int) -> None:
         state.update({"in": n_in, "out": n_out, "seen": True})
@@ -547,7 +565,7 @@ async def public_answer(req: AnswerRequest, request: Request):
     async def stream():
         state["started"] = True
         answer_budget.mark_started(token)
-        _started_slots.add(slot)
+        _started_slots[slot] = time.monotonic()
         deadline = asyncio.get_running_loop().time() + ANSWER_DEADLINE_SECONDS
         gen = get_public_answerer().stream_sentences(system, user, on_usage=on_usage)
         try:
@@ -574,7 +592,8 @@ async def public_answer(req: AnswerRequest, request: Request):
             yield json.dumps({"type": "done"}) + "\n"
         finally:
             try:
-                await gen.aclose()  # runs the answerer's own finally: that is where the token counts arrive
+                async with asyncio.timeout(5):
+                    await gen.aclose()  # runs the answerer's own finally: that is where the token counts arrive
             except BaseException:
                 pass
             finally:
