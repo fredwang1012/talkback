@@ -41,6 +41,14 @@ Reading (default)                           Expanded (click ⤢)
 - **Barge-in:** press the mic (or just speak, with item 2) while a character talks → they stop within ~0.15 s, the bubble is marked "interrupted", it listens immediately, and the next answer knows it was cut off. Both answer paths (Realtime voice; Gemini + Boson TTS).
 - **Multilingual:** ask in French/Spanish/Chinese, or switch mid-conversation → answer in that language in the character's voice, language badge on the bubble; translate the question for searching the English book.
 - Check Boson docs first (turn detection, `response.cancel`, supported languages); probe with a few cents of Boson.
+- **⚠ Check these before building (reminder):**
+  - [ ] Which languages Higgs Realtime **understands** (speech → text) and **speaks**, and whether each preset/cloned voice sounds right in them (e.g. Chinese with Harry's voice, with a cloned English voice).
+  - [ ] **Code-switching / weaving**: one sentence mixing languages ("Hagrid, 为什么 he hid the egg?") — does Realtime transcribe it, and can TTS speak a mixed reply naturally?
+  - [ ] **Switching mid-conversation** works turn to turn with no setting change (Realtime currently auto-detects; confirm).
+  - [ ] **Typed questions** in other languages: the Gemini path should answer in the same language — add the prompt rule and test; the realtime typed path too.
+  - [ ] **Search**: the books are English — translate non-English questions before searching (BM25 local, Vertex live) so answers stay grounded.
+  - [ ] **Faces**: the lip-synced avatar is driven by the audio, so it should match any language — verify mouth shapes look right for Chinese and Spanish clips.
+  - [ ] Badge: today's language badge ("Heard: Español") is a guess from the transcript text only (script ranges + common words, `frontend/src/talk/language.ts`); it doesn't steer anything. Decide whether to keep it as a guess or use what Realtime reports.
 
 ## 4. Emotion
 - **Voice (partly done):** ~8% of book lines carry an emotion tag (anger, fear…), plus whisper/shout/laughter. To do: emotion on Talkback answers, and wider coverage where the text clearly implies it.
