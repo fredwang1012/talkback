@@ -424,9 +424,22 @@ def _cap_paragraphs(sections: list[Section], paragraphs: list[Paragraph]) -> lis
     return out
 
 
+_NUMBERED = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){0,5})(?![\d.]*\w)")
+MAX_LEVEL = 4
+
+
+def section_level(title: str) -> int:
+    """Nesting depth from the heading's number: "2" or "Chapter 2" is 1, "2.1" is 2, "2.1.1" is 3 (capped)."""
+    m = _NUMBERED.match(title.strip())
+    return min(m.group(1).count(".") + 1, MAX_LEVEL) if m else 1
+
+
 def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_detected: dict | None = None) -> Book:
     sections, paragraphs = parse(raw, None, None, HEADING_REGEX)
     paragraphs = _cap_paragraphs(sections, paragraphs)
+    if kind == "textbook":  # novels keep a flat chapter list
+        for sec in sections:
+            sec.level = section_level(sec.title)
     if not paragraphs:
         raise UploadError("No paragraphs were found in the file.")
     book = Book(id=book_id, title=title, author=author, kind=kind, kind_detected=kind_detected, license=LICENSE,

@@ -35,7 +35,7 @@ export type Book = {
   kind_detected?: KindDetected | null;
   license: string;
   attribution: string | null;
-  sections: { id: string; title: string; start_para: number }[];
+  sections: { id: string; title: string; start_para: number; level?: number }[];
   paragraphs: Paragraph[];
   characters: Character[];
   narrator: { id: string; voice: string; is_character: string | null; portrait: string | null } | null;

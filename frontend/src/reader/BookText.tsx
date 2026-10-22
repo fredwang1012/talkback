@@ -1,6 +1,8 @@
 import { Fragment, memo } from "react";
 import type { Book } from "../api";
 import type { FlatChunk } from "./position";
+import ChapterList from "./ChapterList";
+import { isNested } from "./chapterTree";
 
 type Props = {
   book: Book; chunks: FlatChunk[]; index: number; onPick: (i: number) => void;
@@ -38,9 +40,11 @@ function BookText({ book, chunks, index, onPick, word }: Props) {
   const chapterNav = book.sections.length > 1 && (
     <nav className="chapter-nav" aria-label="Chapters">
       <button disabled={current === 0} onClick={() => goTo(current - 1)}>Previous chapter</button>
-      <select aria-label="Go to chapter" value={current} onChange={(e) => goTo(Number(e.target.value))}>
-        {book.sections.map((s, i) => <option key={s.id} value={i}>{s.title || `Part ${i + 1}`}</option>)}
-      </select>
+      {isNested(book.sections)
+        ? <ChapterList book={book} current={current} onGo={goTo} />
+        : <select aria-label="Go to chapter" value={current} onChange={(e) => goTo(Number(e.target.value))}>
+            {book.sections.map((s, i) => <option key={s.id} value={i}>{s.title || `Part ${i + 1}`}</option>)}
+          </select>}
       <button disabled={current >= book.sections.length - 1} onClick={() => goTo(current + 1)}>Next chapter</button>
     </nav>
   );
