@@ -272,14 +272,25 @@ def _vertex_deps():
     return GeminiEmbedder(), VectorStore(settings.vs_collection_path)
 
 
+def _vertex_index_ready(book_id: str) -> bool:
+    """False while a book's Vertex index is building, failed or was interrupted (retrieval then uses local BM25).
+    Books with no index progress recorded (seeded or indexed offline) are served from Vertex."""
+    idx = (ingest_upload.read_status(book_id) or {}).get("index")
+    return not idx or idx.get("state") == "done"
+
+
 @lru_cache(maxsize=8)
 def _index_for(book_id: str) -> retrieval.Index:
     book = books.load_book(book_id)
-    if settings.retrieval_backend == "vertex":
+    if settings.retrieval_backend == "vertex" and _vertex_index_ready(book_id):
         from .gcp.vertex_index import VertexIndex
         earlier = {b.id: b.title for b in books.earlier_in_series(book)}
         return VertexIndex(book, _LazyEmbedder(), _LazyStore(), earlier)
     index_dir = settings.data_dir / "books" / book_id / "index"
+    if settings.retrieval_backend == "vertex":  # Vertex index still building (or failed): local BM25, same eligibility
+        if (index_dir / "chunks.json").exists():
+            return retrieval.Index.load(index_dir)
+        return retrieval.Index(retrieval.make_chunks(book))
     if (index_dir / "chunks.json").exists():
         return retrieval.Index.load(index_dir, embedder=_embedder())
     return retrieval.Index(retrieval.make_chunks(book))  # BM25-only until the index is built
@@ -483,6 +494,28 @@ def _set_status(book_id: str, status: str, message: str | None = None, **kind_in
     _upload_status[book_id] = ingest_upload.write_status(book_id, status, message, **kind_info)
 
 
+def _set_index(book_id: str, **fields) -> None:
+    """Record the Vertex indexing progress {state, done, total, message?} next to the (ready) status."""
+    _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", index=fields)
+
+
+async def _index_in_background(book: Book, chunks) -> None:
+    """Index a published book into Vertex; the book is readable (BM25) meanwhile. Never raises."""
+    book_id, total = book.id, len(chunks)
+    try:
+        _set_index(book_id, state="running", done=0, total=total)
+        embedder, store = _vertex_deps()
+        from .gcp.indexing import index_book
+        await index_book(book, chunks, embedder, store,
+                         on_progress=lambda done, tot: _set_index(book_id, state="running", done=done, total=tot))
+        _set_index(book_id, state="done", done=total, total=total)
+    except Exception as e:  # the book stays readable and keeps the BM25 fallback
+        logging.getLogger(__name__).warning("vertex indexing failed: %s", type(e).__name__)
+        _set_index(book_id, state="error", done=0, total=total, message="Search indexing failed; using basic search.")
+    finally:
+        _index_for.cache_clear()
+
+
 def _set_enrich(book_id: str, **fields) -> None:
     """Record the novel enrichment sub-status next to the (ready) ingest status."""
     enrich = {k: v for k, v in fields.items() if v is not None}
@@ -545,13 +578,15 @@ async def _plan_enrichment(book_id: str, book: Book) -> None:
 
 
 async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str, token: int) -> None:
-    """Background ingest: CPU work in a thread, then (vertex only) index the chunks, then publish book.json.
+    """Background ingest: CPU work in a thread, then publish book.json (readable, local BM25 retrieval), then (vertex
+    only) index the chunks in the background with progress in status.json["index"].
 
-    book.json is written last, so a processing or failed upload is never listed or readable. Never raises.
-    A novel is then enriched (cast, dialogue, summaries) while it is already readable with the narrator.
+    book.json is written after the CPU work, so a processing or failed upload is never listed or readable; a Vertex
+    indexing failure keeps the book readable. Never raises. A novel is then enriched (cast, dialogue, summaries) while it is already readable with the narrator.
     """
     _ingest_guard.mark_started(token)
     ready: Book | None = None
+    chunks: list = []
     try:
         raw, detected = None, None
         if kind == "auto":  # decide novel or textbook from the extracted text
@@ -560,13 +595,11 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
             detected = {"kind": kind, "confidence": confidence, "method": method}
         book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext,
                                                raw, detected)
-        if settings.retrieval_backend == "vertex":
-            from .gcp.indexing import index_book
-            embedder, store = _vertex_deps()
-            await index_book(book, chunks, embedder, store)
-        await asyncio.to_thread(ingest_upload.publish_book, book)
+        await asyncio.to_thread(ingest_upload.publish_book, book)  # readable now; Vertex indexing follows
         _index_for.cache_clear()
         _set_status(book_id, "ready", **({"kind": kind, "kind_detected": detected} if detected else {}))
+        if settings.retrieval_backend == "vertex":
+            _set_index(book_id, state="running", done=0, total=len(chunks))
         ready = book
     except Exception as e:
         ingest_upload.discard_book(book_id)
@@ -577,6 +610,8 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
             _set_status(book_id, "error", "The file could not be processed.")
     finally:
         _ingest_guard.release(token)
+    if ready is not None and settings.retrieval_backend == "vertex":
+        await _index_in_background(ready, chunks)
     if ready is not None and kind == "novel" and settings.upload_enrich:
         try:
             await _plan_enrichment(book_id, ready)
@@ -631,6 +666,8 @@ def book_status(book_id: str):
         elif st and (st.get("enrich") or {}).get("status") == "running":  # restarted mid-enrichment
             st = {"status": "ready", "enrich": {"status": "error", "stage": st["enrich"].get("stage"),
                   "message": "Character processing was interrupted; the book is still readable with the narrator."}}
+        if st and (st.get("index") or {}).get("state") == "running":  # restarted mid-indexing: BM25 keeps serving
+            st = {**st, "index": {**st["index"], "state": "error", "message": "Search indexing was interrupted."}}
     if st is None:
         raise HTTPException(404, "Book not found")
     return st

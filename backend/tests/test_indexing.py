@@ -94,3 +94,50 @@ def test_script_dry_run_makes_no_calls(monkeypatch, capsys):
     asyncio.run(mod.main())
     out = capsys.readouterr().out
     assert "3 chunks" in out and "estimate" in out
+
+
+def test_index_book_runs_batches_concurrently_in_order_with_progress():
+    import threading
+    import time
+
+    state = {"now": 0, "peak": 0}
+    lock = threading.Lock()
+
+    class SlowEmbedder:
+        def embed_documents(self, texts):
+            with lock:
+                state["now"] += 1
+                state["peak"] = max(state["peak"], state["now"])
+            time.sleep(0.05)
+            with lock:
+                state["now"] -= 1
+            return np.array([[float(t.split("-")[1])] * 4 for t in texts], dtype=np.float32)
+
+    stored = []
+
+    class Store:
+        async def upsert(self, objects):
+            stored.extend(objects)
+
+    n = indexing.EMBED_BATCH * 7 + 5
+    chunks = [Chunk(f"c-{i}", 0, 0, f"t-{i}") for i in range(n)]
+    progress = []
+    assert asyncio.run(index_book(_book(), chunks, SlowEmbedder(), Store(), lambda d, t: progress.append((d, t)))) == n
+    assert 2 <= state["peak"] <= indexing.EMBED_CONCURRENCY
+    assert len(stored) == n
+    assert all(o["embedding"][0] == float(o["data"]["chunk_id"].split("-")[1]) for o in stored)  # right vector per chunk
+    assert progress[-1] == (n, n) and [d for d, _ in progress] == sorted(d for d, _ in progress)
+
+
+def test_index_book_failure_raises_and_cancels():
+    class Bad:
+        def embed_documents(self, texts):
+            raise RuntimeError("boom")
+
+    chunks = [Chunk(f"c-{i}", 0, 0, "t") for i in range(300)]
+    try:
+        asyncio.run(index_book(_book(), chunks, Bad(), FakeStore()))
+    except RuntimeError as e:
+        assert str(e) == "boom"
+    else:
+        raise AssertionError("expected failure")

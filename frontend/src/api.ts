@@ -260,8 +260,11 @@ export type EnrichStatus = {
 export function enrichDoneNote(e: EnrichStatus): string {
   return e.degraded && e.message ? e.message : "characters, voices and recap are ready";
 }
+/** Cloud search indexing after the book is readable (it uses basic search until state is "done"). */
+export type IndexStatus = { state: "running" | "done" | "error"; done: number; total: number; message?: string };
+export const indexingLabel = (i: IndexStatus): string => `Indexing ${i.done} / ${i.total}`;
 export type BookStatus = {
-  status: "processing" | "ready" | "error"; message?: string; enrich?: EnrichStatus;
+  status: "processing" | "ready" | "error"; message?: string; enrich?: EnrichStatus; index?: IndexStatus;
   kind?: BookKind; kind_detected?: KindDetected;
 };
 
@@ -330,6 +333,13 @@ export function pollBookStatus(
   id: string, signal?: AbortSignal, intervalMs = 1500, maxMs = 10 * 60 * 1000,
 ): Promise<BookStatus | null> {
   return pollStatus(id, (s) => s.status !== "processing", signal, intervalMs, maxMs);
+}
+
+/** After a book is ready: polls until its search indexing is no longer running (`onUpdate` sees each running status). */
+export function pollIndexing(
+  id: string, onUpdate?: (s: BookStatus) => void, signal?: AbortSignal, intervalMs = 2000, maxMs = 30 * 60 * 1000,
+): Promise<BookStatus | null> {
+  return pollStatus(id, (s) => s.status !== "ready" || s.index?.state !== "running", signal, intervalMs, maxMs, onUpdate);
 }
 
 /**

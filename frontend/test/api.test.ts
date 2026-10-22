@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { enrichDoneNote, fetchBooks, pollBookStatus, pollEnrichment, startEnrichment, timedFetch, uploadBook } from "../src/api";
+import { enrichDoneNote, indexingLabel, pollIndexing, fetchBooks, pollBookStatus, pollEnrichment, startEnrichment, timedFetch, uploadBook } from "../src/api";
 import { setAccessToken } from "../src/accessToken";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -156,6 +156,23 @@ describe("novel enrichment polling", () => {
   it("startEnrichment surfaces the server message", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ detail: "This book is not waiting for confirmation." }), { status: 409 })));
     await expect(startEnrichment("b1")).rejects.toThrow("not waiting");
+  });
+});
+
+describe("indexing progress", () => {
+  it("labels progress and polls until indexing stops running", async () => {
+    vi.useFakeTimers();
+    expect(indexingLabel({ state: "running", done: 600, total: 1317 })).toBe("Indexing 600 / 1317");
+    const seq = [
+      { status: "ready", index: { state: "running", done: 100, total: 300 } },
+      { status: "ready", index: { state: "done", done: 300, total: 300 } },
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(seq.shift()), { status: 200 })));
+    const seen: number[] = [];
+    const p = pollIndexing("b1", (s) => seen.push(s.index?.done ?? -1));
+    await vi.advanceTimersByTimeAsync(10000);
+    expect((await p)?.index?.state).toBe("done");
+    expect(seen).toEqual([100]);
   });
 });
 

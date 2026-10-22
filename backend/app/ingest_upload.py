@@ -277,14 +277,20 @@ KIND_KEYS = ("kind", "kind_detected")
 
 
 def write_status(book_id: str, status: str, message: str | None = None, enrich: dict | None = None,
-                 **kind_info) -> dict:
-    """status.json: {status, message?, enrich?, kind?, kind_detected?}.
+                 index: dict | None = None, **kind_info) -> dict:
+    """status.json: {status, message?, enrich?, index?, kind?, kind_detected?}.
+
+    `index` is the Vertex indexing progress {state: running|done|error, done, total, message?}; absent for books
+    that never needed it (local retrieval, seeded books).
 
     `enrich` is the novel enrichment sub-status (see enrich/pipeline.py). `kind`/`kind_detected` are carried over from
     the previous status unless given.
     """
     prev = read_status(book_id) or {}
     out = {"status": status} | ({"message": message} if message else {}) | ({"enrich": enrich} if enrich else {})
+    index = index if index is not None else prev.get("index")  # carried over so enrich/kind updates keep it
+    if index:
+        out["index"] = index
     for k in KIND_KEYS:
         v = kind_info[k] if k in kind_info else prev.get(k)
         if v is not None:

@@ -114,22 +114,25 @@ def test_cap_is_20_mb():
 def test_vertex_indexing_only_when_enabled(client, monkeypatch):
     calls = []
 
-    async def fake_index_book(book, chunks, embedder, store):
+    async def fake_index_book(book, chunks, embedder, store, on_progress=None):
         calls.append((book.id, len(chunks), embedder, store))
+        on_progress(len(chunks), len(chunks))
         return len(chunks)
 
     monkeypatch.setattr("app.gcp.indexing.index_book", fake_index_book)
     monkeypatch.setattr(main, "_vertex_deps", lambda: ("EMB", "STORE"))
-    post(client, "a.txt", b"One paragraph.\n\nTwo paragraph.")
+    post(client, "a.txt", b"One paragraph.")
     assert calls == []
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
-    book_id = post(client, "b.txt", b"One paragraph.\n\nTwo paragraph.").json()["book_id"]
+    book_id = post(client, "b.txt", b"One paragraph.").json()["book_id"]
     assert len(calls) == 1 and calls[0][0] == book_id and calls[0][2:] == ("EMB", "STORE")
-    assert client.get(f"/api/books/{book_id}/status").json()["status"] == "ready"
+    st = client.get(f"/api/books/{book_id}/status").json()
+    assert st["status"] == "ready" and st["index"]["state"] == "done" and st["index"]["done"] == st["index"]["total"]
+    assert main._vertex_index_ready(book_id)
 
 
-def test_vertex_failure_sets_error(client, monkeypatch):
-    async def boom(*a):
+def test_vertex_failure_keeps_book_readable_with_error(client, monkeypatch):
+    async def boom(*a, **kw):
         raise RuntimeError("secret detail")
 
     monkeypatch.setattr("app.gcp.indexing.index_book", boom)
@@ -137,7 +140,62 @@ def test_vertex_failure_sets_error(client, monkeypatch):
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
     book_id = post(client, "b.txt", b"One paragraph.").json()["book_id"]
     st = client.get(f"/api/books/{book_id}/status").json()
-    assert st["status"] == "error" and "secret" not in st["message"]
+    assert st["status"] == "ready" and st["index"]["state"] == "error" and "secret" not in st["index"]["message"]
+    assert (settings.data_dir / "books" / book_id / "book.json").is_file()
+    assert not main._vertex_index_ready(book_id)  # stays on BM25
+
+
+def test_book_readable_and_bm25_while_vertex_indexing(client, monkeypatch):
+    import asyncio
+    seen = {}
+
+    async def slow_index(book, chunks, embedder, store, on_progress=None):
+        on_progress(1, 5)
+        seen["status"] = client.get(f"/api/books/{book.id}/status").json()
+        seen["readable"] = client.get(f"/api/books/{book.id}").status_code
+        seen["index"] = main._index_for(book.id)
+        return 0
+
+    monkeypatch.setattr("app.gcp.indexing.index_book", slow_index)
+    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(settings, "retrieval_backend", "vertex")
+    book_id = post(client, "b.txt", b"One paragraph.").json()["book_id"]
+    assert seen["status"]["status"] == "ready"
+    assert seen["status"]["index"] == {"state": "running", "done": 1, "total": 5}
+    assert seen["readable"] == 200
+    assert type(seen["index"]).__name__ == "Index"  # local BM25, not VertexIndex
+    assert type(main._index_for(book_id)).__name__ == "VertexIndex"  # after completion
+
+
+def test_interrupted_indexing_reported_on_restart(client, monkeypatch):
+    ingest_upload.write_status("u-x-00000000", "ready", index={"state": "running", "done": 3, "total": 9})
+    st = client.get("/api/books/u-x-00000000/status").json()
+    assert st["index"]["state"] == "error" and st["status"] == "ready"
+
+
+def test_index_status_survives_enrich_and_kind_updates(client):
+    ingest_upload.write_status("bk", "ready", index={"state": "running", "done": 1, "total": 2})
+    assert ingest_upload.write_status("bk", "ready", enrich={"status": "running"})["index"]["done"] == 1
+    assert ingest_upload.write_status("bk", "ready", kind="novel")["index"]["total"] == 2
+
+
+def test_novel_enrichment_runs_after_vertex_indexing(client, monkeypatch):
+    order = []
+
+    async def fake_index(book, chunks, embedder, store, on_progress=None):
+        order.append("index")
+        return 0
+
+    async def fake_plan(book_id, book):
+        order.append("enrich")
+
+    monkeypatch.setattr("app.gcp.indexing.index_book", fake_index)
+    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(main, "_plan_enrichment", fake_plan)
+    monkeypatch.setattr(settings, "retrieval_backend", "vertex")
+    monkeypatch.setattr(settings, "upload_enrich", True)
+    post(client, "n.txt", b"One paragraph.", kind="novel")
+    assert order == ["index", "enrich"]
 
 
 def test_status_survives_restart(client, tmp_path):
