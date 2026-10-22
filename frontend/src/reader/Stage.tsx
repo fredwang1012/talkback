@@ -104,7 +104,7 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
         <div className={`medallion${big ? " big" : ""}${live ? " live" : ""}${thinking ? " thinking" : ""}${talk.speaking ? " speaking" : ""}`} aria-hidden="true">
           {avatarSrc ? <AvatarVideo src={avatarSrc} playing={avatarPlaying} />
             : face && readingFace ? <ReadFace face={face} speaking={readSpeaking} levelRef={levelRef} />
-            : face ? <FaceView face={face} speaking={faceSpeaking} clip={readingFace ? null : talk.clip} />
+            : face ? <FaceView face={face} speaking={faceSpeaking} sync={talk.faceSync} clipShown={talk.clipShown} />
             : portrait ? <img src={portrait} alt="" /> : <span>{name.charAt(0)}</span>}
         </div>
         <div>
