@@ -72,8 +72,14 @@ def build_tts_text(spoken: str, voice_tags: str, emotion: str | None, style: str
     return tags + (with_laughter(text) if sfx else text)
 
 
+CODE_SPOKEN = "Code listing skipped."
+
+
 def chunk_paragraph(p: Paragraph, book: Book) -> list[TtsChunk]:
     narrator_voice = book.narrator.voice if book.narrator else DEFAULT_VOICE
+    if p.kind == "code":  # a listing is displayed whole but spoken as one short note
+        return [TtsChunk(id=f"p{p.idx}c0", speaker="narrator", voice=narrator_voice,
+                         tts_text=build_tts_text(CODE_SPOKEN, "", None), char_start=0, char_end=len(p.text))]
     chars = {c.id: c for c in book.characters}
     segments = p.segments or [Segment(speaker="narrator", text=p.text)]
     apply_styles(segments)  # rule-based whispering/shouting; keeps a style the enrich LLM already set
