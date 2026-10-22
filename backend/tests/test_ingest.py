@@ -75,3 +75,19 @@ def test_textbook_without_gutenberg_markers_uses_headings_and_skips_credits():
     by_section = {s.id: [p.text for p in paras if p.section_id == s.id] for s in sections}
     second = next(s for s in sections if s.title.startswith("8.2"))
     assert by_section[second.id] == ["Light is absorbed by chlorophyll."]
+
+
+def test_section_levels_for_textbooks_and_flat_novels():
+    from app.ingest_upload import build_book, section_level
+    assert [section_level(t) for t in ("2 Boolean retrieval", "2.1 Terms", "2.1.1 Tokenization", "Chapter 3", "Preface",
+                                       "1.2.3.4.5 deep")] == [1, 2, 3, 1, 1, 4]
+    raw = ("1 Intro\n\nBody one.\n\n1.1 Basics\n\nBody two.\n\n1.1.1 Details\n\nBody three.\n\n2 Next\n\nBody four.\n")
+    tb = build_book("b", "T", "A", "textbook", raw)
+    assert [s.level for s in tb.sections] == [1, 2, 3, 1]
+    nv = build_book("b", "T", "A", "novel", raw)
+    assert {s.level for s in nv.sections} == {1}
+
+
+def test_old_book_json_without_level_defaults_to_one():
+    from app.schema import Section
+    assert Section.model_validate({"id": "s1", "title": "x", "start_para": 0}).level == 1
