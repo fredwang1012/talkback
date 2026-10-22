@@ -27,6 +27,9 @@ export function groupShelves(books: BookSummary[]): Shelves {
 /** Only books you uploaded (ids start with "u-") can be moved. */
 export const canMove = (b: Pick<BookSummary, "id">) => b.id.startsWith("u-");
 
+/** Same rule on the server: only your own uploads can be deleted (the shipped and sample books never). */
+export const canDelete = (b: Pick<BookSummary, "id">) => b.id.startsWith("u-");
+
 export const moveTarget = (b: Pick<BookSummary, "kind">): BookKind => (b.kind === "textbook" ? "novel" : "textbook");
 
 export const moveLabel = (b: Pick<BookSummary, "kind">) => (b.kind === "textbook" ? "Move to Novels" : "Move to Textbooks");

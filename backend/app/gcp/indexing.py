@@ -55,3 +55,8 @@ async def index_book(book: Book, chunks: list[Chunk], embedder, store) -> int:
     for i in range(0, len(objects), UPSERT_BATCH):
         await store.upsert(objects[i:i + UPSERT_BATCH])
     return len(objects)
+
+
+def datapoint_ids(book: Book) -> list[str]:
+    """Ids of the Vector Search data objects index_book writes for this book (see build_objects)."""
+    return [f"{book.id}__{c.id}" for c in load_chunks(book)]

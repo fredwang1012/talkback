@@ -499,3 +499,37 @@ def read_status(book_id: str) -> dict | None:
 
 def upload_path(book_id: str, ext: str) -> Path:
     return settings.data_dir / "uploads" / f"{book_id}{ext}"
+
+
+def delete_book_files(book_id: str, ident=None) -> list[str]:
+    """Remove an uploaded book from disk: the book folder (book.json first, so it leaves the library at once), the
+    original upload, avatar clips, portraits and the caller's cast file. Returns what could not be removed.
+
+    Robust on a GCS FUSE mount, where removing a tree can fail part-way: each part is retried once and a failure never
+    stops the others. Only the folders named after this exact book id are touched (the caller validates the id).
+    """
+    from . import users
+    root = settings.data_dir
+    d = root / "books" / book_id
+    for name in ("book.json", "book.json.tmp"):   # hide it first: a half-deleted book must not stay listed
+        try:
+            (d / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+    targets = [d, root / "cache" / "avatar" / book_id, root / "portraits" / book_id,
+               *sorted((root / "uploads").glob(f"{book_id}.*")), users.cast_json(book_id)]
+    left: list[str] = []
+    for t in targets:
+        for _ in range(2):
+            try:
+                if t.is_dir():
+                    shutil.rmtree(t, ignore_errors=True)
+                else:
+                    t.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if not t.exists():
+                break
+        else:
+            left.append(t.relative_to(root).as_posix())
+    return left
