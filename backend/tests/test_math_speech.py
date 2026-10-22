@@ -62,3 +62,19 @@ def test_display_text_and_chunk_invariants_unchanged():
     assert p.text == text and "²" in p.text
     assert all(len(p.text[c.char_start:c.char_end]) <= MAX_CHARS for c in chunks)
     assert "squared" in chunks[0].tts_text and "²" not in chunks[0].tts_text
+
+
+def test_combining_not_equal():
+    assert speak_math("p1\u0338 = NIL") == "p1 not equal to NIL"
+    assert speak_math("p1 =\u0338 NIL") == "p1 not equal to NIL"
+    assert speak_math("p1\u0338= NIL") == "p1 not equal to NIL"
+
+
+def test_assignment_arrow():
+    assert speak_math("x ← 5") == "x gets 5"
+
+
+def test_dotted_section_numbers():
+    assert normalize_for_tts("See section 5.3.1 for details.") == "See section five point three point one for details."
+    assert normalize_for_tts("Section 2.1.1.4 here") == "Section two point one point one point four here"
+    assert normalize_for_tts("pi is 3.14 roughly") == "pi is three.fourteen roughly"  # ordinary decimals untouched
