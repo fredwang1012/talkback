@@ -5,6 +5,7 @@ in data/faces.json ({id: {name, file, voice?}}). A face created with a voice clo
 older voice -> face lookups (lip-sync, /api/voices/faces) are answered from the same list.
 """
 import asyncio
+from glob import escape as glob_escape
 import base64
 import io
 import hashlib
@@ -195,6 +196,28 @@ def create_face(image: bytes, name: str, voice: str | None = None) -> dict:
     return _view(fid, entries[fid])
 
 
+def delete_legacy_voice_files(voice: str) -> None:
+    """Remove the pre-library portrait of a voice (portraits/voices/<file>, -idle/-talk mp4s) when it is bound to this
+    voice id by the old voice_faces.json (or named after it). Shared folder: left alone with PER_USER on."""
+    if settings.per_user:
+        return
+    names: set[str] = set()
+    for f in ("voice_faces.json", "voice_faces.json.migrated"):
+        try:
+            m = json.loads((settings.data_dir / f).read_text(encoding="utf-8"))
+            if isinstance(m, dict) and isinstance(m.get(voice), str):
+                names.add(m[voice])
+        except (OSError, ValueError):
+            pass
+    d = _legacy_dir()
+    for n in names:
+        stem = Path(n).stem
+        for f in (d / Path(n).name, d / f"{stem}-idle.mp4", d / f"{stem}-talk.mp4"):
+            f.unlink(missing_ok=True)
+    for f in d.glob(f"{glob_escape(voice)}*") if d.is_dir() else []:
+        f.unlink(missing_ok=True)
+
+
 def delete_face(fid: str) -> bool:
     if not FACE_ID.match(fid):
         return False
@@ -207,6 +230,10 @@ def delete_face(fid: str) -> bool:
         _delete_files(e)
         _write(entries)
     return True
+
+
+def face_ids_for_voice(voice: str) -> list[str]:
+    return [k for k, v in _entries().items() if v.get("voice") == voice]
 
 
 # ---- voice-bound lookups (lip-sync and the older /api/voices/faces) ----

@@ -6,7 +6,7 @@ import {
   type Book, type Cast, type Face, type Health,
 } from "../api";
 import {
-  PRESETS, castVoice, createCastSaver, emptyCast, isNovel, loadStyle, loadTalkChoice, migrateOldOverrides,
+  PRESETS, castVoice, dropReferences, createCastSaver, emptyCast, isNovel, loadStyle, loadTalkChoice, migrateOldOverrides,
   oneVoiceOverride, readingFaceId, saveStyle, saveTalkChoice, talkFaceId, talkVoice, type ReadingStyle, type TalkChoice,
 } from "../reader/castLogic";
 import { DEMO_SPEAKER, DEMO_START_PARA, firstChunkAtOrAfter, isDemo } from "../demo";
@@ -370,6 +370,10 @@ export default function Reader({ bookId }: { bookId: string }) {
         <VoiceLab book={book} cast={cast} onCast={changeCast} castError={castError} style={style} onStyle={changeStyle}
                   cloned={cloned} onCloned={setCloned} animating={animating} setAnimating={setAnimating} animErrors={animErrors} setAnimErrors={setAnimErrors} faces={faces} onFaces={setFaces}
                   onFacesChanged={() => { reloadFaces(); reloadCast(); }}
+                  onRemoved={(gone) => {
+                    const next = dropReferences(style, talkChoice, gone);
+                    changeStyle(next.style); changeTalk(next.talk);
+                  }}
                   onPreview={preview} audioAvailable={audioAvailable} onClose={() => setLabOpen(false)} />
       )}
       {recapOpen && (

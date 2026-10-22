@@ -70,3 +70,24 @@ describe("changeKind", () => {
     await expect(changeKind("u-x-1", "novel")).rejects.toThrow("still being processed");
   });
 });
+
+import { dropReferences } from "../src/reader/castLogic";
+import { deleteVoice } from "../src/api";
+
+describe("deleting voices and faces", () => {
+  it("sends DELETE and shows the server's refusal for built-in voices", async () => {
+    const f = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "built-in" }), { status: 403 }));
+    vi.stubGlobal("fetch", f);
+    await expect(deleteVoice("voice_x")).rejects.toThrow(/built-in/);
+    expect(f.mock.calls[0][0]).toBe("/api/voices/voice_x");
+    expect(f.mock.calls[0][1].method).toBe("DELETE");
+  });
+
+  it("drops browser-side choices that pointed at the deleted voice or face", () => {
+    const r = dropReferences({ mode: "one", voice: "v1", face: "f1" }, { voice: "v1", face: "none" }, { voice: "v1" });
+    expect(r.style).toEqual({ mode: "one", voice: null, face: "f1" });
+    expect(r.talk).toEqual({ voice: null, face: "none" });
+    const g = dropReferences({ mode: "cast", voice: "v2", face: "f1" }, { voice: "v2", face: "f1" }, { face: "f1" });
+    expect(g.style.face).toBeNull(); expect(g.talk.face).toBeNull(); expect(g.style.voice).toBe("v2");
+  });
+});

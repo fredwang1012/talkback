@@ -47,8 +47,14 @@ def load(book: Book) -> dict:
     stored = _stored(book.id)
     ids = [c.id for c in book.characters]
     main = [i for i in (stored.main if stored.main is not None else _default_main(book)) if i in ids]
-    return {"main": main, "narrator": stored.narrator.model_dump(),
-            "characters": {i: stored.characters.get(i, Assignment()).model_dump() for i in ids}}
+    return {"main": main, "narrator": _live(stored.narrator),
+            "characters": {i: _live(stored.characters.get(i, Assignment())) for i in ids}}
+
+
+def _live(a: Assignment) -> dict:
+    """A voice or face that was deleted since the cast was saved falls back to Auto (None)."""
+    return {"voice": a.voice if a.voice and voices.is_known_voice(a.voice) else None,
+            "face": a.face if a.face and faces.face_exists(a.face) else None}
 
 
 def _check(a: Assignment, who: str) -> None:
