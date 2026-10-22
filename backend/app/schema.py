@@ -39,6 +39,7 @@ class Paragraph(BaseModel):
     text: str
     segments: list[Segment] = []
     tts_chunks: list[TtsChunk] = []
+    kind: Literal["code"] | None = None  # "code": a program / pseudocode listing, shown but not read aloud
 
 
 class Character(BaseModel):

@@ -21,7 +21,7 @@ from typing import NamedTuple
 
 from . import retrieval
 from .config import settings
-from .parsing import HEADING_MARK, parse
+from .parsing import CODE_MARK, HEADING_MARK, parse
 from .schema import Book, Narrator, Paragraph, Section
 from .ttschunks import chunk_paragraph, sentence_spans, split_long
 
@@ -129,6 +129,15 @@ def merge_lines(lines: list[Line]) -> list[str]:
     return paras
 
 
+_MONO_FONT = re.compile(r"mono|courier|consolas|cmtt|typewriter|menlo|lucidacon|inconsolata|fixed|\bcour\b", re.I)
+
+
+def _is_mono(spans: list[dict]) -> bool:
+    """Whether every non-blank span of a line is set in a monospace font."""
+    real = [s for s in spans if s["text"].strip()]
+    return bool(real) and all(_MONO_FONT.search(s["font"]) for s in real)
+
+
 def _font_info(spans: list[dict]) -> tuple[float, bool]:
     """(largest font size rounded to 0.5pt, whether all the text is bold) of a line's spans."""
     real = [s for s in spans if s["text"].strip()] or spans
@@ -233,6 +242,76 @@ def _drop_contents(blocks: list[list[tuple]]) -> list[list[tuple]]:
     return out
 
 
+_BARE_INDEX = re.compile(r"^\d{1,3}$")
+_NUMBERED = re.compile(r"^\d{1,3}\s+\S")
+_CODE_SYMBOLS = re.compile("[←⇐≠]")  # assignment arrows and "not equal"; prose also uses angle brackets, <= and ->
+_CODE_WORDS = re.compile(r"\b(?:if|then|else|elseif|while|do|for each|return|NIL|null|until|repeat|end)\b")
+_CODE_TITLE = re.compile(r"^[A-Z][A-Z0-9_-]{3,}\(.*\)$")  # "INTERSECTWITHSKIPS(p1, p2)"
+CODE_MIN_LINES = 3
+
+
+def _code_score(blk: list[tuple]) -> bool:
+    """Whether a block is program code or pseudocode: monospace, or numbered lines full of keywords / symbols."""
+    lines = [ln[0] for ln in blk]
+    if len(lines) < 2:
+        return False
+    mono = sum(len(ln[0]) for ln in blk if len(ln) > 7 and ln[7])
+    if mono >= 0.8 * sum(len(t) for t in lines) and len(lines) >= 2:
+        return True
+    numbers = sum(1 for t in lines if _BARE_INDEX.match(t))
+    others = [t for t in lines if not _BARE_INDEX.match(t)]
+    if len(lines) < CODE_MIN_LINES or not others:
+        return False
+    arrows = sum(1 for t in others if _CODE_SYMBOLS.search(t))
+    words = sum(1 for t in others if _CODE_SYMBOLS.search(t) or _CODE_WORDS.search(t))
+    numbered = numbers + sum(1 for t in others if _NUMBERED.match(t))
+    if arrows >= 2 and arrows >= 0.4 * len(others):
+        return True
+    return numbered >= 0.4 * len(lines) and numbered >= 3 and words >= 0.6 * len(others) and words >= 2
+
+
+def _code_text(blocks: list[list[tuple]]) -> str:
+    """The listing's lines, each bare line number joined to the code that follows it."""
+    out: list[str] = []
+    pending = ""
+    for blk in blocks:
+        for ln in blk:
+            t = ln[0]
+            if _BARE_INDEX.match(t):
+                pending = (pending + " " + t).strip() if pending else t
+                continue
+            out.append((pending + " " + t).strip())
+            pending = ""
+    if pending:
+        out.append(pending)
+    return "\n".join(out)
+
+
+def _mark_code(blocks: list[list[tuple]]) -> list[list[tuple]]:
+    """Turn each run of code-like blocks (plus a leading 'NAME(args)' title block) into one CODE_MARK line.
+
+    The line stands alone as a paragraph; parse() makes it a paragraph of kind "code" (shown, not read).
+    """
+    flags = [_code_score(b) for b in blocks]
+    out: list[list[tuple]] = []
+    i = 0
+    while i < len(blocks):
+        title = i + 1 < len(blocks) and not flags[i] and flags[i + 1] and len(blocks[i]) == 1             and _CODE_TITLE.match(blocks[i][0][0])
+        if not (flags[i] or title):
+            out.append(blocks[i])
+            i += 1
+            continue
+        j = i + 1
+        while j < len(blocks) and flags[j]:
+            j += 1
+        run = blocks[i:j]
+        lns = [ln for b in run for ln in b]
+        out.append([(CODE_MARK + _code_text(run), min(ln[1] for ln in lns), lns[0][2], max(ln[3] for ln in lns),
+                     lns[-1][4], max(ln[5] for ln in lns), False, False)])
+        i = j
+    return out
+
+
 def _split_by_size(blocks: list[list[tuple]]) -> list[list[tuple]]:
     """Start a new block wherever the font size jumps (a heading set tight against body text)."""
     out = []
@@ -252,6 +331,8 @@ def _heading_candidate(blk: list[tuple], body: float) -> tuple[str, bool] | None
     if len(blk) > 2:
         return None
     text = " ".join(ln[0] for ln in blk)
+    if text.startswith(CODE_MARK):
+        return None
     if _is_heading(text):
         return text, False
     if len(text) > 68 or len(text) < 2 or not any(c.isalpha() for c in text) or re.search(r"[.!?,;:]$", text):
@@ -293,7 +374,7 @@ def _mark_headings(blocks: list[list[tuple]], body: float) -> list[list[tuple]]:
         if i - 1 in drop:
             continue
         if cand is None:
-            out.append([ln[:7] + (False,) for ln in blk])
+            out.append([ln[:7] + (ln[0].startswith(CODE_MARK),) for ln in blk])  # a listing stands alone
             continue
         text, by_font = cand
         nxt = cands[i] if i < len(blocks) and i not in drop else None
@@ -333,7 +414,7 @@ def pdf_to_text(data: bytes) -> str:
                         x0, y0, x1, y1 = ln["bbox"]
                         size, bold = _font_info(ln["spans"])
                         sizes[size] += len(t)
-                        lines.append((t, x0, y0, x1, y1, size, bold))
+                        lines.append((t, x0, y0, x1, y1, size, bold, _is_mono(ln["spans"])))
                         total += len(t) + 1
                         if total > MAX_CHARS:  # checked per line so extraction stops as soon as the cap is crossed
                             raise UploadError("The document has too much text (5 million characters maximum).")
@@ -361,7 +442,7 @@ def pdf_to_text(data: bytes) -> str:
             blocks = blocks[1:]
         if blocks and is_noise(blocks[-1]):
             blocks = blocks[:-1]
-        blocks = _drop_contents(_clean_layout(_reading_order(blocks, widths[pno]), body))
+        blocks = _mark_code(_drop_contents(_clean_layout(_reading_order(blocks, widths[pno]), body)))
         flat = [ln for blk in blocks for ln in blk]
         if not flat:
             continue
@@ -418,7 +499,7 @@ def _cap_paragraphs(sections: list[Section], paragraphs: list[Paragraph]) -> lis
     for p in paragraphs:
         new_start[p.idx] = len(out)
         for piece in split_paragraph(p.text):
-            out.append(Paragraph(idx=len(out), section_id=p.section_id, text=piece))
+            out.append(Paragraph(idx=len(out), section_id=p.section_id, text=piece, kind=p.kind))
     for s in sections:
         s.start_para = new_start.get(s.start_para, len(out))
     return out
@@ -427,6 +508,9 @@ def _cap_paragraphs(sections: list[Section], paragraphs: list[Paragraph]) -> lis
 def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_detected: dict | None = None) -> Book:
     sections, paragraphs = parse(raw, None, None, HEADING_REGEX)
     paragraphs = _cap_paragraphs(sections, paragraphs)
+    if kind != "textbook":  # only textbooks skip listings; elsewhere a monospace block is just text to read
+        for p in paragraphs:
+            p.kind = None
     if not paragraphs:
         raise UploadError("No paragraphs were found in the file.")
     book = Book(id=book_id, title=title, author=author, kind=kind, kind_detected=kind_detected, license=LICENSE,
