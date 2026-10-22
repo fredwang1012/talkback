@@ -137,6 +137,79 @@ def _font_info(spans: list[dict]) -> tuple[float, bool]:
     return size, bold
 
 
+_CAPTION = re.compile(r"^(?:figure|fig\.|table|box|exhibit)\s+\d+(?:[.-]\d+)*(?:\s*[:|–—]|\.(?=\s|$)|\s*$)", re.I)
+_CAPTION_START = re.compile(r"^(?:figure|fig\.|table|box|exhibit)\s+\d+(?:[.-]\d+)*\b", re.I)
+_CELL = re.compile(r"^[\d\s.,%+−±$()/:-]+$")
+SMALL_FONT = 0.85      # text set below this fraction of the body size is a footnote or sidebar
+TABLE_RUN = 3          # this many numeric-only lines in a row are table cells
+COLUMN_GAP = 20.0      # points: a block must clear the page middle by this much to belong to one column
+
+
+def _reading_order(blocks: list[list[tuple]], width: float) -> list[list[tuple]]:
+    """Reorder blocks of a clearly two-column page: left column, then right, between full-width blocks."""
+    mid = width / 2
+    left = [b for b in blocks if max(ln[3] for ln in b) < mid + COLUMN_GAP / 2]
+    right = [b for b in blocks if min(ln[1] for ln in b) > mid - COLUMN_GAP / 2]
+    if len(left) < 2 or len(right) < 2 or len(left) + len(right) < len(blocks) * 0.8:
+        return blocks
+    out: list[list[tuple]] = []
+    band_l: list[list[tuple]] = []
+    band_r: list[list[tuple]] = []
+    left_ids, right_ids = set(map(id, left)), set(map(id, right))
+
+    def flush():
+        out.extend(sorted(band_l, key=lambda b: b[0][2]))
+        out.extend(sorted(band_r, key=lambda b: b[0][2]))
+        band_l.clear()
+        band_r.clear()
+
+    for b in sorted(blocks, key=lambda b: b[0][2]):
+        if id(b) in left_ids:
+            band_l.append(b)
+        elif id(b) in right_ids:
+            band_r.append(b)
+        else:  # spans both columns: a title, banner or wide figure caption
+            flush()
+            out.append(b)
+    flush()
+    return out
+
+
+def _is_caption(blk: list[tuple], body: float) -> bool:
+    text = " ".join(ln[0] for ln in blk)
+    if _CAPTION.match(text):
+        return len(blk) <= 4
+    # "Figure 8.2 The ..." without punctuation is a caption only when set small or bold, else a body sentence
+    size = max(ln[5] for ln in blk)
+    return bool(_CAPTION_START.match(text)) and len(blk) <= 3 and (
+        size < body * 0.95 or all(ln[6] for ln in blk))
+
+
+def _clean_layout(blocks: list[list[tuple]], body: float) -> list[list[tuple]]:
+    """Drop captions, small-font text (footnotes, sidebars) and runs of numeric table cells."""
+    kept = [b for b in blocks
+            if not _is_caption(b, body) and not (body and max(ln[5] for ln in b) < body * SMALL_FONT)]
+    out: list[list[tuple]] = []
+    i = 0
+
+    def numeric(b):
+        return all(_CELL.match(ln[0]) for ln in b)
+
+    while i < len(kept):
+        if numeric(kept[i]):
+            j = i
+            n_lines = 0
+            while j < len(kept) and numeric(kept[j]):
+                n_lines += len(kept[j])
+                j += 1
+            if n_lines >= TABLE_RUN:
+                i = j
+                continue
+        out.append(kept[i])
+        i += 1
+    return out
+
+
 def _has_dot_leader(text: str) -> bool:
     """A TOC line: dots (a leader) followed by a page number. Linear: only the line's tail is looked at."""
     if len(text) > 300:
@@ -245,6 +318,7 @@ def pdf_to_text(data: bytes) -> str:
         if doc.page_count > MAX_PAGES:
             raise UploadError(f"The PDF has too many pages ({MAX_PAGES} maximum).")
         pages: list[list[list[tuple]]] = []  # page -> blocks -> lines (text, x0, y0, x1, y1)
+        widths: list[float] = []
         total = 0
         sizes: Counter = Counter()  # font size -> characters, to find the body size
         for page in doc:
@@ -266,6 +340,7 @@ def pdf_to_text(data: bytes) -> str:
                 if lines:
                     blocks.append(lines)
             pages.append(blocks)
+            widths.append(page.rect.width)
 
     def key(block):
         return _norm_key(" ".join(ln[0] for ln in block))
@@ -286,7 +361,7 @@ def pdf_to_text(data: bytes) -> str:
             blocks = blocks[1:]
         if blocks and is_noise(blocks[-1]):
             blocks = blocks[:-1]
-        blocks = _drop_contents(blocks)
+        blocks = _drop_contents(_clean_layout(_reading_order(blocks, widths[pno]), body))
         flat = [ln for blk in blocks for ln in blk]
         if not flat:
             continue
