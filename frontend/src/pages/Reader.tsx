@@ -14,6 +14,7 @@ import BookText from "../reader/BookText";
 import PlayerBar from "../reader/PlayerBar";
 import RecapPanel from "../reader/RecapPanel";
 import { ReaderEngine, type AudioLike } from "../reader/ReaderEngine";
+import type { FollowAudio } from "../reader/clipFollow";
 import { AudioLevelMeter } from "../reader/audioLevel";
 import { SPEECH_IDLE, stepSpeech } from "../reader/speechLevel";
 import Stage from "../reader/Stage";
@@ -73,6 +74,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const meterRef = useRef<AudioLevelMeter | null>(null);
   const levelRef = useRef(0); // live loudness of the read-aloud audio (read-mode face)
   const [readSpeaking, setReadSpeaking] = useState(false);
+  const getAudio = useCallback(() => (engineRef.current?.currentAudio() as unknown as FollowAudio | null) ?? null, []);
   const indexRef = useRef(0);
   const playingRef = useRef(false);
   indexRef.current = index;
@@ -130,13 +132,16 @@ export default function Reader({ bookId }: { bookId: string }) {
     const tick = () => {
       const now = performance.now();
       const snap = engine.snapshot();
-      const lvl = meter.level(engine.currentAudio(), snap.state === "playing");
+      const cur = engine.currentAudio() as unknown as { paused?: boolean; ended?: boolean } | null;
+      // start/stop exactly with the element's own play/pause/ended, not only with the engine's state
+      const sounding = snap.state === "playing" && !(cur && (cur.paused || cur.ended));
+      const lvl = meter.level(engine.currentAudio(), sounding);
       if (lvl === null) { // no Web Audio: fall back to "speaking while playing"
         levelRef.current = 0;
-        speech = { ...SPEECH_IDLE, speaking: snap.state === "playing" };
+        speech = { ...SPEECH_IDLE, speaking: sounding };
       } else {
         levelRef.current = lvl;
-        speech = snap.state === "playing" ? stepSpeech(speech, lvl, now - last) : SPEECH_IDLE;
+        speech = sounding ? stepSpeech(speech, lvl, now - last) : SPEECH_IDLE;
       }
       last = now;
       setReadSpeaking((cur) => (cur === speech.speaking ? cur : speech.speaking));
@@ -358,7 +363,7 @@ export default function Reader({ bookId }: { bookId: string }) {
           <Stage book={book} para={para} speakerId={speakerId} onSpeaker={setSpeakerId} health={health}
                  talk={talk} audioAvailable={audioAvailable}
                  avatarSrc={chunks[index] && avatars.has(chunks[index].id) ? avatarUrl(book.id, chunks[index].id) : null}
-                 avatarPlaying={playing && !loading} onMode={changeMode}
+                 avatarPlaying={playing && !loading} getAudio={getAudio} onMode={changeMode}
                  pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
                  needsCode={needsCode} onCode={(c, rem) => { setAccessToken(c, rem); setCode(c); }} onOpenLab={() => setLabOpen(true)}
                  faceFor={talkFaceFor}
