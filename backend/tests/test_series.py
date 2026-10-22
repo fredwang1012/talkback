@@ -39,6 +39,24 @@ def test_earlier_in_series_and_recap(tmp_path, monkeypatch):
     assert [b["id"] for b in books.list_books()] == ["s1", "s2", "s3"]
 
 
+def test_series_recap_ends_on_a_whole_sentence_and_full_keeps_everything(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    long = "First sentence here. Second one follows! " + "Third sentence has many many words in it. " * 10
+    write(tmp_path, series_book(1, summaries=[Summary(upto_para=39, text=long)]))
+    write(tmp_path, series_book(2))
+    b2 = books.load_book("s2")
+    out = books.series_recap(b2, max_words=20).split(": ", 1)[1]
+    assert out.endswith((".", "!")) and "…" not in out and len(out.split()) <= 20
+    assert books.series_recap(b2, max_words=20, full=True).split(": ", 1)[1] == long.strip()
+    assert books.series_recap(b2).split(": ", 1)[1].endswith(".")  # default limit also ends on a sentence
+
+
+def test_trim_to_sentence_edge_cases():
+    assert books.trim_to_sentence("Short one.", 10) == "Short one."
+    assert books.trim_to_sentence("One two three four five six seven", 3) == "One two three…"
+    assert books.trim_to_sentence('He said "go." Then he left and kept walking on', 5) == 'He said "go."'
+
+
 def test_load_book_cache_refreshes_when_file_changes(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     write(tmp_path, series_book(1, n=3))

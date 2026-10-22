@@ -201,7 +201,8 @@ def get_recap(book_id: str, para: int = 0):
     sections = [s for s in book.sections if s.start_para <= para]
     chapter = max(sections, key=lambda s: s.start_para).title if sections else ""
     return {"upto_para": best.upto_para if best else None, "chapter": chapter,
-            "text": best.text if best else "", "earlier": books.series_recap(book)}
+            "text": best.text if best else "", "earlier": books.series_recap(book),
+            "earlier_full": books.series_recap(book, full=True)}
 
 
 # ---------- realtime key ----------

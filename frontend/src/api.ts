@@ -104,7 +104,7 @@ export const fetchBooks = () => getJson<BookSummary[]>("/api/books");
 export const fetchBook = (id: string) => getJson<Book>(`/api/books/${encodeURIComponent(id)}`);
 export const fetchHealth = () => getJson<Health>("/api/health");
 
-export type Recap = { upto_para: number | null; chapter: string; text: string; earlier: string };
+export type Recap = { upto_para: number | null; chapter: string; text: string; earlier: string; earlier_full?: string };
 /** "Previously...": the latest stored summary written from text at or before `para`. */
 export const fetchRecap = (bookId: string, para: number) =>
   getJson<Recap>(`/api/books/${encodeURIComponent(bookId)}/recap?para=${Math.max(0, Math.floor(para))}`);

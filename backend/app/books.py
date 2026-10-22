@@ -84,14 +84,29 @@ def earlier_in_series(book: Book) -> list[Book]:
     return sorted(out, key=lambda b: b.series_index)
 
 
-def series_recap(book: Book, max_words: int = 120) -> str:
-    """One closing summary per earlier book of the series ("previously"), each trimmed to max_words."""
+def trim_to_sentence(text: str, max_words: int) -> str:
+    """Cut `text` to at most max_words at the last sentence end, never mid-sentence.
+
+    Falls back to a word cut with an ellipsis only if the first sentence alone is longer than the limit.
+    """
+    words = text.split()
+    if len(words) <= max_words:
+        return " ".join(words)
+    head = " ".join(words[:max_words])
+    ends = [m.end() for m in re.finditer(r"[.!?][\"'”’)]*(?=\s|$)", head)]
+    if ends:
+        return head[:ends[-1]].strip()
+    return head + "…"
+
+
+def series_recap(book: Book, max_words: int = 160, full: bool = False) -> str:
+    """One closing summary per earlier book of the series ("previously"), each ending on a whole sentence
+    within max_words (full=True keeps the whole summary)."""
     parts = []
     for b in earlier_in_series(book):
         if b.summaries:
-            words = max(b.summaries, key=lambda s: s.upto_para).text.split()
-            text = " ".join(words[:max_words]) + ("…" if len(words) > max_words else "")
-            parts.append(f"{b.title}: {text}")
+            text = max(b.summaries, key=lambda s: s.upto_para).text
+            parts.append(f"{b.title}: {text.strip() if full else trim_to_sentence(text, max_words)}")
     return "\n".join(parts)
 
 
