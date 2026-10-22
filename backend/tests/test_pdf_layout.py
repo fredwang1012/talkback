@@ -83,3 +83,31 @@ def test_two_columns_are_read_left_then_right():
 def test_single_column_order_is_unchanged():
     text = pdf_to_text(build(lambda p: body_page(p, lambda q: None)))
     assert text.index("convert light") < text.index("second paragraph")
+
+
+def test_caption_with_leading_marker_symbol_is_dropped():
+    def extra(page):
+        page.insert_textbox(fitz.Rect(72, 300, 500, 330), "\u25ee Figure 2.10 Postings lists with skip pointers.",
+                            fontsize=9)
+        page.insert_textbox(fitz.Rect(72, 340, 500, 370), "\u25b6Table 4.1 Sizes of the indexes", fontsize=9)
+    text = pdf_to_text(build(lambda p: body_page(p, extra)))
+    assert "Figure 2.10" not in text and "Table 4.1" not in text and "convert light" in text
+
+
+def test_marker_caption_without_punctuation_in_body_size_is_kept_as_sentence():
+    def extra(page):
+        page.insert_textbox(fitz.Rect(72, 300, 500, 400),
+                            "\u25ee Figure 8.2 shows how light is absorbed by the pigments inside the membrane, and "
+                            "the next paragraph describes what happens to the energy that is captured.", fontsize=11)
+    text = pdf_to_text(build(lambda p: body_page(p, extra)))
+    assert "Figure 8.2 shows" in text
+
+
+def test_small_caption_inside_a_body_block_is_dropped_without_the_following_text():
+    def extra(page):
+        # one pymupdf block: a small caption, a gap, then body-size text (as in the IR textbook)
+        page.insert_text((72, 300), "\u25ee Figure 2.10 Postings lists intersection with skip pointers.", fontsize=9)
+        page.insert_text((72, 340), "Skip pointers will only be available for the original postings lists.",
+                         fontsize=11)
+    text = pdf_to_text(build(lambda p: body_page(p, extra)))
+    assert "Figure 2.10" not in text and "Skip pointers will only be" in text
