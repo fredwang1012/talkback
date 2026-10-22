@@ -499,15 +499,21 @@ def _set_index(book_id: str, **fields) -> None:
     _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", index=fields)
 
 
+# One Vertex indexing job at a time across uploads and enrichment: the upload guard is released once a book is
+# published, so without this many uploads could each start a paid embedding job at once.
+_index_lock = asyncio.Lock()
+
+
 async def _index_in_background(book: Book, chunks) -> None:
     """Index a published book into Vertex; the book is readable (BM25) meanwhile. Never raises."""
     book_id, total = book.id, len(chunks)
     try:
-        _set_index(book_id, state="running", done=0, total=total)
-        embedder, store = _vertex_deps()
-        from .gcp.indexing import index_book
-        await index_book(book, chunks, embedder, store,
-                         on_progress=lambda done, tot: _set_index(book_id, state="running", done=done, total=tot))
+        async with _index_lock:
+            _set_index(book_id, state="running", done=0, total=total)
+            embedder, store = _vertex_deps()
+            from .gcp.indexing import index_book
+            await index_book(book, chunks, embedder, store,
+                             on_progress=lambda done, tot: _set_index(book_id, state="running", done=done, total=tot))
         _set_index(book_id, state="done", done=total, total=total)
     except Exception as e:  # the book stays readable and keeps the BM25 fallback
         logging.getLogger(__name__).warning("vertex indexing failed: %s", type(e).__name__)
@@ -530,7 +536,9 @@ async def _enrich_indexer(book: Book) -> None:
     if settings.retrieval_backend == "vertex":
         from .gcp.indexing import index_book, load_chunks
         embedder, store = _vertex_deps()
-        await index_book(book, await asyncio.to_thread(load_chunks, book), embedder, store)
+        chunks = await asyncio.to_thread(load_chunks, book)
+        async with _index_lock:
+            await index_book(book, chunks, embedder, store)
 
 
 _enrich_jobs: set[str] = set()   # books with an enrichment job queued or running
