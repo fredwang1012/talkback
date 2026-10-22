@@ -358,6 +358,12 @@ export async function startEnrichment(id: string): Promise<BookStatus> {
   return res.json() as Promise<BookStatus>;
 }
 
+/** Deletes a cloned voice at Boson, from the saved list, and its linked face. 403 for built-in presets. */
+export async function deleteVoice(id: string): Promise<void> {
+  const res = await timedFetch(`/api/voices/${encodeURIComponent(id)}`, { method: "DELETE", headers: authHeaders() }, 60000);
+  if (!res.ok) throw await readError(res, "Could not delete the voice");
+}
+
 export const fetchVoices = () => getJson<Record<string, string>>("/api/voices");
 
 /** A cloned voice's face: portrait plus optional muted loops (speaking, idle). Shown for any speaker using the voice. */

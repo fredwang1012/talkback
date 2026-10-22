@@ -3,6 +3,7 @@ import asyncio
 import random
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
+from urllib.parse import quote
 
 import httpx
 
@@ -79,6 +80,16 @@ class BosonClient:
         data = (await self.request("POST", "/v1/audio/voices", json=body)).json()
         usage.record("boson_voice_clone", "boson-voice-clone", clones=1)  # count only, unpriced
         return data.get("voice") or data["voice_id"]  # schema says `voice`, guide says `voice_id`
+
+    async def delete_voice(self, voice_id: str) -> bool:
+        """DELETE /v1/audio/voices/{id}. True when removed, False when Boson no longer has it (404 = already gone)."""
+        try:
+            await self.request("DELETE", f"/v1/audio/voices/{quote(voice_id, safe='')}")
+        except BosonError as e:
+            if e.status == 404:
+                return False
+            raise
+        return True
 
     # ---- Higgs Avatar (stretch). Request/response shapes follow the docs; verify with scripts/probe_avatar.py. ----
 

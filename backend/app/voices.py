@@ -54,6 +54,23 @@ def save_voice(name: str, voice_id: str) -> None:
     _store().write_text(json.dumps(voices, indent=1), encoding="utf-8")
 
 
+def is_cloned_voice(voice_id: str) -> bool:
+    return voice_id in load_voices().values()
+
+
+def remove_voice(voice_id: str) -> bool:
+    """Drop every saved name that points at this voice id (atomic write). False when it was not saved."""
+    voices = load_voices()
+    kept = {n: v for n, v in voices.items() if v != voice_id}
+    if len(kept) == len(voices):
+        return False
+    p = _store()
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(kept, indent=1), encoding="utf-8")
+    tmp.replace(p)
+    return True
+
+
 def is_known_voice(voice: str) -> bool:
     """Presets or voices this server registered. Anything else would let a caller mint unlimited cache entries."""
     return voice in PRESET_VOICES or voice in load_voices().values()

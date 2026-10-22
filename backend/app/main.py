@@ -967,6 +967,30 @@ async def clone_voice(request: Request, audio: UploadFile = File(...), transcrip
     return {"voice": voice_id, "name": name, "face": face_url}
 
 
+_VOICE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
+
+
+@app.delete("/api/voices/{voice_id}", dependencies=[Depends(require_access)])
+async def delete_voice(voice_id: str):
+    """Delete a voice the caller cloned: at Boson, from the saved list, and the face linked to it. Casts that used it
+    fall back to Auto. Built-in presets are refused."""
+    users.require_account()
+    if voice_id in voices.PRESET_VOICES:
+        raise HTTPException(403, "Built-in voices cannot be deleted.")
+    if not _VOICE_ID.match(voice_id) or not voices.is_cloned_voice(voice_id):   # this account's own list only
+        raise HTTPException(404, "Voice not found")
+    try:
+        await boson.delete_voice(voice_id)   # False (404) = already gone at Boson: carry on
+    except (BosonError, RuntimeError) as e:
+        raise boson_http_error(e)            # local data stays, so the delete can be retried
+    face_ids = faces.face_ids_for_voice(voice_id)
+    for fid in face_ids:   # the face made with this clone goes with it
+        await _delete_face_locked(fid)
+    await asyncio.to_thread(faces.delete_legacy_voice_files, voice_id)
+    voices.remove_voice(voice_id)
+    return {"deleted": voice_id, "faces": face_ids}
+
+
 @app.get("/api/voices", dependencies=[Depends(require_access)])
 def list_voices():
     return voices.load_voices()
@@ -1008,16 +1032,20 @@ def list_faces():
     return faces.list_faces()
 
 
-@app.delete("/api/faces/{face_id}", dependencies=[Depends(require_access)])
-async def delete_face(face_id: str):
-    _safe_face_id(face_id)
+async def _delete_face_locked(face_id: str) -> bool:
     lock = _face_locks.setdefault(face_id, asyncio.Lock())
     try:
         async with lock:  # waits for a running animate, so no loops are written after the delete
-            deleted = faces.delete_face(face_id)
+            return faces.delete_face(face_id)
     finally:
         _release_face_lock(face_id, lock)
-    if not deleted:
+
+
+@app.delete("/api/faces/{face_id}", dependencies=[Depends(require_access)])
+async def delete_face(face_id: str):
+    users.require_account()
+    _safe_face_id(face_id)
+    if not await _delete_face_locked(face_id):
         raise HTTPException(404, "Face not found")
     return {"deleted": face_id}
 

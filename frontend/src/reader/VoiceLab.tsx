@@ -1,6 +1,6 @@
 import { micErrorMessage } from "../audio/mediaErrors";
 import { useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { animateFace, cloneVoice, deleteFace, uploadFace, type Book, type Cast, type Face } from "../api";
+import { animateFace, cloneVoice, deleteFace, deleteVoice, uploadFace, type Book, type Cast, type Face } from "../api";
 import {
   PRESETS, bookVoice, castRows, castFace, castVoice, effectiveMode, isNovel, oneVoiceOverride, runAnimate, withAssignment, type ReadingStyle,
 } from "./castLogic";
@@ -25,6 +25,7 @@ type Props = {
   setAnimErrors: Dispatch<SetStateAction<Record<string, string>>>;
   faces: Face[];
   onFaces: Dispatch<SetStateAction<Face[]>>;
+  onRemoved: (gone: { voice?: string; face?: string }) => void; // browser-side choices pointing at it go back to Auto
   onFacesChanged: () => void; // a face was deleted: the cast may have lost a reference
   onPreview: (speaker: string, voice: string) => void;
   audioAvailable: boolean;
@@ -32,7 +33,7 @@ type Props = {
 };
 
 /** Cast panel (a voice per speaker) and Voice lab (clone your own voice, with consent). */
-export default function VoiceLab({ book, cast, onCast, castError, style, onStyle, cloned, onCloned, animating, setAnimating, animErrors, setAnimErrors, faces, onFaces, onFacesChanged, onPreview, audioAvailable, onClose }: Props) {
+export default function VoiceLab({ book, cast, onCast, castError, style, onStyle, cloned, onCloned, animating, setAnimating, animErrors, setAnimErrors, faces, onFaces, onFacesChanged, onRemoved, onPreview, audioAvailable, onClose }: Props) {
   const [transcript, setTranscript] = useState(SCRIPT);
   const [name, setName] = useState("");
   const [consent, setConsent] = useState(false);
@@ -46,6 +47,22 @@ export default function VoiceLab({ book, cast, onCast, castError, style, onStyle
   const [faceFile, setFaceFile] = useState<File | null>(null);
   const [faceBusy, setFaceBusy] = useState(false);
   const [faceMsg, setFaceMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+
+  const [confirming, setConfirming] = useState<string | null>(null); // "face:<id>" or "voice:<id>"
+  const [voiceMsg, setVoiceMsg] = useState<string | null>(null);
+
+  async function removeVoice(name: string, id: string) {
+    setConfirming(null);
+    setVoiceMsg(null);
+    try {
+      await deleteVoice(id);
+      onCloned(({ [name]: _x, ...rest }) => { void _x; return rest; });
+      onRemoved({ voice: id });
+      onFacesChanged(); // its linked face is gone too, and casts using either fall back to Auto
+    } catch (e) {
+      setVoiceMsg(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   async function startRecording() {
     setStatus(null);
@@ -113,8 +130,10 @@ export default function VoiceLab({ book, cast, onCast, castError, style, onStyle
     if (out) onFaces((list) => list.map((f) => (f.id === id ? { id: out.id, name: out.name, image: out.image, voice: out.voice, talk: out.talk, idle: out.idle } : f)));
   }
   async function remove(f: Face) {
+    setConfirming(null);
     try {
       await deleteFace(f.id);
+      onRemoved({ face: f.id });
       onFaces((list) => list.filter((x) => x.id !== f.id));
       onFacesChanged();
     } catch (e) {
@@ -218,7 +237,15 @@ export default function VoiceLab({ book, cast, onCast, castError, style, onStyle
                           title={done ? "Already animated" : "Renders a talking and an idle loop"}>
                     {busy ? "Animating… (1 to 2 min)" : done ? "Animated" : "Animate (about $0.05)"}
                   </button>
-                  <button disabled={busy} onClick={() => void remove(f)} aria-label={`Delete ${f.name}`}>Delete</button>
+                  {confirming === `face:${f.id}` ? (
+                    <span role="alertdialog" aria-label={`Delete ${f.name}?`}>
+                      Delete this face for good?{" "}
+                      <button onClick={() => void remove(f)}>Delete forever</button>{" "}
+                      <button autoFocus onClick={() => setConfirming(null)}>Cancel</button>
+                    </span>
+                  ) : (
+                    <button disabled={busy} onClick={() => setConfirming(`face:${f.id}`)} aria-label={`Delete ${f.name}`}>Delete</button>
+                  )}
                   {animErrors[f.id] && <p role="alert" className="lab-error face-error">{animErrors[f.id]}</p>}
                 </li>
               );
@@ -233,6 +260,28 @@ export default function VoiceLab({ book, cast, onCast, castError, style, onStyle
         </label>
         <button className="primary" disabled={!faceFile || !faceName.trim() || faceBusy} onClick={() => void submitFace()}>{faceBusy ? "Uploading…" : "Upload a face"}</button>
         {faceMsg && <p role={faceMsg.kind === "error" ? "alert" : "status"} className={`lab-${faceMsg.kind}`}>{faceMsg.text}</p>}
+      </section>
+
+      <section aria-label="Your cloned voices">
+        <h3>Your cloned voices</h3>
+        {Object.keys(cloned).length === 0 && <p className="empty-note">No cloned voices yet.</p>}
+        <ul className="face-list">
+          {Object.entries(cloned).map(([n, id]) => (
+            <li key={id}>
+              <span className="face-name">{n}</span>
+              {confirming === `voice:${id}` ? (
+                <span role="alertdialog" aria-label={`Delete ${n}?`}>
+                  Delete this voice (and its face) for good? Casts using it go back to Auto.{" "}
+                  <button onClick={() => void removeVoice(n, id)}>Delete forever</button>{" "}
+                  <button autoFocus onClick={() => setConfirming(null)}>Cancel</button>
+                </span>
+              ) : (
+                <button onClick={() => setConfirming(`voice:${id}`)} aria-label={`Delete voice ${n}`}>Delete</button>
+              )}
+            </li>
+          ))}
+        </ul>
+        {voiceMsg && <p role="alert" className="lab-error">{voiceMsg}</p>}
       </section>
 
       <section>
