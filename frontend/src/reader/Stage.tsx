@@ -1,3 +1,4 @@
+import { createClipFollower, type FollowAudio } from "./clipFollow";
 import { tryPlayQuietly } from "../audio/mediaErrors";
 import { useEffect, useRef, useState } from "react";
 import type { Book, Face as FaceT, Health } from "../api";
@@ -16,6 +17,7 @@ type Props = {
   audioAvailable: boolean;
   avatarSrc: string | null; // pre-rendered clip for the line being read, when there is one
   avatarPlaying: boolean;
+  getAudio?: () => FollowAudio | null; // read mode: the chunk's audio element, which the clip follows
   onMode: (m: "read" | "talk") => void; // "Talkback" link
   pinned: string | null; // demo mode: talk only to this character
   needsCode: boolean;
@@ -46,15 +48,24 @@ function Face({ src, name }: { src: string | null; name: string }) {
   );
 }
 
-/** Muted on purpose: the page's own audio element stays the single source of sound, so it cannot double up. */
-function AvatarVideo({ src, playing }: { src: string; playing: boolean }) {
+/**
+ * Muted on purpose: the page's own audio element stays the single source of sound, so it cannot double up.
+ * The clip is driven by the chunk's audio (reader/clipFollow): it starts, pauses and ends with the voice and
+ * corrects drift by nudging its playback rate rather than seeking.
+ */
+function AvatarVideo({ src, playing, getAudio }: { src: string; playing: boolean; getAudio?: () => FollowAudio | null }) {
   const ref = useRef<HTMLVideoElement>(null);
   useEffect(() => {
     const v = ref.current;
     if (!v) return;
-    if (playing) void tryPlayQuietly(v); /* autoplay refused: the portrait frame stays */
-    else v.pause();
-  }, [src, playing]);
+    if (!getAudio) { // no audio to follow (silent preview): plain play/pause
+      if (playing) void tryPlayQuietly(v); else v.pause();
+      return;
+    }
+    const f = createClipFollower(v);
+    const h = window.setInterval(() => { if (playing) f.tick(getAudio()); else if (!v.paused) v.pause(); }, 100);
+    return () => window.clearInterval(h);
+  }, [src, playing, getAudio]);
   return <video ref={ref} key={src} src={src} muted playsInline preload="auto" />;
 }
 
@@ -74,7 +85,7 @@ function Waveform() {
   );
 }
 
-export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, spoilers, readSpeaking, levelRef }: Props) {
+export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, getAudio, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, spoilers, readSpeaking, levelRef }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
   const [remember, setRemember] = useState(true);
   const tutor = book.kind === "textbook";
@@ -102,7 +113,7 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
     <aside className="stage" aria-label="Stage">
       <div className={`speaker${big ? " big" : ""}`}>
         <div className={`medallion${big ? " big" : ""}${live ? " live" : ""}${thinking ? " thinking" : ""}${talk.speaking ? " speaking" : ""}`} aria-hidden="true">
-          {avatarSrc ? <AvatarVideo src={avatarSrc} playing={avatarPlaying} />
+          {avatarSrc ? <AvatarVideo src={avatarSrc} playing={avatarPlaying} getAudio={getAudio} />
             : face && readingFace ? <ReadFace face={face} speaking={readSpeaking} levelRef={levelRef} />
             : face ? <FaceView face={face} speaking={faceSpeaking} sync={talk.faceSync} clipShown={talk.clipShown} />
             : portrait ? <img src={portrait} alt="" /> : <span>{name.charAt(0)}</span>}
