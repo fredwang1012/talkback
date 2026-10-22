@@ -14,29 +14,44 @@ function fakeAudio() {
 }
 
 describe("lip-synced clips", () => {
-  it("reports the sentence's video as its audio starts and clears it when it ends", async () => {
+  it("joins the video to the voice when it is ready, and detaches when the sentence ends", async () => {
     const { clips, create } = fakeAudio();
-    const onClip = vi.fn();
-    const s = createSentenceSpeaker(async () => ({ audio_url: "/a.mp3", video_url: "/v.mp4" }), create, onClip);
+    const sync = { holding: false, join: vi.fn(), leave: vi.fn() };
+    const release = vi.fn();
+    const s = createSentenceSpeaker(async () => ({ audio_url: "/a.mp3", openVideo: async () => ({ url: "/v.mp4", release }) }), create, { sync });
     const done = s.play("a");
-    await vi.waitFor(() => expect(clips).toHaveLength(1));
-    expect(onClip).toHaveBeenLastCalledWith("/v.mp4");
+    await vi.waitFor(() => expect(sync.join).toHaveBeenCalledTimes(1));
+    expect(sync.join.mock.calls[0][1].url).toBe("/v.mp4");
     clips[0].onended?.();
     await done;
-    expect(onClip).toHaveBeenLastCalledWith(null);
+    expect(sync.leave).toHaveBeenCalled();
+    await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(1));
   });
 
-  it("clears the clip on barge-in and when there is no video", async () => {
+  it("starts the voice without waiting for a slow video, and releases it if it arrives after the end", async () => {
     const { clips, create } = fakeAudio();
-    const onClip = vi.fn();
-    const s = createSentenceSpeaker(async () => ({ audio_url: "/a.mp3" }), create, onClip);
+    const sync = { holding: false, join: vi.fn(), leave: vi.fn() };
+    const release = vi.fn();
+    let open!: () => void;
+    const s = createSentenceSpeaker(async () => ({ audio_url: "/a.mp3", openVideo: () => new Promise((r) => { open = () => r({ url: "/v", release }); }) }), create, { sync });
+    const done = s.play("a");
+    await vi.waitFor(() => expect(clips).toHaveLength(1)); // audio is up while the stream is still opening
+    clips[0].onended?.();
+    await done;
+    open();
+    await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(1));
+    expect(sync.join).not.toHaveBeenCalled();
+  });
+
+  it("plays on without a video when the stream fails or there is none", async () => {
+    const { clips, create } = fakeAudio();
+    const sync = { holding: false, join: vi.fn(), leave: vi.fn() };
+    const s = createSentenceSpeaker(async () => ({ audio_url: "/a.mp3", openVideo: async () => { throw new Error("boson"); } }), create, { sync });
     const done = s.play("a");
     await vi.waitFor(() => expect(clips).toHaveLength(1));
-    expect(onClip).toHaveBeenLastCalledWith(null);
-    onClip.mockClear();
-    s.stop();
+    clips[0].onended?.();
     await done;
-    expect(onClip).toHaveBeenCalledWith(null);
+    expect(sync.join).not.toHaveBeenCalled();
   });
 });
 
