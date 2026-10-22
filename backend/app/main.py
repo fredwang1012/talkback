@@ -695,6 +695,60 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
         _kind_claims.discard(book_id)
 
 
+def _book_busy(book_id: str) -> bool:
+    """True while an ingest, enrichment or kind change for this book is running."""
+    st = _upload_status.get(book_id) or {}
+    return (st.get("status") == "processing" or (st.get("enrich") or {}).get("status") == "running"
+            or book_id in _enrich_jobs or book_id in _kind_claims)
+
+
+def _forget_book(book_id: str) -> None:
+    """Drop every in-memory trace of a book (library listing, serialised bodies, indexes, status)."""
+    _upload_status.pop(book_id, None)
+    _book_bodies.pop(book_id, None)
+    for k in [k for k in books._cache if Path(k).parent.name == book_id]:
+        books._cache.pop(k, None)
+    books._series_index = None
+    _index_for.cache_clear()
+
+
+@app.delete("/api/books/{book_id}", dependencies=[Depends(require_access)])
+async def delete_book(book_id: str):
+    """Really remove an uploaded book: its Vertex datapoints, folder, original file and caches. Owner only."""
+    if not books._ID.match(book_id):
+        raise HTTPException(404, "Book not found")
+    users.guard_book(book_id)   # 404 for another account's book
+    ident = users.require_account()   # PER_USER: signed in only, never the shared anonymous namespace
+    if not book_id.startswith("u-"):
+        raise HTTPException(403, "Only books you uploaded can be deleted.")
+    if ident.ns and users.book_owner_ns(book_id) != ident.ns:   # explicit owner check, whatever can_see_book allows
+        raise HTTPException(404, "Book not found")
+    book_dir = settings.data_dir / "books" / book_id
+    if not book_dir.is_dir():
+        raise HTTPException(404, "Book not found")
+    if _book_busy(book_id):
+        raise HTTPException(409, "This book is still being processed; try again when it finishes.")
+    _kind_claims.add(book_id)   # blocks a concurrent kind change / enrichment start while we delete
+    try:
+        if settings.retrieval_backend == "vertex":
+            from .gcp.indexing import datapoint_ids
+            book = books.load_book(book_id)
+            try:
+                ids = await asyncio.to_thread(datapoint_ids, book) if book else []
+                if ids:   # first: if Vertex fails the book stays intact and the delete can be retried
+                    await _vertex_deps()[1].delete(ids)
+            except Exception as e:
+                logging.getLogger(__name__).warning("vertex delete failed: %s", type(e).__name__)
+                raise HTTPException(502, "Could not remove the book from search; nothing was deleted, try again.")
+        left = await asyncio.to_thread(ingest_upload.delete_book_files, book_id)
+        _forget_book(book_id)
+    finally:
+        _kind_claims.discard(book_id)
+    if left:
+        logging.getLogger(__name__).warning("book %s: could not remove %s", book_id, left)
+    return {"deleted": book_id, "incomplete": left}
+
+
 # ---------- avatars (stretch) ----------
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
