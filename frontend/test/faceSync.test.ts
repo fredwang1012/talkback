@@ -16,6 +16,13 @@ class FakeAudio implements AudioLike {
   pause() { this.pauses++; }
 }
 
+class EventedAudio extends FakeAudio {
+  private t = new EventTarget();
+  addEventListener(type: string, fn: () => void) { this.t.addEventListener(type, fn); }
+  removeEventListener(type: string, fn: () => void) { this.t.removeEventListener(type, fn); }
+  fire(type: string) { this.t.dispatchEvent(new Event(type)); }
+}
+
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
@@ -43,16 +50,39 @@ describe("FaceSync", () => {
     expect(shown).toEqual([true]);
   });
 
-  it("resyncs the video when it drifts more than 80 ms", () => {
+  it("leaves small drift alone, nudges the rate for medium drift, seeks only for big drift", () => {
     const { sync, v, a } = setup();
+    v.playbackRate = 1;
     sync.join(a, { url: "u", release: vi.fn() });
     v.fire("loadeddata"); v.fire("playing");
-    a.currentTime = 1; v.currentTime = 1.05;
+    a.currentTime = 1; v.currentTime = 1.03; // dead-band
     vi.advanceTimersByTime(100);
-    expect(v.currentTime).toBe(1.05); // within tolerance
-    a.currentTime = 2; v.currentTime = 1.8;
+    expect(v.currentTime).toBe(1.03);
+    expect(v.playbackRate).toBe(1);
+    // medium drift: video 150 ms ahead of the (wall-clock advancing) voice -> slower, no seek
+    const t0 = a.currentTime;
+    a.currentTime = t0 + 0.1; v.currentTime = a.currentTime + 0.15;
+    const before = v.currentTime;
     vi.advanceTimersByTime(100);
-    expect(v.currentTime).toBe(2);
+    expect(v.currentTime).toBe(before);
+    expect(v.playbackRate).toBeLessThan(1);
+    expect(v.playbackRate).toBeGreaterThanOrEqual(0.92);
+    // big drift: seek
+    a.currentTime = 6; v.currentTime = 4;
+    vi.advanceTimersByTime(1500);
+    expect(Math.abs(v.currentTime - 6)).toBeLessThan(1.6);
+    expect(v.currentTime).toBeGreaterThan(4);
+  });
+
+  it("does not start the video before the voice is playing", () => {
+    const sync = new FaceSync(() => {}, { checkMs: 100 });
+    const v = new FakeVideo(); sync.setVideo(v);
+    const a = new EventedAudio();
+    sync.join(a, { url: "u", release: vi.fn() });
+    v.fire("loadeddata");
+    expect(v.plays).toBe(0); // voice has not started: no mouthing yet
+    a.fire("playing");
+    expect(v.plays).toBe(1);
   });
 
   it("pauses the voice while the video waits and resumes both together", () => {

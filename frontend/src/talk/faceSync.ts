@@ -9,18 +9,22 @@
  *  - the video is only shown (`onShown(true)`) once it is actually playing a decoded frame, so there is no black flash
  *    and the talk loop or idle face stays visible underneath until then;
  *  - on joining it seeks to `audio.currentTime`, so a clip that arrives mid-sentence matches the voice;
- *  - while it plays, an offset above DRIFT_LIMIT_S is corrected by seeking the video to the voice;
+ *  - the video only starts once the voice is really playing (no mouthing before the voice);
+ *  - while it plays, drift is measured against a smoothed voice clock (see driftController): small drift nudges the
+ *    video's playbackRate, only a big one (>300 ms, at most once a second) seeks, a dead-band leaves it alone;
  *  - if the video `waiting`s (Boson renders slower than real time), the voice is paused (`holding`) so the two stay
  *    together; if the stall lasts longer than `stallMs` the face falls back to the talk loop and the voice carries
  *    on. When the video recovers it seeks to the voice and is shown again.
  */
 
-import { DRIFT_LIMIT_S, needsResync } from "./speechGate";
+import { needsResync } from "./speechGate";
+import { AudioClock, DriftController, type DriftOptions } from "./driftController";
 import type { AudioLike, ClipSync, VideoClip } from "./sentencePlayer";
 
 export interface VideoLike {
   src: string;
   currentTime: number;
+  playbackRate?: number;
   readyState?: number;
   play(): Promise<void> | void;
   pause(): void;
@@ -44,6 +48,14 @@ const realTimers: Timers = {
   clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
 };
 
+export interface FaceSyncOptions {
+  stallMs?: number; checkMs?: number; seekCooldownMs?: number; startOffsetS?: number;
+  drift?: Partial<DriftOptions>;
+  /** Called with (video position - voice position) the moment the video first shows, to measure the start offset. */
+  onStartOffset?: (offsetS: number) => void;
+  now?: () => number; timers?: Timers;
+}
+
 export class FaceSync implements ClipSync {
   holding = false;
   private video: VideoLike | null = null;
@@ -51,21 +63,23 @@ export class FaceSync implements ClipSync {
   private shown = false;
   private stall: unknown = null;
   private tick: unknown = null;
-  private lastSeek = -Infinity;
+  private clock = new AudioClock();
+  private ctrl: DriftController;
 
   private onShown: (shown: boolean) => void;
-  private opts: { stallMs?: number; checkMs?: number; seekCooldownMs?: number; now?: () => number; timers?: Timers };
+  private opts: FaceSyncOptions;
 
-  constructor(
-    onShown: (shown: boolean) => void,
-    opts: { stallMs?: number; checkMs?: number; seekCooldownMs?: number; now?: () => number; timers?: Timers } = {},
-  ) {
+  constructor(onShown: (shown: boolean) => void, opts: FaceSyncOptions = {}) {
     this.onShown = onShown;
     this.opts = opts;
+    this.ctrl = new DriftController({ ...opts.drift, ...(opts.seekCooldownMs !== undefined ? { seekCooldownMs: opts.seekCooldownMs } : {}), ...(opts.startOffsetS !== undefined ? { startOffsetS: opts.startOffsetS } : {}) });
   }
 
+  /** Constant lead of the video over the voice, measured once per device and applied to every sentence. */
+  setStartOffset(s: number) { this.ctrl.setStartOffset(s); }
+
   private get timers() { return this.opts.timers ?? realTimers; }
-  private now() { return (this.opts.now ?? Date.now)(); }
+  private now() { return (this.opts.now ?? (() => performance.now()))(); }
 
   /** The face's one persistent <video> (or null when it unmounts). */
   setVideo(v: VideoLike | null): void {
@@ -87,27 +101,51 @@ export class FaceSync implements ClipSync {
     const timers = this.timers;
     const stallMs = this.opts.stallMs ?? 1500;
 
-    const align = () => { // seek the video to where the voice is
-      const t = audio.currentTime ?? 0;
-      if (Math.abs(v.currentTime - t) > 0.02) { v.currentTime = t; this.lastSeek = this.now(); }
+    const ctrl = this.ctrl;
+    ctrl.reset();
+    this.clock = new AudioClock();
+    const clk = this.clock;
+    const canListen = typeof audio.addEventListener === "function";
+    let audioStarted = !canListen || (audio.currentTime ?? 0) > 0.02;
+    let loaded = false;
+    const voicePos = () => clk.sample(audio.currentTime ?? 0, this.now());
+    if (audioStarted) clk.anchor(audio.currentTime ?? 0, this.now());
+    const align = () => { // seek the video to where the voice is (once, on joining / rejoining)
+      const t = voicePos() + ctrl.opts.startOffsetS;
+      if (Math.abs(v.currentTime - t) > 0.02) { v.currentTime = t; ctrl.reset(); }
+      if (v.playbackRate !== undefined) v.playbackRate = 1;
+    };
+    const startVideo = () => { // only when the first frame is decoded AND the voice is really playing
+      if (!loaded || !audioStarted || this.holding) return;
+      align();
+      void Promise.resolve(v.play()).catch(() => { /* autoplay refused: the talk loop stays */ });
     };
     const resumeVoice = () => {
       if (!this.holding) return;
       this.holding = false;
       void Promise.resolve(audio.play()).catch(() => {});
     };
-    const onLoaded = () => { // first decoded frame: line up with the voice and start
-      align();
-      void Promise.resolve(v.play()).catch(() => { /* autoplay refused: the talk loop stays */ });
+    const onLoaded = () => { loaded = true; startVideo(); };
+    const onAudioPlaying = () => {
+      if (!audioStarted) { audioStarted = true; clk.anchor(audio.currentTime ?? 0, this.now()); startVideo(); return; }
+      if (!clk.isRunning) { clk.anchor(audio.currentTime ?? 0, this.now()); if (!this.holding) startVideo(); }
+    };
+    const onAudioPause = () => { // the reader paused (not our own hold): freeze the face with the voice
+      if (this.holding) return;
+      clk.pause(this.now());
+      v.pause();
     };
     const onPlaying = () => {
       if (this.stall !== null) { timers.clearTimeout(this.stall); this.stall = null; }
       if (this.holding) { // the video caught up: put the voice where the video is and carry on together
         if (needsResync(v.currentTime, audio.currentTime ?? 0)) audio.currentTime = v.currentTime;
+        clk.anchor(v.currentTime, this.now(), false);
         resumeVoice();
+        clk.resume(this.now());
       } else if (!this.shown) {
         align(); // coming back from a fallback: the voice kept going
       }
+      if (!this.shown && this.opts.onStartOffset) this.opts.onStartOffset(v.currentTime - voicePos());
       this.show(true);
     };
     const onWaiting = () => {
@@ -131,19 +169,28 @@ export class FaceSync implements ClipSync {
       ["loadeddata", onLoaded], ["playing", onPlaying], ["waiting", onWaiting], ["ended", onEnded],
     ];
     for (const [t, f] of handlers) v.addEventListener(t, f);
+    const audioHandlers: [string, () => void][] = [["playing", onAudioPlaying], ["pause", onAudioPause]];
+    if (canListen) for (const [t, f] of audioHandlers) audio.addEventListener!(t, f);
     this.active = {
       audio,
-      detach: () => { for (const [t, f] of handlers) v.removeEventListener(t, f); },
+      detach: () => {
+        for (const [t, f] of handlers) v.removeEventListener(t, f);
+        if (canListen) for (const [t, f] of audioHandlers) audio.removeEventListener?.(t, f);
+      },
     };
 
     v.src = clip.url;
     v.load?.();
 
     this.tick = timers.setInterval(() => {
-      if (!this.shown || this.holding || audio.currentTime === undefined) return;
-      if (this.now() - this.lastSeek < (this.opts.seekCooldownMs ?? 1000)) return;
-      if (needsResync(v.currentTime, audio.currentTime, DRIFT_LIMIT_S)) { v.currentTime = audio.currentTime; this.lastSeek = this.now(); }
-    }, this.opts.checkMs ?? 250);
+      if (!audioStarted && canListen && (audio.currentTime ?? 0) > 0.02) { // missed the 'playing' event
+        audioStarted = true; clk.anchor(audio.currentTime ?? 0, this.now()); startVideo();
+      }
+      if (!this.shown || this.holding || audio.currentTime === undefined || !clk.isRunning) return;
+      const act = ctrl.update(v.currentTime, voicePos(), this.now());
+      if (act.kind === "seek") v.currentTime = act.to;
+      else if (act.kind === "rate" && v.playbackRate !== undefined) v.playbackRate = act.rate;
+    }, this.opts.checkMs ?? 100);
   }
 
   /** Detach from the sentence: the voice resumes if it was held, the video is emptied and hidden. */
