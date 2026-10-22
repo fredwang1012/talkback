@@ -25,6 +25,7 @@ export class RingPlayer {
   private ctx: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
   private initPromise: Promise<void> | null = null;
+  private closed = false;
   private readonly onSpeakingChange?: (speaking: boolean) => void;
   /** Resolvers waiting for a `flushed` reply from the worklet. */
   private pendingFlush: Array<(ms: number) => void> = [];
@@ -39,8 +40,11 @@ export class RingPlayer {
       // Request the same rate the API is sending. If the context ran at a
       // different rate the browser would resample for us, which sounds fine but
       // breaks the sample-counting we rely on in Part 2.
+      this.closed = false;
       const ctx = new AudioContext({ sampleRate: AUDIO_RATE });
       await addWorkletModule(ctx, playbackWorkletSource);
+      // close() ran while the worklet was loading (React StrictMode mounts, then unmounts): do not leak this context.
+      if (this.closed) { await ctx.close().catch(() => {}); return; }
 
       const node = new AudioWorkletNode(ctx, "playback-processor", {
         numberOfInputs: 0,
@@ -89,6 +93,8 @@ export class RingPlayer {
   /** Hand one base64 PCM16 chunk to the ring buffer. */
   enqueueBase64(base64: string): void {
     if (!this.node) return;
+    // Never let a context that went to sleep swallow a whole reply silently.
+    if (this.ctx?.state === "suspended") void this.ctx.resume().catch(() => {});
     const buf = base64ToBytes(base64);
     // The second argument transfers ownership of the buffer to the audio thread
     // instead of copying it. At ~120 chunks per reply the copies would add up.
@@ -121,11 +127,12 @@ export class RingPlayer {
   }
 
   async close(): Promise<void> {
-    if (this.ctx) {
-      await this.ctx.close();
-      this.ctx = null;
-      this.node = null;
-      this.initPromise = null;
-    }
+    this.closed = true;
+    const ctx = this.ctx;
+    this.ctx = null;
+    this.node = null;
+    this.initPromise = null;
+    this.pendingFlush.splice(0).forEach((r) => r(0)); // never leave an interrupt() waiting on a dead worklet
+    if (ctx && ctx.state !== "closed") await ctx.close().catch(() => {});
   }
 }

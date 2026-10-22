@@ -1,3 +1,4 @@
+import { tryPlayQuietly } from "../audio/mediaErrors";
 import { useEffect, useRef, useState } from "react";
 import type { Book, Face as FaceT, Health } from "../api";
 import type { TalkUi } from "../talk/useTalk";
@@ -51,7 +52,7 @@ function AvatarVideo({ src, playing }: { src: string; playing: boolean }) {
   useEffect(() => {
     const v = ref.current;
     if (!v) return;
-    if (playing) void v.play().catch(() => { /* autoplay refused: the portrait frame stays */ });
+    if (playing) void tryPlayQuietly(v); /* autoplay refused: the portrait frame stays */
     else v.pause();
   }, [src, playing]);
   return <video ref={ref} key={src} src={src} muted playsInline preload="auto" />;

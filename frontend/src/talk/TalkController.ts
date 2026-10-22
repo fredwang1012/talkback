@@ -1,3 +1,4 @@
+import { micErrorMessage } from "../audio/mediaErrors";
 /**
  * The core loop as an explicit state machine (brief 7.3):
  *   reading -> listening -> transcribing -> retrieving -> answering -> resuming -> reading   (+ talk-idle)
@@ -175,7 +176,7 @@ export class TalkController {
     if (turn !== this.turn) return;
     // connect and capture in parallel: the mic is buffered until the socket is open
     this.d.session.ensureOpen(this.d.voiceFor(this.speakerId)).catch((e: unknown) => this.fail(turn, e));
-    try { await this.d.session.startMic(); } catch (e) { this.fail(turn, e, "Microphone unavailable. Check browser permission."); }
+    try { await this.d.session.startMic(); } catch (e) { this.fail(turn, e, micErrorMessage(e)); }
   }
 
   async pttUp(): Promise<void> {

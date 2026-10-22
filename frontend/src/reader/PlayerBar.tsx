@@ -5,7 +5,7 @@ type Props = {
   autoResume: boolean; onAutoResume: (v: boolean) => void;
   para: number; totalParas: number; atStart: boolean; atEnd: boolean; hasCast: boolean;
   onRecap: () => void;
-  loading?: boolean; audioAvailable: boolean; audioError: string | null;
+  loading?: boolean; audioAvailable: boolean; audioError: string | null; audioNotice?: string | null;
 };
 
 const Icon = ({ d }: { d: string }) => (
@@ -42,7 +42,9 @@ export default function PlayerBar(p: Props) {
       <p className="note" role={p.audioError ? "alert" : undefined}>
         {p.audioError
           ? `Audio problem: ${p.audioError}`
-          : p.audioAvailable
+          : p.audioNotice
+            ? p.audioNotice
+            : p.audioAvailable
             ? p.loading ? "Preparing audio…" : "Reading aloud. Click a sentence to jump."
             : "No audio yet: play moves through the text at an estimated reading pace. Voices need the Boson API key."}
       </p>

@@ -1,4 +1,7 @@
+import { isAutoplayBlock, TAP_TO_PLAY } from "../audio/mediaErrors";
+import { prefetchEnd } from "./prefetch";
 import type { FlatChunk } from "./position";
+import { resumeTime, staleIndexes } from "./voiceSwitch";
 
 export type WordTiming = { start: number; end: number; char_start: number; char_end: number };
 export type TtsResult = { audio_url: string; timestamps: WordTiming[] | null };
@@ -13,6 +16,7 @@ export interface AudioLike {
   onended: (() => void) | null;
   play(): Promise<void>;
   pause(): void;
+  load?(): void;
 }
 
 export type EngineState = "idle" | "loading" | "playing" | "paused" | "ended" | "error";
@@ -24,13 +28,11 @@ export type EngineDeps = {
 };
 
 type Loaded = { audio: AudioLike; timestamps: WordTiming[] | null };
-type Entry = { promise: Promise<Loaded>; resolved: boolean };
-
-const PREFETCH = 3;
+type Entry = { promise: Promise<Loaded>; resolved: boolean; voice: string | undefined };
 
 /**
  * Plays a book chunk by chunk. One audio element per chunk (preservesPitch, so speed changes keep the voice),
- * the next PREFETCH chunks are fetched ahead, and a seek cancels everything outside the new window.
+ * the next few chunks (see prefetch.ts) are fetched ahead, across paragraph and section boundaries, and a seek cancels everything outside the new window.
  */
 export class ReaderEngine {
   private state: EngineState = "idle";
@@ -38,6 +40,8 @@ export class ReaderEngine {
   private error: string | null = null;
   private speed = 1;
   private narratorOnlyVoice: string | null = null; // set when "full cast" is off
+  private voiceResolver: ((chunk: FlatChunk) => string | undefined) | null = null; // local cast: voice per chunk
+  private currentVoice: string | undefined;
   private wantPlay = false;
   private gen = 0;
   private current: Loaded | null = null;
@@ -77,10 +81,11 @@ export class ReaderEngine {
     let e = this.entries.get(i);
     if (!e) {
       const chunk = this.chunks[i];
-      const entry: Entry = { resolved: false, promise: null as unknown as Promise<Loaded> };
-      entry.promise = this.deps.fetchTts(chunk, this.narratorOnlyVoice ?? undefined).then((r) => {
+      const entry: Entry = { resolved: false, voice: this.voiceOf(i), promise: null as unknown as Promise<Loaded> };
+      entry.promise = this.deps.fetchTts(chunk, entry.voice).then((r) => {
         const audio = this.deps.createAudio(r.audio_url);
         audio.preload = "auto";
+        audio.load?.(); // start downloading the audio now so the chunk is buffered when its turn comes
         audio.preservesPitch = true;
         audio.playbackRate = this.speed;
         entry.resolved = true;
@@ -93,11 +98,12 @@ export class ReaderEngine {
     return e;
   }
 
-  /** Fetch the window [current, current + PREFETCH] and drop everything outside it (stale after a seek). */
+  /** Fetch the window [current, prefetchEnd] and drop everything outside it (stale after a seek). */
   private prefetchFrom(i: number): void {
-    for (let n = i; n <= Math.min(i + PREFETCH, this.chunks.length - 1); n++) this.entry(n).promise.catch(() => {});
+    const end = prefetchEnd(this.chunks, i);
+    for (let n = i; n <= end; n++) this.entry(n).promise.catch(() => {});
     for (const [k, e] of this.entries) {
-      if (k < i || k > i + PREFETCH) {
+      if (k < i || k > end) {
         e.promise.then((l) => l.audio.pause()).catch(() => {});
         this.entries.delete(k);
       }
@@ -112,9 +118,15 @@ export class ReaderEngine {
     this.current = null;
   }
 
-  private async startChunk(i: number): Promise<void> {
+  /** The voice chunk i should be read in right now (undefined: the server picks from the saved cast). */
+  private voiceOf(i: number): string | undefined {
+    return this.narratorOnlyVoice ?? this.voiceResolver?.(this.chunks[i]) ?? undefined;
+  }
+
+  private async startChunk(i: number, resume = false): Promise<void> {
     const gen = ++this.gen;
     const entry = this.entry(i);
+    this.prefetchFrom(i); // request the lookahead now, in parallel with the first chunk, not after it starts
     if (!entry.resolved && this.state !== "playing") this.set("loading");
     else this.emit();
     try {
@@ -125,8 +137,13 @@ export class ReaderEngine {
         this.set("paused");
         return;
       }
+      // a voice switch keeps the old voice going until the new one is ready, then continues at the same word
+      const old = this.current !== loaded ? this.current : null;
+      const at = resume && old ? resumeTime(old.timestamps, old.audio.currentTime, loaded.timestamps) : 0;
+      if (old) this.stopCurrent();
       this.current = loaded;
-      loaded.audio.currentTime = 0;
+      this.currentVoice = entry.voice;
+      loaded.audio.currentTime = at;
       loaded.audio.playbackRate = this.speed;
       loaded.audio.onended = () => this.handleEnded(gen);
       await loaded.audio.play();
@@ -136,6 +153,7 @@ export class ReaderEngine {
     } catch (e) {
       if (gen !== this.gen) return;
       this.wantPlay = false;
+      if (isAutoplayBlock(e)) { this.set("paused", TAP_TO_PLAY); return; } // autoplay policy: wait for a tap, not an error
       this.set("error", e instanceof Error ? e.message : String(e));
     }
   }
@@ -156,7 +174,11 @@ export class ReaderEngine {
     if (this.state === "playing" || this.chunks.length === 0) return;
     this.wantPlay = true;
     if (this.state === "paused" && this.current) {
-      void this.current.audio.play().then(() => this.set("playing"), (e) => this.set("error", String(e)));
+      void this.current.audio.play().then(() => this.set("playing"), (e) => {
+        this.wantPlay = false;
+        if (isAutoplayBlock(e)) this.set("paused", TAP_TO_PLAY);
+        else this.set("error", e instanceof Error ? e.message : String(e));
+      });
       return;
     }
     if (this.state === "ended") this.index = 0;
@@ -197,22 +219,37 @@ export class ReaderEngine {
     for (const e of this.entries.values()) e.promise.then((l) => { l.audio.playbackRate = speed; }).catch(() => {});
   }
 
-  /** Full cast off: read everything in the narrator's voice. Applies from the next chunk on. */
+  /** Full cast off: read everything in the narrator's voice. Applies at once, mid-chunk if playing. */
   setNarratorOnly(voice: string | null): void {
     if (voice === this.narratorOnlyVoice) return;
     this.narratorOnlyVoice = voice;
-    for (const [k, e] of this.entries) {
-      if (k > this.index) { e.promise.then((l) => l.audio.pause()).catch(() => {}); this.entries.delete(k); }
-    }
-    if (this.state === "playing") this.prefetchFrom(this.index);
+    this.applyVoices();
   }
 
-  /** Voices changed (cast picker): forget chunks fetched ahead so they are requested again with the new voice. */
-  refreshAhead(): void {
-    for (const [k, e] of this.entries) {
-      if (k > this.index) { e.promise.then((l) => l.audio.pause()).catch(() => {}); this.entries.delete(k); }
+  /** Local cast: the voice each chunk should have, applied before the cast is saved. */
+  setVoiceResolver(fn: ((chunk: FlatChunk) => string | undefined) | null): void {
+    this.voiceResolver = fn;
+    this.applyVoices();
+  }
+
+  /** Voices changed: refetch only the chunks whose voice differs; restart the current one in the new voice. */
+  refreshAhead(): void { this.applyVoices(); }
+
+  private applyVoices(): void {
+    const stale = staleIndexes([...this.entries].map(([k, e]) => [k, e.voice] as [number, string | undefined]), (i) => this.voiceOf(i));
+    const curStale = this.current !== null && this.currentVoice !== this.voiceOf(this.index);
+    for (const k of stale) {
+      const e = this.entries.get(k);
+      if (!e) continue;
+      this.entries.delete(k);
+      if (k !== this.index) e.promise.then((l) => l.audio.pause()).catch(() => {});
     }
-    if (this.state === "playing") this.prefetchFrom(this.index);
+    if (this.wantPlay && (this.state === "playing" || this.state === "loading")) {
+      if (curStale || stale.includes(this.index)) void this.startChunk(this.index, true); // old voice plays until the new one is ready
+      this.prefetchFrom(this.index);
+    } else if (curStale) {
+      this.stopCurrent(); // paused: playing again starts the chunk over in the new voice
+    }
   }
 
   /** The audio element of the chunk that is current (playing or paused), for level metering. */

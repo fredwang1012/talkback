@@ -13,8 +13,9 @@
 // `write` (where the next arriving sample goes) and `read` (where the next
 // sample to play comes from). Both wrap around the end of the array — hence
 // "ring". `read` and `write` can coincide when the buffer is empty or full, so
-// `available` distinguishes the two states. If the buffer fills, `read` moves
-// forward and the oldest samples are overwritten instead of blocking.
+// `available` distinguishes the two states. If the buffer fills, it grows
+// (Talkback answers can be far longer than the starting size, and they arrive
+// in one fast burst); only at MAX_SECONDS are the oldest samples overwritten.
 //
 // WHY A WORKLET
 //
@@ -37,13 +38,17 @@
 //   { type: 'reset' }   zero the played counter (at the start of each response)
 //   { type: 'flush' }   drop queued audio, reply { type: 'flushed', played }
 
+const RATE = 24000;
+const START_SECONDS = 30;
+// Hard cap (about 17 MB of floats). A whole spoken answer arrives faster than
+// real time, so the buffer must hold all of it: the old fixed 12 s silently
+// overwrote the unplayed middle of any longer answer.
+const MAX_SECONDS = 180;
+
 class PlaybackProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    // Twelve seconds of headroom at 24 kHz. Generous on purpose: the model can
-    // send a long reply in one burst, and running out of room means dropping
-    // audio the user was supposed to hear.
-    this.size = 24000 * 12;
+    this.size = RATE * START_SECONDS;
     this.ring = new Float32Array(this.size);
     this.read = 0;
     this.write = 0;
@@ -69,7 +74,23 @@ class PlaybackProcessor extends AudioWorkletProcessor {
     };
   }
 
+  /** Make room for `needed` queued samples (up to the cap), keeping queued audio in order. */
+  grow(needed) {
+    const max = RATE * MAX_SECONDS;
+    if (needed <= this.size || this.size >= max) return;
+    let size = this.size;
+    while (size < needed && size < max) size *= 2;
+    size = Math.min(size, max);
+    const ring = new Float32Array(size);
+    for (let i = 0; i < this.available; i++) ring[i] = this.ring[(this.read + i) % this.size];
+    this.ring = ring;
+    this.size = size;
+    this.read = 0;
+    this.write = this.available % size;
+  }
+
   push(int16) {
+    this.grow(this.available + int16.length);
     for (let i = 0; i < int16.length; i++) {
       // PCM16 samples are integers from -32768 to 32767. The Web Audio API
       // works in floats from -1 to 1. Dividing by 32768 converts between them.

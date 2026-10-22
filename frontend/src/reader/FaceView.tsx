@@ -1,3 +1,4 @@
+import { tryPlayQuietly } from "../audio/mediaErrors";
 import { useEffect, useMemo, useRef } from "react";
 import type { Face as FaceT } from "../api";
 import type { FaceSync } from "../talk/faceSync";
@@ -59,7 +60,7 @@ export function ReadFace({ face, speaking, levelRef }: { face: FaceT; speaking: 
   useEffect(() => {
     const v = talk.current;
     if (!v) return;
-    if (speaking) { void v.play().catch(() => { /* autoplay refused: the idle frame stays */ }); return; }
+    if (speaking) { void tryPlayQuietly(v); /* autoplay refused: the idle frame stays */ return; }
     const t = window.setTimeout(() => v.pause(), 180); // after the cross-fade
     return () => window.clearTimeout(t);
   }, [speaking, hasTalk]);

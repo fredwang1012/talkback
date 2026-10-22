@@ -1,3 +1,4 @@
+import { isAutoplayBlock } from "../audio/mediaErrors";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getAccessToken, setAccessToken } from "../accessToken";
 import {
@@ -5,7 +6,7 @@ import {
   type Book, type Cast, type Face, type Health,
 } from "../api";
 import {
-  PRESETS, castVoice, createCastSaver, emptyCast, loadStyle, loadTalkChoice, migrateOldOverrides,
+  PRESETS, castVoice, createCastSaver, emptyCast, isNovel, loadStyle, loadTalkChoice, migrateOldOverrides,
   oneVoiceOverride, readingFaceId, saveStyle, saveTalkChoice, talkFaceId, talkVoice, type ReadingStyle, type TalkChoice,
 } from "../reader/castLogic";
 import { DEMO_SPEAKER, DEMO_START_PARA, firstChunkAtOrAfter, isDemo } from "../demo";
@@ -44,6 +45,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const stopTalkRef = useRef<() => void>(() => {});
   const [word, setWord] = useState<{ charStart: number; charEnd: number } | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
+  const [audioNotice, setAudioNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const demo = useMemo(() => isDemo(), []);
   const [code, setCode] = useState(getAccessToken());
@@ -51,6 +53,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [labOpen, setLabOpen] = useState(false);
   const [recapOpen, setRecapOpen] = useState(false);
   const [cast, setCast] = useState<Cast>(emptyCast);
+  const [castLoaded, setCastLoaded] = useState(false); // false until the saved cast arrived: then the server picks voices
   const castEdited = useRef(false); // a local edit happened: late server loads must not overwrite it
   const [animating, setAnimating] = useState<Set<string>>(new Set()); // lives here so closing the panel keeps the spinner
   const [animErrors, setAnimErrors] = useState<Record<string, string>>({});
@@ -86,7 +89,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       fetchCast(b.id).then(async (c) => {
         if (castEdited.current) return; // the visitor already edited: their state is the newest
         const migrated = await migrateOldOverrides(b, c);
-        if (!castEdited.current) setCast(migrated ?? c);
+        if (!castEdited.current) { setCast(migrated ?? c); setCastLoaded(true); }
       }).catch(() => { /* no cast: books keep their own voices */ });
     }).catch((e: Error) => setError(e.message));
     fetchHealth().then(setHealth).catch(() => setHealth(null));
@@ -118,6 +121,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       setPlaying(s.state === "playing" || s.state === "loading");
       setLoading(s.state === "loading");
       setAudioError(s.state === "error" ? s.error : null);
+      setAudioNotice(s.state === "paused" ? s.error : null);
     });
     const meter = new AudioLevelMeter();
     meterRef.current = meter;
@@ -217,8 +221,11 @@ export default function Reader({ bookId }: { bookId: string }) {
   useEffect(() => {
     engineRef.current?.setNarratorOnly(oneVoice);
   }, [oneVoice, audioAvailable]);
-  // a changed cast applies to chunks fetched ahead too
-  useEffect(() => { engineRef.current?.refreshAhead(); }, [cast, audioAvailable]);
+  // a changed cast applies at once, from the local copy (the save runs in the background)
+  useEffect(() => {
+    engineRef.current?.setVoiceResolver(book && castLoaded
+      ? (chunk) => castVoice(book, cast, isNovel(book) ? chunk.speaker : "narrator") : null);
+  }, [cast, castLoaded, book, audioAvailable]);
 
   const changeMode = useCallback((m: "read" | "talk") => {
     setMode(m);
@@ -280,7 +287,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const saver = useMemo(
     () => createCastSaver(bookId, () => setCastError(null), setCastError),
     [bookId]);
-  const changeCast = (next: Cast) => { castEdited.current = true; setCast(next); setCastError(null); void saver(next); };
+  const changeCast = (next: Cast) => { castEdited.current = true; setCastLoaded(true); setCast(next); setCastError(null); void saver(next); };
   const changeStyle = (next: ReadingStyle) => { setStyle(next); saveStyle(bookId, next); };
   const changeTalk = (next: TalkChoice) => { setTalkChoice(next); saveTalkChoice(bookId, next); };
   const reloadCast = () => { void saver.flush().then(() => fetchCast(bookId)).then((c) => { setCast(c); }).catch(() => {}); };
@@ -291,8 +298,11 @@ export default function Reader({ bookId }: { bookId: string }) {
     try {
       const r = await fetchTts(bookId, chunk.id, voice);
       if (!r.cached) spend.addTts(chunk.tts_text.length);
-      void new Audio(r.audio_url).play();
-    } catch (e) { setAudioError(e instanceof Error ? e.message : String(e)); }
+      await new Audio(r.audio_url).play();
+    } catch (e) {
+      if (isAutoplayBlock(e)) setAudioNotice("Tap the preview button again to hear the voice. Your browser needs a fresh click.");
+      else setAudioError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   useEffect(() => {
@@ -376,7 +386,7 @@ export default function Reader({ bookId }: { bookId: string }) {
         para={para} totalParas={book.paragraphs.length}
         atStart={index === 0} atEnd={index >= last}
         hasCast={book.characters.length > 0}
-        audioAvailable={audioAvailable} audioError={audioError}
+        audioAvailable={audioAvailable} audioError={audioError} audioNotice={audioNotice}
       />}
     </>
   );
