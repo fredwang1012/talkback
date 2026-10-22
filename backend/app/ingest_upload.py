@@ -247,11 +247,21 @@ def _split_by_size(blocks: list[list[tuple]]) -> list[list[tuple]]:
     return out
 
 
+_FRONT_MATTER = re.compile(
+    r"©|\(c\)|\bcopyright\b|\bisbn\b|all rights reserved|\buniversity press\b|\bprinted (?:in|on)\b|"
+    r"\bpublished by\b|\bdraft of\b|\bonline edition\b", re.I)
+
+
 def _heading_candidate(blk: list[tuple], body: float) -> tuple[str, bool] | None:
-    """(text, found by font alone) when the block looks like a heading: the regex, or large / bold short text."""
+    """(text, found by font alone) when the block looks like a heading: the regex, or large / bold short text.
+
+    Copyright, ISBN and publisher lines (front matter) are never headings, however large they are set.
+    """
     if len(blk) > 2:
         return None
     text = " ".join(ln[0] for ln in blk)
+    if _FRONT_MATTER.search(text):
+        return None
     if _is_heading(text):
         return text, False
     if len(text) > 68 or len(text) < 2 or not any(c.isalpha() for c in text) or re.search(r"[.!?,;:]$", text):
@@ -301,9 +311,90 @@ def _mark_headings(blocks: list[list[tuple]], body: float) -> list[list[tuple]]:
             text, by_font = text + " " + nxt[0], by_font or nxt[1]
             blk = blk + blocks[i]
             i += 1
+        while by_font and i < len(blocks) and i not in drop and cands[i] is not None and cands[i][1] \
+                and abs(blocks[i][0][5] - blk[0][5]) < 0.5 and not _is_heading(cands[i][0]) \
+                and blocks[i][0][2] - blk[-1][4] < 1.5 * max(blk[0][5], 1):
+            text += " " + cands[i][0]  # a title set over several lines (title page): one heading
+            blk = blk + blocks[i]
+            i += 1
         first, last = blk[0], blk[-1]
         mark = HEADING_MARK if by_font and not _is_heading(text) else ""
         out.append([(mark + text, first[1], first[2], max(ln[3] for ln in blk), last[4], first[5], first[6], True)])
+    return out
+
+
+_TOC_NUMBER = re.compile(r"^\d+(?:\.\d+)*$")
+_TOC_TRAILING = re.compile(r"\S\s+\d{1,4}$")
+TOC_MIN_LINES = 10     # a page needs this many lines to be judged a table of contents
+TOC_FRACTION = 0.5     # ... and this share of them bare numbers (section / page) or ending in a page number
+
+
+def _is_toc_page(blocks: list[list[tuple]]) -> bool:
+    """A contents page without dot leaders: most lines are bare section/page numbers or end in a page number."""
+    lines = [ln[0] for blk in blocks for ln in blk]
+    if len(lines) < TOC_MIN_LINES:
+        return False
+    tocish = sum(1 for t in lines if _TOC_NUMBER.match(t) or (_TOC_TRAILING.search(t) and len(t) <= 120))
+    return tocish >= TOC_FRACTION * len(lines)
+
+
+_LEAD_NUM = re.compile(r"^(?:\d+(?:\.\d+)*\s+)+")
+_TRAIL_NUM = re.compile(r"(?:\s+\d+(?:\.\d+)*)+$")
+
+
+def _header_core(blk: list[tuple], body: float) -> str | None:
+    """The title text of a block shaped like a running header ('2.4 Title 39', '36 2 Title'), else None.
+
+    Page-number-first headers ('39 Title') count only when set smaller than the body text, so that a real
+    chapter heading such as '12 The Wedding' is not mistaken for one.
+    """
+    text = " ".join(ln[0] for ln in blk)
+    if len(blk) > 3 or len(text) > 100 or _BARE_LABEL.match(text):
+        return None
+    trailing = bool(_TRAIL_NUM.search(text)) and bool(re.search(r"[A-Za-z]\s+\d{1,4}$", text))
+    leading2 = bool(re.match(r"^\d{1,4}\s+\d{1,2}\s+\S", text))
+    leading = bool(_LEAD_NUM.match(text)) and body and max(ln[5] for ln in blk) < body * 0.95
+    if not (trailing or leading2 or leading):
+        return None
+    core = _TRAIL_NUM.sub("", _LEAD_NUM.sub("", text)).strip()
+    if core.lower() in ("chapter", "part", "book", "section", "unit", "page"):
+        return None
+    return core.lower() if sum(c.isalpha() for c in core) >= 3 else None
+
+
+def _drop_running_headers(pages: list[list[list[tuple]]], body: float) -> list[list[list[tuple]]]:
+    """Drop per-page running headers/footers made of a section title and a page number (changing every page).
+
+    A page-edge block counts when its title (numbers stripped) repeats at the edge of another page or equals
+    the title of a heading elsewhere ('2.4 Positional postings 39' above the real '2.4 Positional postings').
+    """
+    edge_cores: Counter = Counter()
+    for blocks in pages:
+        seen = set()
+        for blk in ((blocks[0], blocks[-1]) if blocks else ()):
+            core = _header_core(blk, body)
+            if core:
+                seen.add(core)
+        edge_cores.update(seen)
+    body_cores = set()
+    for blocks in pages:
+        for blk in blocks[1:-1]:
+            if len(blk) <= 3:
+                text = " ".join(ln[0] for ln in blk)
+                if len(text) <= 100:
+                    body_cores.add(_TRAIL_NUM.sub("", _LEAD_NUM.sub("", text)).strip().lower())
+
+    def is_header(blk) -> bool:
+        core = _header_core(blk, body)
+        return bool(core) and (edge_cores[core] >= 2 or core in body_cores)
+
+    out = []
+    for blocks in pages:
+        if blocks and is_header(blocks[0]):
+            blocks = blocks[1:]
+        if blocks and is_header(blocks[-1]):
+            blocks = blocks[:-1]
+        out.append(blocks)
     return out
 
 
@@ -355,13 +446,21 @@ def pdf_to_text(data: bytes) -> str:
         return key(block) in repeated or bool(_PAGE_NUMBER.match(" ".join(ln[0] for ln in block)))
 
     body = sizes.most_common(1)[0][0] if sizes else 0.0
+
+    def strip_noise(blocks):
+        while blocks and is_noise(blocks[0]):
+            blocks = blocks[1:]
+        while blocks and is_noise(blocks[-1]):
+            blocks = blocks[:-1]
+        return blocks
+
+    pages = [strip_noise(blocks) for blocks in pages]
+    pages = _drop_running_headers(pages, body)
     all_lines: list[Line] = []
     for pno, blocks in enumerate(pages):
-        if blocks and is_noise(blocks[0]):
-            blocks = blocks[1:]
-        if blocks and is_noise(blocks[-1]):
-            blocks = blocks[:-1]
-        blocks = _drop_contents(_clean_layout(_reading_order(blocks, widths[pno]), body))
+        if _is_toc_page(blocks):
+            continue
+        blocks =_drop_contents(_clean_layout(_reading_order(blocks, widths[pno]), body))
         flat = [ln for blk in blocks for ln in blk]
         if not flat:
             continue
@@ -373,7 +472,9 @@ def pdf_to_text(data: bytes) -> str:
             for t, x0, y0, x1, y1, _size, _bold, _h in blk:
                 all_lines.append(Line(t, x0, x1, y0, y1, left, right, pno, alone))
 
-    text = "\n\n".join(merge_lines(all_lines))
+    paras = merge_lines(all_lines)
+    paras = [p for i, p in enumerate(paras) if i == 0 or p != paras[i - 1] or not p.startswith(HEADING_MARK)]
+    text = "\n\n".join(paras)
     if not text.strip():
         raise UploadError("No extractable text was found. Scanned (image-only) PDFs are not supported.")
     return text
