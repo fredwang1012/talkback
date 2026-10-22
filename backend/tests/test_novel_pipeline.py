@@ -685,7 +685,7 @@ def test_running_enrichment_after_restart_reports_interrupted(client, tmp_path):
 def test_vertex_indexing_runs_in_the_index_stage(client, monkeypatch):
     calls = []
 
-    async def fake_index(book, chunks, embedder, store):
+    async def fake_index(book, chunks, embedder, store, on_progress=None):
         calls.append((book.id, len(book.summaries), len(chunks)))
         return len(chunks)
 

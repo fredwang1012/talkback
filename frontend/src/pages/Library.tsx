@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
-  accountLabel, changeKind, deleteBook, fetchBooks, fetchMe, SIGN_OUT_URL, type Me, MAX_UPLOAD_BYTES, pollBookStatus, pollEnrichment, startEnrichment, uploadBook,
+  accountLabel, changeKind, deleteBook, fetchBooks, fetchMe, SIGN_OUT_URL, type Me, MAX_UPLOAD_BYTES, pollBookStatus, pollEnrichment, pollIndexing, indexingLabel, startEnrichment, uploadBook,
   type BookStatus, type BookSummary, type UploadKind,
   enrichDoneNote,
 } from "../api";
@@ -39,6 +39,12 @@ function AddBook({ onReady }: { onReady: () => void }) {
   /** Novels keep processing after they are readable: show the stage and progress, or the estimate to confirm. */
   async function follow(bookId: string, name: string, first: BookStatus, ctl: AbortController) {
     let st: BookStatus | null = first;
+    if (st.index?.state === "running") {  // readable already; cloud search is still being built
+      const showIdx = (s: BookStatus) => { if (s.index) setState({ phase: "processing", text: `${name} can be read now. ${indexingLabel(s.index)}` }); };
+      showIdx(st);
+      st = await pollIndexing(bookId, showIdx, ctl.signal);
+      if (!st || ctl.signal.aborted) return;
+    }
     if (st.enrich?.status === "running") {
       const show = (s: BookStatus) => setState({
         phase: "enriching", title: name, message: s.enrich?.message ?? "Adding characters", progress: s.enrich?.progress ?? 0,

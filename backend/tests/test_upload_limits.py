@@ -65,19 +65,25 @@ def test_numbered_and_word_headings_in_text():
     assert [p.text for p in book.paragraphs][-2:] == ["3 apples fell.", "Part of the plan."]
 
 
-def test_errored_and_processing_uploads_are_not_visible(client, monkeypatch, tmp_path):
+def test_book_listed_during_indexing_and_after_index_failure(client, monkeypatch):
     seen = {}
 
-    async def failing_index(book, chunks, embedder, store):
+    async def failing_index(book, chunks, embedder, store, on_progress=None):
         seen["listed_during"] = [b["id"] for b in client.get("/api/books").json()]
-        seen["book_json_during"] = (tmp_path / "books" / book.id / "book.json").exists()
         raise RuntimeError("boom")
 
     monkeypatch.setattr("app.gcp.indexing.index_book", failing_index)
     monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
     monkeypatch.setattr(main.settings, "retrieval_backend", "vertex")
     book_id = post(client, "b.txt", b"One paragraph.\n\nTwo.").json()["book_id"]
-    assert seen["listed_during"] == [] and seen["book_json_during"] is False
+    assert seen["listed_during"] == [book_id]  # readable while indexing
+    st = client.get(f"/api/books/{book_id}/status").json()
+    assert st["status"] == "ready" and st["index"]["state"] == "error"
+    assert client.get(f"/api/books/{book_id}").status_code == 200
+
+
+def test_extraction_failure_is_not_visible(client, tmp_path):
+    book_id = post(client, "b.pdf", make_pdf([[]])).json()["book_id"]
     assert client.get(f"/api/books/{book_id}/status").json()["status"] == "error"
     assert [b["id"] for b in client.get("/api/books").json()] == []
     assert client.get(f"/api/books/{book_id}").status_code == 404

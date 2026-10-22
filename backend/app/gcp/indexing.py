@@ -6,7 +6,9 @@ from ..config import settings
 from ..retrieval import Chunk, make_chunks
 from ..schema import Book
 
-UPSERT_BATCH = 500
+EMBED_BATCH = 100        # chunks per embedding call
+EMBED_CONCURRENCY = 5    # embedding calls in flight
+UPSERT_CONCURRENCY = 4   # upsert calls in flight
 
 
 def load_chunks(book: Book) -> list[Chunk]:
@@ -46,15 +48,39 @@ def build_objects(book: Book, chunks: list[Chunk], embeddings) -> list[dict]:
     return objects
 
 
-async def index_book(book: Book, chunks: list[Chunk], embedder, store) -> int:
-    """Embed every chunk and upsert it; returns the number of objects written."""
-    if not chunks:
+async def index_book(book: Book, chunks: list[Chunk], embedder, store, on_progress=None) -> int:
+    """Embed every chunk and upsert it; returns the number of objects written.
+
+    Batches of EMBED_BATCH chunks are embedded (in worker threads) and upserted concurrently, at most
+    EMBED_CONCURRENCY / UPSERT_CONCURRENCY in flight; each batch keeps its own order. `on_progress(done, total)`
+    is called (on the event loop) after each batch is stored. The first failure cancels the rest and is raised.
+    """
+    total = len(chunks)
+    if not total:
         return 0
-    embeddings = await asyncio.to_thread(embedder.embed_documents, [embed_text(c) for c in chunks])
-    objects = build_objects(book, chunks, embeddings)
-    for i in range(0, len(objects), UPSERT_BATCH):
-        await store.upsert(objects[i:i + UPSERT_BATCH])
-    return len(objects)
+    embed_slots, upsert_slots = asyncio.Semaphore(EMBED_CONCURRENCY), asyncio.Semaphore(UPSERT_CONCURRENCY)
+    done = 0
+
+    async def one(batch: list[Chunk]) -> None:
+        nonlocal done
+        async with embed_slots:
+            embeddings = await asyncio.to_thread(embedder.embed_documents, [embed_text(c) for c in batch])
+        objects = build_objects(book, batch, embeddings)
+        async with upsert_slots:
+            await store.upsert(objects)
+        done += len(batch)
+        if on_progress:
+            on_progress(done, total)
+
+    tasks = [asyncio.ensure_future(one(chunks[i:i + EMBED_BATCH])) for i in range(0, total, EMBED_BATCH)]
+    try:
+        await asyncio.gather(*tasks)
+    except BaseException:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    return total
 
 
 def datapoint_ids(book: Book) -> list[str]:
