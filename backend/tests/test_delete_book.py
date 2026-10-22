@@ -120,3 +120,20 @@ def test_only_the_owner_deletes(pu, tmp_path):
     assert (settings.data_dir / "books" / "u-bob-1" / "book.json").exists()   # Bob's book untouched
     assert client.delete("/api/books/demo", headers=h(token(ALICE))).status_code == 403
     assert client.delete("/api/books/hp1", headers=h(token(ALICE))).status_code == 404
+
+
+def test_anonymous_cannot_delete_even_shared_namespace_uploads(pu):
+    client, _ = pu
+    r = client.post("/api/books/upload", data={"title": "Anon", "kind": "textbook"},
+                    files={"file": ("a.txt", b"Hello there.\n\nSecond paragraph here.", "text/plain")})
+    bid = r.json()["book_id"]
+    assert (settings.data_dir / "books" / bid / "owner.txt").read_text() == users.PUBLIC_NS
+    assert client.delete(f"/api/books/{bid}").status_code == 403
+    assert (settings.data_dir / "books" / bid).exists()
+
+
+def test_owner_marker_must_match_even_for_owner_only_ids(pu):
+    client, _ = pu
+    (settings.data_dir / "books" / "u-alice-1" / "owner.txt").write_text(users.ns_for(BOB))
+    assert client.delete("/api/books/u-alice-1", headers=h(token(ALICE))).status_code == 404
+    assert (settings.data_dir / "books" / "u-alice-1" / "book.json").exists()

@@ -718,8 +718,11 @@ async def delete_book(book_id: str):
     if not books._ID.match(book_id):
         raise HTTPException(404, "Book not found")
     users.guard_book(book_id)   # 404 for another account's book
+    ident = users.require_account()   # PER_USER: signed in only, never the shared anonymous namespace
     if not book_id.startswith("u-"):
         raise HTTPException(403, "Only books you uploaded can be deleted.")
+    if ident.ns and users.book_owner_ns(book_id) != ident.ns:   # explicit owner check, whatever can_see_book allows
+        raise HTTPException(404, "Book not found")
     book_dir = settings.data_dir / "books" / book_id
     if not book_dir.is_dir():
         raise HTTPException(404, "Book not found")
