@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { Face as FaceT } from "../api";
+import type { FaceSync } from "../talk/faceSync";
 import { pulseAmount } from "./speechLevel";
 
 /** A muted looping clip of a voice's face (speaking or idle). */
@@ -7,12 +8,39 @@ export function FaceLoop({ src }: { src: string }) {
   return <video key={src} src={src} muted loop autoPlay playsInline preload="auto" />;
 }
 
-/** The face for the medallion: a lip-synced clip, else the speaking loop while speaking, else the idle loop or portrait. */
-export function FaceView({ face, speaking, clip }: { face: FaceT; speaking: boolean; clip: string | null }) {
-  if (clip) return <video key={clip} src={clip} muted autoPlay playsInline />; // the audio element plays the sound
-  if (speaking && face.talk) return <FaceLoop src={face.talk} />;
-  if (face.idle) return <FaceLoop src={face.idle} />;
-  return <img src={face.image} alt="" />;
+/**
+ * The face for the medallion (Talk mode). Layers, bottom to top, are never swapped for new elements, so nothing
+ * flashes black: the idle loop (or portrait) always rests underneath; the talk loop fades in only while the sentence
+ * audio is really playing and no lip-sync video is in step; the one persistent lip-sync <video> (driven by `sync`,
+ * see talk/faceSync) fades in only once it has a decoded frame and is playing.
+ */
+export function FaceView({ face, speaking, sync, clipShown }: { face: FaceT; speaking: boolean; sync: FaceSync | null; clipShown: boolean }) {
+  const talk = useRef<HTMLVideoElement>(null);
+  const clip = useRef<HTMLVideoElement>(null);
+  const showTalk = speaking && !clipShown && !!face.talk;
+
+  useEffect(() => {
+    const v = talk.current;
+    if (!v) return;
+    if (showTalk) { void v.play().catch(() => { /* autoplay refused: the idle frame stays */ }); return; }
+    const t = window.setTimeout(() => v.pause(), 180); // after the cross-fade
+    return () => window.clearTimeout(t);
+  }, [showTalk]);
+
+  useEffect(() => {
+    sync?.setVideo(clip.current);
+    return () => sync?.setVideo(null);
+  }, [sync]);
+
+  return (
+    <div className="read-face">
+      {face.idle
+        ? <video key={face.idle} src={face.idle} muted loop autoPlay playsInline preload="auto" />
+        : <img src={face.image} alt="" />}
+      {face.talk && <video ref={talk} key={face.talk} src={face.talk} className={`rf-talk${showTalk ? " on" : ""}`} muted loop playsInline preload="auto" />}
+      <video ref={clip} className={`rf-talk${clipShown ? " on" : ""}`} muted playsInline />
+    </div>
+  );
 }
 
 const reducedMotion = () => typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
