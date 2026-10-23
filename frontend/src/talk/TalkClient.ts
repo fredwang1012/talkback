@@ -5,7 +5,21 @@ import { TOOL_DEFS } from "./tools";
 
 const WS_URL = "wss://api.boson.ai/v1/realtime?model=higgs-realtime";
 const OPEN = 1; // WebSocket.OPEN, spelled out so tests need no global WebSocket
-const PREFIX_CHUNKS = 3; // ~100 ms each
+/**
+ * Hands-free pre-roll (#114): how much mic audio from before the voice gate opened is sent first. The gate reports
+ * speech only after `minSpeechMs` of continuous level over its threshold (400 ms while the character talks, and a dip
+ * restarts the count), and a soft first syllable is under the threshold anyway, so the first second or so of the
+ * question was gone before the turn began. Short enough that little of the character's echo comes along with it.
+ */
+export const PREROLL_MS = 1500;
+/** A turn started by the mic button while hands-free is on keeps only this much (the reader presses, then speaks). */
+const PRESS_PREROLL_MS = 300;
+
+/** Duration of a base64 PCM16 mono chunk at AUDIO_RATE. */
+function chunkMs(b64: string): number {
+  const pad = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
+  return ((b64.length * 3) / 4 - pad) / 2 / AUDIO_RATE * 1000;
+}
 
 /** Short and behavioural: the role comes from per-response instructions (brief 3.4 prompting lesson). */
 export const SESSION_INSTRUCTIONS =
@@ -94,7 +108,8 @@ export class TalkClient implements TalkSession {
   private mic: MicLike;
   private micOn = false;
   private monitor = false; // hands-free (#10): the mic stays open between turns; chunks are kept briefly, not sent
-  private recent: string[] = []; // the last PREFIX_CHUNKS while monitoring: sent first when a turn starts, so no word is clipped
+  private recent: { b64: string; ms: number }[] = []; // rolling pre-roll while monitoring (#114): sent first when a turn starts
+  private recentMs = 0;
   private pendingAudio: string[] = [];
   private commitWhenOpen = false;
   private interrupting = false; // a cancel is out and not yet acknowledged (#100): new audio and the commit wait
@@ -216,10 +231,20 @@ export class TalkClient implements TalkSession {
 
   // ---- microphone / turns -------------------------------------------------------------------------------------
 
-  async startMic(): Promise<void> {
+  /**
+   * Start streaming the turn. `voiceStarted` (hands-free, the voice gate opened it): the rolling pre-roll goes out
+   * first, so the words spoken before the gate decided it was speech are kept (#114). A press keeps only ~300 ms.
+   * Without hands-free nothing was captured before, so push-to-talk starts from the press as always.
+   */
+  async startMic(voiceStarted = false): Promise<void> {
     this.micOn = true;
     this.commitWhenOpen = false;
-    for (const b64 of this.recent.splice(0)) this.onMicChunk(b64); // the ~300 ms before the gate opened
+    const keepMs = voiceStarted ? PREROLL_MS : PRESS_PREROLL_MS;
+    const pre = this.recent.splice(0);
+    this.recentMs = 0;
+    let from = pre.length;
+    for (let ms = 0; from > 0 && ms < keepMs; ) ms += pre[--from].ms;
+    for (const c of pre.slice(from)) this.onMicChunk(c.b64); // in order, ahead of the live audio (held with it if not ready)
     await this.mic.start();
   }
 
@@ -227,6 +252,7 @@ export class TalkClient implements TalkSession {
   async setMonitor(on: boolean): Promise<void> {
     this.monitor = on;
     this.recent = [];
+    this.recentMs = 0;
     if (on) await this.mic.start();
     else if (!this.micOn) await this.mic.stop();
   }
@@ -236,7 +262,12 @@ export class TalkClient implements TalkSession {
 
   private onMicChunk(b64: string): void {
     if (!this.micOn) {
-      if (this.monitor) { this.recent.push(b64); if (this.recent.length > PREFIX_CHUNKS) this.recent.shift(); }
+      if (this.monitor) { // keep just enough to cover PREROLL_MS
+        const ms = chunkMs(b64);
+        this.recent.push({ b64, ms });
+        this.recentMs += ms;
+        while (this.recent.length > 1 && this.recentMs - this.recent[0].ms >= PREROLL_MS) this.recentMs -= this.recent.shift()!.ms;
+      }
       return;
     }
     if (this.ready) this.send(inputAudioAppend(b64));
