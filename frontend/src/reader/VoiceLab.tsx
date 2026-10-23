@@ -146,13 +146,13 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
       <section aria-label="Your cloned voices">
         <h3>Your cloned voices</h3>
         {Object.keys(cloned).length === 0 && <p className="empty-note">No cloned voices yet.</p>}
-        <ul className="face-list">
+        <ul className="face-list voice-list">
           {Object.entries(cloned).map(([n, id]) => (
             <li key={id}>
               <span className="face-name">{n}</span>
               {confirming === `voice:${id}` ? (
                 <span role="alertdialog" aria-label={`Delete ${n}?`}>
-                  Delete this voice (and its face) for good? Casts using it go back to Auto.{" "}
+                  Delete this voice for good? Its face stays. Casts using the voice go back to Auto.{" "}
                   <button onClick={() => void removeVoice(n, id)}>Delete forever</button>{" "}
                   <button autoFocus onClick={() => setConfirming(null)}>Cancel</button>
                 </span>

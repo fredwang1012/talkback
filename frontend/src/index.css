@@ -365,6 +365,7 @@ button:disabled { cursor: not-allowed; }
 /* Voices panel: cast table, face library; Talk voice/avatar pickers */
 .face-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .face-list li { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; align-items: center; }
+.face-list.voice-list li { grid-template-columns: 1fr auto; } /* no thumbnail or Animate: Delete keeps its own width */
 .face-list .face-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .face-list .face-error { grid-column: 1 / -1; font-size: 0.88rem; }
 .talk-pick { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; }
