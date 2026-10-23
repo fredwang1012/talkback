@@ -128,3 +128,116 @@ def laughter_at(spoken: str) -> int | None:
 def with_laughter(spoken: str) -> str:
     at = laughter_at(spoken)
     return spoken if at is None else spoken[:at] + "<|sfx:laughter|>" + spoken[at:]
+
+
+# ---------- more sound effects (#73) ----------
+# Each sfx goes right before onomatopoeia the book already has, at the start of a character's line (after the opening
+# quote), like laughter. Sounds that are ambiguous on their own also need the adjacent speech tag to say so.
+
+_SIGH_TAG = re.compile(r"\bsigh(?:ed|s|ing)\b", re.I)
+_WEEP_TAG = re.compile(
+    r"\b(?:sob(?:bed|s|bing)|wept|weep(?:s|ing)?|crying(?!\s+out)|in\s+tears|burst\s+into\s+tears"
+    r"|cried\s+(?:bitterly|softly|quietly|piteously|harder|silently|herself|himself|themselves))\b", re.I)
+_SCREAM_TAG = re.compile(r"\b(?:scream(?:ed|s|ing)?|shriek(?:ed|s|ing)?)\b", re.I)
+_SIGH_WORD = re.compile(r"sigh|a+hh+|ah-h+|a+h+-h+|haa+h+")
+_SOB_WORD = re.compile(r"sob|boo-?hoo(?:-?hoo)*")
+_SCREAM_WORD = re.compile(r"a{2,}h+|a{3,}(?:r*gh)?")
+
+
+def speech_tag(segments: Sequence, i: int) -> str:
+    """The short speech tags next to character line segments[i] ('she sighed.' / 'Alice sobbed,'), joined; else ''."""
+    out = []
+    if i + 1 < len(segments) and segments[i + 1].speaker == "narrator":
+        first = _SENT_END.split(_clean(segments[i + 1].text), maxsplit=1)[0]
+        if len(first.split()) <= _MAX_TAG_WORDS:
+            out.append(first)
+    if i > 0 and segments[i - 1].speaker == "narrator":
+        s = segments[i - 1].text.strip()
+        if s and s[-1] in ",:—-":
+            last = _SENT_END.split(_clean(s))[-1]
+            if len(last.split()) <= _MAX_TAG_WORDS:
+                out.append(last)
+    return " | ".join(out)
+
+
+def _says(rx: re.Pattern, tag: str) -> bool:
+    return any(not _NEGATED.search(tag[:m.start()].replace("’", "'")) for m in rx.finditer(tag))
+
+
+def sfx_at(spoken: str, tag: str = "") -> tuple[int, str] | None:
+    """(offset, sfx name) when `spoken` starts with onomatopoeia for a Boson sound effect, else None.
+
+    `tag` is the adjacent speech tag (see speech_tag). Strict: when in doubt, no sound."""
+    lead = _LEAD.match(spoken)
+    if not lead:
+        return None
+    rest = spoken[lead.end():]
+    raw = rest.split()[:2]
+    if not raw:
+        return None
+    first = re.sub(r"[^a-z-]", "", raw[0].lower()).strip("-")
+    second = re.sub(r"[^a-z]", "", raw[1].lower()) if len(raw) > 1 else ""
+    # punctuation right after the word: a sound, not a verb ('Sniff!' vs 'Sniff this rose')
+    alone = bool(re.match(r"[A-Za-z-]+[!,.?…—*]", raw[0].lstrip("*"))) or len(raw) == 1
+    at = lead.end()
+    if _LAUGH.fullmatch(first.replace("-", "")) or (first == "ho" and second == "ho"):
+        return at, "laughter"
+    if first == "ahem":
+        return at, "cough"
+    if first == "cough" and (alone or second == "cough"):
+        return at, "cough"
+    if first == "sniff" and (alone or second == "sniff"):
+        return at, "sniff"
+    if _SIGH_WORD.fullmatch(first) and _says(_SIGH_TAG, tag):
+        return at, "sigh"
+    if (_SOB_WORD.fullmatch(first) or (first == "boo" and second == "hoo")) and (alone or second == "hoo") \
+            and _says(_WEEP_TAG, tag):
+        return at, "crying"
+    if _SCREAM_WORD.fullmatch(first) and re.match(r"[A-Za-z-]+!", raw[0]) and not _says(_SIGH_TAG, tag) \
+            and (raw[0].rstrip("!\"'”’").isupper() or _says(_SCREAM_TAG, tag)):  # 'Aaah!' alone may be delight
+        return at, "screaming"
+    return None
+
+
+def with_sfx(spoken: str, tag: str = "") -> str:
+    found = sfx_at(spoken, tag)
+    if found is None:
+        return spoken
+    at, name = found
+    return spoken[:at] + f"<|sfx:{name}|>" + spoken[at:]
+
+
+# ---------- expressiveness (#73) ----------
+
+_LOUD_TAG = re.compile(r"\b(?:shout(?:ed|s|ing)?|scream(?:ed|s|ing)?)\b", re.I)
+
+
+def detect_expressive(segments: Sequence, i: int) -> str | None:
+    """'expressive_high' for a clearly climactic character line, 'expressive_low' for a whispered one, else None.
+
+    Call after apply_styles (whispered = style 'whispering')."""
+    seg = segments[i]
+    if seg.speaker == "narrator":
+        return None
+    if seg.style == "whispering":
+        return "expressive_low"
+    ends_bang = seg.text.strip().rstrip("\"'”’)").endswith("!")
+    if _shouted_by_case(seg.text) or (ends_bang and _says(_LOUD_TAG, speech_tag(segments, i))):
+        return "expressive_high"
+    return None
+
+
+# ---------- pauses (#73) ----------
+
+_BREAK_MARKS = frozenset("*#~•·◆◇§")
+_BREAK_CHARS = _BREAK_MARKS | frozenset("=_-")
+SCENE_BREAK_MAX = 40  # a real separator is short; longer text is never one (also keeps the check cheap)
+
+
+def is_scene_break(text: str) -> bool:
+    """A separator paragraph such as '* * *', '***', '#' or '~ ~ ~' (no letters or digits). Linear: no regex
+    backtracking on uploaded text."""
+    t = text.strip()
+    if not t or len(t) > SCENE_BREAK_MAX:
+        return False
+    return all(c in _BREAK_CHARS or c.isspace() for c in t) and any(c in _BREAK_MARKS for c in t)

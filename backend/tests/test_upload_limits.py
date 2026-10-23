@@ -158,7 +158,7 @@ def test_huge_paragraph_chunks_fast():
     t = time.perf_counter()
     chunks = chunk_paragraph(book.paragraphs[0], book)
     assert time.perf_counter() - t < 1.0
-    assert chunks and all(len(c.tts_text) <= 280 for c in chunks)
+    assert chunks and all(c.char_end - c.char_start <= 280 for c in chunks)
 
 
 def test_upload_rate_limit(client, monkeypatch):

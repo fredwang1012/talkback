@@ -784,3 +784,32 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
 - Search: `multilingual.search_query` translates a non-English question to English with Gemini on Vertex (temperature 0, thinking off, 4 s timeout, 256-entry cache) before `/api/retrieve` and `/api/answer` search; `/api/retrieve` returns `search_query` when it differs. Without GCP_PROJECT, or on any failure, the original question is searched.
 - Why it matters: with BM25 alone (local, no e5 installed; also Vertex books while their index builds) a Spanish question finds nothing relevant. Alice: "¿Qué le pasa a Alicia cuando bebe de la botella?" returned ¶114-118 / 141-142 / 215-221 (unrelated); its English form returns ¶14-17 and ¶109-111 (the bottle scenes).
 - Not live-tested here (this machine has no GCP_PROJECT, and a Realtime check spends Boson credit). The badge (frontend/src/talk/language.ts) uses the same word lists; voice commands (#72 parseIntent) are still English only.
+## More expressive read-aloud tags, rule-based (#73, 2026-10-23, offline: no Boson calls)
+- `backend/app/delivery.py` (no LLM, strict; ambiguous -> no tag). Every sfx goes right before onomatopoeia already at the
+  start of a character's line (after the opening quote); narration never gets one. `speech_tag()` is the short adjacent
+  speech tag (same <=9-word clauses the style rule uses).
+  - sigh: Sigh / Ahh / Ahh-h / Haah, only if the tag says sighed/sighs/sighing.
+  - crying: Sob / Boo-hoo / Boo hoo, only if the tag says sobbed, wept, weeping, crying (not "crying out"), in tears,
+    or "cried bitterly/softly/quietly/piteously/harder/silently/herself...". Plain "cried Alice" means said -> no sfx.
+  - sniff, cough: Sniff / Cough when followed by punctuation or repeated ("Sniff this rose" is a verb); Ahem -> cough.
+  - screaming: Aah+! / Aaargh! with "!", and either uppercase (AAAARGH!) or a screamed/shrieked tag. Lowercase "Aaah!"
+    alone is not tagged (HP4: Mr. Weasley's "Aaah!" is delight).
+  - laughter unchanged.
+- Expressiveness: `<|prosody:expressive_high|>` for a character line that is mostly uppercase with "!", or ends with "!"
+  and its tag says shouted/screamed; `<|prosody:expressive_low|>` for a whispered line (alongside style:whispering).
+  Never added when the voice tags already carry an expressive_* tag.
+- Pauses (`ttschunks.lead_pause`, first chunk of a paragraph only, right before the text): `long_pause` for the first
+  paragraph of every section (after the heading, which is not spoken) and after a separator paragraph (`* * *`, `***`,
+  `#`, `~ ~ ~`; the separator's own chunk is unchanged); `pause` for a dialogue paragraph right after a paragraph of
+  pure narration that ended with . ! or ? (narration ending in ":" or "," introduces the quote, so no pause).
+- tts_text order: voice tags, style, emotion, expressive_*, pause/long_pause, text (sfx inside the text).
+- Chapter-end reset tag: not done. Neither the Boson vocabulary we recorded (above, and delivery.TAG_VALUES) nor the
+  tags page lists a reset tag, so nothing is inserted.
+- Timestamp residue: all new tags are already in TAG_VALUES, so `strip_tag_residue` removes 'prosodylongpause',
+  'prosodyexpressivelow', 'sfxcrying' etc. glued to words (tests in backend/tests/test_expressive.py).
+- Cost: existing book.json files are NOT rebuilt, so cached audio is untouched; the tags appear when a book's chunks are
+  rebuilt (preprocess/chunk_tts.py, re-enrich, new uploads). `scripts/estimate_expressive.py` (offline) compares
+  chunk_paragraph(expressive=False) with the new rules per book. Run on the main checkout's data/books:
+  9642 of ~104k chunks change, 806k chars, $12.09 if every changed chunk were re-voiced (HP1-7 $10.15, five classics
+  $1.09, IR textbook $0.85); only 16 changed chunks ($0.05) have audio in the local cache under the book's own voice.
+  `pause` makes up ~85% of the changes; real sfx hits are rare (HP1-7: 8 cough/screaming, classics: 0).
