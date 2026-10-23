@@ -8,7 +8,7 @@ import { micErrorMessage } from "../audio/mediaErrors";
 
 import type { SentenceSpeaker } from "./sentencePlayer";
 import type { TimingEvent } from "./speechGate";
-import { createVoiceGate } from "./handsFree";
+import { HANDS_FREE_OVER_SPEECH, createVoiceGate } from "./handsFree";
 import { parseIntent, type ToolOutcome, type ToolRunner } from "./tools";
 
 /** How many queued sentences are synthesised ahead of the one being spoken. */
@@ -41,9 +41,9 @@ export interface TalkSession {
   /** Stop the mic. With `discard`, drop what was captured instead of keeping it for a commit. */
   stopMic(discard?: boolean): Promise<void>;
   commit(): void;
-  /** Ask for a spoken answer using per-response instructions. */
-  respond(instructions: string): void;
-  /** Flush local playback, truncate the interrupted item at the played position and cancel the response. */
+  /** Ask for a spoken answer using per-response instructions. A typed question is given as `question` (#97). */
+  respond(instructions: string, question?: string): void;
+  /** Flush local playback, truncate the interrupted item at the played position and cancel the response. Rejects when the cancel is never acknowledged. */
   interrupt(): Promise<void>;
   /** Hand the results of a `tool-call` back and let the model go on speaking. Optional: a session without tools never asks. */
   returnTools?(results: ToolResult[]): void;
@@ -123,12 +123,18 @@ export class TalkController {
   private handsFree = false; // #10: the voice gate starts and ends turns instead of the mic button
   private handsFreeTurn = false; // the current turn was started by the gate (never a tap)
   private gate = createVoiceGate();
+  private opening: Promise<void> = Promise.resolve(); // the session connect started by the current turn (#102)
+  private watch = 0; // the answer watchdog in force; an older one that wakes up does nothing
+  private quietSince = 0; // when the character last stopped speaking (hands-free echo tail, #103)
   private off: () => void;
 
   constructor(deps: TalkDeps) {
-    this.d = { now: () => Date.now(), autoResumeDelayMs: 1500, transcriptTimeoutMs: 2500, retrieveTimeoutMs: 8000, tapMs: 300, ...deps };
+    this.d = { now: () => Date.now(), autoResumeDelayMs: 1500, transcriptTimeoutMs: 6000, retrieveTimeoutMs: 8000, tapMs: 300, ...deps };
     this.off = deps.session.on((e) => this.onSession(e));
   }
+
+  /** The character's own voice is still in the room this long after playback ends: the strict gate profile still applies (#103). */
+  static readonly ECHO_TAIL_MS = 300;
 
   get state(): TalkState { return this._state; }
 
@@ -165,6 +171,7 @@ export class TalkController {
   private setSpeaking(v: boolean): void {
     if (v === this.speaking) return;
     this.speaking = v;
+    if (!v) this.quietSince = this.d.now();
     this.d.onSpeaking?.(v);
   }
 
@@ -220,12 +227,19 @@ export class TalkController {
     }
   }
 
-  /** A microphone level reading (hands-free only): speech during an answer barges in; silence after speech ends the turn. */
+  /**
+   * A microphone level reading (hands-free only): speech starts a turn, silence after speech ends one.
+   * While the character is speaking (and for a short tail after) the level is partly their own voice through the
+   * speakers (#103), so a barge-in then needs the stricter profile: clearly louder than the echo, and sustained.
+   * A blip or the echo itself never cuts them off; the mic button or Space always does.
+   */
   noteLevel(rms: number): void {
     if (!this.handsFree) return;
-    const ev = this.gate.feed(rms, this.d.now());
+    const now = this.d.now();
+    const overSpeech = this._state !== "listening" && (this.speaking || now - this.quietSince < TalkController.ECHO_TAIL_MS);
+    const ev = this.gate.feed(rms, now, overSpeech ? HANDS_FREE_OVER_SPEECH : undefined);
     if (ev === "start" && ["reading", "talk-idle", "answering", "resuming"].includes(this._state)) void this.beginTurn(true);
-    else if (ev === "stop" && this._state === "listening" && this.handsFreeTurn) void this.pttUp();
+    else if (ev === "stop" && this._state === "listening") { this.handsFreeTurn = true; void this.pttUp(); } // a pressed turn ends on silence too, and is never a tap
   }
 
   // ---- push to talk ---------------------------------------------------------------------------------------
@@ -251,12 +265,14 @@ export class TalkController {
     this.d.onCaption?.("", false);
     this.set("listening");
 
-    if ((wasAnswering || wasBusy) && !viaAnswer) {
-      try { await this.d.session.interrupt(); } catch { /* nothing to cancel is fine */ }
-    }
-    if (turn !== this.turn) return;
-    // connect and capture in parallel: the mic is buffered until the socket is open
-    this.d.session.ensureOpen(this.d.voiceFor(this.speakerId)).catch((e: unknown) => this.fail(turn, e));
+    // Cancel, connect and capture all at once (#100, #99): the mic starts now so the first words over the old answer
+    // are kept; the session holds that audio and the commit until the cancel is acknowledged and the socket is open.
+    // pttUp waits for both before it starts the transcript window. A cancel that is never acknowledged ends the turn.
+    const interrupting = (wasAnswering || wasBusy) && !viaAnswer
+      ? this.d.session.interrupt().catch((e: unknown) => this.fail(turn, e))
+      : Promise.resolve();
+    const connecting = this.d.session.ensureOpen(this.d.voiceFor(this.speakerId)).catch((e: unknown) => this.fail(turn, e));
+    this.opening = Promise.all([interrupting, connecting]).then(() => undefined);
     try { await this.d.session.startMic(); } catch (e) { this.fail(turn, e, micErrorMessage(e)); }
   }
 
@@ -281,13 +297,23 @@ export class TalkController {
     await this.d.session.stopMic();
     if (turn !== this.turn) return;
     this.set("transcribing");
+    // The first press often releases before the socket is open (key fetch + connect take seconds). The commit is
+    // queued until then, so the transcript window must start when it is really sent, not at the release (#102).
+    await this.opening; // a failed connect already ended this turn through fail()
+    if (turn !== this.turn) return;
     const t0 = this.d.now();
     this.d.session.commit();
     const transcript = await this.waitFor((e) => e.type === "transcript", this.d.transcriptTimeoutMs);
     if (turn !== this.turn) return;
     const query = transcript && transcript.type === "transcript" ? transcript.text.trim() : "";
     this.latency = { commitToTranscriptMs: this.d.now() - t0 };
-    if (query) this.d.onTranscript?.(query);
+    if (!query) { // nothing heard (silence, a failed or late transcription): never ask an empty question
+      this.d.onToast?.("I didn't catch that. Try again.");
+      this.turn++;
+      this.backToReading();
+      return;
+    }
+    this.d.onTranscript?.(query);
 
     await this.answerQuery(turn, query);
   }
@@ -313,14 +339,14 @@ export class TalkController {
     this.d.onTranscript?.(query);
     this.set("retrieving");
     if ((wasAnswering || wasBusy) && !viaAnswer) {
-      try { await this.d.session.interrupt(); } catch { /* nothing to cancel is fine */ }
+      try { await this.d.session.interrupt(); } catch (e) { this.fail(turn, e); return; }
     }
     if (turn !== this.turn) return;
     if (!(this.d.answer && this.d.speaker)) {
       try { await this.d.session.ensureOpen(this.d.voiceFor(this.speakerId)); } catch (e) { this.fail(turn, e); return; }
       if (turn !== this.turn) return;
     }
-    await this.answerQuery(turn, query);
+    await this.answerQuery(turn, query, true);
   }
 
   /** Stop speaking and drop the current answer (Stop button). */
@@ -334,7 +360,8 @@ export class TalkController {
     this.backToReading();
   }
 
-  private async answerQuery(turn: number, query: string): Promise<void> {
+  /** `typed`: the question is text, so the Realtime model must be given it as an item (#97); spoken audio is already the user item. */
+  private async answerQuery(turn: number, query: string, typed = false): Promise<void> {
     this.set("retrieving");
     const r0 = this.d.now();
     if (this.d.answer && this.d.speaker) {
@@ -366,7 +393,7 @@ export class TalkController {
 
     this.set("answering");
     const a0 = this.d.now();
-    this.d.session.respond(instructions);
+    this.d.session.respond(instructions, typed ? query : undefined);
     void this.awaitAnswer(turn, a0); // key release returns now; the answer is handled in the background
   }
 
@@ -458,11 +485,17 @@ export class TalkController {
     this.d.speaker?.stop();
   }
 
+  /**
+   * Waits for the answer to start (audio), end without audio, or fail; after 15 s of nothing it ends the turn itself.
+   * Armed by `respond` and again by every `returnTools` (#102): a tool call's continuation is a new response that can
+   * go missing too, and until it speaks the status would otherwise say "Thinking" for ever.
+   */
   private async awaitAnswer(turn: number, a0: number): Promise<void> {
+    const watch = ++this.watch;
     const first = await this.waitFor((e) => e.type === "audio-start" || e.type === "response-done" || e.type === "error", 15000);
-    if (turn !== this.turn) return;
+    if (turn !== this.turn || watch !== this.watch) return;
     if (first?.type === "audio-start") {
-      this.latency.firstAudioMs = this.d.now() - a0;
+      this.latency.firstAudioMs ??= this.d.now() - a0;
       this.d.onLatency?.({ ...this.latency });
     } else if (first?.type === "response-done") {
       this.afterAnswer(); // finished without any audio: nothing to wait for
@@ -502,6 +535,7 @@ export class TalkController {
     });
     this.set("answering"); // the spoken confirmation follows
     this.d.session.returnTools?.(results);
+    void this.awaitAnswer(this.turn, this.d.now()); // the continuation gets its own watchdog
   }
 
   /** Run one tool and apply what it means for the loop: where reading continues (or that it does not) once the answer ends. */

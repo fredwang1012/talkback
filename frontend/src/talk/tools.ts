@@ -294,7 +294,12 @@ export type Intent = { name: ToolName; args: Record<string, unknown> };
  * phrasings only, so a real question is never swallowed. Anything else is null and goes to Gemini as a question.
  */
 export function parseIntent(text: string): Intent | null {
-  const t = norm(text).replace(/[.!?]+$/, "");
+  // the transcriber writes speech as prose (#102): "Okay, read chapter 2, please!" must parse like "read chapter 2"
+  const t = norm(text)
+    .replace(/[,;:!?]+/g, " ").replace(/\.+$/, "").replace(/\s+/g, " ").trim()
+    .replace(/^(?:hey|hi|ok|okay|so|um|uh|now)\s+/, "")
+    .replace(/^(?:can|could|would|will)\s+you\s+(?:please\s+)?/, "")
+    .replace(/\s+please$/, "");
   let m: RegExpExecArray | null;
   if ((m = /^(?:please )?(?:read|start|begin)(?: me)? (?:chapter|part) (\S+)(?: (?:aloud|out loud|please))?$/.exec(t))) return { name: "read_chapter", args: { chapter: m[1] } };
   if ((m = /^(?:please )?(?:jump|go|skip|take me|move)(?: back| ahead| forward)? to (?:the )?(?:(?:chapter|part) (\S+)|(?:my )?bookmark|(.+))$/.exec(t))) {

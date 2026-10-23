@@ -115,6 +115,8 @@ describe("TalkbackView", () => {
     expect(host.querySelector(".bubble.interrupted")!.textContent).toContain("interrupted");
     const hf = host.querySelector<HTMLButtonElement>(".hands-free")!;
     expect(hf.getAttribute("aria-pressed")).toBe("false");
+    expect(hf.textContent).toMatch(/headphones/i); // #103: the label says what it needs
+    expect(hf.title).toMatch(/headphones/i);
     act(() => hf.click());
     expect(setHandsFree).toHaveBeenCalledWith(true);
   });

@@ -269,6 +269,66 @@ describe("TalkController tools (Realtime)", () => {
   });
 });
 
+describe("TalkController tools: every voice path ends somewhere visible (#102)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("a tool call whose spoken continuation never comes times out with a toast instead of 'Thinking' forever", async () => {
+    const h = setup({ playing: true });
+    await ask(h, "Jump to chapter two");
+    h.session.emit({ type: "audio-start" }); // the first response said a word, then stopped to act
+    h.session.emit({ type: "tool-call", calls: [{ callId: "c1", name: "jump_to", args: { chapter: "2" } }] });
+    expect(h.session.calls.at(-1)).toBe("return-tools");
+    await tick(14000);
+    expect(h.talk.state).toBe("answering"); // still inside the window
+    await tick(2000);
+    expect(h.toasts.at(-1)).toMatch(/took too long/);
+    expect(["reading", "talk-idle"]).toContain(h.talk.state);
+    expect(h.toasts).toHaveLength(1); // one watchdog, one toast
+  });
+
+  it("a tool call answered by a server error ends the turn with the error shown", async () => {
+    const h = setup({ playing: true });
+    await ask(h, "Jump to chapter two");
+    h.session.emit({ type: "tool-call", calls: [{ callId: "c1", name: "jump_to", args: { chapter: "2" } }] });
+    h.session.emit({ type: "error", message: "function_call_output rejected" });
+    await tick(0);
+    expect(h.toasts).toEqual(["function_call_output rejected"]);
+    expect(h.talk.state).toBe("reading");
+    await tick(20000);
+    expect(h.toasts).toHaveLength(1); // the watchdog does not add a second toast after the turn ended
+  });
+
+  it("a continuation that only speaks (no second tool) ends normally; a second tool call re-arms the watchdog once", async () => {
+    const h = setup({ playing: true });
+    await ask(h, "Jump to chapter two then read it");
+    h.session.emit({ type: "tool-call", calls: [{ callId: "c1", name: "jump_to", args: { chapter: "2" } }] });
+    await tick(10000);
+    h.session.emit({ type: "tool-call", calls: [{ callId: "c2", name: "bookmark", args: {} }] });
+    await tick(10000); // 20 s since the first call, 10 s since the second: still waiting
+    expect(h.talk.state).toBe("answering");
+    expect(h.toasts).toEqual([]);
+    await finishSpeaking(h);
+    await tick(1500);
+    expect(h.talk.state).toBe("reading");
+  });
+});
+
+describe("TalkController tools (Gemini path: spoken commands as the transcriber writes them)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("punctuation, 'please' and a polite prefix from the transcript still run the tool (#102)", async () => {
+    for (const said of ["Read chapter two.", "Read chapter 2, please!", "Could you read chapter two?", "Okay, jump to chapter two."]) {
+      const h = setup({ gemini: true, playing: false });
+      await ask(h, said);
+      await tick(0);
+      expect(h.actions, said).toEqual(["seek:8"]);
+      expect(h.spoken, said).toEqual([]);
+    }
+  });
+});
+
 describe("TalkController tools (Gemini path: intent parse, no model call)", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());

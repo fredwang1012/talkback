@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TalkClient, type MicLike, type PlayerLike, type SocketLike } from "../src/talk/TalkClient";
 import { TalkController, type ReaderControl, type SessionEvent, type TalkSession, type TalkState } from "../src/talk/TalkController";
-import { HANDS_FREE, createVoiceGate } from "../src/talk/handsFree";
+import { HANDS_FREE, HANDS_FREE_OVER_SPEECH, createVoiceGate, type VoiceGateEvent } from "../src/talk/handsFree";
 import { INTERRUPTED_MARK, addQuestion, appendSentence, finishAnswer, markInterrupted, priorTurns } from "../src/talk/chatLog";
 
 // ---- fake socket ----
@@ -141,6 +141,28 @@ describe("voice gate (hands-free)", () => {
     expect(HANDS_FREE.threshold).toBeLessThan(0.05);
     expect(HANDS_FREE.silenceMs).toBeGreaterThanOrEqual(600);
   });
+
+  it("the over-speech profile (#103) needs louder, longer speech: residual echo and blips pass, real speech opens it", () => {
+    expect(HANDS_FREE_OVER_SPEECH.threshold).toBeGreaterThanOrEqual(0.08);
+    expect(HANDS_FREE_OVER_SPEECH.minSpeechMs).toBeGreaterThanOrEqual(350);
+    const g = createVoiceGate();
+    const strict = HANDS_FREE_OVER_SPEECH;
+    for (let t = 0; t < 2000; t += 20) expect(g.feed(0.07, t, strict)).toBeNull(); // what the echo canceller leaves of the character
+    for (let t = 2000; t < 2300; t += 20) expect(g.feed(0.3, t, strict)).toBeNull(); // a 300 ms blip
+    expect(g.feed(0.01, 2300, strict)).toBeNull();
+    let started: number | null = null;
+    for (let t = 2320; t < 3000 && started === null; t += 20) if (g.feed(0.2, t, strict) === "start") started = t;
+    expect(started).not.toBeNull();
+    expect(started! - 2320).toBeGreaterThanOrEqual(strict.minSpeechMs);
+    // once open, the profile in force decides the end as usual
+    for (let t = started! + 20; t < started! + 700; t += 20) expect(g.feed(0.01, t, strict)).toBeNull();
+    expect(g.feed(0.01, started! + 720, strict)).toBe("stop");
+    // the idle profile is unchanged: the same 0.07 is speech when nobody else is talking
+    const g2 = createVoiceGate();
+    let idleStart: VoiceGateEvent = null;
+    for (let t = 0; t < 400; t += 20) idleStart = g2.feed(0.07, t) ?? idleStart;
+    expect(idleStart).toBe("start");
+  });
 });
 
 // ---- the loop ----
@@ -265,8 +287,8 @@ describe("barge-in in the loop (TalkController)", () => {
     await ask(h, "Who is Alice?", 6000); // held well past the long tap window
     h.session.emit({ type: "audio-start" });
     expect(h.talk.state).toBe("answering");
-    // the character talks; the reader speaks over them
-    for (let i = 0; i < 10; i++) { h.talk.noteLevel(0.12); await tick(20); }
+    // the character talks; the reader speaks over them, clearly and for half a second (HANDS_FREE_OVER_SPEECH)
+    for (let i = 0; i < 25; i++) { h.talk.noteLevel(0.2); await tick(20); }
     expect(h.talk.state).toBe("listening");
     expect(h.interrupted()).toBe(1);
     await tick(0);
@@ -276,6 +298,52 @@ describe("barge-in in the loop (TalkController)", () => {
     expect(h.talk.state).toBe("transcribing");
     expect(h.session.calls.at(-1)).toBe("commit");
     expect(h.reader.log).not.toContain("play"); // not treated as a tap
+  });
+
+  it("hands-free: the character's echo and a short blip never barge in; sustained loud speech does (#103)", async () => {
+    const h = setup({ tapMs: 5000 });
+    await h.talk.setHandsFree(true);
+    await ask(h, "Who is Alice?", 6000);
+    h.session.emit({ type: "audio-start" }); // the character speaks: the laptop mic hears what the echo canceller leaves
+    expect(h.talk.state).toBe("answering");
+    for (let i = 0; i < 50; i++) { h.talk.noteLevel(0.06); await tick(20); } // a second of residual echo: loud for the idle gate
+    expect(h.talk.state).toBe("answering");
+    for (let i = 0; i < 10; i++) { h.talk.noteLevel(0.25); await tick(20); } // a 200 ms blip (cough, click)
+    for (let i = 0; i < 10; i++) { h.talk.noteLevel(0.06); await tick(20); }
+    expect(h.talk.state).toBe("answering");
+    expect(h.interrupted()).toBe(0);
+    for (let i = 0; i < 25; i++) { h.talk.noteLevel(0.2); await tick(20); } // half a second of real speech over the character
+    expect(h.talk.state).toBe("listening");
+    expect(h.interrupted()).toBe(1);
+  });
+
+  it("hands-free: the echo tail right after the answer is judged strictly too, then the idle gate applies again (#103)", async () => {
+    const h = setup({ tapMs: 5000 });
+    await h.talk.setHandsFree(true);
+    await ask(h, "Who is Alice?", 6000);
+    h.session.emit({ type: "audio-start" });
+    h.session.emit({ type: "response-done", status: "completed" });
+    h.session.emit({ type: "playback-drained" });
+    await tick(0);
+    expect(h.talk.state).toBe("talk-idle");
+    for (let i = 0; i < 10; i++) { h.talk.noteLevel(0.06); await tick(20); } // 200 ms of tail at echo level
+    expect(h.talk.state).toBe("talk-idle");
+    await tick(300);
+    for (let i = 0; i < 10; i++) { h.talk.noteLevel(0.06); await tick(20); } // the same level once the room is quiet: the reader
+    expect(h.talk.state).toBe("listening");
+  });
+
+  it("hands-free: pressing the mic while the character speaks still interrupts, and silence then ends that turn", async () => {
+    const h = setup({ tapMs: 5000 });
+    await h.talk.setHandsFree(true);
+    await ask(h, "Who is Alice?", 6000);
+    h.session.emit({ type: "audio-start" });
+    await h.talk.pttDown();
+    expect(h.talk.state).toBe("listening");
+    expect(h.interrupted()).toBe(1);
+    for (let i = 0; i < 10; i++) { h.talk.noteLevel(0.12); await tick(20); }
+    for (let i = 0; i < 40; i++) { h.talk.noteLevel(0.01); await tick(20); }
+    expect(h.talk.state).toBe("transcribing"); // the gate ends the pressed turn too: no need to release the key
   });
 
   it("hands-free off again releases the monitor, and levels are ignored", async () => {

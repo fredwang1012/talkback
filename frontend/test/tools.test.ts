@@ -170,6 +170,14 @@ describe("parseIntent (Gemini path)", () => {
     expect(parseIntent("bookmark this")).toEqual({ name: "bookmark", args: {} });
     expect(parseIntent("show me the cast")).toEqual({ name: "show_cast", args: {} });
   });
+  it("tolerates how speech is transcribed: punctuation, commas, 'please', a polite prefix", () => {
+    expect(parseIntent("Read chapter 2, please.")).toEqual({ name: "read_chapter", args: { chapter: "2" } });
+    expect(parseIntent("Jump to chapter two!")).toEqual({ name: "jump_to", args: { chapter: "two" } });
+    expect(parseIntent("Could you read chapter two?")).toEqual({ name: "read_chapter", args: { chapter: "two" } });
+    expect(parseIntent("Okay, please pause.")).toEqual({ name: "pause_reading", args: {} });
+    expect(parseIntent("Can you go a bit faster, please?")).toEqual({ name: "set_speed", args: { speed: "faster" } });
+    expect(parseIntent("Set the speed to 1.5, please")).toEqual({ name: "set_speed", args: { speed: "1.5" } });
+  });
   it("leaves real questions alone", () => {
     for (const q of ["Why did Alice follow the rabbit?", "What happens in chapter 3?", "Who is the Hatter?", "Is the story over?", "Can you read faster than a human?"]) {
       expect(parseIntent(q)).toBeNull();

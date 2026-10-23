@@ -70,10 +70,10 @@ export class MicCapture {
         // and the conversation interrupts itself. Wear headphones and it stops
         // mattering; most people will not.
         echoCancellation: true,
-        // Browser noise suppression off. It is tuned for human listeners on a
-        // call, and it removes quiet speech along with the noise. Leave the
-        // audio raw and let the model decide what matters.
-        noiseSuppression: false,
+        // Noise suppression on too (#103): hands-free keeps the mic open while
+        // the character talks, and fan noise plus speaker bleed must not read
+        // as the reader speaking. The STT copes with suppressed audio fine.
+        noiseSuppression: true,
         autoGainControl: true,
         channelCount: 1,
       },

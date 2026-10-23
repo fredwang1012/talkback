@@ -148,8 +148,8 @@ export default function TalkbackView({
           )}
           {talk.setHandsFree && (
             <button className="spoiler-toggle hands-free" aria-pressed={!!talk.handsFree} onClick={() => talk.setHandsFree?.(!talk.handsFree)}
-                    title="Keep the microphone open: just speak to interrupt or ask; a pause ends your question. Headphones help.">
-              Hands-free: {talk.handsFree ? "on" : "off"}
+                    title="Recommended with headphones. Keeps the microphone open: speak to ask or to interrupt, a pause ends your question. Through speakers a little of the character's own voice comes back, so interrupting them takes clear, sustained speech.">
+              Hands-free (use headphones): {talk.handsFree ? "on" : "off"}
             </button>
           )}
         </div>

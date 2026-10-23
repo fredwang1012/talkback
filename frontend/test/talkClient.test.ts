@@ -287,6 +287,109 @@ describe("TalkClient turns", () => {
   });
 });
 
+describe("TalkClient typed questions (#97)", () => {
+  it("a typed question goes to the model as a user input_text item before response.create; a spoken one sends none", async () => {
+    const h = setup();
+    const p = h.client.ensureOpen("marcus");
+    await flush(); h.sockets[0].open(); await p;
+    const s = h.sockets[0];
+    h.client.respond("Be the Tutor.", "What is a monad?");
+    expect(s.sent.slice(-2)).toEqual([
+      { type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "What is a monad?" }] } },
+      { type: "response.create", response: { instructions: "Be the Tutor.", max_output_tokens: 600 } },
+    ]);
+    h.client.respond("Be the Tutor."); // spoken: the committed audio is the user item
+    expect(s.types().slice(-2)).toEqual(["response.create", "response.create"]);
+  });
+});
+
+describe("TalkClient barge-in leftovers (#100)", () => {
+  async function speaking(h: ReturnType<typeof setup>) {
+    const p = h.client.ensureOpen("marcus");
+    await flush(); h.sockets[0].open(); await p;
+    const s = h.sockets[0];
+    h.client.respond("x");
+    s.recv({ type: "response.created", response: { id: "r1" } });
+    s.recv({ type: "response.output_item.added", item: { id: "item1", type: "message" } });
+    s.recv({ type: "response.output_audio.delta", response_id: "r1", item_id: "item1", delta: "OLD1" });
+    s.recv({ type: "response.output_audio_transcript.delta", response_id: "r1", item_id: "item1", delta: "The old " });
+    return s;
+  }
+
+  it("audio and captions of the cut-off answer that arrive after the interrupt are dropped until the next response", async () => {
+    const h = setup();
+    const s = await speaking(h);
+    h.player.playedMs = 500;
+    const p = h.client.interrupt();
+    await flush();
+    s.recv({ type: "response.output_audio.delta", response_id: "r1", item_id: "item1", delta: "OLD2" }); // generated faster than real time
+    s.recv({ type: "response.output_audio_transcript.delta", response_id: "r1", item_id: "item1", delta: "answer" });
+    s.recv({ type: "response.done", response: { id: "r1", status: "cancelled", output: [] } });
+    await p;
+    s.recv({ type: "response.output_audio.delta", response_id: "r1", item_id: "item1", delta: "OLD3" }); // a straggler after the ack
+    expect(h.player.enqueued).toEqual(["OLD1"]);
+    expect(h.events.filter((e) => e.type === "caption").map((e) => (e as { text: string }).text)).toEqual(["The old "]);
+    expect(h.events.some((e) => e.type === "playback-drained")).toBe(false); // the old answer's end is not the new turn's end
+    // the next answer plays normally
+    h.client.respond("y");
+    s.recv({ type: "response.created", response: { id: "r2" } });
+    s.recv({ type: "response.output_audio.delta", response_id: "r2", item_id: "item2", delta: "NEW1" });
+    s.recv({ type: "response.output_audio_transcript.delta", response_id: "r2", item_id: "item2", delta: "Fresh" });
+    expect(h.player.enqueued).toEqual(["OLD1", "NEW1"]);
+    expect(h.events.at(-1)).toEqual({ type: "caption", text: "Fresh", done: false });
+  });
+
+  it("mic audio and the commit of the new question are held until the cancel is acknowledged, then sent in order", async () => {
+    const h = setup();
+    const s = await speaking(h);
+    const p = h.client.interrupt();
+    await h.client.startMic(); // the mic starts at once: the first words are kept
+    h.chunk("Q1"); h.chunk("Q2");
+    h.client.commit(); // a quick release
+    await flush();
+    expect(s.types().filter((t) => t.startsWith("input_audio_buffer"))).toEqual([]); // nothing yet: voice_output_task_ongoing otherwise
+    s.recv({ type: "response.done", response: { id: "r1", status: "cancelled", output: [] } });
+    await p;
+    expect(s.types().slice(-3)).toEqual(["input_audio_buffer.append", "input_audio_buffer.append", "input_audio_buffer.commit"]);
+    expect(s.sent.slice(-3, -1).map((e) => e.audio)).toEqual(["Q1", "Q2"]);
+    h.chunk("Q3"); // held no more
+    expect(s.types().at(-1)).toBe("input_audio_buffer.append");
+  });
+
+  it("'response_not_active' acknowledges the cancel too (the answer had just finished)", async () => {
+    const h = setup();
+    const s = await speaking(h);
+    const p = h.client.interrupt();
+    await flush();
+    s.recv({ type: "error", error: { type: "invalid_request_error", code: "response_not_active", message: "none" } });
+    await p;
+    h.client.commit();
+    expect(s.types().at(-1)).toBe("input_audio_buffer.commit");
+  });
+
+  it("a cancel that is never acknowledged fails the interrupt with a message, and nothing held is sent", async () => {
+    const h = setup();
+    const s = await speaking(h);
+    const p = h.client.interrupt();
+    await h.client.startMic();
+    h.chunk("Q1");
+    h.client.commit();
+    await expect(p).rejects.toThrow(/could not be stopped/i); // cancelWaitMs is 50 here
+    expect(s.types().filter((t) => t.startsWith("input_audio_buffer"))).toEqual([]);
+  });
+});
+
+describe("TalkClient transcription outcomes", () => {
+  it("a failed transcription is reported as an empty transcript, so the turn ends instead of waiting it out", async () => {
+    const h = setup();
+    const p = h.client.ensureOpen("marcus");
+    await flush(); h.sockets[0].open(); await p;
+    h.client.commit();
+    h.sockets[0].recv({ type: "conversation.item.input_audio_transcription.failed", item_id: "i1", error: { message: "no speech" } });
+    expect(h.events).toEqual([{ type: "transcript", text: "" }]);
+  });
+});
+
 describe("TalkClient voice changes", () => {
   async function open(h: ReturnType<typeof setup>) {
     const p = h.client.ensureOpen("marcus");
@@ -359,7 +462,9 @@ describe("TalkClient history on a fresh session", () => {
     const sent = h.sockets[0].sent;
     expect(sent.map((e) => e.type)).toEqual(["session.update", "conversation.item.create", "conversation.item.create"]);
     expect(sent[1].item).toEqual({ type: "message", role: "user", content: [{ type: "input_text", text: "Who is Hagrid?" }] });
-    expect(sent[2].item.role).toBe("assistant");
+    // Boson's AssistantItem takes {type: "text"}; "output_text" is rejected with a pile of pydantic errors (#102)
+    expect(sent[2].item).toEqual({ type: "message", role: "assistant", content: [{ type: "text", text: "A big fellow." }] });
+    expect(JSON.stringify(sent)).not.toContain("output_text");
     expect(JSON.stringify(sent)).not.toContain("input_audio");
     h.sockets[0].recv({ type: "error", error: { type: "invalid_request_error", message: "bad item", event_id: "seed-1" } });
     expect(h.events.filter((e) => e.type === "error")).toHaveLength(0);
