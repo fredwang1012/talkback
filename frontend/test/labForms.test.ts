@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { faceFileName, faceMissing, loadedSize, missingLine, objectUrlEffect, voiceMissing } from "../src/reader/labForms";
+import { faceMissing, loadedSize, missingLine, objectUrlEffect, voiceMissing } from "../src/reader/labForms";
 
 const ready = { clip: true, transcript: "Hello there", name: "Me", consent: true, audioAvailable: true, busy: false };
 
@@ -65,14 +65,5 @@ describe("loadedSize", () => {
     expect(loadedSize({ complete: false, naturalWidth: 0, naturalHeight: 0 })).toBeNull();
     expect(loadedSize({ complete: true, naturalWidth: 0, naturalHeight: 0 })).toBeNull();
     expect(loadedSize(null)).toBeNull();
-  });
-});
-
-describe("faceFileName", () => {
-  it("follows the content type", () => {
-    expect(faceFileName("image/png")).toBe("portrait.png");
-    expect(faceFileName("image/webp")).toBe("portrait.webp");
-    expect(faceFileName("image/jpeg")).toBe("portrait.jpg");
-    expect(faceFileName(null)).toBe("portrait.jpg");
   });
 });

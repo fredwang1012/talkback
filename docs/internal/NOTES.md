@@ -714,3 +714,15 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   character speaks (and 300 ms after) the gate uses `HANDS_FREE_OVER_SPEECH` (0.10 RMS for 400 ms) instead of the idle
   profile (0.04 for 150 ms): residual echo and a cough do not interrupt, clear sustained speech does, the mic button /
   Space always does. The toggle says "Hands-free (use headphones)".
+
+## Lip-sync for any voice x face (#113)
+- Before: lip-sync requests sent only the voice and the server animated `faces.voice_face_path(voice)`, so only a
+  cloned voice with its own face ever lip-synced; uploaded faces, presets with a face and newly cloned voices with a
+  picked face fell back to the talk loop. Now every request (answers, recaps, read mode per chunk, replays re-open the
+  same clip) carries `face_id` = the face on screen; `_lipsync_face` resolves it in the caller's library (404 for
+  another account's or unknown id), and falls back to the voice's face when no id is sent. Cache key unchanged
+  (audio key + face image hash), so old clips stay valid.
+- Cloning with an existing face sends `face_id` to `/api/voices/clone`: `faces.link_voice` marks the entry
+  `voice` + `linked: true` (no copy). Deleting the voice deletes only faces made with the clone (no `linked`) and
+  unlinks borrowed ones (`faces.unlink_voice`). The old `face` file upload still works.
+- Realtime (Boson realtime) answers are audio only, as before; nothing to lip-sync there.

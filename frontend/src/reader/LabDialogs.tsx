@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { cloneVoice, fetchFaceFile, uploadFace, type Face } from "../api";
+import { cloneVoice, uploadFace, type Face } from "../api";
 import { micErrorMessage } from "../audio/mediaErrors";
 import { toCloneAudio } from "../audio/toWav";
 import CameraCapture from "./CameraCapture";
@@ -86,7 +86,7 @@ export function AddFaceForm({ onDone, onCancel }: { onDone: (face: Face, animate
 export type ClonedVoice = { name: string; voice: string; face: string | null };
 
 /** Add voice dialog body (#111): the line to read, Record or upload, transcript, name, an existing face or none,
- * consent, Create voice. The face is linked by sending a copy of its image with the clone (the API takes a file). */
+ * consent, Create voice. The chosen face is linked by id (#113): no copy, so the face list shows it once. */
 export function AddVoiceForm({ faces, audioAvailable, onDone, onCancel }: {
   faces: Face[]; audioAvailable: boolean; onDone: (out: ClonedVoice) => void; onCancel: () => void;
 }) {
@@ -131,9 +131,8 @@ export function AddVoiceForm({ faces, audioAvailable, onDone, onCancel }: {
     setMsg(null);
     try {
       const chosen = faces.find((f) => f.id === faceId);
-      const face = chosen ? await fetchFaceFile(chosen) : null;
       const audio = await toCloneAudio(clip.blob, clip.filename);
-      onDone(await cloneVoice(audio.blob, audio.filename, transcript, name.trim(), consent, face));
+      onDone(await cloneVoice(audio.blob, audio.filename, transcript, name.trim(), consent, null, chosen?.id ?? null));
     } catch (e) {
       setMsg({ kind: "error", text: errText(e) });
       setBusy(false);

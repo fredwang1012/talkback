@@ -63,8 +63,8 @@ type Args = {
   voiceFor: (speakerId: string) => string;
   autoResume: boolean;
   health: Health | null;
-  canLipSync?: (voice: string) => boolean; // the chosen face is the one bound to this voice (the server lip-syncs the voice's own face)
-  narratorCanLipSync?: (voice: string) => boolean; // the same for the narrator's face, which reads recaps aloud
+  faceIdFor?: (speakerId: string) => string | null; // the face shown for a speaker's answers (#113: any face lip-syncs any voice); null = none
+  narratorFaceId?: () => string | null; // the same for the narrator's face, which reads recaps aloud
   spoilers?: boolean; // full-book mode: the reader allows spoilers (novels only)
   talkback?: boolean; // the dedicated conversation view is open: a mic tap never toggles reading
   narratorVoice?: string | null; // reads recaps aloud in the chat
@@ -72,7 +72,7 @@ type Args = {
 };
 
 /** Owns the Talk session for the reader screen. The real mic, speaker and socket are created once per book. */
-export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, canLipSync = () => false, narratorCanLipSync = () => false, spoilers = false, talkback = false, narratorVoice = null, tools }: Args): TalkUi {
+export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, faceIdFor = () => null, narratorFaceId = () => null, spoilers = false, talkback = false, narratorVoice = null, tools }: Args): TalkUi {
   const [state, setState] = useState<TalkState>("reading");
   const [caption, setCaption] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -121,18 +121,18 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   const narration = useRef<ReturnType<typeof createReadAloud> | null>(null);
   if (!narration.current) {
     // lip-synced on the narrator's face like an answer (same clip path, start gate and face sync); the talk loop or
-    // the still face stands in when that face cannot lip-sync this voice or a render fails
+    // the still face stands in when no face is shown or a render fails
     narration.current = createReadAloud(() => createSentenceSpeaker(async (text) => {
       const voice = narratorVoiceRef.current ?? "";
       const r = await speak(text, voice);
       if (!r.cached) spend.addTts(text.length);
-      return lipSyncClip(r.audio_url, voice, latest.current.narratorCanLipSync(voice));
+      return lipSyncClip(r.audio_url, voice, latest.current.narratorFaceId());
     }, undefined, { sync: faceSync.current as FaceSync, onPlaying: setSpeaking }), setNarratingKey, (e) => setToast(e instanceof Error ? e.message : String(e)));
   }
   const clientRef = useRef<TalkClient | null>(null);
   const viaGemini = answersViaGemini(health);
-  const latest = useRef({ reader, voiceFor, speakerId, canLipSync, narratorCanLipSync, spoilers, tools });
-  latest.current = { reader, voiceFor, speakerId, canLipSync, narratorCanLipSync, spoilers, tools };
+  const latest = useRef({ reader, voiceFor, speakerId, faceIdFor, narratorFaceId, spoilers, tools });
+  latest.current = { reader, voiceFor, speakerId, faceIdFor, narratorFaceId, spoilers, tools };
 
   useEffect(() => {
     if (!enabled) return;
@@ -151,6 +151,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       },
     });
     let answerVoice = "";
+    let answerFaceId: string | null = null;
     let answerMsgId: number | undefined;
     let rtMsgId: number | undefined;
     let talk: TalkController | null = null;
@@ -171,18 +172,19 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       },
       retrieve: (query, para, speaker) => fetchRetrieve(bookId, query, para, speaker, latest.current.spoilers),
       ...(viaGemini ? {
-        // the voice is fixed when the answer starts, so a mid-answer speaker switch cannot change it
+        // the voice and face are fixed when the answer starts, so a mid-answer speaker switch cannot change them
         answer: (query, para, speaker, onSentence, signal) => {
           answerVoice = latest.current.voiceFor(speaker);
+          answerFaceId = latest.current.faceIdFor(speaker);
           answerMsgId = pendingId();
           return streamAnswer(bookId, query, para, speaker, (t) => { setMessages((m) => appendSentence(m, t)); onSentence(t); }, signal, latest.current.spoilers, priorTurns(msgs.current, speaker));
         },
         speaker: createSentenceSpeaker(async (text) => {
           const voice = answerVoice;
           const r = await speak(text, voice);
-          // always lip-synced when the face is bound to the voice (#92): the first word waits (bounded) until this
-          // clip can start with it from 0 (start gate: sentencePlayer, faceSync)
-          const clip = lipSyncClip(r.audio_url, voice, latest.current.canLipSync(voice));
+          // always lip-synced when a face is shown (#92, any face since #113): the first word waits (bounded) until
+          // this clip can start with it from 0 (start gate: sentencePlayer, faceSync)
+          const clip = lipSyncClip(r.audio_url, voice, answerFaceId);
           if (answerMsgId !== undefined) replayStore.current.addSentence(answerMsgId, text, clip);
           return clip;
         }, undefined, { sync: faceSync.current as FaceSync, onPlaying: gate.playing, onTiming: logTiming }),

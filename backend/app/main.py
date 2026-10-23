@@ -1166,14 +1166,30 @@ def _drop_avatar_ref(key: str, entry: list) -> None:
 class LipSyncRequest(BaseModel):
     audio_url: str = Field(max_length=120)
     voice: str = Field(max_length=120)
+    face_id: str | None = Field(None, max_length=200)  # the face shown (#113); omitted: the voice's own linked face
+
+
+def _lipsync_face(req: LipSyncRequest) -> Path:
+    """The portrait to animate. With `face_id`: that face from the caller's own library (the same visibility as
+    /api/faces: per-account under PER_USER, the shared library otherwise), 404 when it is not theirs or unknown.
+    Without: the face bound to the voice, as before (400 when the voice has none)."""
+    if req.face_id is not None:
+        face = faces.image_path(req.face_id) if faces.FACE_ID.match(req.face_id) else None
+        if face is None or not face.is_file():
+            raise HTTPException(404, "Face not found")
+        return face
+    face = faces.voice_face_path(req.voice) if voices.is_known_voice(req.voice) else None
+    if face is None:
+        raise HTTPException(400, "Lip-sync needs audio from /api/speak and a voice that has a face.")
+    return face
 
 
 def _lipsync_inputs(req: LipSyncRequest) -> tuple[Path, Path, str]:
     """Validate a lip-sync request: (cached TTS file, face image, cache key). Raises 400/404."""
     m = _TTS_URL.match(req.audio_url)
-    face = faces.voice_face_path(req.voice) if voices.is_known_voice(req.voice) else None
-    if not m or face is None:
+    if not m:
         raise HTTPException(400, "Lip-sync needs audio from /api/speak and a voice that has a face.")
+    face = _lipsync_face(req)
     audio = settings.data_dir / "cache" / "tts" / f"{m.group(1)}.mp3"
     if not audio.is_file():
         raise HTTPException(404, "That audio is not cached.")
@@ -1306,11 +1322,15 @@ def avatar(chunk_id: str, book: str):
 @app.post("/api/voices/clone", dependencies=[Depends(require_access)])
 async def clone_voice(request: Request, audio: UploadFile = File(...), transcript: str = Form(..., max_length=2000),
                       name: str = Form(..., max_length=60), consent: str = Form("false"),
-                      face: UploadFile | None = File(None)):
+                      face: UploadFile | None = File(None), face_id: str | None = Form(None, max_length=80)):
+    """Clone a voice. `face` (an image) stores a new face bound to it; `face_id` (#113) links an existing face of the
+    caller's library instead, with no copy: deleting the voice later only drops that link."""
     if not clone_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many voice uploads; wait a moment.")
     data = await audio.read(voices.MAX_BYTES + 1)  # bounded read: never buffer an unbounded upload
     image = await face.read(faces.MAX_FACE_BYTES + 1) if face is not None else None
+    if face_id is not None and (not faces.FACE_ID.match(face_id) or not faces.face_exists(face_id)):
+        raise HTTPException(404, "Face not found")  # before the paid clone call
     try:
         voices.validate_clone_request(data, transcript, name, consent)
         if image is not None:
@@ -1322,7 +1342,14 @@ async def clone_voice(request: Request, audio: UploadFile = File(...), transcrip
     except (BosonError, RuntimeError) as e:
         raise boson_http_error(e)
     voices.save_voice(name, voice_id)
-    face_url = faces.create_face(image, name, voice=voice_id)["image"] if image is not None else None
+    face_url = None
+    if image is not None:
+        face_url = faces.create_face(image, name, voice=voice_id)["image"]
+    elif face_id is not None:
+        try:
+            face_url = faces.link_voice(face_id, voice_id)["image"]
+        except faces.FaceInputError:   # deleted between the check and the clone: the voice stays, without a face
+            face_url = None
     return {"voice": voice_id, "name": name, "face": face_url}
 
 
@@ -1342,9 +1369,10 @@ async def delete_voice(voice_id: str):
         await boson.delete_voice(voice_id)   # False (404) = already gone at Boson: carry on
     except (BosonError, RuntimeError) as e:
         raise boson_http_error(e)            # local data stays, so the delete can be retried
-    face_ids = faces.face_ids_for_voice(voice_id)
+    face_ids = faces.own_face_ids_for_voice(voice_id)
     for fid in face_ids:   # the face made with this clone goes with it
         await _delete_face_locked(fid)
+    await asyncio.to_thread(faces.unlink_voice, voice_id)   # a borrowed library face (#113) only loses the link
     await asyncio.to_thread(faces.delete_legacy_voice_files, voice_id)
     voices.remove_voice(voice_id)
     return {"deleted": voice_id, "faces": face_ids}

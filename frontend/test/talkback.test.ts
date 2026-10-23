@@ -258,13 +258,13 @@ describe("useTalk transcript", () => {
     expect(latest.replayable.has(latest.messages[1].id)).toBe(false);
   });
 
-  it("a recap read aloud is lip-synced on the narrator's face, like answers, when that face is bound to the voice (#92)", async () => {
+  it("a recap read aloud is lip-synced on the narrator's face, like answers, whenever a face is shown (#92, #113)", async () => {
     made.length = 0;
     const { speak } = await import("../src/api");
-    let bound = true;
+    let shown: string | null = "f-narrator";
     function NarratorHarness() {
       latest = useTalk({ bookId: "hp-lip", enabled: true, reader, speakerId: "hagrid", voiceFor: () => "marcus", autoResume: true, narratorVoice: "belinda",
-        narratorCanLipSync: (v) => bound && v === "belinda",
+        narratorFaceId: () => shown,
         health: { ok: true, boson_key_set: true, access_required: false, answer_backend: "gemini" }, talkback: true });
       return null;
     }
@@ -276,7 +276,7 @@ describe("useTalk transcript", () => {
     const clip = await narrator.synth("Alice fell.") as { audio_url: string; openVideo?: unknown };
     expect(speak).toHaveBeenLastCalledWith("Alice fell.", "belinda");
     expect(typeof clip.openVideo).toBe("function");
-    bound = false; // the narrator's face is not bound to this voice: plain audio, the talk loop stands in
+    shown = null; // no face shown for the narrator: plain audio, the talk loop stands in
     expect((await narrator.synth("Alice fell.") as { openVideo?: unknown }).openVideo).toBeUndefined();
   });
 

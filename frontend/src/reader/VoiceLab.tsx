@@ -41,7 +41,7 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
   }
   function voiceAdded(out: ClonedVoice) {
     onCloned((c) => ({ ...c, [out.name]: out.voice }));
-    onFacesChanged(); // reloads voices and faces (a linked face copy may have been made)
+    onFacesChanged(); // reloads voices and faces (the linked face now carries this voice)
     setLabMsg(`Created "${out.name}". Pick it for any speaker in the voice lists above.`);
     closeAdd();
   }

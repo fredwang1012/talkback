@@ -45,10 +45,10 @@ talking to, and the reading picks up where it stopped.
    summary per earlier book of the series.
 5. **Gemini 2.5 Flash** writes 2-4 spoken sentences in character; they stream back as NDJSON lines.
 6. For each sentence the browser calls `/api/speak` (**Boson TTS**, in the speaker's voice, cached) and plays it while
-   the next one is synthesised. If the voice has a face bound to it, each sentence is also
-   rendered as a lip-synced clip (`/api/avatar/talk`) and played in step with its audio (always on, #92); the face's
-   speaking loop stands in when it cannot be lip-synced or a render fails. Recaps read aloud work the same way on the
-   narrator's face.
+   the next one is synthesised. If a face is shown for the speaker (any face with any voice, #113: the request names
+   the face id, which the server resolves in the caller's own library), each sentence is also rendered as a lip-synced
+   clip (`/api/avatar/talk`) and played in step with its audio (always on, #92); the face's speaking loop stands in
+   when no face is shown or a render fails. Recaps read aloud work the same way on the narrator's face.
 7. Pressing again interrupts (barge-in); reading resumes from the same sentence.
 
 ## Read mode

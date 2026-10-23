@@ -61,9 +61,3 @@ export function loadedSize(img: { complete: boolean; naturalWidth: number; natur
   if (!img || !img.complete || img.naturalWidth <= 0 || img.naturalHeight <= 0) return null;
   return { w: img.naturalWidth, h: img.naturalHeight };
 }
-
-/** File name for a face image fetched by URL, from its content type. */
-export function faceFileName(contentType: string | null): string {
-  const t = (contentType ?? "").toLowerCase();
-  return t.includes("png") ? "portrait.png" : t.includes("webp") ? "portrait.webp" : "portrait.jpg";
-}

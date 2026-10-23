@@ -20,7 +20,7 @@ import type { FollowAudio } from "../reader/clipFollow";
 import { AudioLevelMeter } from "../reader/audioLevel";
 import { SPEECH_IDLE, stepSpeech } from "../reader/speechLevel";
 import { loopsToPreload, showReadingFace } from "../reader/readFace";
-import { lipSyncVoiceFor, readClipsOn, readFaceFor, speechSeconds, type ReadFaces } from "../reader/readLipSync";
+import { lipSyncTargetFor, readClipsOn, readFaceFor, speechSeconds, type ReadFaces } from "../reader/readLipSync";
 import Stage from "../reader/Stage";
 import { toggleMode, validSpeaker } from "../reader/talkbackLogic";
 import TalkbackView, { ModeToggle } from "../reader/TalkbackView";
@@ -191,15 +191,15 @@ export default function Reader({ bookId }: { bookId: string }) {
   const nextChunk = chunks[index + 1];
   const nextReadingFace = book && nextChunk && playing ? readFaceFor(readFaces, nextChunk.speaker) : null;
   const preloadLoops = loopsToPreload(readingFace, nextReadingFace);
-  // the engine's clip source: the chunk's clip on the voice whose bound face is on screen (null: no lip-sync for it,
-  // the talk loop or still face shows). Always on, at every speed: the clip plays at the voice's rate (#105).
+  // the engine's clip source: the chunk's clip on the face on screen for it, whatever voice reads it (#113; null: no
+  // face shown, audio only). Always on, at every speed: the clip plays at the voice's rate (#105).
   const clipsOn = readClipsOn(audioAvailable);
   const clipSource = useMemo<ClipSource | null>(() => {
     if (!clipsOn) return null;
     return (chunk, audioUrl, voice) => {
-      const faceVoice = lipSyncVoiceFor(latestFaces.current, chunk.speaker, voice);
-      if (!faceVoice) return null;
-      return openClipVideo(audioUrl, faceVoice, () => spend.addAvatar(speechSeconds(chunk.tts_text)));
+      const target = lipSyncTargetFor(latestFaces.current, chunk.speaker, voice);
+      if (!target) return null;
+      return openClipVideo(audioUrl, target.voice, target.faceId, () => spend.addAvatar(speechSeconds(chunk.tts_text)));
     };
   }, [clipsOn]);
   useEffect(() => { engineRef.current?.setClipSource(clipSource); }, [clipSource, book, chunks, audioAvailable, demo]);
@@ -240,8 +240,8 @@ export default function Reader({ bookId }: { bookId: string }) {
     speakerId,
     autoResume,
     health,
-    canLipSync: (voice) => { const f = talkFaceFor(speakerId); return !!f && f.voice === voice; },
-    narratorCanLipSync: (voice) => { const f = talkFaceFor("narrator"); return !!f && f.voice === voice; },
+    faceIdFor: (id) => talkFaceFor(id)?.id ?? null,
+    narratorFaceId: () => talkFaceFor("narrator")?.id ?? null,
     spoilers: spoilers && book?.kind === "novel",
     talkback: mode === "talk",
     voiceFor: talkVoiceFor,

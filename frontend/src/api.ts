@@ -1,5 +1,4 @@
 import { getAccessToken } from "./accessToken";
-import { faceFileName } from "./reader/labForms";
 
 export type Segment = { speaker: string; text: string; emotion: string | null };
 export type TtsChunk = {
@@ -238,12 +237,14 @@ export async function fetchRealtimeKey(): Promise<string> {
 
 export type CloneResult = { voice: string; name: string; face: string | null };
 
-/** Registers a custom voice. The server refuses without explicit consent. */
+/** Registers a custom voice. The server refuses without explicit consent. `face`: an image file stored as a new face
+ * bound to the voice; `faceId`: an existing library face linked to it instead (#113, no copy). */
 export async function cloneVoice(audio: Blob, filename: string, transcript: string, name: string, consent: boolean,
-  face?: File | null): Promise<CloneResult> {
+  face?: File | null, faceId?: string | null): Promise<CloneResult> {
   const form = new FormData();
   form.append("audio", audio, filename);
   if (face) form.append("face", face, face.name);
+  else if (faceId) form.append("face_id", faceId);
   form.append("transcript", transcript);
   form.append("name", name);
   form.append("consent", consent ? "true" : "false");
@@ -489,12 +490,17 @@ export const fetchVoices = () => getJson<Record<string, string>>("/api/voices");
 export type VoiceFace = { image: string; talk: string | null; idle: string | null };
 export const fetchVoiceFaces = () => getJson<Record<string, VoiceFace>>("/api/voices/faces");
 
-/** Lip-synced clip of one answer sentence (the face speaking that exact audio). Takes ~10 s to render. */
-export async function lipSync(audioUrl: string, voice: string): Promise<string> {
+/** The body of a lip-sync request: the cached audio, the voice that spoke it and the face shown (#113). Without a
+ * face id the server falls back to the face bound to the voice. */
+export const lipSyncBody = (audioUrl: string, voice: string, faceId: string | null) =>
+  JSON.stringify({ audio_url: audioUrl, voice, ...(faceId ? { face_id: faceId } : {}) });
+
+/** Lip-synced clip of one answer sentence (the face shown speaking that exact audio). Takes ~10 s to render. */
+export async function lipSync(audioUrl: string, voice: string, faceId: string | null = null): Promise<string> {
   const res = await timedFetch("/api/avatar/talk", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ audio_url: audioUrl, voice }),
+    body: lipSyncBody(audioUrl, voice, faceId),
   }, 120000);
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
@@ -504,11 +510,11 @@ export async function lipSync(audioUrl: string, voice: string): Promise<string> 
 }
 
 /** Streaming lip-sync: the response is fragmented MP4 as it renders, or JSON {video_url} when the clip is cached. */
-export const lipSyncStream = (audioUrl: string, voice: string, signal: AbortSignal): Promise<Response> =>
+export const lipSyncStream = (audioUrl: string, voice: string, faceId: string | null, signal: AbortSignal): Promise<Response> =>
   fetch("/api/avatar/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ audio_url: audioUrl, voice }),
+    body: lipSyncBody(audioUrl, voice, faceId),
     signal,
   });
 
@@ -552,14 +558,6 @@ export async function uploadFace(image: File, name: string): Promise<Face> {
   const res = await timedFetch("/api/faces", { method: "POST", headers: authHeaders(), body: form }, 60000);
   if (!res.ok) throw await readError(res, "Face upload failed");
   return res.json() as Promise<Face>;
-}
-
-/** An existing face's image as a File, so a new voice can be linked to it through /api/voices/clone (#111). */
-export async function fetchFaceFile(face: Face): Promise<File> {
-  const res = await timedFetch(face.image, { headers: authHeaders() }, 30000);
-  if (!res.ok) throw await readError(res, "Could not read that face");
-  const blob = await res.blob();
-  return new File([blob], faceFileName(res.headers.get("content-type") ?? blob.type), { type: blob.type || "image/jpeg" });
 }
 
 /** The main face's box as fractions of the image (x, y of the top-left corner). */

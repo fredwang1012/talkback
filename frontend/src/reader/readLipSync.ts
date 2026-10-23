@@ -2,10 +2,9 @@
  * Read-mode lip-sync (#80, always on since #92): pure decisions for ReaderEngine and the Reader page.
  *
  * Each TTS chunk being read gets a Boson avatar clip of its audio (the same stream, start gate and drift control as
- * Talkback: talk/clipVideo, talk/startGate, talk/faceSync). The server lip-syncs the face BOUND TO THE VOICE it is
- * given, so a chunk can only be lip-synced on a face that is bound to a voice; the voice sent is the chunk's own when
- * its reader's face is bound to it, else the narrator's when the narrator's face is bound to the narrator's voice
- * (the narrator's face then reads that chunk, loop and clip alike).
+ * Talkback: talk/clipVideo, talk/startGate, talk/faceSync). The clip is rendered on the face ON SCREEN for the chunk
+ * (readFaceFor: the speaker's own face, else the narrator's), whatever voice reads it: the request names that face
+ * (#113), so any voice x face pair lip-syncs. A chunk with no face shown plays audio only.
  */
 
 import type { Face } from "../api";
@@ -62,13 +61,11 @@ export const readFaceFor = (faces: ReadFaces, speaker: string): Face | null =>
   faces.faceFor(speaker) ?? faces.faceFor("narrator") ?? null;
 
 /**
- * The voice whose bound face lip-syncs a chunk by `speaker` read in `chunkVoice`, or null when no lip-sync is possible
- * (the face shown is not bound to the voice that speaks). The clip must match the face on screen (readFaceFor).
+ * What to lip-sync a chunk by `speaker` (read in `chunkVoice`) with: the id of the face on screen for it (readFaceFor)
+ * and the voice that spoke the audio, or null when no face is shown (audio only, nothing to animate).
  */
-export function lipSyncVoiceFor(faces: ReadFaces, speaker: string, chunkVoice: string | undefined): string | null {
-  const own = faces.faceFor(speaker);
-  if (own) return chunkVoice && own.voice === chunkVoice ? chunkVoice : null;
-  const narrator = faces.faceFor("narrator");
-  const narratorVoice = faces.voiceFor("narrator");
-  return narrator && narrator.voice === narratorVoice ? narratorVoice : null;
+export function lipSyncTargetFor(faces: ReadFaces, speaker: string, chunkVoice: string | undefined): { faceId: string; voice: string } | null {
+  const face = readFaceFor(faces, speaker);
+  if (!face) return null;
+  return { faceId: face.id, voice: chunkVoice ?? faces.voiceFor(speaker) };
 }
