@@ -1,6 +1,6 @@
 """Talk prompts (brief section 7.4). All prompt logic lives here so it is testable; keep them short and behavioural."""
 from . import multilingual
-from .schema import Book
+from .schema import EMOTIONS, Book
 
 MAX_INSTRUCTIONS_CHARS = 8000   # Boson Realtime instructions
 MAX_ANSWER_PROMPT_CHARS = 24000  # Gemini answer prompt: 12k of passages + story so far + earlier books' recap
@@ -8,6 +8,7 @@ MAX_ANSWER_PROMPT_CHARS = 24000  # Gemini answer prompt: 12k of passages + story
 CHARACTER_TEMPLATE = """You are {name} from "{title}", chatting with a reader who has paused the story.
 Speak as {name}: {persona}
 (That describes only your manner of speaking, not what you know. What you know comes only from the notes and passages below.)
+{tone}
 Even about yourself, say only what the notes have already revealed: if you have a secret the reader has not learned, keep it, and never hint that there is one.
 No lists, no markdown, no stage directions.
 Answer specifically and in detail, in two to four spoken sentences: name the people, places and objects involved and say what happened, using the passages and notes below. Stay in character voice, but never invent facts that are not in the passages or notes. If they do not contain the answer, say so in character instead of guessing.
@@ -55,6 +56,7 @@ This story may be famous, but you know ONLY the notes and passages below: never 
 CHARACTER_FULL_TEMPLATE = """You are {name} from "{title}", chatting with a reader who has paused the story.
 Speak as {name}: {persona}
 (That describes only your manner of speaking, not what you know. What you know comes only from the notes and passages below.)
+{tone}
 No lists, no markdown, no stage directions.
 Answer specifically and in detail, in two to four spoken sentences: name the people, places and objects involved and say what happened, using the passages and notes below. Stay in character voice, but never invent facts that are not in the passages or notes. If they do not contain the answer, say so in character instead of guessing.
 """ + FULL_BOOK_NOTE + """Do not invent plot facts that are not in the notes. Stay in character.
@@ -79,6 +81,10 @@ Always reply in the language the reader used.
 {passages}"""
 
 
+READER_TONE_RULE = ("Notice the reader's mood from how they word their question (worried, excited, cross, teasing) and let "
+                    "your reply react to it as yourself.")
+
+
 def format_passages(passages: list[dict]) -> str:
     if not passages:
         return "(nothing relevant)"
@@ -87,13 +93,15 @@ def format_passages(passages: list[dict]) -> str:
         for p in passages)
 
 
+REALTIME_EMOTION_RULE = "Let the feeling of what you say show in your voice, as you would if you were really there."
+
 LANGUAGE_RULE = ("The reader wrote in {lang}. Answer only in {lang}, even though the book, the notes and the passages "
                  "below are in English: translate what they say, but keep the names as the book has them.\n\n")
 
 
 def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages: list[dict],
                        limit: int = MAX_INSTRUCTIONS_CHARS, *, spoilers: bool = False,
-                       reply_language: str | None = None) -> str:
+                       reply_language: str | None = None, voice_emotion: bool = False) -> str:
     """Render the Talk prompt for `speaker_id` ("narrator" or a character id). Raises KeyError for unknown ids.
 
     `reply_language` (#12): the question's language when it is not English. The rule goes first, so it survives the
@@ -109,13 +117,19 @@ def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages:
         if character is None:
             raise KeyError(speaker_id)
         out = (CHARACTER_FULL_TEMPLATE if spoilers else CHARACTER_TEMPLATE).format(name=character.name, title=book.title, persona=character.persona,
-                                        story_so_far=story, passages=text_passages)
+                                        tone=READER_TONE_RULE, story_so_far=story, passages=text_passages)
+    if voice_emotion:  # Realtime answers are audio only: no tags, so the feeling has to come from the voice (#14)
+        out = REALTIME_EMOTION_RULE + "\n\n" + out
     if reply_language:
         out = LANGUAGE_RULE.format(lang=reply_language) + out
     return out[:limit]
 
 
-ANSWER_SUFFIX = "\n\nYour reply is spoken aloud word for word, so write only the words to be spoken."
+ANSWER_EMOTION_RULE = ("Start every sentence with the feeling it carries, in square brackets, as one English word from this list "
+                       "(also when you answer in another language): " + ", ".join(EMOTIONS) + ". Write [neutral] when "
+                       "it is calm. The brackets are never spoken; they only set your tone of voice. Feelings change no facts.")
+ANSWER_SUFFIX = ("\n\nYour reply is spoken aloud word for word, so write only the words to be spoken and the feeling markers.\n"
+                 + ANSWER_EMOTION_RULE)
 
 
 MAX_HISTORY_TURNS = 8

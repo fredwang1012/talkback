@@ -10,6 +10,7 @@ import { detectLanguage, type Detected } from "./language";
 import { FaceSync } from "./faceSync";
 import { createPlayingGate, type TimingEvent } from "./speechGate";
 import { lipSyncClip } from "./clipVideo";
+import { createEmotionMemo } from "./answerEmotion";
 import { createSentenceSpeaker, type Clip } from "./sentencePlayer";
 import { createReplayPlayer, createReplayStore, runPcm, runSentences, type ReplayItem } from "./replay";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
@@ -153,6 +154,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     let answerVoice = "";
     let answerFaceId: string | null = null;
     let answerMsgId: number | undefined;
+    const answerEmotion = createEmotionMemo();
     let rtMsgId: number | undefined;
     let talk: TalkController | null = null;
     const gate = createPlayingGate((on) => talk?.notePlaying(on));
@@ -177,11 +179,12 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
           answerVoice = latest.current.voiceFor(speaker);
           answerFaceId = latest.current.faceIdFor(speaker);
           answerMsgId = pendingId();
-          return streamAnswer(bookId, query, para, speaker, (t) => { setMessages((m) => appendSentence(m, t)); onSentence(t); }, signal, latest.current.spoilers, priorTurns(msgs.current, speaker));
+          answerEmotion.clear();
+          return streamAnswer(bookId, query, para, speaker, (t, emotion) => { answerEmotion.note(t, emotion); setMessages((m) => appendSentence(m, t)); onSentence(t); }, signal, latest.current.spoilers, priorTurns(msgs.current, speaker));
         },
         speaker: createSentenceSpeaker(async (text) => {
           const voice = answerVoice;
-          const r = await speak(text, voice);
+          const r = await speak(text, voice, answerEmotion.get(text));
           // always lip-synced when a face is shown (#92, any face since #113): the first word waits (bounded) until
           // this clip can start with it from 0 (start gate: sentencePlayer, faceSync)
           const clip = lipSyncClip(r.audio_url, voice, answerFaceId);

@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from pydantic import BaseModel, Field
 
-from . import books, cast, face_detect, faces, ingest_upload, multilingual, public_client, recap, retrieval, tts_cache, users, voices
+from . import books, cast, emotion, face_detect, faces, ingest_upload, multilingual, public_client, recap, retrieval, tts_cache, users, voices
 from .delivery import apply_speed
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
@@ -405,7 +405,7 @@ async def retrieve(req: RetrieveRequest, request: Request):
     out = await retrieval.aretrieve(book, _index_for(req.book_id), search, reader_para, min(req.k, REALTIME_K),
                                     spoilers=req.spoilers, max_chars=REALTIME_MAX_PASSAGE_CHARS, **_series_context(book))
     out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"], spoilers=req.spoilers,
-                                             reply_language=multilingual.foreign_language(req.query))
+                                             reply_language=multilingual.foreign_language(req.query), voice_emotion=True)
     if search != req.query:
         out["search_query"] = search  # what was searched, for debugging (the browser network panel)
     out["persona"] = speaker.persona if speaker else None
@@ -445,10 +445,10 @@ async def answer(req: RetrieveRequest, request: Request):
     async def stream():
         first_ms = None
         try:
-            async for sentence in get_answerer().stream_sentences(system, user):
+            async for sentence, feeling in emotion.tag_sentences(get_answerer().stream_sentences(system, user)):
                 if first_ms is None:
                     first_ms = int((time.monotonic() - t_retrieved) * 1000)
-                yield _line({"type": "sentence", "text": sentence})
+                yield _line(emotion.sentence_line(sentence, feeling))
         except Exception as e:  # never leak stack traces or secrets to the client
             logging.getLogger(__name__).warning("answer stream failed: %s", type(e).__name__)
             yield _line({"type": "error", "message": "The answer could not be generated; please try again."})
@@ -464,9 +464,12 @@ async def _public_answer_stream(book: Book, speaker, req: RetrieveRequest, out: 
     payload = public_client.answer_payload(book, speaker, req.speaker_id, out, req.query, req.spoilers, req.history)
     try:
         async for msg in public_client.stream_answer(payload):
+            text, marked = emotion.split_marker(msg["text"])  # the service is not trusted to have stripped markers
+            if not text:
+                continue
             if first_ms is None:
                 first_ms = int((time.monotonic() - t_retrieved) * 1000)
-            yield _line({"type": "sentence", "text": msg["text"]})
+            yield _line(emotion.sentence_line(text, emotion.valid(msg.get("emotion")) or marked))
     except public_client.PublicFailure as e:
         logging.getLogger(__name__).warning("public answer failed: %s", e.kind)
         if e.kind != "limit":
@@ -481,16 +484,18 @@ async def _public_answer_stream(book: Book, speaker, req: RetrieveRequest, out: 
 class SpeakRequest(BaseModel):
     text: str = Field(min_length=1, max_length=400)
     voice: str
+    emotion: str | None = Field(default=None, max_length=40)  # an answer sentence's feeling (#14); unknown is ignored
 
 
 @app.post("/api/speak", dependencies=[Depends(require_access)])
 async def speak(req: SpeakRequest, request: Request):
     if not voices.is_known_voice(req.voice):
         raise HTTPException(400, f"Unknown voice '{req.voice}'.")
-    if not tts_cache.is_cached(req.text, req.voice) and not tts_bucket.allow(rate_key(request)):
+    tts_text = emotion.tts_input(req.text, emotion.valid(req.emotion))
+    if not tts_cache.is_cached(tts_text, req.voice) and not tts_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many new audio requests; wait a moment.")
     try:
-        out = await tts_cache.get_or_create(boson, req.text, req.voice, req.text)
+        out = await tts_cache.get_or_create(boson, tts_text, req.voice, req.text)
     except (BosonError, RuntimeError) as e:
         raise boson_http_error(e)
     return {"voice": req.voice, **out}
