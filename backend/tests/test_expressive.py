@@ -200,3 +200,12 @@ def test_alignment_with_new_tag_residue():
     tagged = [{"word": "<|prosody:long_pause|>", "start": 0, "end": 0}] + words(["prosodylongpauseMorning", "came"])
     out = align_timestamps(tagged, plain)
     assert [plain[o["char_start"]:o["char_end"]] for o in out] == ["Morning", "came."]
+
+
+def test_scene_break_check_is_linear_and_length_capped():
+    import time
+    from app.delivery import is_scene_break
+    t = time.perf_counter()
+    assert not is_scene_break("* " * 50000 + "x")
+    assert time.perf_counter() - t < 0.5
+    assert not is_scene_break("*" * 41)

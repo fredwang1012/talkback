@@ -229,9 +229,15 @@ def detect_expressive(segments: Sequence, i: int) -> str | None:
 
 # ---------- pauses (#73) ----------
 
-_SCENE_BREAK = re.compile(r"[\s*#~•·◆◇§=_-]*[*#~•·◆◇§][\s*#~•·◆◇§=_-]*")
+_BREAK_MARKS = frozenset("*#~•·◆◇§")
+_BREAK_CHARS = _BREAK_MARKS | frozenset("=_-")
+SCENE_BREAK_MAX = 40  # a real separator is short; longer text is never one (also keeps the check cheap)
 
 
 def is_scene_break(text: str) -> bool:
-    """A separator paragraph such as '* * *', '***', '#' or '~ ~ ~' (no letters or digits)."""
-    return bool(_SCENE_BREAK.fullmatch(text.strip()))
+    """A separator paragraph such as '* * *', '***', '#' or '~ ~ ~' (no letters or digits). Linear: no regex
+    backtracking on uploaded text."""
+    t = text.strip()
+    if not t or len(t) > SCENE_BREAK_MAX:
+        return False
+    return all(c in _BREAK_CHARS or c.isspace() for c in t) and any(c in _BREAK_MARKS for c in t)
