@@ -2,9 +2,12 @@ import { micErrorMessage } from "../audio/mediaErrors";
 import { useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { animateFace, cloneVoice, deleteFace, deleteVoice, uploadFace, type Book, type Cast, type Face } from "../api";
 import { PRESETS, castFace, castVoice, isNovel, runAnimate, withAssignment } from "./castLogic";
+import CameraCapture from "./CameraCapture";
 import { NovelVoices, VoiceCard } from "./VoicePicker";
 
 export { PRESETS };
+const VOICE_HELP = "10–30 seconds of clear speech in a quiet room (at least 3 s, up to 10 MB). Type exactly what you said.";
+const FACE_HELP = "PNG, JPEG or WebP up to 5 MB. One face looking at the camera, head and shoulders, even light.";
 const SCRIPT =
   "Well, it is a rather long story, but I have to tell you that I was walking home late one evening " +
   "when I noticed a light burning in the window of the old house.";
@@ -191,9 +194,12 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
         <label htmlFor="face-name">Face name</label>
         <input id="face-name" value={faceName} maxLength={60} onChange={(e) => setFaceName(e.target.value)} />
         <label className="file" htmlFor="face-file">
-          Image (PNG, JPEG or WebP, up to 5 MB)
+          Image
           <input id="face-file" type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setFaceFile(e.target.files?.[0] ?? null)} />
         </label>
+        <CameraCapture onUse={setFaceFile} />
+        {faceFile && <p className="empty-note">Selected: {faceFile.name}</p>}
+        <p className="empty-note">{FACE_HELP}</p>
         <button className="primary" disabled={!faceFile || !faceName.trim() || faceBusy} onClick={() => void submitFace()}>{faceBusy ? "Uploading…" : "Upload a face"}</button>
         {faceMsg && <p role={faceMsg.kind === "error" ? "alert" : "status"} className={`lab-${faceMsg.kind}`}>{faceMsg.text}</p>}
       </section>
@@ -222,7 +228,8 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
 
       <section>
         <h3>Your voice</h3>
-        <p className="empty-note">Read the line below aloud for 5 to 30 seconds in a quiet room, then check that the text matches what you said.</p>
+        <p className="empty-note">Read the line below aloud, then check that the text matches what you said.</p>
+        <p className="empty-note">{VOICE_HELP}</p>
         <label htmlFor="lab-transcript">What you will say</label>
         <textarea id="lab-transcript" rows={3} value={transcript} onChange={(e) => setTranscript(e.target.value)} />
         <div className="lab-row">
@@ -237,6 +244,8 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
           Add a face (optional): a portrait shown whenever this voice speaks
           <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setFace(e.target.files?.[0] ?? null)} />
         </label>
+        <CameraCapture onUse={setFace} />
+        <p className="empty-note">{FACE_HELP}</p>
         {face && <p className="empty-note">Face: {face.name}</p>}
         <label htmlFor="lab-name">Name this voice</label>
         <input id="lab-name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} />

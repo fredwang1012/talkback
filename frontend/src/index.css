@@ -701,3 +701,9 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
 .recap-menu-list [role="menuitem"]:hover, .recap-menu-list [role="menuitem"]:focus-visible { background: var(--brass-soft); outline: none; }
 .bubble.narrator { align-self: stretch; max-width: none; border-style: dashed; background: var(--ground-sunk); }
 .bubble.narrator .who-line small { text-transform: none; letter-spacing: 0; color: var(--ink-soft); font-weight: 400; }
+
+/* webcam portrait capture (#107) */
+.camera { display: inline-flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.camera-box { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.camera-preview, .camera-thumb { width: 160px; height: 160px; object-fit: cover; border-radius: 8px; background: #000; }
+.camera-preview { transform: scaleX(-1); } /* mirrored preview only; the captured file is not mirrored */
