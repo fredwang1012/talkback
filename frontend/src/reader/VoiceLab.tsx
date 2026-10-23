@@ -62,7 +62,7 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
       await deleteVoice(id);
       onCloned(({ [name]: _x, ...rest }) => { void _x; return rest; });
       onRemoved({ voice: id });
-      onFacesChanged(); // its linked face is gone too, and casts using either fall back to Auto
+      onFacesChanged(); // its face stays (unlinked); casts using the voice fall back to Auto
     } catch (e) {
       setVoiceMsg(e instanceof Error ? e.message : String(e));
     }

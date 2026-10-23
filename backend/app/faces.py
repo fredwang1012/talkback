@@ -262,25 +262,20 @@ def link_voice(fid: str, voice: str) -> dict:
 
 
 def unlink_voice(voice: str) -> list[str]:
-    """Drop the voice binding of every face borrowed by `voice` (link_voice); the faces stay. Returns their ids.
-    Faces made with the clone itself (uploaded alongside it, no `linked` mark) are left for the caller to delete."""
+    """Drop the voice binding of every face bound to `voice`, whether uploaded with the clone or borrowed (link_voice);
+    the faces stay in the library. Returns their ids."""
     out: list[str] = []
     with _lock:
         _migrate_legacy()
         entries = _read()
         for k, v in entries.items():
-            if v.get("voice") == voice and v.get("linked"):
+            if v.get("voice") == voice:
                 v.pop("voice", None)
                 v.pop("linked", None)
                 out.append(k)
         if out:
             _write(entries)
     return out
-
-
-def own_face_ids_for_voice(voice: str) -> list[str]:
-    """Faces that were created with this voice's clone (not borrowed from the library): these go with the voice."""
-    return [k for k, v in _entries().items() if v.get("voice") == voice and not v.get("linked")]
 
 
 # ---- voice-bound lookups (lip-sync and the older /api/voices/faces) ----

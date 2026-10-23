@@ -97,7 +97,7 @@ def test_deleting_a_voice_unlinks_a_linked_face_but_keeps_it(env, boson):  # noq
     assert client.post("/api/voices/clone", data={"transcript": "hello there", "name": "me", "consent": "true", "face_id": fid},
                        files={"audio": ("a.wav", silent_wav(4), "audio/wav")}).status_code == 200
     r = client.delete("/api/voices/voice_abc")
-    assert r.status_code == 200 and r.json()["faces"] == []
+    assert r.status_code == 200 and r.json()["faces"] == [fid]   # unlinked, not deleted
     assert boson["deleted"] == ["voice_abc"]
     listed = client.get("/api/faces").json()
     assert [(f["id"], f["voice"]) for f in listed] == [(fid, None)]
