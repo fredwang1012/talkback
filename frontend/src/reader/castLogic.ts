@@ -37,11 +37,42 @@ function writeJson(key: string, value: unknown): void {
 }
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
 
-export function loadTalkChoice(bookId: string): TalkChoice {
+/** Talkback's Voice / Avatar picks per "Talk to" character id (#106). A character with no entry is on Auto. */
+export type TalkChoices = Record<string, TalkChoice>;
+const AUTO: TalkChoice = { voice: null, face: null };
+const isAuto = (c: TalkChoice) => c.voice === null && c.face === null;
+
+/** The picks for a book (this browser). The old single pick, which applied to every character, becomes the narrator's. */
+export function loadTalkChoices(bookId: string): TalkChoices {
   const o = readJson(talkKey(bookId));
-  return { voice: str(o?.voice), face: str(o?.face) };
+  if (!o) return {};
+  const by = o.bySpeaker;
+  if (by === undefined) { // before #106: { voice, face } for whoever was talked to
+    const legacy = { voice: str(o.voice), face: str(o.face) };
+    return isAuto(legacy) ? {} : { narrator: legacy };
+  }
+  const out: TalkChoices = {};
+  if (by && typeof by === "object") {
+    for (const [id, v] of Object.entries(by as Record<string, unknown>)) {
+      if (!v || typeof v !== "object") continue;
+      const c = { voice: str((v as Record<string, unknown>).voice), face: str((v as Record<string, unknown>).face) };
+      if (!isAuto(c)) out[id] = c;
+    }
+  }
+  return out;
 }
-export const saveTalkChoice = (bookId: string, c: TalkChoice) => writeJson(talkKey(bookId), c);
+export const saveTalkChoices = (bookId: string, cs: TalkChoices) => writeJson(talkKey(bookId), { bySpeaker: cs });
+
+/** The pick for one character (Auto when there is none). */
+export const choiceFor = (cs: TalkChoices, id: string): TalkChoice => cs[id] ?? AUTO;
+
+/** `cs` with one character's pick changed; back to Auto drops the entry. */
+export function withTalkChoice(cs: TalkChoices, id: string, c: TalkChoice): TalkChoices {
+  const next = { ...cs };
+  if (isAuto(c)) delete next[id];
+  else next[id] = { voice: c.voice, face: c.face };
+  return next;
+}
 
 /** After a voice or face is deleted, browser-side choices that pointed at it fall back to Auto (null). */
 export function dropReferences(talk: TalkChoice, gone: { voice?: string; face?: string }): TalkChoice {
@@ -49,6 +80,13 @@ export function dropReferences(talk: TalkChoice, gone: { voice?: string; face?: 
     voice: gone.voice && talk.voice === gone.voice ? null : talk.voice,
     face: gone.face && talk.face === gone.face ? null : talk.face,
   };
+}
+
+/** dropReferences for every character's pick. */
+export function dropTalkReferences(cs: TalkChoices, gone: { voice?: string; face?: string }): TalkChoices {
+  let next: TalkChoices = {};
+  for (const [id, c] of Object.entries(cs)) next = withTalkChoice(next, id, dropReferences(c, gone));
+  return next;
 }
 
 // ---------- resolving voices and faces ----------

@@ -17,7 +17,7 @@ type Props = {
   faces: FaceT[];
   faceFor: (speakerId: string) => FaceT | undefined;
   autoVoiceFor: (speakerId: string) => string;
-  choice: TalkChoice;
+  choice: TalkChoice; // the Voice / Avatar pick of the character talked to (speakerId), #106
   onChoice: (c: TalkChoice) => void;
   voices: { value: string; label: string }[];
   spoilers: boolean;
@@ -127,13 +127,13 @@ export default function TalkbackView({
               </>
             )}
             <label htmlFor="tb-voice">Voice</label>
-            <select id="tb-voice" value={choice.voice ?? ""} onChange={(e) => onChoice({ ...choice, voice: e.target.value || null })}>
+            <select id="tb-voice" value={choice.voice ?? ""} title={`${name}'s voice here (each character keeps their own)`} onChange={(e) => onChoice({ ...choice, voice: e.target.value || null })}>
               <option value="">Auto ({voiceLabel(autoVoiceFor(speakerId))})</option>
               {choice.voice && !voices.some((v) => v.value === choice.voice) && <option value={choice.voice}>{choice.voice}</option>}
               {voices.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
             </select>
             <label htmlFor="tb-avatar">Avatar</label>
-            <select id="tb-avatar" value={choice.face ?? ""} onChange={(e) => onChoice({ ...choice, face: e.target.value || null })}>
+            <select id="tb-avatar" value={choice.face ?? ""} title={`${name}'s face here (each character keeps their own)`} onChange={(e) => onChoice({ ...choice, face: e.target.value || null })}>
               <option value="">Auto</option>
               <option value="none">None</option>
               {choice.face && choice.face !== "none" && !faces.some((f) => f.id === choice.face) && <option value={choice.face}>(removed face)</option>}
