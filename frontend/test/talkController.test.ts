@@ -13,8 +13,16 @@ class FakeSession implements TalkSession {
   async startMic() { if (this.micFails) throw new Error("denied"); this.calls.push("mic-start"); }
   async stopMic(discard = false) { this.calls.push(discard ? "mic-discard" : "mic-stop"); }
   commit() { this.calls.push("commit"); }
-  respond(instructions: string) { this.calls.push(`respond:${instructions}`); }
-  async interrupt() { this.calls.push("interrupt"); }
+  respond(instructions: string, question?: string) { this.calls.push(question ? `respond:${instructions}:${question}` : `respond:${instructions}`); }
+  interruptFails = false;
+  holdInterrupt = false; // the cancel waits for interruptAck() (the server's acknowledgement)
+  interruptAck: (() => void) | null = null;
+  interrupt() {
+    this.calls.push("interrupt");
+    if (this.interruptFails) return Promise.reject(new Error("The character could not be stopped. Try again."));
+    if (!this.holdInterrupt) return Promise.resolve();
+    return new Promise<void>((r) => { this.interruptAck = () => { this.interruptAck = null; r(); }; });
+  }
   on(fn: (e: SessionEvent) => void) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   emit(e: SessionEvent) { [...this.listeners].forEach((fn) => fn(e)); }
 }
@@ -123,14 +131,52 @@ describe("TalkController core loop", () => {
     expect(paused.reader.playing).toBe(true); // was paused -> now playing
   });
 
-  it("uses an empty query when the transcript never arrives, and still answers", async () => {
+  it("no transcript in time: nothing is asked, the reader is told, and the story goes on (#102)", async () => {
     const h = setup();
     await h.talk.pttDown();
     await tick(600);
     const up = h.talk.pttUp();
-    await tick(2600); // transcript timeout is 2.5 s
+    await tick(6500); // transcript window is 6 s
     await up;
-    expect(h.retrieved[0][0]).toBe("");
+    expect(h.retrieved).toEqual([]); // never an empty question
+    expect(h.toasts[0]).toMatch(/didn.t catch/i);
+    expect(h.talk.state).toBe("reading");
+    expect(h.reader.log).toEqual(["pause", "resumeAt:5"]);
+  });
+
+  it("an empty or failed transcript ends the turn the same way, at once", async () => {
+    const h = setup();
+    await h.talk.pttDown();
+    await tick(600);
+    const up = h.talk.pttUp();
+    await tick(0);
+    h.session.emit({ type: "transcript", text: "   " });
+    await tick(0);
+    await up;
+    expect(h.retrieved).toEqual([]);
+    expect(h.toasts[0]).toMatch(/didn.t catch/i);
+    expect(h.talk.state).toBe("reading");
+  });
+
+  it("the transcript window starts once the socket is open and the commit is really sent (#102)", async () => {
+    const h = setup();
+    let openNow: () => void = () => {};
+    h.session.ensureOpen = (voice: string) => new Promise<void>((r) => { h.session.calls.push(`open:${voice}`); openNow = () => { r(); }; });
+    await h.talk.pttDown();
+    await tick(600);
+    const up = h.talk.pttUp();
+    await tick(4000); // the socket is still connecting: the window has not started
+    expect(h.session.calls).not.toContain("commit");
+    expect(h.talk.state).toBe("transcribing");
+    openNow();
+    await tick(0);
+    expect(h.session.calls).toContain("commit");
+    await tick(5000); // 5 s after the commit is still inside the window
+    expect(h.talk.state).toBe("transcribing");
+    h.session.emit({ type: "transcript", text: "Read chapter two" });
+    await tick(0);
+    await up;
+    expect(h.retrieved[0][0]).toBe("Read chapter two");
     expect(h.talk.state).toBe("answering");
   });
 
@@ -301,6 +347,60 @@ describe("TalkController core loop", () => {
   });
 });
 
+describe("TalkController typed questions reach the model (#97)", () => {
+  it("a typed question is handed to respond() as text; a spoken one is not (its audio is the user item)", async () => {
+    const h = setup();
+    await h.talk.ask("What is a monad?");
+    expect(h.session.calls.at(-1)).toBe("respond:INSTR:What is a monad?");
+    await finishAnswer(h);
+    await tick(1500);
+    await ask(h, "and then?");
+    expect(h.session.calls.at(-1)).toBe("respond:INSTR");
+  });
+});
+
+describe("TalkController barge-in turn (#100)", () => {
+  it("the mic starts at once; the commit and the transcript window wait for the cancel to be acknowledged", async () => {
+    const h = setup();
+    await ask(h);
+    h.session.emit({ type: "audio-start" });
+    h.session.holdInterrupt = true;
+    const down = h.talk.pttDown();
+    await tick(0);
+    expect(h.session.calls.slice(-3)).toEqual(["interrupt", "open:marcus", "mic-start"]); // not after the ack
+    await down;
+    await tick(600);
+    const up = h.talk.pttUp();
+    await tick(1000);
+    expect(h.session.calls.filter((c) => c === "commit")).toHaveLength(1); // only the first question's
+    expect(h.talk.state).toBe("transcribing");
+    h.session.interruptAck!();
+    await tick(0);
+    expect(h.session.calls.filter((c) => c === "commit")).toHaveLength(2);
+    await tick(5500); // most of the window, counted from the commit
+    expect(h.talk.state).toBe("transcribing");
+    h.session.emit({ type: "transcript", text: "a new question" });
+    await tick(0);
+    await up;
+    expect(h.retrieved.at(-1)![0]).toBe("a new question");
+    expect(h.talk.state).toBe("answering");
+  });
+
+  it("a cancel that is never acknowledged ends the turn with the message, never 'Thinking' for ever", async () => {
+    const h = setup();
+    await ask(h);
+    h.session.emit({ type: "audio-start" });
+    h.session.interruptFails = true;
+    await h.talk.pttDown();
+    await tick(600);
+    await h.talk.pttUp();
+    await tick(0);
+    expect(h.toasts.at(-1)).toMatch(/could not be stopped/);
+    expect(["reading", "talk-idle"]).toContain(h.talk.state);
+    expect(h.session.calls.filter((c) => c === "commit")).toHaveLength(1);
+  });
+});
+
 describe("TalkController transcript hook", () => {
   it("reports the trimmed question once it is heard, and nothing when no transcript arrives", async () => {
     const heard: string[] = [];
@@ -315,7 +415,7 @@ describe("TalkController transcript hook", () => {
     await h2.talk.pttDown();
     await tick(600);
     const up = h2.talk.pttUp();
-    await tick(2600);
+    await tick(6500);
     await up;
     expect(heard2).toEqual([]);
   });

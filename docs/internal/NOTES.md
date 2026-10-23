@@ -552,7 +552,7 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
 - Pace: ~1.5-3 s from request to first fragment (up to ~6 s with several streams in flight), then about real time
   (TTS-ready -> stream-end of 10.7 s for a 9.04 s clip). The first sentence's clip therefore cannot catch up with a voice
   that starts immediately; the voice now waits (bounded) for ~2 fragments before the first word.
-- TTS mp3s are 32 kbit/s 24 kHz, so `len(data)/16000` in main.py under-counts avatar seconds 4x in usage logging.
+- Fixed (#79): avatar seconds now come from mp3 frame headers (app/mp3dur.py), fallback len/8000 (cached mp3s are 64 kbit/s, so old len/16000 was 2x low).
 ## Read-mode lip-sync (#80, 2026-10-23, designed offline: no Boson calls)
 - Read mode used to play only the generic talk loop, so the mouth never matched the words. Now, behind "Lip-sync while
   reading" (Stage, off by default, shown only when a face on screen is bound to a voice), ReaderEngine streams a Boson
@@ -613,8 +613,8 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   bound to the voice that speaks (same clip path + start gate + FaceSync everywhere; recaps use the narrator's face,
   which TalkbackView shows while a recap plays). The "talkback:lipsync" / "talkback:readlipsync" localStorage keys are
   no longer read. No price or delay copy remains in the UI.
-- Silent fallbacks: no face / unbound face / failed or stalled render -> talk loop or still face; read mode at speeds
-  other than 1x drops the clip source (reader/readLipSync.readClipsOn) because clips render at the natural pace.
+- Silent fallbacks: no face / unbound face / failed or stalled render -> talk loop or still face. (Read mode at speeds
+  other than 1x used to drop the clip source; since #105 the clip plays at the voice's playbackRate instead.)
 - Cost: every fresh line spoken by a bound face now renders a clip (~$0.09/min of video, cached per line + voice).
 
 ## Voices panel: One voice / Two voices, Full cast removed (#93, 2026-10-23)
@@ -632,6 +632,100 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   be names run together (the IR PDF: "Christopher D. Manning Prabhakar Raghavan Hinrich Schütze"): the fast LLM, which
   sees the title page, is then asked for the list (schema `authors: list[str]`), and its answer replaces the metadata.
   When no LLM can be used the metadata string is kept as is.
+
+## Voice agent: Realtime tools act on the reader (#72, 2026-10-23)
+- `frontend/src/talk/tools.ts` declares ten client function tools to `session.update` (`tools[]`, `tool_choice: auto`):
+  jump_to (chapter number / title / Roman numeral / "last" / "bookmark", or a quoted passage), read_chapter, resume_reading,
+  pause_reading, set_voice_mode (one/two), set_narrator (male/female), set_speed (1.25 / faster / slower / normal),
+  open_recap (chapter/book/series), bookmark, show_cast. Boson's server-side `{"type": "web_search"}` is never declared
+  (novel spoilers). `runTool` is pure: a `ToolContext` snapshot + `ToolActions` (Reader.tsx wires seek/pause/cast/speed/
+  recap/Voices panel), so every tool is unit-tested without a DOM.
+- Flow (TalkClient): `response.function_call_arguments.done` is remembered; `response.done` with a `function_call` item
+  whose `executor` is `"client"` (server-run tools are skipped) becomes a `tool-call` session event instead of a finished
+  answer; TalkController runs the tool, `returnTools()` sends `function_call_output` per call and a `response.create` with
+  the same per-response instructions, and the model speaks the confirmation. A cancelled response drops its calls.
+- Spoiler guard: `resolveJump` refuses any target whose first chunk's paragraph is past `readerPara` when spoilers are off
+  (a quoted passage lands on the nearest match at or before the reader; bookmarks set with spoilers on are checked too).
+  The model is told why in the tool output so it can say so; the reader never moves.
+- After the answer: a tool that moved the reader sets where auto-resume continues (read_chapter / resume_reading force
+  a resume even with auto-resume off and switch Talkback back to the page; pause_reading stops the resume). A chip
+  ("Jumped to Chapter II") is a `role: "tool"` chat message, kept in the log, never sent back as history.
+- Gemini answer path (no Realtime, so no function calling): `parseIntent` recognises a few plain phrasings ("read chapter 3",
+  "jump to the part where ...", "keep reading", "pause", "a bit faster", "one voice", "recap the last chapter", "bookmark
+  this", "show me the cast") and runs the same tool without calling Gemini; anything else is a question. Refusals toast.
+
+## Barge-in: interrupt a character mid-answer (#10, 2026-10-23)
+- Realtime: the mic press (or Space, or a typed question) while an answer plays does, in this order: local playback
+  flush (the audible stop, well under 0.15 s), `conversation.item.truncate` at the ms actually heard (`audio_end_ms`),
+  `response.cancel`, wait for the cancelled `response.done`, then open the mic. Already in TalkClient.interrupt; now
+  covered by fake-socket tests (test/bargeIn.test.ts). Gemini + TTS: the press aborts the stream and stops the
+  sentence clip (lip-sync included); no socket traffic.
+- The cut-off bubble is marked `interrupted` ("· interrupted", an em dash after the text), and `priorTurns` appends
+  " [the reader interrupted here]" to that reply, so the next answer (both paths) knows what was not heard.
+- Hands-free (off by default, Talkback view button): a client-side voice gate (talk/handsFree.ts) over the capture
+  worklet's RMS. Speech over 0.04 RMS for 150 ms starts a turn (barging in if the character is talking); 700 ms under
+  it commits the turn; a gate turn is never a tap. The mic stays open between turns (`TalkClient.setMonitor`), keeps
+  the last ~300 ms and sends it first so the first word is not clipped. Tuned for laptop mics; echo cancellation is on,
+  headphones recommended.
+- Why not Boson `server_vad` / `semantic_vad`: the migration guide says `create_response`/`interrupt_response` are
+  accepted but have no effect, i.e. the server always answers on end of turn by itself. That answer would not carry the
+  per-response retrieval instructions (spoiler-safe context, persona), so turns stay manual (`turn_detection: null`).
+  The session still sets `noise_reduction: near_field`. If Boson adds `create_response: false`, `server_vad` with
+  `threshold` ~0.6-0.7 (its default moved to 0.85) would replace the local gate.
+
+## Spoken turns live: tool calls, barge-in leftovers, hands-free echo (#102, #97, #99, #100, #103, 2026-10-23)
+- Spoken commands failed where typed ones worked because the *question* was lost, not the tool. `pttUp` waited a fixed
+  2.5 s for the transcript from the key release; on the first turn of a session the commit is deferred until the socket
+  opens (key fetch + connect), and STT runs after that, so the window expired, the query was "" and it still went to
+  Gemini (`/api/answer` -> "The answer could not be generated") or to retrieval. Now `beginTurn` keeps the
+  ensureOpen/interrupt promises, `pttUp` awaits them, the window (6 s) starts at the real commit, an empty or failed
+  transcript ends the turn with "I didn't catch that" and never asks an empty question (#99 as well).
+- `parseIntent` strips transcription prose ("Okay, read chapter 2, please!" / "Could you ...?") before matching.
+- Realtime: every `returnTools()` re-arms the 15 s answer watchdog (a tool call's continuation is a new response that can
+  go missing); only the latest watchdog acts. A typed question is sent as a user `input_text` item before
+  `response.create` (#97): the instructions carry the passages, not the question.
+- Barge-in (#100): the old answer's `output_audio.delta` / caption deltas keep arriving after the local flush (the server
+  runs ahead of real time); TalkClient drops all output from the interrupt until the next `response.created`. The mic
+  starts at once; audio and the commit are held in the client until the cancel is acknowledged (`response.done` or
+  `response_not_active`), then sent in order. A cancel never acknowledged fails the turn with a message.
+- Boson's AssistantItem content takes `{type: "text"}`; `output_text` (history seeding) was rejected with 22 pydantic errors.
+- Hands-free echo (#103): `getUserMedia` asks for echoCancellation + noiseSuppression + autoGainControl. While the
+  character speaks (and 300 ms after) the gate uses `HANDS_FREE_OVER_SPEECH` (0.10 RMS for 400 ms) instead of the idle
+  profile (0.04 for 150 ms): residual echo and a cough do not interrupt, clear sustained speech does, the mic button /
+  Space always does. The toggle says "Hands-free (use headphones)".
+## Short chunks: voice before face (#104, 2026-10-23, fake-clock tests, no Boson calls)
+- Cause (read mode): (1) when a chunk's voice ended, FaceSync kept the old clip attached and SHOWN, frozen on its last
+  frame ('pause' arrives before 'ended'), until the next clip joined; (2) the next clip opened only when the current
+  voice started (1 ahead), so a ~1 s chunk gave it ~1 s of head start against Boson's 1.5-3 s first fragment + ~0.8 s
+  pre-roll, and the 1 s chained gate timed out: the next voice started under the previous chunk's still face, and its
+  own clip joined late (rendezvous) or never. Talkback was not affected the same way (its speaker leaves the sync at
+  each sentence end and waits up to 6 s per sentence).
+- Fix: FaceSync hides the face on the voice's `ended`; ReaderEngine leaves the sync when a chunk ends; clips open ahead
+  until the next unopened one has >= 4 s of speech as head start (max 3 ahead, readLipSync.clipAheadFor); chained wait
+  1 s -> 3 s. More renders in flight with short chunks: the server's 12/min avatar bucket can still refuse some (talk
+  loop then).
+
+## Lip-sync at 0.75x-1.5x (#105, 2026-10-23, fake-clock tests)
+- The clip is rendered at the voice's natural pace, so it simply plays at the voice's playbackRate: FaceSync and the
+  pre-rendered clip follower set video.playbackRate = audioRate * (1 +- drift nudge); AudioClock advances at the voice's
+  rate; the voice keeps preservesPitch. Speed changes mid-clip are followed on the next tick.
+- Start gate at speed: a live stream renders at ~real time but is played faster, so the head start grows to
+  1 - 1/(1.1 * rate) of the sentence (~39% at 1.5x, ~0.7 s base); at 0.75x only the base. A long chunk at 1.5x
+  therefore waits longer before its first word, and if the render still falls behind the face drops to the talk loop
+  and rejoins (unchanged fallback). Talkback answers and recaps have no speed control, so they are unaffected.
+
+
+## Lip-sync for any voice x face (#113)
+- Before: lip-sync requests sent only the voice and the server animated `faces.voice_face_path(voice)`, so only a
+  cloned voice with its own face ever lip-synced; uploaded faces, presets with a face and newly cloned voices with a
+  picked face fell back to the talk loop. Now every request (answers, recaps, read mode per chunk, replays re-open the
+  same clip) carries `face_id` = the face on screen; `_lipsync_face` resolves it in the caller's library (404 for
+  another account's or unknown id), and falls back to the voice's face when no id is sent. Cache key unchanged
+  (audio key + face image hash), so old clips stay valid.
+- Cloning with an existing face sends `face_id` to `/api/voices/clone`: `faces.link_voice` marks the entry
+  `voice` + `linked: true` (no copy). Deleting the voice deletes only faces made with the clone (no `linked`) and
+  unlinks borrowed ones (`faces.unlink_voice`). The old `face` file upload still works.
+- Realtime (Boson realtime) answers are audio only, as before; nothing to lip-sync there.
 
 ## Textbook figures in the reader (#40, 2026-10-23)
 - The IR textbook's figures (01bool, Figures 1.1-1.7) contain no vector drawings and no real pictures: they are text (matrix cells, posting lists, pseudocode) plus rules and boxes stored as thin embedded images. So `get_images` / `get_drawings` alone would find none of them. Figures are found from their caption instead (`_take_figures`): a "Figure N" line set small or bold, and everything between it and the nearest prose above it (else below it). The crop (page.get_pixmap(clip=...), 150 dpi, longest side <= 2000 px) is saved to `data/books/<id>/figures/fig-N.png`, and the figure becomes a paragraph of kind "figure" (text = caption, read aloud by default) placed between paragraphs. The text inside the figure no longer leaks into the body text.

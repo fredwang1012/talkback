@@ -6,8 +6,9 @@ import {
   type Book, type Cast, type Face, type Health,
 } from "../api";
 import {
-  PRESETS, PREVIEW_LINE, castVoice, dropReferences, createCastSaver, emptyCast, isNovel, loadTalkChoice, migrateOldOverrides,
-  readingFaceId, saveTalkChoice, talkFaceId, talkVoice, type TalkChoice,
+  PRESETS, PREVIEW_LINE, castVoice, choiceFor, dropTalkReferences, createCastSaver, emptyCast, isNovel, loadTalkChoices, migrateOldOverrides,
+  narratorGender, readingFaceId, saveTalkChoices, talkFaceId, talkVoice, voiceMode, withTalkChoice, withVoiceMode, type TalkChoice,
+  type TalkChoices,
 } from "../reader/castLogic";
 import { DEMO_SPEAKER, DEMO_START_PARA, firstChunkAtOrAfter, isDemo } from "../demo";
 import BookText from "../reader/BookText";
@@ -19,7 +20,7 @@ import type { FollowAudio } from "../reader/clipFollow";
 import { AudioLevelMeter } from "../reader/audioLevel";
 import { SPEECH_IDLE, stepSpeech } from "../reader/speechLevel";
 import { loopsToPreload, showReadingFace } from "../reader/readFace";
-import { lipSyncVoiceFor, readClipsOn, readFaceFor, speechSeconds, type ReadFaces } from "../reader/readLipSync";
+import { lipSyncTargetFor, readClipsOn, readFaceFor, speechSeconds, type ReadFaces } from "../reader/readLipSync";
 import Stage from "../reader/Stage";
 import { toggleMode, validSpeaker } from "../reader/talkbackLogic";
 import TalkbackView, { ModeToggle } from "../reader/TalkbackView";
@@ -28,6 +29,7 @@ import VoiceLab from "../reader/VoiceLab";
 import { spend, type SpendSnapshot } from "../spend";
 import { openClipVideo } from "../talk/clipVideo";
 import { FaceSync } from "../talk/faceSync";
+import { runTool, type ToolActions, type ToolContext } from "../talk/tools";
 import { useTalk } from "../talk/useTalk";
 import { DebugDrawer } from "../ui/DebugDrawer";
 import { debugEnabled } from "../ui/debugFlag";
@@ -68,8 +70,9 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [castError, setCastError] = useState<string | null>(null);
   const [faces, setFaces] = useState<Face[]>([]);
   const [cloned, setCloned] = useState<Record<string, string>>({});
-  const [talkChoice, setTalkChoice] = useState<TalkChoice>(() => loadTalkChoice(bookId));
-  useEffect(() => { setTalkChoice(loadTalkChoice(bookId)); }, [bookId]);
+  // Talkback's Voice / Avatar picks, one per "Talk to" character (#106), kept per book in this browser
+  const [talkChoices, setTalkChoices] = useState<TalkChoices>(() => loadTalkChoices(bookId));
+  useEffect(() => { setTalkChoices(loadTalkChoices(bookId)); }, [bookId]);
   // read-mode lip-sync (#80, always on since #92): the face's clip video is driven by its own sync
   const [readClipShown, setReadClipShown] = useState(false);
   const readSync = useRef<FaceSync | null>(null);
@@ -91,6 +94,8 @@ export default function Reader({ bookId }: { bookId: string }) {
   playingRef.current = playing;
   readCaptionsRef.current = readCaptions;
   useEffect(() => { engineRef.current?.setSkipCaptions(!readCaptions); saveReadCaptions(readCaptions); }, [readCaptions]);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
   useEffect(() => {
     fetchBook(bookId).then((b) => {
@@ -172,10 +177,10 @@ export default function Reader({ bookId }: { bookId: string }) {
 
 
   const readingVoiceFor = (id: string) => (book ? castVoice(book, cast, id) : "marcus");
-  const talkVoiceFor = (id: string) => (book ? talkVoice(book, cast, talkChoice, id) : "marcus");
+  const talkVoiceFor = (id: string) => (book ? talkVoice(book, cast, choiceFor(talkChoices, id), id) : "marcus");
   const faceById = (id: string | null) => (id ? faces.find((f) => f.id === id) : undefined);
   const talkFaceFor = (id: string) =>
-    book ? faceById(talkFaceId(book, cast, talkChoice, id, talkVoiceFor(id), faces)) : undefined;
+    book ? faceById(talkFaceId(book, cast, choiceFor(talkChoices, id), id, talkVoiceFor(id), faces)) : undefined;
   const narratorVoice = book ? castVoice(book, cast, "narrator") : null;
   const current = chunks[index];
   // read mode: who reads a chunk, by the reader's own voice -> face resolution (one or two voices); a speaker
@@ -192,21 +197,47 @@ export default function Reader({ bookId }: { bookId: string }) {
   const nextChunk = chunks[index + 1];
   const nextReadingFace = book && nextChunk && playing ? readFaceFor(readFaces, nextChunk.speaker) : null;
   const preloadLoops = loopsToPreload(readingFace, nextReadingFace);
-  // the engine's clip source: the chunk's clip on the voice whose bound face is on screen (null: no lip-sync for it,
-  // the talk loop or still face shows). Always on, but only at 1x (readClipsOn).
-  const clipsOn = readClipsOn(audioAvailable, speed);
+  // the engine's clip source: the chunk's clip on the face on screen for it, whatever voice reads it (#113; null: no
+  // face shown, audio only). Always on, at every speed: the clip plays at the voice's rate (#105).
+  const clipsOn = readClipsOn(audioAvailable);
   const clipSource = useMemo<ClipSource | null>(() => {
     if (!clipsOn) return null;
     return (chunk, audioUrl, voice) => {
-      const faceVoice = lipSyncVoiceFor(latestFaces.current, chunk.speaker, voice);
-      if (!faceVoice) return null;
-      return openClipVideo(audioUrl, faceVoice, () => spend.addAvatar(speechSeconds(chunk.tts_text)));
+      const target = lipSyncTargetFor(latestFaces.current, chunk.speaker, voice);
+      if (!target) return null;
+      return openClipVideo(audioUrl, target.voice, target.faceId, () => spend.addAvatar(speechSeconds(chunk.tts_text)));
     };
   }, [clipsOn]);
   useEffect(() => { engineRef.current?.setClipSource(clipSource); }, [clipSource, book, chunks, audioAvailable, demo]);
   const voiceOptions = useMemo(
     () => [...PRESETS.map((v) => ({ value: v, label: v })), ...Object.entries(cloned).map(([n, v]) => ({ value: v, label: `${n} (cloned)` }))],
     [cloned]);
+
+  // The reader tools a character can call (#72): the snapshot and the actions read the latest state through refs, so
+  // the runner handed to the talk loop never goes stale. The spoiler guard lives in runTool.
+  const toolDeps = useRef<{ ctx: () => ToolContext; act: ToolActions } | null>(null);
+  toolDeps.current = book ? {
+    ctx: () => ({
+      bookId: book.id, sections: book.sections, paragraphs: book.paragraphs, characters: book.characters, chunks,
+      index: indexRef.current, readerPara: readerPara(chunks, indexRef.current), spoilers: spoilers && book.kind === "novel",
+      playing: engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current,
+      speed, speeds: SPEEDS, voiceMode: voiceMode(cast), narrator: narratorGender(cast), inSeries: !!book.series,
+    }),
+    act: {
+      seek: (i) => { lastManualScroll.current = 0; const next = clampIndex(i, chunks.length); if (engineRef.current) engineRef.current.seek(next); else setIndex(next); },
+      pause: () => (engineRef.current ? engineRef.current.pause() : setPlaying(false)),
+      setVoiceMode: (m) => changeCast(withVoiceMode(cast, m)),
+      setNarrator: (g) => changeCast({ ...cast, narrator_gender: g }),
+      setSpeed,
+      openRecap: (scope) => recap({ scope, label: scope === "chapter" ? "Last chapter" : scope === "book" ? "This book so far" : "The series so far" }),
+      showCast: () => setLabOpen(true),
+    },
+  } : null;
+  const toolRunner = useCallback((name: string, args: Record<string, unknown>) => {
+    const d = toolDeps.current;
+    if (!d) return { ok: false, output: "The book is still loading.", chip: null };
+    return runTool(name, args, d.ctx(), d.act);
+  }, []);
 
   // Talk mode: push-to-talk questions, answered from what has been read so far (needs the Boson key).
   const talk = useTalk({
@@ -215,12 +246,13 @@ export default function Reader({ bookId }: { bookId: string }) {
     speakerId,
     autoResume,
     health,
-    canLipSync: (voice) => { const f = talkFaceFor(speakerId); return !!f && f.voice === voice; },
-    narratorCanLipSync: (voice) => { const f = talkFaceFor("narrator"); return !!f && f.voice === voice; },
+    faceIdFor: (id) => talkFaceFor(id)?.id ?? null,
+    narratorFaceId: () => talkFaceFor("narrator")?.id ?? null,
     spoilers: spoilers && book?.kind === "novel",
     talkback: mode === "talk",
     voiceFor: talkVoiceFor,
     narratorVoice: audioAvailable ? narratorVoice : null,
+    tools: toolRunner,
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
       currentIndex: () => indexRef.current,
@@ -228,6 +260,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       pause: () => (engineRef.current ? engineRef.current.pause() : setPlaying(false)),
       play: () => (engineRef.current ? engineRef.current.play() : setPlaying(true)),
       resumeAt: (i) => {
+        if (modeRef.current === "talk") setMode("read"); // a tool asked for reading to go on (#72): show the page, keep the chat
         if (engineRef.current) { engineRef.current.seek(i); engineRef.current.play(); }
         else { setIndex(clampIndex(i, chunks.length)); setPlaying(true); }
       },
@@ -338,7 +371,9 @@ export default function Reader({ bookId }: { bookId: string }) {
     () => createCastSaver(bookId, () => setCastError(null), setCastError),
     [bookId]);
   const changeCast = (next: Cast) => { castEdited.current = true; setCastLoaded(true); setCast(next); setCastError(null); void saver(next); };
-  const changeTalk = (next: TalkChoice) => { setTalkChoice(next); saveTalkChoice(bookId, next); };
+  const changeTalkChoices = (next: TalkChoices) => { setTalkChoices(next); saveTalkChoices(bookId, next); };
+  /** A Voice / Avatar pick in Talkback belongs to the character being talked to. */
+  const changeTalk = (next: TalkChoice) => changeTalkChoices(withTalkChoice(talkChoices, speakerId, next));
   const reloadCast = () => { void saver.flush().then(() => fetchCast(bookId)).then((c) => { setCast(c); }).catch(() => {}); };
   const reloadFaces = () => { fetchFaces().then(setFaces).catch(() => {}); fetchVoices().then(setCloned).catch(() => {}); };
   // one short fixed line per voice through the TTS cache: only the first preview of a voice costs anything
@@ -391,7 +426,7 @@ export default function Reader({ bookId }: { bookId: string }) {
             <TalkbackView book={book} para={para} speakerId={speakerId} onSpeaker={setSpeakerId}
                           pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
                           talk={talk} faces={faces} faceFor={talkFaceFor} autoVoiceFor={readingVoiceFor}
-                          choice={talkChoice} onChoice={changeTalk} voices={voiceOptions}
+                          choice={choiceFor(talkChoices, speakerId)} onChoice={changeTalk} voices={voiceOptions}
                           spoilers={spoilers} onSpoilers={(on) => { setSpoilers(on); saveSpoilers(bookId, on); }}
                           portrait={book.characters.find((c) => c.id === speakerId)?.portrait ?? book.narrator?.portrait ?? null}
                           onBack={() => changeMode("read")} onRecap={recap} onVoices={() => setLabOpen(true)} />
@@ -418,7 +453,7 @@ export default function Reader({ bookId }: { bookId: string }) {
                   cloned={cloned} onCloned={setCloned} animating={animating} setAnimating={setAnimating} animErrors={animErrors} setAnimErrors={setAnimErrors} faces={faces} onFaces={setFaces}
                   onFacesChanged={() => { reloadFaces(); reloadCast(); }}
                   onRemoved={(gone) => {
-                    changeTalk(dropReferences(talkChoice, gone));
+                    changeTalkChoices(dropTalkReferences(talkChoices, gone));
                   }}
                   onPreview={preview} audioAvailable={audioAvailable} onClose={() => setLabOpen(false)} />
       )}

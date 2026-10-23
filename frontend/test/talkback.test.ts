@@ -103,6 +103,24 @@ describe("TalkbackView", () => {
     expect(talk.clearMessages).toHaveBeenCalled();
   });
 
+  it("renders a tool chip, an interrupted reply, and the hands-free toggle (off by default)", () => {
+    const setHandsFree = vi.fn();
+    const messages = [
+      { id: 1, role: "user", speakerId: "narrator", text: "Read chapter two" },
+      { id: 2, role: "tool", speakerId: "tool", text: "Jumped to Chapter II" },
+      { id: 3, role: "character", speakerId: "narrator", text: "Here we go", interrupted: true },
+    ] as TalkUi["messages"];
+    view(novel, fakeTalk({ messages, handsFree: false, setHandsFree }));
+    expect(host.querySelector(".tool-chip")!.textContent).toBe("Jumped to Chapter II");
+    expect(host.querySelector(".bubble.interrupted")!.textContent).toContain("interrupted");
+    const hf = host.querySelector<HTMLButtonElement>(".hands-free")!;
+    expect(hf.getAttribute("aria-pressed")).toBe("false");
+    expect(hf.textContent).toMatch(/headphones/i); // #103: the label says what it needs
+    expect(hf.title).toMatch(/headphones/i);
+    act(() => hf.click());
+    expect(setHandsFree).toHaveBeenCalledWith(true);
+  });
+
   it("shows a labelled replay button only on finished replies that can be replayed", () => {
     const replay = vi.fn();
     const messages = [
@@ -240,13 +258,13 @@ describe("useTalk transcript", () => {
     expect(latest.replayable.has(latest.messages[1].id)).toBe(false);
   });
 
-  it("a recap read aloud is lip-synced on the narrator's face, like answers, when that face is bound to the voice (#92)", async () => {
+  it("a recap read aloud is lip-synced on the narrator's face, like answers, whenever a face is shown (#92, #113)", async () => {
     made.length = 0;
     const { speak } = await import("../src/api");
-    let bound = true;
+    let shown: string | null = "f-narrator";
     function NarratorHarness() {
       latest = useTalk({ bookId: "hp-lip", enabled: true, reader, speakerId: "hagrid", voiceFor: () => "marcus", autoResume: true, narratorVoice: "belinda",
-        narratorCanLipSync: (v) => bound && v === "belinda",
+        narratorFaceId: () => shown,
         health: { ok: true, boson_key_set: true, access_required: false, answer_backend: "gemini" }, talkback: true });
       return null;
     }
@@ -258,7 +276,7 @@ describe("useTalk transcript", () => {
     const clip = await narrator.synth("Alice fell.") as { audio_url: string; openVideo?: unknown };
     expect(speak).toHaveBeenLastCalledWith("Alice fell.", "belinda");
     expect(typeof clip.openVideo).toBe("function");
-    bound = false; // the narrator's face is not bound to this voice: plain audio, the talk loop stands in
+    shown = null; // no face shown for the narrator: plain audio, the talk loop stands in
     expect((await narrator.synth("Alice fell.") as { openVideo?: unknown }).openVideo).toBeUndefined();
   });
 

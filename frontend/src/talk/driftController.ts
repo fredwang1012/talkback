@@ -13,7 +13,7 @@ export interface DriftOptions {
   deadBandS: number;      // |smoothed drift| below this: leave the video alone
   hardSeekS: number;      // above this a seek is allowed
   seekCooldownMs: number; // minimum gap between seeks
-  maxRateDelta: number;   // playbackRate stays within 1 +- this
+  maxRateDelta: number;   // playbackRate stays within (voice rate) * (1 +- this)
   rateGain: number;       // rate change per second of drift
   emaAlpha: number;       // weight of each new drift sample
   startOffsetS: number;   // constant: how far the video leads (+) the voice at the same instant
@@ -28,18 +28,30 @@ export type DriftAction =
   | { kind: "rate"; rate: number }
   | { kind: "seek"; to: number; rate: 1 };
 
-/** Voice position estimate: anchored at play time, advanced by the wall clock, softly corrected by raw readings. */
+/**
+ * Voice position estimate: anchored at play time, advanced by the wall clock times the voice's playback rate, softly
+ * corrected by raw readings.
+ */
 export class AudioClock {
   private pos = 0;
   private at = 0;
   private running = false;
   private anchored = false;
+  private rate = 1;
 
   anchor(pos: number, nowMs: number, running = true) { this.pos = pos; this.at = nowMs; this.running = running; this.anchored = true; }
   pause(nowMs: number) { if (this.running) { this.pos = this.position(nowMs); this.running = false; } }
   resume(nowMs: number) { if (!this.running) { this.at = nowMs; this.running = true; } }
   get isRunning() { return this.running; }
-  position(nowMs: number): number { return this.running ? this.pos + (nowMs - this.at) / 1000 : this.pos; }
+  get playbackRate() { return this.rate; }
+  /** The voice's playbackRate (media seconds per wall second); the position so far is kept. */
+  setRate(rate: number, nowMs: number) {
+    if (!(rate > 0) || rate === this.rate) return;
+    this.pos = this.position(nowMs);
+    this.at = nowMs;
+    this.rate = rate;
+  }
+  position(nowMs: number): number { return this.running ? this.pos + ((nowMs - this.at) / 1000) * this.rate : this.pos; }
 
   /** Feed a raw `currentTime` reading; returns the smoothed position. */
   sample(reading: number, nowMs: number, jumpS = 0.2, blend = 0.1): number {

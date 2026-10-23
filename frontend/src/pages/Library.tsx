@@ -263,13 +263,16 @@ function Volume({ b, busy, note, onMove, onConfirm, onDelete, onHide }: {
   );
 }
 
+const MAX_STACK = 4;
+
 /** Books of one series stacked into a single card; it opens in place to show every volume in series order. */
 function SeriesStack({ g, children }: { g: SeriesGroup; children: (b: BookSummary) => ReactNode }) {
   const [open, setOpen] = useState(false);
   const cover = g.books.find((b) => b.cover)?.cover;
   const bodyId = `series-${g.series}`;
+  const behind = Math.min(g.books.length, MAX_STACK) - 1; // one spine per further volume, up to MAX_STACK cards
   return (
-    <div className={`series-stack${open ? " series-open" : ""}`} role="group" aria-label={seriesTitle(g.series)}>
+    <div className={`series-stack stack-${behind}${open ? " series-open" : ""}`} role="group" aria-label={seriesTitle(g.series)}>
       <button type="button" className="series-card" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((v) => !v)}>
         {cover && <img className="cover" src={cover} alt="" />}
         <span className="series-card-text">

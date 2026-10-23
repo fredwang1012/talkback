@@ -59,20 +59,24 @@ const realTimers: Timers = {
 /**
  * Seconds of clip to have buffered before the voice starts. Boson streams at roughly real time (0.75 s fragments,
  * measured ~1.0-1.1x), so the head start must cover one fragment of granularity plus ~9% of the sentence for a render
- * up to ~1.1x slower than real time. A clip that is complete (short sentence) is ready as soon as it is all in.
+ * up to ~1.1x slower than real time. Played faster (`rate` > 1, read mode at 1.25x/1.5x) the clip is used up faster
+ * than it renders, so the share of the sentence to have in hand grows: 1 - 1 / (1.1 * rate), ~0.09 at 1x, ~0.39 at
+ * 1.5x, none at 0.75x. A clip that is complete (short sentence) is ready as soon as it is all in.
  */
 export const START_LEAD_BASE_S = 0.7;
 export const START_LEAD_PER_S = 0.09;
-export const startLeadFor = (voiceS: number | null | undefined): number => {
+const RENDER_SLOWEST = 1.1; // render time per second of clip we plan for
+export const startLeadFor = (voiceS: number | null | undefined, rate = 1): number => {
   const d = voiceS && Number.isFinite(voiceS) && voiceS > 0 ? voiceS : 6;
-  return Math.min(d, START_LEAD_BASE_S + START_LEAD_PER_S * d);
+  const per = rate === 1 || !(rate > 0) ? START_LEAD_PER_S : Math.max(0, 1 - 1 / (RENDER_SLOWEST * rate));
+  return Math.min(d, START_LEAD_BASE_S + per * d);
 };
 
 export interface FaceSyncOptions {
   checkMs?: number;
   startOffsetS?: number;
   drift?: Partial<DriftOptions>;
-  startLead?: (voiceS: number | null) => number;
+  startLead?: (voiceS: number | null, rate: number) => number;
   now?: () => number;
   timers?: Timers;
 }
@@ -162,7 +166,14 @@ export class FaceSync implements ClipSync {
     let backoffTicks = 0;
     if (late) openGate();
 
-    const voicePos = () => clk.sample(audio.currentTime ?? 0, this.now());
+    // the voice's speed (read mode 0.75x-1.5x, #105): the clip plays at the same rate, nudged by the drift controller
+    const baseRate = () => { const r = audio.playbackRate; return typeof r === "number" && r > 0 ? r : 1; };
+    const setRate = (nudge: number) => {
+      if (v.playbackRate === undefined) return;
+      const want = baseRate() * nudge;
+      if (Math.abs(v.playbackRate - want) > 1e-4) v.playbackRate = want;
+    };
+    const voicePos = () => { clk.setRate(baseRate(), this.now()); return clk.sample(audio.currentTime ?? 0, this.now()); };
     const bufferedEnd = (): number | null => {
       const b = v.buffered;
       if (!b) return null;
@@ -175,10 +186,10 @@ export class FaceSync implements ClipSync {
       const e = bufferedEnd();
       if (e === null || complete()) return true;
       const d = finite(audio.duration) ? audio.duration : null;
-      return e >= startLead(d) + offset();
+      return e >= startLead(d, baseRate()) + offset();
     };
     const cancelArm = () => { if (this.arm !== null) { timers.clearTimeout(this.arm); this.arm = null; } };
-    const hide = () => { cancelArm(); this.show(false); v.pause(); if (v.playbackRate !== undefined) v.playbackRate = 1; };
+    const hide = () => { cancelArm(); this.show(false); v.pause(); setRate(1); };
     const stall = () => { // the render fell behind the voice: talk loop, and try again later, less eagerly each time
       hide();
       phase = "hidden";
@@ -188,7 +199,7 @@ export class FaceSync implements ClipSync {
     const play = () => {
       phase = "starting";
       ctrl.reset();
-      if (v.playbackRate !== undefined) v.playbackRate = 1;
+      setRate(1);
       void Promise.resolve(v.play()).catch(() => { if (phase === "starting") phase = "hidden"; }); // autoplay refused
     };
     const tryRendezvous = () => {
@@ -208,7 +219,7 @@ export class FaceSync implements ClipSync {
       const wait = target - (voicePos() + offset());
       if (wait < -0.03) { seekLead = Math.min(1, seekLead * 2); phase = "hidden"; return; } // the seek was slower than the lead
       phase = "armed";
-      this.arm = timers.setTimeout(() => { this.arm = null; if (phase === "armed") play(); }, Math.max(0, wait * 1000));
+      this.arm = timers.setTimeout(() => { this.arm = null; if (phase === "armed") play(); }, Math.max(0, (wait / baseRate()) * 1000));
     };
     const onVoicePlaying = () => {
       clk.anchor(audio.currentTime ?? 0, this.now());
@@ -232,6 +243,10 @@ export class FaceSync implements ClipSync {
       if (phase === "shown" || phase === "starting") { v.pause(); phase = "paused"; }
       else if (phase === "seeking" || phase === "armed") { cancelArm(); phase = "hidden"; }
     };
+    // the voice is over: the face goes down at once. Without this the clip froze on its last frame ('pause' comes
+    // before 'ended') and stayed up until the next clip joined, so a next voice that did not wait for its own clip
+    // started under the previous sentence's still face (#104)
+    const onVoiceEnded = () => { if (voiceOn) { hide(); phase = "done"; } };
     const onLoaded = () => {
       loaded = true;
       if (phase === "loading" && offset() > 0 && Math.abs(v.currentTime - offset()) > 0.02) v.currentTime = offset();
@@ -252,7 +267,7 @@ export class FaceSync implements ClipSync {
     ];
     for (const [t, f] of handlers) v.addEventListener(t, f);
     const canListen = typeof audio.addEventListener === "function";
-    const audioHandlers: [string, () => void][] = [["playing", onVoicePlaying], ["pause", onVoicePause]];
+    const audioHandlers: [string, () => void][] = [["playing", onVoicePlaying], ["pause", onVoicePause], ["ended", onVoiceEnded]];
     if (canListen) for (const [t, f] of audioHandlers) audio.addEventListener!(t, f);
     this.active = {
       openGate: () => openGate(),
@@ -278,7 +293,7 @@ export class FaceSync implements ClipSync {
       } else if (phase === "shown") {
         const act = ctrl.update(v.currentTime, voicePos(), this.now());
         if (act.kind === "seek") { hide(); phase = "hidden"; backoffTicks = 0; } // too far off: rejoin, no visible jump
-        else if (act.kind === "rate" && v.playbackRate !== undefined) v.playbackRate = act.rate;
+        else setRate(act.rate); // also follows a speed change mid-clip
       }
     }, checkMs);
     return gate;

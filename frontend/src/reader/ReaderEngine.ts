@@ -3,7 +3,7 @@ import type { ClipSync, VideoClip } from "../talk/sentencePlayer";
 import { gateVoiceOnClip, type ClipGate } from "../talk/startGate";
 import { prefetchEnd } from "./prefetch";
 import { nextChunk, type FlatChunk } from "./position";
-import { clipWindow, READ_CHAIN_WAIT_MS, READ_CLIP_AHEAD, READ_START_WAIT_MS } from "./readLipSync";
+import { clipAheadFor, clipWindow, READ_CHAIN_WAIT_MS, READ_START_WAIT_MS, speechSeconds } from "./readLipSync";
 import { resumeTime, staleIndexes } from "./voiceSwitch";
 
 export type WordTiming = { start: number; end: number; char_start: number; char_end: number };
@@ -40,12 +40,12 @@ export type EngineDeps = {
   sync?: ClipSync;        // the read-mode face's lip-sync video (talk/faceSync); clips are only opened with one
   startWaitMs?: number;   // the first word after Play waits this long at most for its clip
   chainWaitMs?: number;   // between chunks (the next clip is normally prefetched)
-  clipAhead?: number;     // clips opened ahead of the playing chunk
+  clipAhead?: number;     // clips opened ahead of the playing chunk (default: by speech length, readLipSync.clipAheadFor)
 };
 
 type Loaded = { audio: AudioLike; timestamps: WordTiming[] | null; url: string; voice: string | undefined };
 type Entry = {
-  promise: Promise<Loaded>; resolved: boolean; voice: string | undefined;
+  promise: Promise<Loaded>; resolved: boolean; voice: string | undefined; loaded?: Loaded;
   video?: Promise<VideoClip | null>; // the chunk's lip-sync clip, once opened (null: none, or the render failed)
   clipJoined?: boolean;              // the clip was attached to the face: starting this chunk over needs a fresh one
 };
@@ -57,7 +57,7 @@ type Entry = {
  * Lip-sync (#80): with a `sync` and a clip source, each chunk's clip is opened with its audio and played with the
  * Talkback start gate (talk/startGate): the first word waits (bounded) until the clip can start with it from 0; the
  * voice is never paused or moved for the face. The next chunk's clip opens the moment the current voice starts
- * (bounded by `clipAhead`), so continuous reading has no render wait between chunks; a seek, skip or voice change
+ * (more ahead when chunks are short: readLipSync.clipAheadFor), so continuous reading has no render wait between chunks; a seek, skip or voice change
  * drops the clips that are no longer next.
  */
 export class ReaderEngine {
@@ -118,7 +118,8 @@ export class ReaderEngine {
         audio.preservesPitch = true;
         audio.playbackRate = this.speed;
         entry.resolved = true;
-        return { audio, timestamps: r.timestamps, url: r.audio_url, voice: entry.voice ?? r.voice };
+        entry.loaded = { audio, timestamps: r.timestamps, url: r.audio_url, voice: entry.voice ?? r.voice };
+        return entry.loaded;
       });
       entry.promise.catch(() => this.entries.delete(i)); // a failed prefetch is retried when its turn comes
       this.entries.set(i, entry);
@@ -157,11 +158,23 @@ export class ReaderEngine {
     this.clipSource = src;
     if (src && this.current && this.state === "playing") {
       this.joinLate(this.index, this.gen);
-      this.holdClips(this.index, this.clipAhead);
+      this.holdClips(this.index, this.clipAheadAt(this.index));
     }
   }
 
-  private get clipAhead(): number { return this.deps.clipAhead ?? READ_CLIP_AHEAD; }
+  /** Clips held ahead of chunk i: a fixed count when given, else enough that the next clip has a head start of a few
+   * seconds of speech (short chunks back to back open more ahead, #104). */
+  private clipAheadAt(i: number): number {
+    if (this.deps.clipAhead !== undefined) return this.deps.clipAhead;
+    return clipAheadFor(i, this.chunks.length - 1, (k) => this.speechAt(k));
+  }
+
+  /** Seconds chunk k takes to speak at the current speed: its audio's duration once known, else from its text. */
+  private speechAt(k: number): number {
+    const d = this.entries.get(k)?.loaded?.audio.duration;
+    const s = typeof d === "number" && Number.isFinite(d) && d > 0 ? d : speechSeconds(this.chunks[k]?.tts_text ?? "");
+    return s / (this.speed > 0 ? this.speed : 1);
+  }
 
   /** The chunk's clip, opened once its audio is known. `fresh`: the chunk starts over, so a clip that was already
    * attached to the face (a MediaSource plays only once) is replaced. */
@@ -236,7 +249,7 @@ export class ReaderEngine {
     this.cancelGate();
     const entry = this.entry(i);
     this.prefetchFrom(i); // request the lookahead now, in parallel with the first chunk, not after it starts
-    this.holdClips(i, this.clipAhead, false);
+    this.holdClips(i, this.clipAheadAt(i), false);
     this.openClip(i, true); // this chunk's clip renders while its audio loads; the next one's waits for the voice
     if (!entry.resolved && this.state !== "playing") this.set("loading");
     else this.emit();
@@ -283,7 +296,7 @@ export class ReaderEngine {
       if (at > 0) this.joinLate(i, gen); // resumed mid-chunk (voice switch): the clip joins when it can
       this.set("playing");
       this.prefetchFrom(i);
-      this.holdClips(i, this.clipAhead); // the next chunk's clip renders while this one plays
+      this.holdClips(i, this.clipAheadAt(i)); // the next chunk's clip renders while this one plays
     } catch (e) {
       if (gen !== this.gen) return;
       this.wantPlay = false;
@@ -301,6 +314,7 @@ export class ReaderEngine {
       this.set("ended");
       return;
     }
+    this.deps.sync?.leave(); // the finished chunk's clip comes down now, not when the next clip joins (#104)
     this.index = next;
     void this.startChunk(this.index, { chained: true });
   }
@@ -309,7 +323,7 @@ export class ReaderEngine {
     if (this.state === "playing" || this.chunks.length === 0) return;
     this.wantPlay = true;
     if (this.state === "paused" && this.current) {
-      void this.current.audio.play().then(() => { this.set("playing"); this.holdClips(this.index, this.clipAhead); }, (e) => {
+      void this.current.audio.play().then(() => { this.set("playing"); this.holdClips(this.index, this.clipAheadAt(this.index)); }, (e) => {
         this.wantPlay = false;
         if (isAutoplayBlock(e)) this.set("paused", TAP_TO_PLAY);
         else this.set("error", e instanceof Error ? e.message : String(e));
@@ -342,7 +356,7 @@ export class ReaderEngine {
     this.stopCurrent();
     this.index = next;
     this.prefetchFrom(next);
-    this.holdClips(next, this.clipAhead, false); // clips that are no longer next are cancelled; none opens until play
+    this.holdClips(next, this.clipAheadAt(next), false); // clips that are no longer next are cancelled; none opens until play
     if (this.wantPlay) void this.startChunk(next);
     else this.set(this.state === "paused" ? "paused" : "idle"); // not playing: just move the position
   }

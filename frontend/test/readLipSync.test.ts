@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Face } from "../src/api";
-import { clipWindow, lipSyncVoiceFor, readClipsOn, readFaceFor, speechSeconds } from "../src/reader/readLipSync";
+import { clipAheadFor, clipWindow, lipSyncTargetFor, readClipsOn, readFaceFor, speechSeconds } from "../src/reader/readLipSync";
 
 const face = (id: string, voice: string | null): Face => ({ id, name: id, image: `/${id}.png`, voice, talk: null, idle: null });
 const nar = face("f-nar", "clone-nar");
@@ -25,30 +25,46 @@ describe("read-mode lip-sync decisions", () => {
     expect(readFaceFor(faces({}, {}), "hermione")).toBeNull();
   });
 
-  it("lip-syncs on the chunk's own voice only when the face shown is bound to it", () => {
+  it("lip-syncs the face on screen with whatever voice reads the chunk (#113)", () => {
     const f = faces({ narrator: nar, harry }, { narrator: "clone-nar", harry: "clone-harry" });
-    expect(lipSyncVoiceFor(f, "harry", "clone-harry")).toBe("clone-harry");
-    expect(lipSyncVoiceFor(f, "harry", "jake")).toBeNull(); // the voice changed under the face
-    expect(lipSyncVoiceFor(f, "harry", undefined)).toBeNull();
+    expect(lipSyncTargetFor(f, "harry", "clone-harry")).toEqual({ faceId: "f-harry", voice: "clone-harry" });
+    expect(lipSyncTargetFor(f, "harry", "jake")).toEqual({ faceId: "f-harry", voice: "jake" }); // a preset on a cloned face
+    expect(lipSyncTargetFor(f, "harry", undefined)).toEqual({ faceId: "f-harry", voice: "clone-harry" }); // the reading voice
   });
 
-  it("a speaker without a face is read by the narrator's face, lip-synced on the narrator's voice", () => {
+  it("a speaker without a face is read by the narrator's face, even an unbound uploaded one; no face: audio only", () => {
     const f = faces({ narrator: nar }, { narrator: "clone-nar", hermione: "chloe" });
-    expect(lipSyncVoiceFor(f, "hermione", "chloe")).toBe("clone-nar");
-    const unbound = faces({ narrator: face("f-nar", null) }, { narrator: "marcus", hermione: "chloe" });
-    expect(lipSyncVoiceFor(unbound, "hermione", "chloe")).toBeNull();
-    expect(lipSyncVoiceFor(faces({}, {}), "hermione", "chloe")).toBeNull();
+    expect(lipSyncTargetFor(f, "hermione", "chloe")).toEqual({ faceId: "f-nar", voice: "chloe" });
+    const unbound = faces({ narrator: face("f-up", null) }, { narrator: "marcus", hermione: "chloe" });
+    expect(lipSyncTargetFor(unbound, "hermione", "chloe")).toEqual({ faceId: "f-up", voice: "chloe" });
+    expect(lipSyncTargetFor(faces({}, {}), "hermione", "chloe")).toBeNull();
   });
 
-  it("lip-syncs whenever there is audio, but only at 1x: at other speeds the talk loop stands in (#92)", () => {
-    expect(readClipsOn(true, 1)).toBe(true);
-    expect(readClipsOn(true, 1.25)).toBe(false);
-    expect(readClipsOn(true, 0.75)).toBe(false);
-    expect(readClipsOn(false, 1)).toBe(false);
+  it("lip-syncs whenever there is audio, at every speed (#92, #105)", () => {
+    expect(readClipsOn(true)).toBe(true);
+    expect(readClipsOn(false)).toBe(false);
   });
 
   it("estimates the seconds of speech in a chunk for the spend tracker", () => {
     expect(speechSeconds("x".repeat(150))).toBe(10);
     expect(speechSeconds("")).toBe(1);
+  });
+});
+
+describe("clipAheadFor (#104)", () => {
+  const lens = [8, 0.9, 0.8, 1.1, 0.7, 3, 8];
+  const sp = (k: number) => lens[k];
+  it("one ahead behind a normal chunk", () => {
+    expect(clipAheadFor(0, 6, sp)).toBe(1);
+    expect(clipAheadFor(5, 9, (k) => [8, 0.9, 0.8, 1.1, 0.7, 3, 8, 8, 8][k])).toBe(2); // 3 s < 4 s of head start
+  });
+  it("short chunks open more clips ahead, capped", () => {
+    expect(clipAheadFor(1, 6, sp)).toBe(3);
+    expect(clipAheadFor(3, 6, sp)).toBe(3); // 1.1 + 0.7 < 4, + 3 >= 4
+    expect(clipAheadFor(1, 6, sp, { max: 2 })).toBe(2);
+  });
+  it("never past the last chunk", () => {
+    expect(clipAheadFor(4, 6, sp)).toBe(2); // 0.7 + 3 < 4, but chunk 6 is the last
+    expect(clipAheadFor(6, 6, sp)).toBe(1);
   });
 });

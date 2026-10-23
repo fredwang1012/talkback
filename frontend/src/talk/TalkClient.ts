@@ -1,13 +1,16 @@
 import { AUDIO_RATE } from "../audio/constants";
-import { describeClose, historyItem, inputAudioAppend, truncateItem, type ClientEvent, type ServerEvent } from "../realtime/events";
-import type { SessionEvent, TalkSession } from "./TalkController";
+import { describeClose, functionCallOutput, historyItem, inputAudioAppend, truncateItem, userTextItem, type ClientEvent, type ServerEvent } from "../realtime/events";
+import type { SessionEvent, TalkSession, ToolCall, ToolResult } from "./TalkController";
+import { TOOL_DEFS } from "./tools";
 
 const WS_URL = "wss://api.boson.ai/v1/realtime?model=higgs-realtime";
 const OPEN = 1; // WebSocket.OPEN, spelled out so tests need no global WebSocket
+const PREFIX_CHUNKS = 3; // ~100 ms each
 
 /** Short and behavioural: the role comes from per-response instructions (brief 3.4 prompting lesson). */
 export const SESSION_INSTRUCTIONS =
-  "You are a spoken reading companion. Follow the instructions given with each response. Speak naturally; no markdown.";
+  "You are a spoken reading companion. Follow the instructions given with each response. Speak naturally; no markdown. " +
+  "When the reader asks you to act on the book (jump, read a chapter, pause, resume, voices, speed, recap, bookmark, cast), call the tool, then confirm in one short sentence.";
 
 export interface SocketLike {
   readyState: number;
@@ -51,12 +54,14 @@ export interface TalkClientDeps {
   voiceChangeWaitMs?: number;
   /** Waits between retries when Boson refuses a connection with close code 1013 (concurrency limit). */
   backoffMs?: number[];
+  /** The function tools declared to the session (#72); `[]` declares none. Never Boson's server-side web_search. */
+  tools?: readonly unknown[];
 }
 
 /** Close code 1013 before the session opened: too many concurrent connections. Safe to retry after a pause. */
 export class ConnectionLimitError extends Error {}
 
-export function sessionConfig(voice: string): ClientEvent {
+export function sessionConfig(voice: string, tools: readonly unknown[] = TOOL_DEFS): ClientEvent {
   return {
     type: "session.update",
     session: {
@@ -64,6 +69,8 @@ export function sessionConfig(voice: string): ClientEvent {
       model: "higgs-realtime",
       instructions: SESSION_INSTRUCTIONS,
       output_modalities: ["audio"],
+      tools, // client function tools only: the model asks, the browser acts (see tools.ts)
+      tool_choice: "auto",
       audio: {
         input: {
           format: { type: "audio/pcm", rate: AUDIO_RATE },
@@ -86,8 +93,12 @@ export class TalkClient implements TalkSession {
   private player: PlayerLike;
   private mic: MicLike;
   private micOn = false;
+  private monitor = false; // hands-free (#10): the mic stays open between turns; chunks are kept briefly, not sent
+  private recent: string[] = []; // the last PREFIX_CHUNKS while monitoring: sent first when a turn starts, so no word is clipped
   private pendingAudio: string[] = [];
   private commitWhenOpen = false;
+  private interrupting = false; // a cancel is out and not yet acknowledged (#100): new audio and the commit wait
+  private dropOutput = false; // the cut-off answer's late output is discarded until the next response.created (#100)
   private listeners = new Set<(e: SessionEvent) => void>();
   private waiters: ((e: ServerEvent) => void)[] = [];
 
@@ -96,6 +107,8 @@ export class TalkClient implements TalkSession {
   private audioStarted = false;
   private assistantItemId: string | null = null;
   private caption = "";
+  private lastInstructions = "";
+  private pendingCalls: ToolCall[] = []; // tool calls announced by function_call_arguments.done, until response.done
 
   constructor(deps: TalkClientDeps) {
     this.d = { cancelWaitMs: 2000, voiceChangeWaitMs: 3000, backoffMs: [1000, 2000, 4000], ...deps };
@@ -151,7 +164,7 @@ export class TalkClient implements TalkSession {
       this.ws = ws;
       ws.onopen = () => {
         opened = true;
-        this.send(sessionConfig(voice)); // the first session.update starts the session; no need to wait for session.created
+        this.send(sessionConfig(voice, this.d.tools)); // the first session.update starts the session; no need to wait for session.created
         this.seedHistory();
         this.flushPending();
         resolve();
@@ -165,6 +178,8 @@ export class TalkClient implements TalkSession {
         this.d.onLog?.("info", `close:${ev.code}`, info);
         if (!wasThis) return;
         this.resetResponse();
+        this.dropOutput = false;
+        this.interrupting = false;
         if (ev.code === 1013 && !opened) { reject(new ConnectionLimitError(info.message)); return; }
         if (ev.code === 3000 || ev.code === 4429) this.emit({ type: "error", message: info.message });
         else if (ev.code === 1013) this.emit({ type: "error", message: "Boson is at its connection limit. Try again in a moment." });
@@ -186,12 +201,15 @@ export class TalkClient implements TalkSession {
     const ws = this.ws;
     this.ws = null;
     this.resetResponse();
+    this.dropOutput = false;
+    this.interrupting = false;
     ws?.close(1000, "chat cleared");
   }
 
   close(): void {
     this.ws?.close(1000, "client disconnect");
     this.ws = null;
+    this.monitor = false;
     void this.mic.stop();
     void this.player.close();
   }
@@ -201,16 +219,32 @@ export class TalkClient implements TalkSession {
   async startMic(): Promise<void> {
     this.micOn = true;
     this.commitWhenOpen = false;
+    for (const b64 of this.recent.splice(0)) this.onMicChunk(b64); // the ~300 ms before the gate opened
     await this.mic.start();
   }
 
+  /** Hands-free (#10): keep the microphone open between turns so speech can be detected; nothing is sent until startMic. */
+  async setMonitor(on: boolean): Promise<void> {
+    this.monitor = on;
+    this.recent = [];
+    if (on) await this.mic.start();
+    else if (!this.micOn) await this.mic.stop();
+  }
+
+  /** Audio and commits may go out: the socket is open and no cancel is waiting for its acknowledgement. */
+  private get ready(): boolean { return this.isOpen && !this.interrupting; }
+
   private onMicChunk(b64: string): void {
-    if (!this.micOn) return;
-    if (this.isOpen) this.send(inputAudioAppend(b64));
-    else this.pendingAudio.push(b64); // still connecting: keep it and send in order once open
+    if (!this.micOn) {
+      if (this.monitor) { this.recent.push(b64); if (this.recent.length > PREFIX_CHUNKS) this.recent.shift(); }
+      return;
+    }
+    if (this.ready) this.send(inputAudioAppend(b64));
+    else this.pendingAudio.push(b64); // still connecting, or the old answer is still being cancelled: send in order later
   }
 
   private flushPending(): void {
+    if (!this.ready) return;
     for (const b64 of this.pendingAudio) this.send(inputAudioAppend(b64));
     this.pendingAudio = [];
     if (this.commitWhenOpen) { this.commitWhenOpen = false; this.send({ type: "input_audio_buffer.commit" }); }
@@ -218,7 +252,7 @@ export class TalkClient implements TalkSession {
 
   async stopMic(discard = false): Promise<void> {
     this.micOn = false;
-    await this.mic.stop();
+    if (!this.monitor) await this.mic.stop();
     if (discard) {
       this.pendingAudio = [];
       this.commitWhenOpen = false;
@@ -227,30 +261,59 @@ export class TalkClient implements TalkSession {
   }
 
   commit(): void {
-    if (this.isOpen) this.send({ type: "input_audio_buffer.commit" });
-    else this.commitWhenOpen = true; // released before the socket opened: commit right after the buffered audio
+    if (this.ready) this.send({ type: "input_audio_buffer.commit" });
+    else this.commitWhenOpen = true; // released before the socket opened (or the cancel was acknowledged): commit right after the held audio
   }
 
-  respond(instructions: string): void {
+  /**
+   * Ask for the answer. A typed question (`question`) is first put into the conversation as a user text item (#97):
+   * the instructions carry the passages, not the question, and a bare response.create answers an empty turn. A spoken
+   * question needs none: the committed audio is the user item.
+   */
+  respond(instructions: string, question?: string): void {
     this.resetResponse();
+    this.lastInstructions = instructions;
     this.responseActive = true;
+    if (question?.trim()) this.send(userTextItem(question.trim()));
     this.send({ type: "response.create", response: { instructions, max_output_tokens: 600 } });
+  }
+
+  /** Tool calls done (#72): hand every result back, then ask for the spoken continuation under the same instructions. */
+  returnTools(results: ToolResult[]): void {
+    for (const r of results) this.send(functionCallOutput(r.callId, r.output));
+    this.responseActive = true;
+    this.send({ type: "response.create", response: { instructions: this.lastInstructions, max_output_tokens: 600 } });
   }
 
   /** Pause / resume the reply being played (#90): the rest of the reply keeps arriving and waits in the ring buffer. */
   async pausePlayback(): Promise<void> { await this.player.pausePlayback?.(); }
   async resumePlayback(): Promise<void> { await this.player.resumePlayback?.(); }
 
-  /** Barge-in: stop playback, truncate the item at what was actually heard, cancel generation, wait for the ack. */
+  /**
+   * Barge-in: stop playback, truncate the item at what was actually heard, cancel generation, wait for the ack.
+   * From here until the next response.created the old answer's late output is dropped (#100): the server generates
+   * faster than real time, so its audio and caption deltas keep arriving after the local flush. Mic audio and the
+   * commit of the new question are held until the cancel is acknowledged (a commit during an active response is
+   * rejected with voice_output_task_ongoing); a cancel that is never acknowledged fails the turn rather than
+   * pretending the old answer stopped.
+   */
   async interrupt(): Promise<void> {
+    const active = this.responseActive;
+    if (active) { this.interrupting = true; this.dropOutput = true; }
     const playedMs = await this.player.flush();
     if (this.assistantItemId && playedMs > 0) this.send(truncateItem(this.assistantItemId, playedMs));
-    if (this.responseActive) {
-      const done = this.waitForServer((e) => e.type === "response.done", this.d.cancelWaitMs);
-      this.send({ type: "response.cancel" });
-      await done; // a commit while a response is active is rejected (voice_output_task_ongoing)
-    }
+    if (!active) { this.resetResponse(); return; }
+    const ack = this.waitForServer((e) => e.type === "response.done" || (e.type === "error" && errorCode(e) === "response_not_active"), this.d.cancelWaitMs);
+    this.send({ type: "response.cancel" });
+    const got = await ack;
+    this.interrupting = false;
     this.resetResponse();
+    if (!got) {
+      this.pendingAudio = [];
+      this.commitWhenOpen = false;
+      throw new Error("The character could not be stopped. Try again.");
+    }
+    this.flushPending(); // the words spoken over the old answer, then the commit if the key was already released
   }
 
   async setVoice(voice: string): Promise<void> {
@@ -282,6 +345,22 @@ export class TalkClient implements TalkSession {
     this.audioStarted = false;
     this.assistantItemId = null;
     this.caption = "";
+    this.pendingCalls = [];
+  }
+
+  /** The tool calls of a finished response that are ours to run: `executor` "client" (the server runs its own, e.g. web_search). */
+  private clientCalls(response: unknown): ToolCall[] {
+    const output = (response as { output?: unknown[] } | undefined)?.output;
+    const calls: ToolCall[] = [];
+    let listed = false;
+    for (const raw of Array.isArray(output) ? output : []) {
+      const item = raw as { type?: string; call_id?: string; name?: string; arguments?: string; executor?: string };
+      if (item.type !== "function_call" || typeof item.call_id !== "string" || typeof item.name !== "string") continue;
+      listed = true;
+      if (item.executor !== undefined && item.executor !== "client") continue;
+      calls.push({ callId: item.call_id, name: item.name, args: parseArgs(item.arguments) });
+    }
+    return listed ? calls : this.pendingCalls; // a response.done without its items: only the *.arguments.done events named them
   }
 
   private onMessage(raw: string): void {
@@ -294,19 +373,25 @@ export class TalkClient implements TalkSession {
       case "conversation.item.input_audio_transcription.completed":
         this.emit({ type: "transcript", text: String(evt.transcript ?? "") });
         break;
+      case "conversation.item.input_audio_transcription.failed":
+        this.emit({ type: "transcript", text: "" }); // nothing usable was heard: the turn ends now, not after the timeout
+        break;
       case "response.created":
         this.player.reset(); // zero the played-sample counter so audio_end_ms measures this reply only
+        this.dropOutput = false; // a new answer: its output is wanted again
         this.responseActive = true;
         this.responseDone = false;
         this.audioStarted = false;
         this.caption = "";
         break;
       case "response.output_item.added": {
+        if (this.dropOutput) break;
         const item = evt.item as { id?: string; type?: string } | undefined;
         if (item?.type === "message" && typeof item.id === "string") this.assistantItemId = item.id;
         break;
       }
       case "response.output_audio.delta":
+        if (this.dropOutput) break; // the cut-off answer, generated ahead of what was heard
         if (typeof evt.delta === "string" && evt.delta) {
           if (typeof evt.item_id === "string") this.assistantItemId = evt.item_id;
           this.player.enqueueBase64(evt.delta);
@@ -315,15 +400,30 @@ export class TalkClient implements TalkSession {
         }
         break;
       case "response.output_audio_transcript.delta":
+        if (this.dropOutput) break;
         this.caption += String(evt.delta ?? "");
         this.emit({ type: "caption", text: this.caption, done: false });
         break;
       case "response.output_audio_transcript.done":
+        if (this.dropOutput) break;
         this.emit({ type: "caption", text: String(evt.transcript ?? this.caption), done: true });
+        break;
+      case "response.function_call_arguments.done":
+        if (this.dropOutput) break;
+        if (typeof evt.call_id === "string" && typeof evt.name === "string") {
+          this.pendingCalls.push({ callId: evt.call_id, name: evt.name, args: parseArgs(evt.arguments) });
+        }
         break;
       case "response.done": {
         const status = (evt.response as { status?: string } | undefined)?.status;
         this.responseActive = false;
+        if (this.dropOutput) { this.pendingCalls = []; break; } // the cancelled answer's end is not the new turn's end (the interrupt waiter saw it)
+        const calls = status === "cancelled" ? [] : this.clientCalls(evt.response);
+        this.pendingCalls = [];
+        if (calls.length) { // the model stopped to act: run the tools, then returnTools() continues the answer
+          this.emit({ type: "tool-call", calls });
+          break;
+        }
         this.responseDone = true;
         this.emit({ type: "response-done", status: status === "cancelled" ? "cancelled" : status === "failed" ? "failed" : "completed" });
         if (!this.audioStarted) this.emit({ type: "playback-drained" }); // nothing was spoken, nothing to wait for
@@ -332,7 +432,7 @@ export class TalkClient implements TalkSession {
       case "error": {
         const err = (evt.error ?? evt) as { type?: string; code?: string | null; message?: string; event_id?: string };
         if (typeof err.event_id === "string" && err.event_id.startsWith("seed-")) break; // a history item was refused: the chat just starts fresh
-        if (err.code === "response_not_active") break; // cancelling an already-finished response is harmless
+        if (errorCode(evt) === "response_not_active") break; // cancelling an already-finished response is harmless
         this.emit({ type: "error", message: err.message ?? "The voice service reported an error." });
         break;
       }
@@ -350,4 +450,16 @@ export class TalkClient implements TalkSession {
       this.responseDone = false;
     }
   }
+}
+
+/** The `code` of a server error event (nested under `error`, or flat). */
+function errorCode(evt: ServerEvent): string | null {
+  const err = (evt.error ?? evt) as { code?: unknown };
+  return typeof err.code === "string" ? err.code : null;
+}
+
+/** A tool call's JSON arguments, or {} when they are missing or malformed (the tool reports the problem, never throws). */
+function parseArgs(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "string" || !raw.trim()) return {};
+  try { const v = JSON.parse(raw); return v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {}; } catch { return {}; }
 }

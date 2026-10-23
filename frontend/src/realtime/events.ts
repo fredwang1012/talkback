@@ -146,14 +146,19 @@ export function userTextItem(text: string): ClientEvent {
   };
 }
 
-/** An earlier turn of the chat put back into a fresh session (text only, never audio). `eventId` lets us recognise an error about it. */
+/**
+ * An earlier turn of the chat put back into a fresh session (text only, never audio). `eventId` lets us recognise an
+ * error about it. Content types per Boson's item schema: user and system items take `input_text` (or `input_audio`),
+ * an assistant item takes `text` (or `audio`); `output_text` is not accepted and the server answers with a pile of
+ * pydantic errors (#102).
+ */
 export function historyItem(role: "user" | "character", text: string, eventId: string): ClientEvent {
   return {
     type: "conversation.item.create",
     event_id: eventId,
     item: role === "user"
       ? { type: "message", role: "user", content: [{ type: "input_text", text }] }
-      : { type: "message", role: "assistant", content: [{ type: "output_text", text }] },
+      : { type: "message", role: "assistant", content: [{ type: "text", text }] },
   } as ClientEvent;
 }
 

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReaderEngine, type AudioLike, type TtsResult } from "../src/reader/ReaderEngine";
 import type { FlatChunk } from "../src/reader/position";
 import { FaceSync } from "../src/talk/faceSync";
+import { READ_CHAIN_WAIT_MS } from "../src/reader/readLipSync";
 import { FakeStreamVideo, FakeVoice } from "./fakeMedia";
 
 beforeEach(() => vi.useFakeTimers());
@@ -16,7 +17,6 @@ afterEach(() => vi.useRealTimers());
 const now = () => Date.now();
 
 class FakeChunkAudio extends FakeVoice implements AudioLike {
-  playbackRate = 1;
   preservesPitch = false;
   preload = "";
   constructor(public src: string, duration: number) { super(now, duration); }
@@ -29,12 +29,14 @@ const mkChunks = (n: number, speaker = (_i: number) => "narrator"): FlatChunk[] 
   }));
 
 type Opts = {
-  chunks?: number; voiceS?: number; clipS?: number; firstMs?: number; rtf?: number;
+  chunks?: number; voiceS?: number | ((i: number) => number); clipS?: number; firstMs?: number; rtf?: number;
   canLipSync?: (chunk: FlatChunk) => boolean; startWaitMs?: number; chainWaitMs?: number;
 };
 
 function setup(o: Opts = {}) {
-  const voiceS = o.voiceS ?? 8.4, clipS = o.clipS ?? 9.04, firstMs = o.firstMs ?? 1300, rtf = o.rtf ?? 1;
+  const voiceOf = (i: number) => typeof o.voiceS === "function" ? o.voiceS(i) : o.voiceS ?? 8.4;
+  const clipOf = (i: number) => o.clipS ?? (typeof o.voiceS === "function" ? voiceOf(i) + 0.64 : 9.04);
+  const firstMs = o.firstMs ?? 1300, rtf = o.rtf ?? 1;
   const audios = new Map<string, FakeChunkAudio>();
   const video = new FakeStreamVideo(now);
   let shown = false;
@@ -45,14 +47,14 @@ function setup(o: Opts = {}) {
   const t0 = now();
   const engine = new ReaderEngine(mkChunks(o.chunks ?? 3), {
     fetchTts: async (chunk): Promise<TtsResult> => ({ audio_url: `/media/tts/${chunk.id}.mp3`, timestamps: null, voice: "v1" }),
-    createAudio: (url) => { const a = new FakeChunkAudio(url, voiceS); audios.set(url, a); return a; },
+    createAudio: (url) => { const a = new FakeChunkAudio(url, voiceOf(Number(url.match(/c(\d+)\.mp3/)![1]))); audios.set(url, a); return a; },
     sync, startWaitMs: o.startWaitMs ?? 6000, chainWaitMs: o.chainWaitMs ?? 1000,
   });
   engine.setClipSource((chunk) => {
     if (o.canLipSync && !o.canLipSync(chunk)) return null;
     opens.push({ id: chunk.id, at: now() - t0 });
     const url = `blob:${chunk.id}-${opens.length}`;
-    video.addStream(url, clipS, firstMs, rtf);
+    video.addStream(url, clipOf(Number(chunk.id.slice(1))), firstMs, rtf);
     return new Promise((res) => setTimeout(() => res({ url, release: () => releases.push(chunk.id) }), firstMs));
   });
   const audioOf = (id: string) => audios.get(`/media/tts/${id}.mp3`);
@@ -72,7 +74,19 @@ function setup(o: Opts = {}) {
     const sound = s.filter((x) => x.sounding);
     return { soundMs: sound.length * 10, shownMs: sound.filter((x) => x.shown).length * 10, maxDrift: Math.max(0, ...s.filter((x) => x.shown).map((x) => x.drift)) };
   };
-  return { engine, video, sync, audios, audioOf, opens, releases, drive, stats, t0, isShown: () => shown };
+  /** Ms from the chunk's first sound to its face showing (null: never shown while it sounded). */
+  const faceLagMs = (index: number) => {
+    const sound = samples.filter((x) => x.index === index && x.sounding);
+    const k = sound.findIndex((x) => x.shown);
+    return k < 0 ? null : k * 10;
+  };
+  /** The longest stretch (ms) the lip-sync face stayed up while no voice was sounding. */
+  const longestSilentShownMs = () => {
+    let run = 0, max = 0;
+    for (const x of samples) { run = x.shown && !x.sounding ? run + 10 : 0; max = Math.max(max, run); }
+    return max;
+  };
+  return { engine, video, sync, audios, audioOf, opens, releases, drive, stats, faceLagMs, longestSilentShownMs, t0, isShown: () => shown };
 }
 
 describe("read-mode lip-sync (#80)", () => {
@@ -185,5 +199,84 @@ describe("read-mode lip-sync (#80)", () => {
     const s = r.stats(0);
     expect(s.shownMs).toBeGreaterThan(0.9 * s.soundMs);
     expect(s.maxDrift).toBeLessThan(0.1);
+  });
+});
+
+describe("short chunks back to back (#104)", () => {
+  it("when a chunk's voice ends its face goes down at once, not frozen on the last frame until the next clip", async () => {
+    const r = setup({ chunks: 2, voiceS: (i) => [1, 3][i], firstMs: 1800 });
+    r.engine.play();
+    await r.drive(15000);
+    expect(r.engine.snapshot().state).toBe("ended");
+    expect(r.longestSilentShownMs()).toBeLessThanOrEqual(60); // was ~1 s: the old clip stayed up between chunks
+  });
+
+  it("each short chunk's voice starts with its own face from 0, not before it", async () => {
+    const lens = [4, 0.9, 0.8, 1.1, 0.7, 3];
+    const r = setup({ chunks: lens.length, voiceS: (i) => lens[i], firstMs: 1800 });
+    r.engine.play();
+    await r.drive(30000);
+    expect(r.engine.snapshot().state).toBe("ended");
+    for (let i = 0; i < lens.length; i++) {
+      const a = r.audioOf(`c${i}`)!;
+      expect(a.pauses, `c${i} pauses`).toBe(0);
+      expect(a.backJumps, `c${i} rewinds`).toEqual([]);
+      expect(r.faceLagMs(i), `c${i} face lag`).not.toBeNull();
+      expect(r.faceLagMs(i)!, `c${i} face lag`).toBeLessThanOrEqual(100);
+      expect(r.stats(i).maxDrift, `c${i} drift`).toBeLessThan(0.1);
+    }
+  });
+
+  it("slower render starts (3.5 s to the first fragment, several streams in flight): the chained wait still covers short chunks", async () => {
+    const lens = [2, 0.9, 0.8, 1.1, 0.7, 3];
+    const r = setup({ chunks: lens.length, voiceS: (i) => lens[i], firstMs: 3500, chainWaitMs: READ_CHAIN_WAIT_MS });
+    r.engine.play();
+    await r.drive(30000);
+    expect(r.engine.snapshot().state).toBe("ended");
+    for (let i = 0; i < lens.length; i++) {
+      expect(r.faceLagMs(i), `c${i} face lag`).not.toBeNull();
+      expect(r.faceLagMs(i)!, `c${i} face lag`).toBeLessThanOrEqual(100);
+    }
+    expect(r.opens.length).toBe(lens.length); // every clip opened once
+  });
+});
+
+describe("lip-sync at other reading speeds (#105)", () => {
+  for (const speed of [1.25, 1.5, 0.75]) {
+    it(`${speed}x: the clip runs at the voice's rate, starts with it and stays in step`, async () => {
+      const r = setup({ chunks: 2, voiceS: 6, clipS: 6.64 });
+      r.engine.setSpeed(speed);
+      r.engine.play();
+      await r.drive(30000);
+      expect(r.engine.snapshot().state).toBe("ended");
+      for (const i of [0, 1]) {
+        const a = r.audioOf(`c${i}`)!;
+        expect(a.playbackRate).toBe(speed);
+        expect(a.pauses).toBe(0);
+        expect(a.backJumps).toEqual([]);
+        expect(r.faceLagMs(i), `c${i} face lag`).not.toBeNull();
+        expect(r.faceLagMs(i)!, `c${i} face lag`).toBeLessThanOrEqual(100);
+        const s = r.stats(i);
+        expect(s.shownMs, `c${i} shown`).toBeGreaterThan(0.9 * s.soundMs);
+        expect(s.maxDrift, `c${i} drift`).toBeLessThan(0.1);
+      }
+    });
+  }
+
+  // the render must be ahead for this: a live stream rendering at 1x cannot feed 1.5x for long (it stalls to the talk
+  // loop and rejoins, covered by the stall tests), so here it renders at 2x
+  it("a speed change mid-chunk: the clip follows the new rate without dropping the face", async () => {
+    const r = setup({ chunks: 1, voiceS: 10, clipS: 10.64, rtf: 0.5 });
+    r.engine.play();
+    await r.drive(4500); // voice and face are going at 1x
+    expect(r.isShown()).toBe(true);
+    r.engine.setSpeed(1.5);
+    await r.drive(1000);
+    expect(r.video.playbackRate).toBeGreaterThan(1.5 * 0.92);
+    expect(r.video.playbackRate).toBeLessThan(1.5 * 1.08);
+    await r.drive(10000);
+    const s = r.stats(0);
+    expect(s.maxDrift).toBeLessThan(0.1);
+    expect(s.shownMs).toBeGreaterThan(0.9 * s.soundMs);
   });
 });

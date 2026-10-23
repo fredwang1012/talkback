@@ -8,15 +8,15 @@ class V implements FollowVideo {
   pause() { this.paused = true; }
 }
 /** Fake clock: `adv` moves time in 10 ms steps (voice and clip advance) and polls the follower every 100 ms. */
-const mk = () => {
+const mk = (rate = 1) => {
   const v = new V();
-  const a: FollowAudio = { currentTime: 0, paused: true, ended: false };
+  const a: FollowAudio = { currentTime: 0, paused: true, ended: false, playbackRate: rate };
   const f = createClipFollower(v, () => Date.now());
   let n = 0;
   const adv = async (ms: number) => {
     for (let i = 0; i < ms / 10; i++) {
       await vi.advanceTimersByTimeAsync(10);
-      if (!a.paused) a.currentTime += 0.01;
+      if (!a.paused) a.currentTime += 0.01 * rate;
       if (!v.paused) v.currentTime += 0.01 * v.playbackRate;
       if (++n % 10 === 0) f.tick(a);
     }
@@ -137,4 +137,18 @@ describe("clip follower start-up (#66)", () => {
     expect(r.movingMs).toBeGreaterThan(2000);
     expect(r.worst).toBeLessThan(0.08);
   });
+
+  for (const rate of [1.5, 0.75]) {
+    it(`${rate}x (#105): the clip plays at the voice's rate and stays in step`, async () => {
+      const { v, a, adv } = mk(rate);
+      a.paused = false; a.currentTime = 0.01;
+      await adv(600);
+      let worst = 0;
+      for (let k = 0; k < 40; k++) { await adv(100); worst = Math.max(worst, Math.abs(v.currentTime - a.currentTime)); }
+      expect(v.paused).toBe(false);
+      expect(v.playbackRate).toBeGreaterThan(rate * 0.92);
+      expect(v.playbackRate).toBeLessThan(rate * 1.08);
+      expect(worst).toBeLessThan(0.1);
+    });
+  }
 });

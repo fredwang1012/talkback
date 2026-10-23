@@ -42,7 +42,7 @@ def seed_clone(client, voice_id="voice_abc"):
     assert clone_with_face(client).status_code == 200
 
 
-def test_delete_removes_voice_face_and_calls_boson_once(env, boson):  # noqa: F811
+def test_delete_removes_voice_keeps_face_and_calls_boson_once(env, boson):  # noqa: F811
     client, _ = env
     seed_clone(client)
     fid = client.get("/api/faces").json()[0]["id"]
@@ -52,8 +52,9 @@ def test_delete_removes_voice_face_and_calls_boson_once(env, boson):  # noqa: F8
     assert r.status_code == 200 and r.json()["faces"] == [fid]
     assert boson["deleted"] == ["voice_abc"]
     assert client.get("/api/voices").json() == {}
-    assert client.get("/api/faces").json() == [] and client.get("/api/voices/faces").json() == {}
-    assert not list((settings.data_dir / "portraits" / "faces").glob(f"{fid}*"))
+    assert [x["id"] for x in client.get("/api/faces").json()] == [fid]   # the face stays, unlinked
+    assert client.get("/api/voices/faces").json() == {}
+    assert list((settings.data_dir / "portraits" / "faces").glob(f"{fid}*"))
     assert client.delete("/api/voices/voice_abc").status_code == 404   # gone; no second Boson call
     assert boson["deleted"] == ["voice_abc"]
 
@@ -102,7 +103,7 @@ def test_cast_falls_back_to_auto_after_deleting_voice_or_face(env, boson):  # no
     assert client.put("/api/books/u-mine-1/cast", json=body).json()["narrator"] == {"voice": "voice_abc", "tags": None, "face": fid}
     client.delete("/api/voices/voice_abc")
     cast = client.get("/api/books/u-mine-1/cast").json()
-    assert cast["narrator"] == {"voice": None, "tags": None, "face": None}
+    assert cast["narrator"] == {"voice": None, "tags": None, "face": fid}   # the face outlives the voice
     assert cast["characters"]["harry"] == {"voice": None, "tags": None, "face": standalone}
     client.delete(f"/api/faces/{standalone}")
     assert client.get("/api/books/u-mine-1/cast").json()["characters"]["harry"] == {"voice": None, "tags": None, "face": None}
@@ -161,7 +162,7 @@ def test_unmarked_store_entries_and_legacy_files_are_deletable_samples_untouched
     (d / "samples" / "person" / "voice-clip.wav").write_bytes(b"ref")
     assert client.delete("/api/voices/voice_narr").status_code == 200
     assert boson["deleted"] == ["voice_narr"]
-    assert not list((d / "portraits" / "faces").glob(f"{fid}*"))
+    assert list((d / "portraits" / "faces").glob(f"{fid}*"))   # the face outlives the voice
     assert sorted(p.name for p in (d / "portraits" / "voices").iterdir()) == ["other.png", "voice_narrator.png"]
     assert (d / "samples" / "person" / "voice-clip.wav").read_bytes() == b"ref"
 
@@ -174,3 +175,12 @@ def test_character_portraits_are_not_deletable_as_faces(env):  # noqa: F811
     assert client.delete("/api/faces/harry").status_code == 404
     assert client.delete("/api/voices/marcus").status_code == 403
     assert (p / "harry.png").exists()
+
+
+def test_deleting_a_face_keeps_its_voice(env, boson):  # noqa: F811
+    client, _ = env
+    seed_clone(client)
+    fid = client.get("/api/faces").json()[0]["id"]
+    assert client.delete(f"/api/faces/{fid}").status_code == 200
+    assert client.get("/api/voices").json() == {"me": "voice_abc"}
+    assert boson["deleted"] == []

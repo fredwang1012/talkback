@@ -106,8 +106,9 @@ on your Boson key. Remove `PUBLIC_API_URL` from `.env` to never contact the serv
 - **Higgs Avatar (faces).** Face loops (speaking and idle) are rendered asynchronously from a portrait. Wherever a face
   is shown (read mode, Talkback answers, recaps read aloud) each sentence is also lip-synced: rendered as a talking clip
   and played in step with its audio using streaming fMP4 through the browser's MediaSource, so playback starts before
-  the render ends. When a face cannot be lip-synced (no face, or not bound to the voice), at speeds other than 1x, or
-  when a render fails or falls behind, the face's speaking loop (or its still picture) stands in.
+  the render ends; at 0.75x-1.5x reading speed the clip plays at the voice's rate. When a face cannot be lip-synced (no
+  face, or not bound to the voice), or when a render fails or falls behind, the face's speaking loop (or its still
+  picture) stands in.
 - **Voice cloning.** In the Voices panel, create a voice from your own recording (a consent box is required), assign it to
   the narrator or a character, and give it a face.
 

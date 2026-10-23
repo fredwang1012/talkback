@@ -1,7 +1,7 @@
 import { AudioClock, DriftController } from "../talk/driftController";
 
 /** The bits of an <audio> / <video> element the follower needs (so it can be tested with fakes). */
-export interface FollowAudio { currentTime: number; paused?: boolean; ended?: boolean; }
+export interface FollowAudio { currentTime: number; paused?: boolean; ended?: boolean; playbackRate?: number; }
 export interface FollowVideo {
   currentTime: number; playbackRate: number; paused: boolean; ended?: boolean; duration?: number;
   readyState?: number; seeking?: boolean;
@@ -47,6 +47,8 @@ export function createClipFollower(video: FollowVideo, now: () => number = () =>
   return {
     tick(audio: FollowAudio | null | undefined): void {
       const t = now();
+      // the voice's speed (#105): the clip plays at the same rate, nudged by the drift controller
+      const base = audio && typeof audio.playbackRate === "number" && audio.playbackRate > 0 ? audio.playbackRate : 1;
       if (audio !== lastAudio) { lastAudio = audio ?? null; clock = new AudioClock(); ctrl.reset(); cancelArm(); phase = "idle"; }
       if (!audioSounding(audio) || !audio) {
         cancelArm();
@@ -58,9 +60,10 @@ export function createClipFollower(video: FollowVideo, now: () => number = () =>
       if (phase === "idle") { // the voice (re)started: line the clip up before it moves
         clock.anchor(audio.currentTime, t);
         ctrl.reset();
-        video.playbackRate = 1;
+        video.playbackRate = base;
         phase = "align";
       }
+      clock.setRate(base, t);
       const voice = clock.sample(audio.currentTime, t);
       const pos = voice + ctrl.opts.startOffsetS; // where the clip should be now
       if (phase === "align") {
@@ -89,7 +92,7 @@ export function createClipFollower(video: FollowVideo, now: () => number = () =>
           phase = "synced";
           ctrl.reset();
           void Promise.resolve(video.play()).catch(() => { /* autoplay refused: the frame stays */ });
-        }, Math.max(0, wait * 1000));
+        }, Math.max(0, (wait / base) * 1000));
         return;
       }
       if (phase === "armed") return;
@@ -101,7 +104,7 @@ export function createClipFollower(video: FollowVideo, now: () => number = () =>
       if (video.paused) { phase = "align"; return; } // something paused it (e.g. a background tab): line it up again
       const act = ctrl.update(video.currentTime, voice, t);
       if (act.kind === "seek") { video.pause(); phase = "align"; } // far off: rendezvous again rather than a visible jump
-      else if (act.kind === "rate") video.playbackRate = act.rate;
+      else if (Math.abs(video.playbackRate - base * act.rate) > 1e-4) video.playbackRate = base * act.rate; // follows a speed change too
     },
   };
 }
