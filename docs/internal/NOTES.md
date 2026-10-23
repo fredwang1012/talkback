@@ -625,3 +625,10 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
 - Migration: cast mode "cast" (stored or sent by an old client) is read as "two" on the server (pydantic before-
   validator) and in the browser (castLogic.voiceMode, which also maps missing/unknown values). The `characters`
   assignments stay in cast_settings.json but novels no longer read from them, so per-character pitch tags are dropped.
+
+## Auto title: several authors (#95, 2026-10-23)
+- The describe step joins authors with ", ". Metadata / Gutenberg author fields are split on ; / | newlines, "and", "&"
+  and commas ("Last, First" turned round; "Martin Luther King, Jr." kept). A field of 4+ words with no separator may
+  be names run together (the IR PDF: "Christopher D. Manning Prabhakar Raghavan Hinrich Schütze"): the fast LLM, which
+  sees the title page, is then asked for the list (schema `authors: list[str]`), and its answer replaces the metadata.
+  When no LLM can be used the metadata string is kept as is.
