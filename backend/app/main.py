@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from pydantic import BaseModel, Field
 
-from . import books, cast, face_detect, faces, ingest_upload, public_client, recap, retrieval, tts_cache, users, voices
+from . import books, cast, face_detect, faces, ingest_upload, multilingual, public_client, recap, retrieval, tts_cache, users, voices
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
@@ -412,10 +412,14 @@ async def retrieve(req: RetrieveRequest, request: Request):
     if not retrieve_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many lookups; wait a moment.")
     book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
+    search = await multilingual.search_query(req.query)  # the book is English: a question in another language is translated
     # realtime (Boson) instructions must stay short: fewer passages and a smaller character cap than /api/answer
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, min(req.k, REALTIME_K),
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), search, reader_para, min(req.k, REALTIME_K),
                                     spoilers=req.spoilers, max_chars=REALTIME_MAX_PASSAGE_CHARS, **_series_context(book))
-    out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"], spoilers=req.spoilers)
+    out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"], spoilers=req.spoilers,
+                                             reply_language=multilingual.foreign_language(req.query))
+    if search != req.query:
+        out["search_query"] = search  # what was searched, for debugging (the browser network panel)
     out["persona"] = speaker.persona if speaker else None
     return out
 
@@ -439,7 +443,8 @@ async def answer(req: RetrieveRequest, request: Request):
         raise HTTPException(429, "Too many questions; wait a moment.")
     book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
     t0 = time.monotonic()
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, spoilers=req.spoilers,
+    search = await multilingual.search_query(req.query)  # searched in English; answered in the reader's language
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), search, reader_para, req.k, spoilers=req.spoilers,
                                     **_series_context(book))
     t_retrieved = time.monotonic()
     retrieve_ms = int((t_retrieved - t0) * 1000)

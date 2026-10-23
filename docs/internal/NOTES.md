@@ -843,3 +843,9 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   upload with the same owner's uploads).
 - Left as proposals: textbook summaries (~$0.05 per 100K chars, IR book ~$1.60), personas from earliest spoken lines
   (+~$0.004/novel, changes the spoiler window), resegment with a stronger tier, PDF cover image (free).
+
+## Questions in other languages (#12, 2026-10-23)
+- Answer language: the prompts already said "Always reply in the language the reader used", but deep in a long English prompt. When the question is clearly not English (`multilingual.foreign_language`: a non-Latin script, or 2+ common words of one language outnumbering English ones), `build_instructions(reply_language=...)` now opens the prompt with "The reader wrote in Spanish. Answer only in Spanish ..." (first, so the length cap never cuts it). Gemini (`build_answer_prompt`, also the public service) sets it from the question; Realtime gets it in the `/api/retrieve` instructions (typed and spoken questions). The model still sees the reader's own words.
+- Search: `multilingual.search_query` translates a non-English question to English with Gemini on Vertex (temperature 0, thinking off, 4 s timeout, 256-entry cache) before `/api/retrieve` and `/api/answer` search; `/api/retrieve` returns `search_query` when it differs. Without GCP_PROJECT, or on any failure, the original question is searched.
+- Why it matters: with BM25 alone (local, no e5 installed; also Vertex books while their index builds) a Spanish question finds nothing relevant. Alice: "¿Qué le pasa a Alicia cuando bebe de la botella?" returned ¶114-118 / 141-142 / 215-221 (unrelated); its English form returns ¶14-17 and ¶109-111 (the bottle scenes).
+- Not live-tested here (this machine has no GCP_PROJECT, and a Realtime check spends Boson credit). The badge (frontend/src/talk/language.ts) uses the same word lists; voice commands (#72 parseIntent) are still English only.
