@@ -401,7 +401,7 @@ export default function Reader({ bookId }: { bookId: string }) {
                  pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
                  needsCode={needsCode} onCode={(c, rem) => { setAccessToken(c, rem); setCode(c); }} onOpenLab={() => setLabOpen(true)}
                  faceFor={talkFaceFor}
-                 readingFace={readingFace} preloadLoops={preloadLoops} spoilers={spoilers}
+                 readingFace={readingFace} preloadLoops={preloadLoops}
                  readSpeaking={readSpeaking} levelRef={levelRef}
                  readLipSync={{ sync: readSync.current as FaceSync, shown: readClipShown }} />
         )}

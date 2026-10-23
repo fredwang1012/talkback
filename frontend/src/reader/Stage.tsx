@@ -34,7 +34,6 @@ type Props = {
   faceFor: (speakerId: string) => FaceT | undefined; // the face shown in Talk mode
   readingFace: FaceT | null; // face of whoever is reading aloud right now in read mode
   preloadLoops?: string[]; // read mode: the next reader's loop videos, warmed up so a speaker change starts on time
-  spoilers: boolean; // full-book mode (novels): answers may use the whole book
   readSpeaking: boolean; // read mode: the audio is audibly speaking right now (not in a pause)
   levelRef: { current: number }; // read mode: live loudness of the audio, for the still-image pulse
   readLipSync?: ReadLipSyncUi;
@@ -107,13 +106,14 @@ function ReadClipVideo({ sync, shown }: { sync: FaceSync; shown: boolean }) {
   return <video ref={ref} className={`rf-clip${shown ? " on" : ""}`} muted playsInline />;
 }
 
-export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, getAudio, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, preloadLoops = [], spoilers, readSpeaking, levelRef, readLipSync }: Props) {
+export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, getAudio, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, preloadLoops = [], readSpeaking, levelRef, readLipSync }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
   const [remember, setRemember] = useState(true);
   const clipShown = !!readLipSync?.shown;
   const tutor = book.kind === "textbook";
-  const fullBook = !tutor && spoilers;
-  const { met, locked } = splitCharacters(book.characters, para, fullBook);
+  // read mode (#94): the Talkback spoiler setting does not apply here, so unmet characters stay locked and no
+  // spoiler note shows; Talkback has its own
+  const { met, locked } = splitCharacters(book.characters, para, false);
   const speaker = met.find((c) => c.id === speakerId);
   const name = speaker?.name ?? (tutor ? "Tutor" : "Narrator");
   const blurb = speaker ? speaker.persona : tutor ? "Explains the chapter in plain words. Ask about anything." : book.narrator?.is_character
@@ -150,13 +150,9 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
       </div>
       {talk.speaking && <Waveform />}
 
-      <div className={`badge${fullBook ? " spoilers-on" : ""}`}>
-        {fullBook
-          ? <><strong>Full book — spoilers on.</strong> {speaker ? name : "The narrator"} may reveal anything from the whole book.</>
-          : <>
-              <strong>{speaker ? `${name} knows` : "Story position:"}</strong> up to paragraph {para + 1}.
-              {locked.length > 0 && <> {locked.length} more {locked.length === 1 ? "character appears" : "characters appear"} later.</>}
-            </>}
+      <div className="badge">
+        <strong>Story position:</strong> paragraph {para + 1}.
+        {locked.length > 0 && <> {locked.length} more {locked.length === 1 ? "character appears" : "characters appear"} later.</>}
       </div>
       <section aria-label="Who to talk to">
         <ul className="cast-list">

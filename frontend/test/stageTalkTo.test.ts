@@ -24,7 +24,7 @@ describe("Stage cast list", () => {
     act(() => root.render(createElement(Stage, {
       book, para: 3, speakerId: "narrator", onSpeaker, health: null, talk, audioAvailable: true, avatarSrc: null, avatarPlaying: false,
       onMode, pinned: null, needsCode: false, onCode: () => {}, onOpenLab: () => {}, faceFor: () => undefined,
-      readingFace: null, spoilers: false,
+      readingFace: null,
     })));
     const labels = [...host.querySelectorAll(".talk-to strong")].map((e) => e.textContent);
     expect(labels).toEqual(["Talk to the Narrator", "Talk to Ron"]); // no minor Peeves; Snape is locked
@@ -40,7 +40,7 @@ describe("Stage read-mode lip-sync (#80, #92: always on, no toggle)", () => {
     act(() => root.render(createElement(Stage, {
       book, para: 3, speakerId: "narrator", onSpeaker: () => {}, health: null, talk, audioAvailable: true, avatarSrc: null, avatarPlaying: false,
       onMode: () => {}, pinned: null, needsCode: false, onCode: () => {}, onOpenLab: () => {}, faceFor: () => undefined,
-      readingFace: null, spoilers: false, readSpeaking: false, levelRef: { current: 0 },
+      readingFace: null, readSpeaking: false, levelRef: { current: 0 },
       readLipSync: { sync, shown: false },
     })));
     expect(host.querySelector(".lipsync")).toBeNull();
@@ -48,5 +48,28 @@ describe("Stage read-mode lip-sync (#80, #92: always on, no toggle)", () => {
     expect(host.textContent).not.toMatch(/lip-?sync|\$0\.0|per minute|seconds later|moment later/i);
     expect(host.querySelectorAll("video.rf-clip")).toHaveLength(1);
     expect(sync.setVideo).toHaveBeenCalledWith(host.querySelector("video.rf-clip")); // the sync owns the clip video
+  });
+});
+
+describe("Stage in read mode (#94)", () => {
+  const render = (speakerId = "narrator") => act(() => root.render(createElement(Stage, {
+    book, para: 3, speakerId, onSpeaker: () => {}, health: null, talk, audioAvailable: true, avatarSrc: null, avatarPlaying: false,
+    onMode: () => {}, pinned: null, needsCode: false, onCode: () => {}, onOpenLab: () => {}, faceFor: () => undefined,
+    readingFace: null, readSpeaking: false, levelRef: { current: 0 },
+  })));
+
+  it("never shows the Talkback spoiler note; unmet characters stay locked (the spoiler setting is Talkback's)", () => {
+    render();
+    expect(host.textContent).not.toMatch(/spoiler|whole book|full book|may reveal/i);
+    expect(host.querySelector(".spoilers-on")).toBeNull();
+    expect(host.textContent).toContain("Story position: paragraph 4.");
+    expect(host.textContent).not.toContain("Talk to Snape");
+  });
+
+  it("shows the reading position, not what a character knows", () => {
+    render("ron");
+    expect(host.textContent).not.toContain("knows");
+    expect(host.textContent).toContain("Story position: paragraph 4.");
+    expect(host.textContent).toContain("1 more character appears later.");
   });
 });
