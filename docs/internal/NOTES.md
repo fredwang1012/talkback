@@ -673,6 +673,26 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   The session still sets `noise_reduction: near_field`. If Boson adds `create_response: false`, `server_vad` with
   `threshold` ~0.6-0.7 (its default moved to 0.85) would replace the local gate.
 
+## Spoken turns live: tool calls, barge-in leftovers, hands-free echo (#102, #97, #99, #100, #103, 2026-10-23)
+- Spoken commands failed where typed ones worked because the *question* was lost, not the tool. `pttUp` waited a fixed
+  2.5 s for the transcript from the key release; on the first turn of a session the commit is deferred until the socket
+  opens (key fetch + connect), and STT runs after that, so the window expired, the query was "" and it still went to
+  Gemini (`/api/answer` -> "The answer could not be generated") or to retrieval. Now `beginTurn` keeps the
+  ensureOpen/interrupt promises, `pttUp` awaits them, the window (6 s) starts at the real commit, an empty or failed
+  transcript ends the turn with "I didn't catch that" and never asks an empty question (#99 as well).
+- `parseIntent` strips transcription prose ("Okay, read chapter 2, please!" / "Could you ...?") before matching.
+- Realtime: every `returnTools()` re-arms the 15 s answer watchdog (a tool call's continuation is a new response that can
+  go missing); only the latest watchdog acts. A typed question is sent as a user `input_text` item before
+  `response.create` (#97): the instructions carry the passages, not the question.
+- Barge-in (#100): the old answer's `output_audio.delta` / caption deltas keep arriving after the local flush (the server
+  runs ahead of real time); TalkClient drops all output from the interrupt until the next `response.created`. The mic
+  starts at once; audio and the commit are held in the client until the cancel is acknowledged (`response.done` or
+  `response_not_active`), then sent in order. A cancel never acknowledged fails the turn with a message.
+- Boson's AssistantItem content takes `{type: "text"}`; `output_text` (history seeding) was rejected with 22 pydantic errors.
+- Hands-free echo (#103): `getUserMedia` asks for echoCancellation + noiseSuppression + autoGainControl. While the
+  character speaks (and 300 ms after) the gate uses `HANDS_FREE_OVER_SPEECH` (0.10 RMS for 400 ms) instead of the idle
+  profile (0.04 for 150 ms): residual echo and a cough do not interrupt, clear sustained speech does, the mic button /
+  Space always does. The toggle says "Hands-free (use headphones)".
 ## Short chunks: voice before face (#104, 2026-10-23, fake-clock tests, no Boson calls)
 - Cause (read mode): (1) when a chunk's voice ended, FaceSync kept the old clip attached and SHOWN, frozen on its last
   frame ('pause' arrives before 'ended'), until the next clip joined; (2) the next clip opened only when the current
@@ -694,26 +714,6 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   therefore waits longer before its first word, and if the render still falls behind the face drops to the talk loop
   and rejoins (unchanged fallback). Talkback answers and recaps have no speed control, so they are unaffected.
 
-## Spoken turns live: tool calls, barge-in leftovers, hands-free echo (#102, #97, #99, #100, #103, 2026-10-23)
-- Spoken commands failed where typed ones worked because the *question* was lost, not the tool. `pttUp` waited a fixed
-  2.5 s for the transcript from the key release; on the first turn of a session the commit is deferred until the socket
-  opens (key fetch + connect), and STT runs after that, so the window expired, the query was "" and it still went to
-  Gemini (`/api/answer` -> "The answer could not be generated") or to retrieval. Now `beginTurn` keeps the
-  ensureOpen/interrupt promises, `pttUp` awaits them, the window (6 s) starts at the real commit, an empty or failed
-  transcript ends the turn with "I didn't catch that" and never asks an empty question (#99 as well).
-- `parseIntent` strips transcription prose ("Okay, read chapter 2, please!" / "Could you ...?") before matching.
-- Realtime: every `returnTools()` re-arms the 15 s answer watchdog (a tool call's continuation is a new response that can
-  go missing); only the latest watchdog acts. A typed question is sent as a user `input_text` item before
-  `response.create` (#97): the instructions carry the passages, not the question.
-- Barge-in (#100): the old answer's `output_audio.delta` / caption deltas keep arriving after the local flush (the server
-  runs ahead of real time); TalkClient drops all output from the interrupt until the next `response.created`. The mic
-  starts at once; audio and the commit are held in the client until the cancel is acknowledged (`response.done` or
-  `response_not_active`), then sent in order. A cancel never acknowledged fails the turn with a message.
-- Boson's AssistantItem content takes `{type: "text"}`; `output_text` (history seeding) was rejected with 22 pydantic errors.
-- Hands-free echo (#103): `getUserMedia` asks for echoCancellation + noiseSuppression + autoGainControl. While the
-  character speaks (and 300 ms after) the gate uses `HANDS_FREE_OVER_SPEECH` (0.10 RMS for 400 ms) instead of the idle
-  profile (0.04 for 150 ms): residual echo and a cough do not interrupt, clear sustained speech does, the mic button /
-  Space always does. The toggle says "Hands-free (use headphones)".
 
 ## Lip-sync for any voice x face (#113)
 - Before: lip-sync requests sent only the voice and the server animated `faces.voice_face_path(voice)`, so only a
@@ -726,3 +726,33 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   `voice` + `linked: true` (no copy). Deleting the voice deletes only faces made with the clone (no `linked`) and
   unlinks borrowed ones (`faces.unlink_voice`). The old `face` file upload still works.
 - Realtime (Boson realtime) answers are audio only, as before; nothing to lip-sync there.
+
+## More expressive read-aloud tags, rule-based (#73, 2026-10-23, offline: no Boson calls)
+- `backend/app/delivery.py` (no LLM, strict; ambiguous -> no tag). Every sfx goes right before onomatopoeia already at the
+  start of a character's line (after the opening quote); narration never gets one. `speech_tag()` is the short adjacent
+  speech tag (same <=9-word clauses the style rule uses).
+  - sigh: Sigh / Ahh / Ahh-h / Haah, only if the tag says sighed/sighs/sighing.
+  - crying: Sob / Boo-hoo / Boo hoo, only if the tag says sobbed, wept, weeping, crying (not "crying out"), in tears,
+    or "cried bitterly/softly/quietly/piteously/harder/silently/herself...". Plain "cried Alice" means said -> no sfx.
+  - sniff, cough: Sniff / Cough when followed by punctuation or repeated ("Sniff this rose" is a verb); Ahem -> cough.
+  - screaming: Aah+! / Aaargh! with "!", and either uppercase (AAAARGH!) or a screamed/shrieked tag. Lowercase "Aaah!"
+    alone is not tagged (HP4: Mr. Weasley's "Aaah!" is delight).
+  - laughter unchanged.
+- Expressiveness: `<|prosody:expressive_high|>` for a character line that is mostly uppercase with "!", or ends with "!"
+  and its tag says shouted/screamed; `<|prosody:expressive_low|>` for a whispered line (alongside style:whispering).
+  Never added when the voice tags already carry an expressive_* tag.
+- Pauses (`ttschunks.lead_pause`, first chunk of a paragraph only, right before the text): `long_pause` for the first
+  paragraph of every section (after the heading, which is not spoken) and after a separator paragraph (`* * *`, `***`,
+  `#`, `~ ~ ~`; the separator's own chunk is unchanged); `pause` for a dialogue paragraph right after a paragraph of
+  pure narration that ended with . ! or ? (narration ending in ":" or "," introduces the quote, so no pause).
+- tts_text order: voice tags, style, emotion, expressive_*, pause/long_pause, text (sfx inside the text).
+- Chapter-end reset tag: not done. Neither the Boson vocabulary we recorded (above, and delivery.TAG_VALUES) nor the
+  tags page lists a reset tag, so nothing is inserted.
+- Timestamp residue: all new tags are already in TAG_VALUES, so `strip_tag_residue` removes 'prosodylongpause',
+  'prosodyexpressivelow', 'sfxcrying' etc. glued to words (tests in backend/tests/test_expressive.py).
+- Cost: existing book.json files are NOT rebuilt, so cached audio is untouched; the tags appear when a book's chunks are
+  rebuilt (preprocess/chunk_tts.py, re-enrich, new uploads). `scripts/estimate_expressive.py` (offline) compares
+  chunk_paragraph(expressive=False) with the new rules per book. Run on the main checkout's data/books:
+  9642 of ~104k chunks change, 806k chars, $12.09 if every changed chunk were re-voiced (HP1-7 $10.15, five classics
+  $1.09, IR textbook $0.85); only 16 changed chunks ($0.05) have audio in the local cache under the book's own voice.
+  `pause` makes up ~85% of the changes; real sfx hits are rare (HP1-7: 8 cough/screaming, classics: 0).

@@ -1,7 +1,7 @@
 """Split paragraphs into Boson TTS chunks (<= 280 chars, sentence-aligned). Shared by preprocess/chunk_tts.py and uploads."""
 import re
 
-from .delivery import apply_styles, with_laughter
+from .delivery import apply_styles, detect_expressive, is_scene_break, speech_tag, with_sfx
 from .schema import Book, Paragraph, Segment, TtsChunk
 from .textnorm import normalize_for_tts
 
@@ -65,17 +65,57 @@ def split_long(text: str, base: int, limit: int = MAX_CHARS) -> list[tuple[int, 
 
 
 def build_tts_text(spoken: str, voice_tags: str, emotion: str | None, style: str | None = None,
-                   sfx: bool = False) -> str:
-    """[voice prosody tags][style][emotion][spoken text, with a laughter sfx before laughter onomatopoeia if sfx]."""
-    tags = voice_tags + (f"<|style:{style}|>" if style else "") + (f"<|emotion:{emotion}|>" if emotion else "")
+                   sfx: bool = False, *, tag: str = "", expressive: str | None = None, pause: str | None = None) -> str:
+    """[voice prosody tags][style][emotion][expressiveness][pause][spoken text, with an sfx before onomatopoeia if sfx].
+
+    Delivery tags (style, emotion, expressive_*) go at the start; `pause` ('pause' / 'long_pause') is positional and sits
+    right before the text. `tag` is the adjacent speech tag, which some sound effects need (see delivery.sfx_at).
+    An expressive_* already in the voice tags is not repeated."""
+    if expressive and "expressive_" in voice_tags:
+        expressive = None
+    tags = (voice_tags + (f"<|style:{style}|>" if style else "") + (f"<|emotion:{emotion}|>" if emotion else "")
+            + (f"<|prosody:{expressive}|>" if expressive else "") + (f"<|prosody:{pause}|>" if pause else ""))
     text = normalize_for_tts(spoken)
-    return tags + (with_laughter(text) if sfx else text)
+    return tags + (with_sfx(text, tag) if sfx else text)
+
+
+def _prev_paragraph(p: Paragraph, book: Book) -> Paragraph | None:
+    ps = book.paragraphs
+    if 0 < p.idx <= len(ps) and ps[p.idx - 1].idx == p.idx - 1:
+        return ps[p.idx - 1]
+    return next((q for q in ps if q.idx == p.idx - 1), None)
+
+
+def lead_pause(p: Paragraph, book: Book) -> str | None:
+    """Positional pause before a paragraph's first chunk (#73), or None.
+
+    long_pause: first paragraph of a section (after the chapter heading) or right after a scene break ('* * *').
+    pause: a dialogue paragraph right after a paragraph of pure narration that ended a sentence."""
+    if is_scene_break(p.text):
+        return None
+    if any(s.start_para == p.idx for s in book.sections):
+        return "long_pause"
+    prev = _prev_paragraph(p, book)
+    if prev is None or prev.kind == "code":
+        return None
+    if is_scene_break(prev.text):
+        return "long_pause"
+    chars = {c.id for c in book.characters}
+    first = next((s for s in p.segments if s.text.strip()), None)
+    if first is None or first.speaker not in chars:
+        return None
+    prev_segs = [s for s in prev.segments if s.text.strip()]
+    if prev_segs and all(s.speaker not in chars for s in prev_segs) and prev.text.rstrip().rstrip("\"'”’)").endswith((".", "!", "?")):
+        return "pause"
+    return None
 
 
 CODE_SPOKEN = "Code listing skipped."
 
 
-def chunk_paragraph(p: Paragraph, book: Book) -> list[TtsChunk]:
+def chunk_paragraph(p: Paragraph, book: Book, *, expressive: bool = True) -> list[TtsChunk]:
+    """TTS chunks for one paragraph. expressive=False leaves out the #73 additions (pauses, expressive_*, sfx other
+    than laughter context), which scripts/estimate_expressive.py uses to measure what they change."""
     narrator_voice = book.narrator.voice if book.narrator else DEFAULT_VOICE
     if p.kind == "code":  # a listing is displayed whole but spoken as one short note
         return [TtsChunk(id=f"p{p.idx}c0", speaker="narrator", voice=narrator_voice,
@@ -85,7 +125,8 @@ def chunk_paragraph(p: Paragraph, book: Book) -> list[TtsChunk]:
     apply_styles(segments)  # rule-based whispering/shouting; keeps a style the enrich LLM already set
     chunks: list[TtsChunk] = []
     cursor = 0
-    for seg in segments:
+    pause = lead_pause(p, book) if expressive else None
+    for si, seg in enumerate(segments):
         seg_text = seg.text.strip()
         if not seg_text:
             continue
@@ -110,10 +151,21 @@ def chunk_paragraph(p: Paragraph, book: Book) -> list[TtsChunk]:
                 groups[-1] = (groups[-1][0], e)
             else:
                 groups.append((s, e))
+        is_char = seg.speaker in chars
+        extra = {"tag": speech_tag(segments, si), "expressive": detect_expressive(segments, si)}             if expressive and is_char else {}
         for s, e in groups:
             spoken = p.text[s:e]
+            text = build_tts_text(spoken, tags, seg.emotion, seg.style, sfx=is_char, pause=pause, **extra)                 if expressive else _legacy_tts_text(spoken, tags, seg.emotion, seg.style, is_char)
+            pause = None  # only the paragraph's first chunk
             chunks.append(TtsChunk(
-                id=f"p{p.idx}c{len(chunks)}", speaker=seg.speaker if seg.speaker in chars else "narrator",
-                voice=voice, tts_text=build_tts_text(spoken, tags, seg.emotion, seg.style, sfx=seg.speaker in chars),
-                char_start=s, char_end=e))
+                id=f"p{p.idx}c{len(chunks)}", speaker=seg.speaker if is_char else "narrator",
+                voice=voice, tts_text=text, char_start=s, char_end=e))
     return chunks
+
+
+def _legacy_tts_text(spoken: str, voice_tags: str, emotion: str | None, style: str | None, sfx: bool) -> str:
+    """tts_text as built before #73 (laughter was the only sfx). Only for estimating re-render cost."""
+    from .delivery import with_laughter
+    tags = voice_tags + (f"<|style:{style}|>" if style else "") + (f"<|emotion:{emotion}|>" if emotion else "")
+    text = normalize_for_tts(spoken)
+    return tags + (with_laughter(text) if sfx else text)

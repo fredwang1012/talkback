@@ -89,7 +89,7 @@ def test_code_chunk_is_a_short_spoken_note_and_text_is_kept_for_display():
     assert code.text == "1 x = 1\n2 return x"
     assert [c.tts_text for c in code.tts_chunks] == ["Code listing skipped."]
     other = [p for p in book.paragraphs if p.kind is None]
-    assert len(other) == 2 and other[0].tts_chunks[0].tts_text.startswith("Plants")
+    assert len(other) == 2 and other[0].tts_chunks[0].tts_text.removeprefix("<|prosody:long_pause|>").startswith("Plants")
 
 
 def test_non_textbook_does_not_skip_code():
