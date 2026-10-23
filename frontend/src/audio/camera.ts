@@ -24,20 +24,29 @@ export function squareCrop(w: number, h: number): { sx: number; sy: number; side
   return { sx: Math.floor((w - side) / 2), sy: Math.floor((h - side) / 2), side, out: Math.min(side, MAX_PORTRAIT) };
 }
 
-/** Grab the current video frame, center-crop to a square and encode as portrait.jpg. The frame is not mirrored. */
-export async function captureJpeg(
-  video: { videoWidth: number; videoHeight: number },
+/** Draw the square (sx, sy, side) of `source` at most MAX_PORTRAIT px wide and encode it as portrait.jpg (quality 0.9). */
+export async function squareJpeg(
+  source: CanvasImageSource, sx: number, sy: number, side: number,
   makeCanvas: () => HTMLCanvasElement = () => document.createElement("canvas"),
 ): Promise<File> {
-  const { sx, sy, side, out } = squareCrop(video.videoWidth, video.videoHeight);
-  if (!side) throw new Error("The camera has no picture yet. Wait a moment and try again.");
+  const out = Math.min(side, MAX_PORTRAIT);
   const canvas = makeCanvas();
   canvas.width = out;
   canvas.height = out;
   const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Could not capture the photo in this browser.");
-  ctx.drawImage(video as unknown as CanvasImageSource, sx, sy, side, side, 0, 0, out, out);
+  if (!ctx) throw new Error("Could not prepare the photo in this browser.");
+  ctx.drawImage(source, sx, sy, side, side, 0, 0, out, out);
   const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/jpeg", 0.9));
-  if (!blob) throw new Error("Could not capture the photo in this browser.");
+  if (!blob) throw new Error("Could not prepare the photo in this browser.");
   return new File([blob], "portrait.jpg", { type: "image/jpeg" });
+}
+
+/** Grab the current video frame, center-crop to a square and encode as portrait.jpg. The frame is not mirrored. */
+export async function captureJpeg(
+  video: { videoWidth: number; videoHeight: number },
+  makeCanvas?: () => HTMLCanvasElement,
+): Promise<File> {
+  const { sx, sy, side } = squareCrop(video.videoWidth, video.videoHeight);
+  if (!side) throw new Error("The camera has no picture yet. Wait a moment and try again.");
+  return squareJpeg(video as unknown as CanvasImageSource, sx, sy, side, makeCanvas);
 }

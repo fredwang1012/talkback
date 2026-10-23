@@ -4,6 +4,7 @@ import { useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { animateFace, cloneVoice, deleteFace, deleteVoice, uploadFace, type Book, type Cast, type Face } from "../api";
 import { PRESETS, castFace, castVoice, isNovel, runAnimate, withAssignment } from "./castLogic";
 import CameraCapture from "./CameraCapture";
+import FaceCropper from "./FaceCropper";
 import { NovelVoices, VoiceCard } from "./VoicePicker";
 
 export { PRESETS };
@@ -40,12 +41,14 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
   const [consent, setConsent] = useState(false);
   const [clip, setClip] = useState<{ blob: Blob; filename: string } | null>(null);
   const [face, setFace] = useState<File | null>(null);
+  const [rawFace, setRawFace] = useState<File | null>(null); // picked or taken, waiting for its crop (#109)
   const [recording, setRecording] = useState(false);
   const [status, setStatus] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
   const [faceName, setFaceName] = useState("");
   const [faceFile, setFaceFile] = useState<File | null>(null);
+  const [rawFaceFile, setRawFaceFile] = useState<File | null>(null);
   const [faceBusy, setFaceBusy] = useState(false);
   const [faceMsg, setFaceMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 
@@ -197,9 +200,10 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
         <input id="face-name" value={faceName} maxLength={60} onChange={(e) => setFaceName(e.target.value)} />
         <label className="file" htmlFor="face-file">
           Image
-          <input id="face-file" type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setFaceFile(e.target.files?.[0] ?? null)} />
+          <input id="face-file" type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => { setRawFaceFile(e.target.files?.[0] ?? null); e.target.value = ""; }} />
         </label>
-        <CameraCapture onUse={setFaceFile} />
+        <CameraCapture onUse={setRawFaceFile} />
+        {rawFaceFile && <FaceCropper file={rawFaceFile} onUse={(f) => { setFaceFile(f); setRawFaceFile(null); }} onCancel={() => setRawFaceFile(null)} />}
         {faceFile && <p className="empty-note">Selected: {faceFile.name}</p>}
         <p className="empty-note">{FACE_HELP}</p>
         <button className="primary" disabled={!faceFile || !faceName.trim() || faceBusy} onClick={() => void submitFace()}>{faceBusy ? "Uploading…" : "Upload a face"}</button>
@@ -244,9 +248,10 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
         {clip && <p className="empty-note">Ready: {clip.filename} ({Math.round(clip.blob.size / 1024)} KB)</p>}
         <label className="file">
           Add a face (optional): a portrait shown whenever this voice speaks
-          <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setFace(e.target.files?.[0] ?? null)} />
+          <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => { setRawFace(e.target.files?.[0] ?? null); e.target.value = ""; }} />
         </label>
-        <CameraCapture onUse={setFace} />
+        <CameraCapture onUse={setRawFace} />
+        {rawFace && <FaceCropper file={rawFace} onUse={(f) => { setFace(f); setRawFace(null); }} onCancel={() => setRawFace(null)} />}
         <p className="empty-note">{FACE_HELP}</p>
         {face && <p className="empty-note">Face: {face.name}</p>}
         <label htmlFor="lab-name">Name this voice</label>

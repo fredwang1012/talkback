@@ -553,6 +553,24 @@ export async function uploadFace(image: File, name: string): Promise<Face> {
   return res.json() as Promise<Face>;
 }
 
+/** The main face's box as fractions of the image (x, y of the top-left corner). */
+export type FaceBox = { x: number; y: number; w: number; h: number };
+
+/** The main face's box (fractions of the image) for the head-and-shoulders crop; null on no face or any failure. */
+export async function detectFace(image: File, signal?: AbortSignal): Promise<FaceBox | null> {
+  const form = new FormData();
+  form.append("image", image, image.name);
+  try {
+    const res = await timedFetch("/api/faces/detect", { method: "POST", headers: authHeaders(), body: form, signal }, 30000);
+    if (!res.ok) return null;
+    const f = ((await res.json()) as { face?: Partial<FaceBox> | null }).face;
+    if (!f || ![f.x, f.y, f.w, f.h].every((v) => typeof v === "number" && Number.isFinite(v))) return null;
+    return { x: f.x!, y: f.y!, w: f.w!, h: f.h! };
+  } catch {
+    return null;
+  }
+}
+
 export async function deleteFace(id: string): Promise<void> {
   const res = await timedFetch(`/api/faces/${encodeURIComponent(id)}`, { method: "DELETE", headers: authHeaders() });
   if (!res.ok) throw await readError(res, "Could not delete the face");

@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from pydantic import BaseModel, Field
 
-from . import books, cast, faces, ingest_upload, public_client, recap, retrieval, tts_cache, users, voices
+from . import books, cast, face_detect, faces, ingest_upload, public_client, recap, retrieval, tts_cache, users, voices
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
@@ -1383,6 +1383,25 @@ async def upload_face(request: Request, image: UploadFile = File(...), name: str
         return faces.create_face(data, name)
     except faces.FaceInputError as e:
         raise HTTPException(400, str(e))
+
+
+face_detect_bucket = TokenBucket(capacity=12, per_seconds=60)  # per IP / account: each may cost one Gemini Flash call
+
+
+@app.post("/api/faces/detect", dependencies=[Depends(require_access)])
+async def detect_face(request: Request, image: UploadFile = File(...)):
+    """The main face's box ({x, y, w, h} as fractions, or null) for the head-and-shoulders crop (#109). Nothing is
+    stored. Guarded like /api/books/describe: accounts only under PER_USER, a per-caller bucket here, and a global
+    bucket, daily cap and budget reservation in face_detect."""
+    users.require_account("Sign in to add faces.")
+    if not face_detect_bucket.allow(rate_key(request)):
+        raise HTTPException(429, "Too many photos at once; place the square yourself.")
+    data = await image.read(faces.MAX_FACE_BYTES + 1)  # bounded read
+    try:
+        ext = faces.validate_image(data)
+    except faces.FaceInputError as e:
+        raise HTTPException(400, str(e))
+    return {"face": await face_detect.detect(data, ext)}
 
 
 @app.get("/api/faces", dependencies=[Depends(require_access)])

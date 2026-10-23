@@ -717,3 +717,10 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
 .camera-box { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .camera-preview, .camera-thumb { width: 160px; height: 160px; object-fit: cover; border-radius: 8px; background: #000; }
 .camera-preview { transform: scaleX(-1); } /* mirrored preview only; the captured file is not mirrored */
+/* face crop (#109): the proposed square over the photo, dimmed outside, dragged or resized with pointer events */
+.crop { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.crop-frame { position: relative; display: inline-block; max-width: min(100%, 320px); overflow: hidden; border-radius: var(--r-md); touch-action: none; user-select: none; }
+.crop-frame img { display: block; width: 100%; height: auto; }
+.crop-square { position: absolute; box-sizing: border-box; border: 2px solid var(--brass); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); cursor: move; touch-action: none; }
+.crop-square:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.crop-handle { position: absolute; right: -2px; bottom: -2px; width: 18px; height: 18px; background: var(--brass); cursor: nwse-resize; touch-action: none; }
