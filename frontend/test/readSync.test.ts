@@ -17,7 +17,6 @@ afterEach(() => vi.useRealTimers());
 const now = () => Date.now();
 
 class FakeChunkAudio extends FakeVoice implements AudioLike {
-  playbackRate = 1;
   preservesPitch = false;
   preload = "";
   constructor(public src: string, duration: number) { super(now, duration); }
@@ -239,5 +238,45 @@ describe("short chunks back to back (#104)", () => {
       expect(r.faceLagMs(i)!, `c${i} face lag`).toBeLessThanOrEqual(100);
     }
     expect(r.opens.length).toBe(lens.length); // every clip opened once
+  });
+});
+
+describe("lip-sync at other reading speeds (#105)", () => {
+  for (const speed of [1.25, 1.5, 0.75]) {
+    it(`${speed}x: the clip runs at the voice's rate, starts with it and stays in step`, async () => {
+      const r = setup({ chunks: 2, voiceS: 6, clipS: 6.64 });
+      r.engine.setSpeed(speed);
+      r.engine.play();
+      await r.drive(30000);
+      expect(r.engine.snapshot().state).toBe("ended");
+      for (const i of [0, 1]) {
+        const a = r.audioOf(`c${i}`)!;
+        expect(a.playbackRate).toBe(speed);
+        expect(a.pauses).toBe(0);
+        expect(a.backJumps).toEqual([]);
+        expect(r.faceLagMs(i), `c${i} face lag`).not.toBeNull();
+        expect(r.faceLagMs(i)!, `c${i} face lag`).toBeLessThanOrEqual(100);
+        const s = r.stats(i);
+        expect(s.shownMs, `c${i} shown`).toBeGreaterThan(0.9 * s.soundMs);
+        expect(s.maxDrift, `c${i} drift`).toBeLessThan(0.1);
+      }
+    });
+  }
+
+  // the render must be ahead for this: a live stream rendering at 1x cannot feed 1.5x for long (it stalls to the talk
+  // loop and rejoins, covered by the stall tests), so here it renders at 2x
+  it("a speed change mid-chunk: the clip follows the new rate without dropping the face", async () => {
+    const r = setup({ chunks: 1, voiceS: 10, clipS: 10.64, rtf: 0.5 });
+    r.engine.play();
+    await r.drive(4500); // voice and face are going at 1x
+    expect(r.isShown()).toBe(true);
+    r.engine.setSpeed(1.5);
+    await r.drive(1000);
+    expect(r.video.playbackRate).toBeGreaterThan(1.5 * 0.92);
+    expect(r.video.playbackRate).toBeLessThan(1.5 * 1.08);
+    await r.drive(10000);
+    const s = r.stats(0);
+    expect(s.maxDrift).toBeLessThan(0.1);
+    expect(s.shownMs).toBeGreaterThan(0.9 * s.soundMs);
   });
 });

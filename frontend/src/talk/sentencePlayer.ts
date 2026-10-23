@@ -36,6 +36,7 @@ export interface AudioLike {
   pause(): void;
   currentTime?: number;
   duration?: number;
+  playbackRate?: number; // the voice's speed (read mode); the lip-sync clip plays at the same rate
   addEventListener?(type: string, fn: () => void): void;
   removeEventListener?(type: string, fn: () => void): void;
 }

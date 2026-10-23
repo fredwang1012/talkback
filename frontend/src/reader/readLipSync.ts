@@ -38,10 +38,10 @@ export function clipAheadFor(i: number, last: number, speechS: (k: number) => nu
 }
 
 /**
- * Lip-sync is always on in read mode (#92) when there is audio, but only at 1x: the clip is rendered at the voice's
- * natural pace, so at other speeds the face would drift; the talk loop stands in there, silently.
+ * Lip-sync is always on in read mode (#92) when there is audio, at every speed (#105): the clip is rendered at the
+ * voice's natural pace and played at the voice's playbackRate (talk/faceSync), so it stays in step at 0.75x-1.5x too.
  */
-export const readClipsOn = (audioAvailable: boolean, speed: number): boolean => audioAvailable && speed === 1;
+export const readClipsOn = (audioAvailable: boolean): boolean => audioAvailable;
 
 /** Seconds of speech in a chunk's text (the clip is as long as the audio), for the spend estimate before metadata. */
 export const speechSeconds = (ttsText: string): number => Math.max(1, ttsText.length / 15);

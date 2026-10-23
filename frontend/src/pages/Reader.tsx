@@ -190,8 +190,8 @@ export default function Reader({ bookId }: { bookId: string }) {
   const nextReadingFace = book && nextChunk && playing ? readFaceFor(readFaces, nextChunk.speaker) : null;
   const preloadLoops = loopsToPreload(readingFace, nextReadingFace);
   // the engine's clip source: the chunk's clip on the voice whose bound face is on screen (null: no lip-sync for it,
-  // the talk loop or still face shows). Always on, but only at 1x (readClipsOn).
-  const clipsOn = readClipsOn(audioAvailable, speed);
+  // the talk loop or still face shows). Always on, at every speed: the clip plays at the voice's rate (#105).
+  const clipsOn = readClipsOn(audioAvailable);
   const clipSource = useMemo<ClipSource | null>(() => {
     if (!clipsOn) return null;
     return (chunk, audioUrl, voice) => {

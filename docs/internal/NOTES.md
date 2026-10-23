@@ -613,8 +613,8 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   bound to the voice that speaks (same clip path + start gate + FaceSync everywhere; recaps use the narrator's face,
   which TalkbackView shows while a recap plays). The "talkback:lipsync" / "talkback:readlipsync" localStorage keys are
   no longer read. No price or delay copy remains in the UI.
-- Silent fallbacks: no face / unbound face / failed or stalled render -> talk loop or still face; read mode at speeds
-  other than 1x drops the clip source (reader/readLipSync.readClipsOn) because clips render at the natural pace.
+- Silent fallbacks: no face / unbound face / failed or stalled render -> talk loop or still face. (Read mode at speeds
+  other than 1x used to drop the clip source; since #105 the clip plays at the voice's playbackRate instead.)
 - Cost: every fresh line spoken by a bound face now renders a clip (~$0.09/min of video, cached per line + voice).
 
 ## Voices panel: One voice / Two voices, Full cast removed (#93, 2026-10-23)
@@ -684,3 +684,13 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   until the next unopened one has >= 4 s of speech as head start (max 3 ahead, readLipSync.clipAheadFor); chained wait
   1 s -> 3 s. More renders in flight with short chunks: the server's 12/min avatar bucket can still refuse some (talk
   loop then).
+
+## Lip-sync at 0.75x-1.5x (#105, 2026-10-23, fake-clock tests)
+- The clip is rendered at the voice's natural pace, so it simply plays at the voice's playbackRate: FaceSync and the
+  pre-rendered clip follower set video.playbackRate = audioRate * (1 +- drift nudge); AudioClock advances at the voice's
+  rate; the voice keeps preservesPitch. Speed changes mid-clip are followed on the next tick.
+- Start gate at speed: a live stream renders at ~real time but is played faster, so the head start grows to
+  1 - 1/(1.1 * rate) of the sentence (~39% at 1.5x, ~0.7 s base); at 0.75x only the base. A long chunk at 1.5x
+  therefore waits longer before its first word, and if the render still falls behind the face drops to the talk loop
+  and rejoins (unchanged fallback). Talkback answers and recaps have no speed control, so they are unaffected.
+

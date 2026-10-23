@@ -40,11 +40,9 @@ describe("read-mode lip-sync decisions", () => {
     expect(lipSyncVoiceFor(faces({}, {}), "hermione", "chloe")).toBeNull();
   });
 
-  it("lip-syncs whenever there is audio, but only at 1x: at other speeds the talk loop stands in (#92)", () => {
-    expect(readClipsOn(true, 1)).toBe(true);
-    expect(readClipsOn(true, 1.25)).toBe(false);
-    expect(readClipsOn(true, 0.75)).toBe(false);
-    expect(readClipsOn(false, 1)).toBe(false);
+  it("lip-syncs whenever there is audio, at every speed (#92, #105)", () => {
+    expect(readClipsOn(true)).toBe(true);
+    expect(readClipsOn(false)).toBe(false);
   });
 
   it("estimates the seconds of speech in a chunk for the spend tracker", () => {

@@ -148,6 +148,7 @@ export class FakeStreamVideo extends Queue {
 
 export class FakeVoice extends Queue {
   onended: (() => void) | null = null;
+  playbackRate = 1; // media seconds per wall second (preservesPitch: only the pace changes)
   onerror: (() => void) | null = null;
   paused = true;
   duration: number;
@@ -175,7 +176,7 @@ export class FakeVoice extends Queue {
       const t = this.now();
       if (t >= this.soundAt) {
         if (t - dtMs < this.soundAt) { this.queue("playing"); if (this.startedAt === null) this.startedAt = this.soundAt; }
-        else this.pos += dtMs / 1000;
+        else this.pos += (dtMs / 1000) * this.playbackRate;
         if (this.pos >= this.duration) { this.pos = this.duration; this.paused = true; this.queue("pause"); this.queue("ended"); this.flush(); this.onended?.(); return; } // like Chrome: pause, then ended
       }
     }
