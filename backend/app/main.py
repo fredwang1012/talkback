@@ -28,6 +28,7 @@ from .enrich import pipeline as enrich_pipeline
 from .enrich.detect import detect_kind
 from .gcp import usage
 from .personas import build_answer_prompt, build_instructions
+from .mp3dur import mp3_seconds
 from .ratelimit import TokenBucket, client_ip
 from .schema import Book, ChatTurn
 from .uploadlimit import UploadSizeLimit
@@ -1197,7 +1198,7 @@ async def lipsync(req: LipSyncRequest, request: Request):
             try:
                 vid = await boson.create_video(base64.b64encode(face.read_bytes()).decode(), base64.b64encode(data).decode(),
                                                image_mime=faces.FACE_EXTS[face.suffix.lstrip(".").lower()],
-                                               seconds=len(data) / 16000)  # 128 kbit/s mp3
+                                               seconds=mp3_seconds(data))
                 await boson.wait_video(vid, interval=1, timeout=120)
                 video = await boson.download_video(vid)
             except (BosonError, RuntimeError) as e:
@@ -1240,7 +1241,7 @@ async def lipsync_stream(req: LipSyncRequest, request: Request):
             async with asyncio.timeout(STREAM_MAX_SECONDS):
                 _vid, chunks = await stack.enter_async_context(boson.stream_video(
                     base64.b64encode(face.read_bytes()).decode(), base64.b64encode(data).decode(),
-                    image_mime=faces.FACE_EXTS[face.suffix.lstrip(".").lower()], seconds=len(data) / 16000))
+                    image_mime=faces.FACE_EXTS[face.suffix.lstrip(".").lower()], seconds=mp3_seconds(data)))
         except (BosonError, RuntimeError) as e:
             raise boson_http_error(e)
         except TimeoutError:

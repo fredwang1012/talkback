@@ -552,7 +552,7 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
 - Pace: ~1.5-3 s from request to first fragment (up to ~6 s with several streams in flight), then about real time
   (TTS-ready -> stream-end of 10.7 s for a 9.04 s clip). The first sentence's clip therefore cannot catch up with a voice
   that starts immediately; the voice now waits (bounded) for ~2 fragments before the first word.
-- TTS mp3s are 32 kbit/s 24 kHz, so `len(data)/16000` in main.py under-counts avatar seconds 4x in usage logging.
+- Fixed (#79): avatar seconds now come from mp3 frame headers (app/mp3dur.py), fallback len/4000.
 ## Read-mode lip-sync (#80, 2026-10-23, designed offline: no Boson calls)
 - Read mode used to play only the generic talk loop, so the mouth never matched the words. Now, behind "Lip-sync while
   reading" (Stage, off by default, shown only when a face on screen is bound to a voice), ReaderEngine streams a Boson
