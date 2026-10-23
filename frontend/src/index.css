@@ -208,6 +208,12 @@ button:disabled { cursor: not-allowed; }
 }
 .para.para-math .sentence.active .math-img, .para.para-math .sentence:hover .math-img { opacity: 1; }
 .para.para-math .math-text { font-style: italic; }
+.para .math-inline .katex { font-size: 1.05em; }
+.para .math-inline-img {
+  display: inline-block; vertical-align: middle; width: auto; max-width: 100%;
+  filter: var(--math-img-filter); mix-blend-mode: var(--math-img-blend);
+}
+.para .sentence .math-inline-img.word { background: none; padding: 0; outline: 2px solid var(--brass); outline-offset: 1px; }
 .para.para-code {
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 0.95rem; line-height: 1.5;
   white-space: pre-wrap; overflow-x: auto; background: var(--ground-sunk); padding: 0.75em 1em; border-radius: 6px;

@@ -163,7 +163,7 @@ def test_render_crops_and_records_the_picture(data_dir):
     assert png.startswith(b"\x89PNG") and hint == "y = b + a x + e (3.4)"
     assert equation_path(book_id, "e1").read_bytes() == png
     [m] = [p.math for p in load(book_id).paragraphs if p.math]
-    assert m.image == f"/api/books/{book_id}/equations/e1.png"
+    assert m.image.startswith(f"/api/books/{book_id}/equations/e1.png?v=")
 
 
 def test_render_stops_for_a_deleted_book(data_dir):
@@ -286,10 +286,11 @@ def test_equations_job_crops_then_reads(data_dir, monkeypatch):
     book_id = published(data)
     monkeypatch.setattr(equations, "available", lambda: True)
 
-    async def fake_transcribe(bid, found):
+    async def fake_transcribe(bid, found, **kw):
         assert list(found) == ["e1"]
         return {"e1": {"latex": "y=x", "spoken": "y equals x"}}
     monkeypatch.setattr(equations, "transcribe", fake_transcribe)
+    monkeypatch.setattr(equations, "make_llm", lambda provider: None)
     asyncio.run(main._equations_job(book_id, data))
     [m] = [p.math for p in load(book_id).paragraphs if p.math]
     assert m.image and m.latex == "y=x" and m.spoken == "y equals x"

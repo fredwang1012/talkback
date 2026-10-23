@@ -33,6 +33,7 @@ SYSTEM = """You transcribe typeset mathematics from pictures cropped out of a te
 For each picture, by its id:
 - latex: the equation in LaTeX math mode for KaTeX, without $ or \\[ delimiters and without \\begin{equation}. Several lines: use \\begin{aligned} ... \\end{aligned}. Leave out the equation number such as (3.4).
 - spoken: how a teacher reads it aloud, in plain English words only (no LaTeX, no symbols), at most 35 words, e.g. "y hat equals beta zero hat plus beta one hat times x".
+Pictures whose id starts with "m" are formulas from inside a sentence: their spoken reading replaces the formula in that sentence, so keep it short (at most 15 words), e.g. "beta one hat".
 The extracted text given with each picture is often garbled; trust the picture.
 If a picture is not an equation (prose, a table, a figure, blank), give an empty latex and an empty spoken."""
 
@@ -89,13 +90,27 @@ def _parts(batch: list[tuple[str, bytes, str]]) -> list:
     return out
 
 
+def fitting(n: int, spent: float = 0.0) -> int:
+    """How many of n pictures fit under the per-book cap after `spent`."""
+    while n and estimate(n) + spent > settings.upload_book_cap_usd:
+        n = n * 9 // 10
+    return n
+
+
 async def transcribe(book_id: str, crops: dict[str, tuple[bytes, str]], *, llm: LLM | None = None,
-                     parts=_parts) -> dict[str, dict]:
-    """{equation id: {latex, spoken}} for the pictures Gemini could read. `crops` is {id: (PNG, extracted text)}."""
+                     parts=_parts, fit: bool = False) -> dict[str, dict]:
+    """{equation id: {latex, spoken}} for the pictures Gemini could read. `crops` is {id: (PNG, extracted text)}.
+    With `fit` (inline formulas, after the display equations on the same `llm`), only the first pictures that fit
+    under the per-book cap are sent instead of none."""
     if not crops:
         return {}
+    spent = llm.usd if llm is not None else 0.0
+    if fit:
+        crops = dict(list(crops.items())[:fitting(len(crops), spent)])
+        if not crops:
+            return {}
     est = estimate(len(crops))
-    reason = check_caps(est)
+    reason = check_caps(est + spent)
     if reason:
         log.info("equations of %s not transcribed: %s ($%.2f estimated)", book_id, reason, est)
         return {}

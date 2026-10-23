@@ -59,6 +59,18 @@ class MathBlock(BaseModel):
     spoken: str | None = None
 
 
+class InlineMath(BaseModel):
+    """A formula inside a prose paragraph whose extracted text is garbled: text[start:end] shows that garble."""
+    id: str
+    start: int
+    end: int
+    page: int
+    bbox: list[float]
+    image: str | None = None
+    latex: str | None = None
+    spoken: str | None = None
+
+
 class Paragraph(BaseModel):
     idx: int
     section_id: str
@@ -68,6 +80,7 @@ class Paragraph(BaseModel):
     # "code": a program / pseudocode listing, shown but not read aloud; "math": a display equation (see `math`)
     kind: Literal["code", "math"] | None = None
     math: MathBlock | None = None
+    inline_math: list[InlineMath] = []
 
 
 class Character(BaseModel):

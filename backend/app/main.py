@@ -32,6 +32,7 @@ from .personas import build_answer_prompt, build_instructions
 from .mp3dur import mp3_seconds
 from .ratelimit import TokenBucket, client_ip
 from .schema import Book, ChatTurn
+from .ttschunks import inline_spans
 from .uploadlimit import UploadSizeLimit
 
 def _warm_up() -> None:
@@ -292,7 +293,8 @@ async def tts(req: TtsRequest, request: Request):
                 if not cached and not tts_bucket.allow(rate_key(request)):
                     raise HTTPException(429, "Too many new audio requests; wait a moment.")
                 try:
-                    out = await tts_cache.get_or_create(boson, tts_text, voice, p.text[c.char_start:c.char_end])
+                    out = await tts_cache.get_or_create(boson, tts_text, voice, p.text[c.char_start:c.char_end],
+                                                        inline_spans(p, c.char_start, c.char_end))
                 except (BosonError, RuntimeError) as e:
                     raise boson_http_error(e)
                 return {"chunk_id": c.id, "voice": voice, **out}
@@ -761,7 +763,8 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
         _ingest_guard.release(token)
         if hash_key is not None:   # book.json is written by now (or the ingest failed): the disk check takes over
             _hash_claims.pop(hash_key, None)
-    if ready is not None and kind == "textbook" and ext == ".pdf" and any(p.kind == "math" for p in ready.paragraphs):
+    if ready is not None and kind == "textbook" and ext == ".pdf" and any(p.kind == "math" or p.inline_math
+                                                                         for p in ready.paragraphs):
         _start_equations(book_id, data)
     if ready is not None and settings.retrieval_backend == "vertex":
         await _index_in_background(ready, chunks)
@@ -813,19 +816,27 @@ def _start_equations(book_id: str, data: bytes) -> None:
 async def _equations_job(book_id: str, data: bytes) -> None:
     """Pictures first (the reader shows them at once), then LaTeX and spoken readings. Never raises; the book stays
     readable with whatever was saved."""
+    stop = lambda: book_id in _deleted  # noqa: E731
     try:
-        crops = await asyncio.to_thread(ingest_upload.render_equations, book_id, data, lambda: book_id in _deleted)
-        if crops and enrich_equations.available() and book_id not in _deleted:
-            readings = await enrich_equations.transcribe(book_id, crops)
-            if readings and book_id not in _deleted:
-                await asyncio.to_thread(ingest_upload.update_equations, book_id, readings)
+        crops = await asyncio.to_thread(ingest_upload.render_equations, book_id, data, stop)
+        inline, shared = await asyncio.to_thread(ingest_upload.render_inline, book_id, data, stop)
+        if not (crops or inline) or not enrich_equations.available() or stop():
+            return
+        llm = enrich_equations.make_llm("gemini")
+        readings = await enrich_equations.transcribe(book_id, crops, llm=llm) if crops else {}
+        if readings and not stop():
+            await asyncio.to_thread(ingest_upload.update_equations, book_id, readings)
+        readings = await enrich_equations.transcribe(book_id, inline, llm=llm, fit=True) if inline else {}
+        fields = {i: r for k, r in readings.items() for i in shared.get(k, [k])}
+        if fields and not stop():
+            await asyncio.to_thread(ingest_upload.update_equations, book_id, fields)
     except Exception as e:
         logging.getLogger(__name__).warning("equations of %s failed: %s", book_id, type(e).__name__)
     finally:
         _equation_jobs.discard(book_id)
 
 
-_EQ_ID = re.compile(r"^e\d{1,5}$")
+_EQ_ID = re.compile(r"^(?:e\d{1,5}|m\d{1,6})$")  # display equation / inline formula
 
 
 @app.get("/api/books/{book_id}/equations/{eq_id}.png")
