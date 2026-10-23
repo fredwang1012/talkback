@@ -9,8 +9,9 @@ vi.mock("../src/audio/playback", () => ({ RingPlayer: class { async close() {} }
 vi.mock("../src/audio/capture", () => ({ MicCapture: class { async stop() {} } }));
 const spoken = vi.hoisted(() => [] as string[]);
 const ctl = vi.hoisted(() => ({ hold: false, release: [] as (() => void)[], log: [] as string[] }));
+const made = vi.hoisted(() => [] as { synth: (t: string) => Promise<unknown>; hooks?: { sync?: unknown } }[]);
 vi.mock("../src/talk/sentencePlayer", () => ({
-  createSentenceSpeaker: () => ({
+  createSentenceSpeaker: (synth: (t: string) => Promise<unknown>, _c: unknown, hooks?: { sync?: unknown }) => (made.push({ synth, hooks }), {
     prefetch() {},
     play: (t: string) => { spoken.push(t); return ctl.hold ? new Promise<void>((r) => ctl.release.push(r)) : Promise.resolve(); },
     stop() { ctl.log.push("stop"); ctl.release.splice(0).forEach((r) => r()); },
@@ -20,6 +21,7 @@ vi.mock("../src/talk/sentencePlayer", () => ({
 }));
 vi.mock("../src/api", async (orig) => ({
   ...(await orig<typeof import("../src/api")>()),
+  speak: vi.fn(async () => ({ audio_url: "/media/tts/x.wav", cached: true })),
   streamAnswer: vi.fn(async (_b: string, _q: string, _p: number, _s: string, onSentence: (t: string) => void) => {
     onSentence("Hagrid is the keeper of keys.");
     onSentence("He is kind.");
@@ -59,7 +61,7 @@ function view(book: Book, talk: TalkUi, spoilers = false, p = 7) {
   act(() => root.render(createElement(TalkbackView, {
     book, para: p, speakerId: "narrator", onSpeaker: () => {}, pinned: null, talk, faces: [], faceFor: () => undefined,
     autoVoiceFor: () => "marcus", choice: { voice: null, face: null }, onChoice: () => {}, voices: [], spoilers,
-    onSpoilers: () => {}, lipSyncable: false, lipSync: false, onLipSync: () => {}, portrait: null, onBack: () => {}, onRecap: () => {}, onVoices: () => {},
+    onSpoilers: () => {}, portrait: null, onBack: () => {}, onRecap: () => {}, onVoices: () => {},
   })));
 }
 
@@ -118,7 +120,7 @@ describe("TalkbackView", () => {
     expect(host.querySelector(".replay-btn")!.getAttribute("aria-label")).toBe("Pause Narrator's reply again");
   });
 
-  it("posts narrator recaps with a heading and play/pause, and promises a ~2 s lip-sync delay", () => {
+  it("posts narrator recaps with a heading and play/pause; no lip-sync toggle or delay note (#92)", () => {
     const replay = vi.fn();
     const messages = [
       { id: 1, role: "narrator", speakerId: "narrator", text: "Alice fell.", recap: "Last chapter: I" },
@@ -137,9 +139,24 @@ describe("TalkbackView", () => {
     act(() => root.render(createElement(TalkbackView, {
       book: novel, para: 7, speakerId: "narrator", onSpeaker: () => {}, pinned: null, talk: fakeTalk(), faces: [], faceFor: () => ({ id: "f" }) as never,
       autoVoiceFor: () => "marcus", choice: { voice: null, face: null }, onChoice: () => {}, voices: [], spoilers: false,
-      onSpoilers: () => {}, lipSyncable: true, lipSync: false, onLipSync: () => {}, portrait: null, onBack: () => {}, onRecap: () => {}, onVoices: () => {},
+      onSpoilers: () => {}, portrait: null, onBack: () => {}, onRecap: () => {}, onVoices: () => {},
     })));
-    expect(host.querySelector(".lipsync")!.textContent).toBe("Lip-synced face (answers start about 2 seconds later)");
+    expect(host.querySelector(".lipsync")).toBeNull();
+    expect(host.querySelector("input[type=checkbox]")).toBeNull();
+    expect(host.textContent).not.toMatch(/lip-?sync|\$0\.0|per minute|seconds later/i);
+  });
+
+  it("shows the narrator's face while a recap is read aloud (#92)", () => {
+    const faceFor = (id: string) => ({ id: `f-${id}`, name: id, image: `/${id}.png`, voice: null, talk: null, idle: null });
+    const render = (narrating: boolean) => act(() => root.render(createElement(TalkbackView, {
+      book: novel, para: 7, speakerId: "hagrid", onSpeaker: () => {}, pinned: null, talk: fakeTalk({ narrating }), faces: [], faceFor,
+      autoVoiceFor: () => "marcus", choice: { voice: null, face: null }, onChoice: () => {}, voices: [], spoilers: false,
+      onSpoilers: () => {}, portrait: null, onBack: () => {}, onRecap: () => {}, onVoices: () => {},
+    })));
+    render(false);
+    expect(host.querySelector(".tb-face img")!.getAttribute("src")).toBe("/hagrid.png");
+    render(true);
+    expect(host.querySelector(".tb-face img")!.getAttribute("src")).toBe("/narrator.png");
   });
 
   it("the answer being spoken has play/pause from its first sentence", () => {
@@ -221,6 +238,28 @@ describe("useTalk transcript", () => {
     await act(async () => { await latest.narrate("Last chapter", async () => ({ text: "", empty: "You're at the start of this book." })); });
     expect(latest.messages[1]).toMatchObject({ text: "You're at the start of this book.", quiet: true });
     expect(latest.replayable.has(latest.messages[1].id)).toBe(false);
+  });
+
+  it("a recap read aloud is lip-synced on the narrator's face, like answers, when that face is bound to the voice (#92)", async () => {
+    made.length = 0;
+    const { speak } = await import("../src/api");
+    let bound = true;
+    function NarratorHarness() {
+      latest = useTalk({ bookId: "hp-lip", enabled: true, reader, speakerId: "hagrid", voiceFor: () => "marcus", autoResume: true, narratorVoice: "belinda",
+        narratorCanLipSync: (v) => bound && v === "belinda",
+        health: { ok: true, boson_key_set: true, access_required: false, answer_backend: "gemini" }, talkback: true });
+      return null;
+    }
+    await act(async () => { root.render(createElement(NarratorHarness)); });
+    const before = made.length;
+    await act(async () => { await latest.narrate("Last chapter", async () => ({ text: "Alice fell." })); });
+    const narrator = made[before]; // the read-aloud makes its speaker when it starts reading
+    expect(narrator.hooks?.sync).toBe(latest.faceSync); // same face sync (start gate, drift) as Talkback answers
+    const clip = await narrator.synth("Alice fell.") as { audio_url: string; openVideo?: unknown };
+    expect(speak).toHaveBeenLastCalledWith("Alice fell.", "belinda");
+    expect(typeof clip.openVideo).toBe("function");
+    bound = false; // the narrator's face is not bound to this voice: plain audio, the talk loop stands in
+    expect((await narrator.synth("Alice fell.") as { openVideo?: unknown }).openVideo).toBeUndefined();
   });
 
   it("the live answer pauses and resumes in place from its button, then becomes a replay", async () => {

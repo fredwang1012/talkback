@@ -155,7 +155,7 @@ describe("read-mode lip-sync (#80)", () => {
     expect(s1.shownMs).toBeGreaterThan(0.9 * s1.soundMs);
   });
 
-  it("turning lip-sync off mid-read releases every clip and hides the face; the voice carries on", async () => {
+  it("dropping the clip source mid-read (speed off 1x) releases every clip and hides the face; the voice carries on", async () => {
     const r = setup({ chunks: 2 });
     r.engine.play();
     await r.drive(4000);

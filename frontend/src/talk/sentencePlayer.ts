@@ -57,7 +57,7 @@ export interface ClipSync {
   readonly canShow?: boolean;
 }
 
-/** The longest the first word waits for its lip-synced face (the UI promises answers start later with lip-sync on). */
+/** The longest the first word waits for its lip-synced face; past that the talk loop starts with the voice. */
 export const START_WAIT_MS = 6000;
 
 export interface SpeakerHooks {

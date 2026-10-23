@@ -22,9 +22,6 @@ type Props = {
   voices: { value: string; label: string }[];
   spoilers: boolean;
   onSpoilers: (on: boolean) => void;
-  lipSyncable: boolean;
-  lipSync: boolean;
-  onLipSync: (on: boolean) => void;
   portrait: string | null;
   onBack: () => void;
   onRecap: (c: RecapChoice) => void; // a recap is posted into this chat by the narrator
@@ -63,15 +60,19 @@ export function ModeToggle({ mode, onMode, talkAvailable }: { mode: "read" | "ta
 
 export default function TalkbackView({
   book, para, speakerId, onSpeaker, pinned, talk, faces, faceFor, autoVoiceFor, choice, onChoice, voices,
-  spoilers, onSpoilers, lipSyncable, lipSync, onLipSync, portrait, onBack, onRecap, onVoices,
+  spoilers, onSpoilers, portrait, onBack, onRecap, onVoices,
 }: Props) {
   const novel = showSpoilerToggle(book);
   const fullBook = novel && spoilers;
   const choices = speakerChoices(book, para, fullBook);
   const name = speakerName(book, speakerId);
+  // a recap is read by the narrator: their face (lip-synced like an answer) and name show while it plays
+  const shownId = talk.narrating ? "narrator" : speakerId;
+  const shownName = speakerName(book, shownId);
+  const shownPortrait = talk.narrating ? book.narrator?.portrait ?? null : portrait;
   const status = talkbackStatus(talk.state, talk.speaking); // follows the audio: the face uses it
   const line = useStableStatus(status, talk.state === "answering"); // the status text and the busy state
-  const face = faceFor(speakerId);
+  const face = faceFor(shownId);
   const chapter = chapterAt(book, para);
   const voiceLabel = (v: string) => (PRESETS.includes(v) ? v : "your cloned voice");
   const [draft, setDraft] = useState("");
@@ -111,10 +112,10 @@ export default function TalkbackView({
         <div className="tb-face-col">
           <div className={`tb-face${status === "listening" ? " live" : ""}${status === "thinking" ? " thinking" : ""}${status === "speaking" ? " speaking" : ""}`} aria-hidden="true">
             {face ? <FaceView face={face} speaking={talk.speaking} sync={talk.faceSync} clipShown={talk.clipShown} />
-              : portrait ? <img src={portrait} alt="" />
-              : <span className="mono">{name.charAt(0)}</span>}
+              : shownPortrait ? <img src={shownPortrait} alt="" />
+              : <span className="mono">{shownName.charAt(0)}</span>}
           </div>
-          <h2 className="tb-name">{name}</h2>
+          <h2 className="tb-name">{shownName}</h2>
 
           <div className="tb-controls">
             {choices.length > 0 && (
@@ -144,12 +145,6 @@ export default function TalkbackView({
                     title="Let answers use the whole book, including what comes later">
               Spoilers: {spoilers ? "on" : "off"}
             </button>
-          )}
-          {face && lipSyncable && (
-            <label className="lipsync">
-              <input type="checkbox" checked={lipSync} onChange={(e) => onLipSync(e.target.checked)} />
-              Lip-synced face (answers start about 2 seconds later)
-            </label>
           )}
         </div>
 

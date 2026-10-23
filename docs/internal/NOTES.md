@@ -607,3 +607,12 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   and Resume plays it on from that moment. Up to 3 paused texts keep their clip; past that, or when the clip is gone
   (stopped), Resume restarts the part it was on. The lip-sync video, when there is one, pauses and resumes with the
   voice (faceSync follows the voice's pause/playing events). Chat replies (live and replays) use the same speaker pause.
+
+## Lip-sync always on (#92, 2026-10-23)
+- User decision: no toggles. Read mode, Talkback answers and recaps read aloud are lip-synced whenever the face shown is
+  bound to the voice that speaks (same clip path + start gate + FaceSync everywhere; recaps use the narrator's face,
+  which TalkbackView shows while a recap plays). The "talkback:lipsync" / "talkback:readlipsync" localStorage keys are
+  no longer read. No price or delay copy remains in the UI.
+- Silent fallbacks: no face / unbound face / failed or stalled render -> talk loop or still face; read mode at speeds
+  other than 1x drops the clip source (reader/readLipSync.readClipsOn) because clips render at the natural pace.
+- Cost: every fresh line spoken by a bound face now renders a clip (~$0.09/min of video, cached per line + voice).

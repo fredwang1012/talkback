@@ -34,30 +34,19 @@ describe("Stage cast list", () => {
   });
 });
 
-describe("Stage read-mode lip-sync toggle (#80)", () => {
-  const render = (available: boolean, on = false) => {
-    const onToggle = vi.fn();
+describe("Stage read-mode lip-sync (#80, #92: always on, no toggle)", () => {
+  it("has no lip-sync toggle, price or delay note, and keeps one persistent clip video", () => {
     const sync = { setVideo: vi.fn() } as unknown as FaceSync;
     act(() => root.render(createElement(Stage, {
       book, para: 3, speakerId: "narrator", onSpeaker: () => {}, health: null, talk, audioAvailable: true, avatarSrc: null, avatarPlaying: false,
       onMode: () => {}, pinned: null, needsCode: false, onCode: () => {}, onOpenLab: () => {}, faceFor: () => undefined,
       readingFace: null, spoilers: false, readSpeaking: false, levelRef: { current: 0 },
-      readLipSync: { available, on, onToggle, sync, shown: false },
+      readLipSync: { sync, shown: false },
     })));
-    return { onToggle, sync };
-  };
-
-  it("is offered with its cost only when a face on screen can lip-sync, and keeps one persistent clip video", () => {
-    const { sync } = render(false);
-    expect(host.querySelector(".stage .lipsync")).toBeNull();
+    expect(host.querySelector(".lipsync")).toBeNull();
+    expect(host.querySelector("input[type=checkbox]")).toBeNull();
+    expect(host.textContent).not.toMatch(/lip-?sync|\$0\.0|per minute|seconds later|moment later/i);
+    expect(host.querySelectorAll("video.rf-clip")).toHaveLength(1);
     expect(sync.setVideo).toHaveBeenCalledWith(host.querySelector("video.rf-clip")); // the sync owns the clip video
-    const { onToggle } = render(true);
-    const label = host.querySelector(".stage .lipsync")!;
-    expect(label.textContent).toContain("Lip-sync while reading");
-    expect(label.textContent).toContain("$0.09 per minute");
-    const box = label.querySelector<HTMLInputElement>("input[type=checkbox]")!;
-    expect(box.checked).toBe(false); // off by default
-    act(() => { box.click(); });
-    expect(onToggle).toHaveBeenCalledWith(true);
   });
 });

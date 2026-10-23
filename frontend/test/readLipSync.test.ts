@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Face } from "../src/api";
-import { clipWindow, lipSyncVoiceFor, readFaceFor, readLipSyncable, readLipSyncCost, speechSeconds } from "../src/reader/readLipSync";
+import { clipWindow, lipSyncVoiceFor, readClipsOn, readFaceFor, speechSeconds } from "../src/reader/readLipSync";
 
 const face = (id: string, voice: string | null): Face => ({ id, name: id, image: `/${id}.png`, voice, talk: null, idle: null });
 const nar = face("f-nar", "clone-nar");
@@ -40,14 +40,14 @@ describe("read-mode lip-sync decisions", () => {
     expect(lipSyncVoiceFor(faces({}, {}), "hermione", "chloe")).toBeNull();
   });
 
-  it("the toggle is offered only when some face on screen can lip-sync", () => {
-    expect(readLipSyncable(faces({ narrator: nar }, { narrator: "clone-nar" }), ["narrator", "harry"])).toBe(true);
-    expect(readLipSyncable(faces({ narrator: face("f", "x") }, { narrator: "marcus" }), ["narrator"])).toBe(false);
-    expect(readLipSyncable(faces({}, {}), ["narrator"])).toBe(false);
+  it("lip-syncs whenever there is audio, but only at 1x: at other speeds the talk loop stands in (#92)", () => {
+    expect(readClipsOn(true, 1)).toBe(true);
+    expect(readClipsOn(true, 1.25)).toBe(false);
+    expect(readClipsOn(true, 0.75)).toBe(false);
+    expect(readClipsOn(false, 1)).toBe(false);
   });
 
-  it("states the Boson avatar price per minute and that cached lines are free", () => {
-    expect(readLipSyncCost()).toBe("About $0.09 per minute of reading; lines rendered before are free.");
+  it("estimates the seconds of speech in a chunk for the spend tracker", () => {
     expect(speechSeconds("x".repeat(150))).toBe(10);
     expect(speechSeconds("")).toBe(1);
   });

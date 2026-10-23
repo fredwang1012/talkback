@@ -7,14 +7,10 @@ import type { TalkUi } from "../talk/useTalk";
 import type { TalkState } from "../talk/TalkController";
 import { splitCharacters } from "./position";
 import { FaceView, ReadFace } from "./FaceView";
-import { readLipSyncCost } from "./readLipSync";
 
-/** Read-mode lip-sync (#80): the toggle (offered only when a face on screen can be lip-synced) and the persistent
- * clip video the sync drives; `shown` once a clip has a frame and is in step with the voice. */
+/** Read-mode lip-sync (#80, always on since #92): the persistent clip video the sync drives; `shown` once a clip has
+ * a frame and is in step with the voice (otherwise the talk loop or the still face shows). */
 export type ReadLipSyncUi = {
-  available: boolean;
-  on: boolean;
-  onToggle: (on: boolean) => void;
   sync: FaceSync;
   shown: boolean;
 };
@@ -152,12 +148,6 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
           <p>{blurb}</p>
         </div>
       </div>
-      {readLipSync?.available && (
-        <label className="lipsync">
-          <input type="checkbox" checked={readLipSync.on} onChange={(e) => readLipSync.onToggle(e.target.checked)} />
-          <span>Lip-sync while reading <small>{readLipSyncCost()} Each line starts a moment later.</small></span>
-        </label>
-      )}
       {talk.speaking && <Waveform />}
 
       <div className={`badge${fullBook ? " spoilers-on" : ""}`}>

@@ -9,8 +9,8 @@ import { createReadAloud, speechParts } from "../reader/readAloud";
 import { detectLanguage, type Detected } from "./language";
 import { FaceSync } from "./faceSync";
 import { createPlayingGate, type TimingEvent } from "./speechGate";
-import { openClipVideo } from "./clipVideo";
-import { createSentenceSpeaker, type Clip, type VideoClip } from "./sentencePlayer";
+import { lipSyncClip } from "./clipVideo";
+import { createSentenceSpeaker, type Clip } from "./sentencePlayer";
 import { createReplayPlayer, createReplayStore, runPcm, runSentences, type ReplayItem } from "./replay";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
 import { TalkController, type Latency, type ReaderControl, type TalkState } from "./TalkController";
@@ -29,6 +29,7 @@ export type TalkUi = {
   language: Detected | null;
   faceSync: FaceSync; // owns the persistent lip-sync <video> and keeps it locked to the voice
   clipShown: boolean; // the lip-sync video has a decoded frame and is in step: show it over the talk loop
+  narrating?: boolean; // a narrator recap is being read aloud now: the narrator's face shows (lip-synced like answers)
   logs: LogEntry[];
   pttDown: () => void;
   pttUp: () => void;
@@ -60,14 +61,14 @@ type Args = {
   autoResume: boolean;
   health: Health | null;
   canLipSync?: (voice: string) => boolean; // the chosen face is the one bound to this voice (the server lip-syncs the voice's own face)
+  narratorCanLipSync?: (voice: string) => boolean; // the same for the narrator's face, which reads recaps aloud
   spoilers?: boolean; // full-book mode: the reader allows spoilers (novels only)
   talkback?: boolean; // the dedicated conversation view is open: a mic tap never toggles reading
-  lipSync?: boolean; // render each answer sentence as a lip-synced clip of the voice's face (~10 s per sentence)
   narratorVoice?: string | null; // reads recaps aloud in the chat
 };
 
 /** Owns the Talk session for the reader screen. The real mic, speaker and socket are created once per book. */
-export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, canLipSync = () => false, lipSync: wantLipSync = false, spoilers = false, talkback = false, narratorVoice = null }: Args): TalkUi {
+export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, canLipSync = () => false, narratorCanLipSync = () => false, spoilers = false, talkback = false, narratorVoice = null }: Args): TalkUi {
   const [state, setState] = useState<TalkState>("reading");
   const [caption, setCaption] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -114,16 +115,19 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   };
   const narration = useRef<ReturnType<typeof createReadAloud> | null>(null);
   if (!narration.current) {
+    // lip-synced on the narrator's face like an answer (same clip path, start gate and face sync); the talk loop or
+    // the still face stands in when that face cannot lip-sync this voice or a render fails
     narration.current = createReadAloud(() => createSentenceSpeaker(async (text) => {
-      const r = await speak(text, narratorVoiceRef.current ?? "");
-      spend.addTts(text.length);
-      return r;
-    }), setNarratingKey, (e) => setToast(e instanceof Error ? e.message : String(e)));
+      const voice = narratorVoiceRef.current ?? "";
+      const r = await speak(text, voice);
+      if (!r.cached) spend.addTts(text.length);
+      return lipSyncClip(r.audio_url, voice, latest.current.narratorCanLipSync(voice));
+    }, undefined, { sync: faceSync.current as FaceSync, onPlaying: setSpeaking }), setNarratingKey, (e) => setToast(e instanceof Error ? e.message : String(e)));
   }
   const clientRef = useRef<TalkClient | null>(null);
   const viaGemini = answersViaGemini(health);
-  const latest = useRef({ reader, voiceFor, speakerId, canLipSync, wantLipSync, spoilers });
-  latest.current = { reader, voiceFor, speakerId, canLipSync, wantLipSync, spoilers };
+  const latest = useRef({ reader, voiceFor, speakerId, canLipSync, narratorCanLipSync, spoilers });
+  latest.current = { reader, voiceFor, speakerId, canLipSync, narratorCanLipSync, spoilers };
 
   useEffect(() => {
     if (!enabled) return;
@@ -171,14 +175,9 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         speaker: createSentenceSpeaker(async (text) => {
           const voice = answerVoice;
           const r = await speak(text, voice);
-          if (latest.current.wantLipSync && latest.current.canLipSync(voice)) {
-            // the first word waits (bounded) until this clip can start with it from 0 (start gate: sentencePlayer, faceSync)
-            const openVideo = (): Promise<VideoClip> => openClipVideo(r.audio_url, voice);
-            const clip = { audio_url: r.audio_url, openVideo };
-            if (answerMsgId !== undefined) replayStore.current.addSentence(answerMsgId, text, clip);
-            return clip;
-          }
-          const clip = { audio_url: r.audio_url };
+          // always lip-synced when the face is bound to the voice (#92): the first word waits (bounded) until this
+          // clip can start with it from 0 (start gate: sentencePlayer, faceSync)
+          const clip = lipSyncClip(r.audio_url, voice, latest.current.canLipSync(voice));
           if (answerMsgId !== undefined) replayStore.current.addSentence(answerMsgId, text, clip);
           return clip;
         }, undefined, { sync: faceSync.current as FaceSync, onPlaying: gate.playing, onTiming: logTiming }),
@@ -228,6 +227,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
 
   return {
     state, caption, toast, level, latency, speaking, question, language, faceSync: faceSync.current, clipShown, logs,
+    narrating: narratingKey !== null,
     pttDown: useCallback(() => { void controller.current?.pttDown(); }, []),
     pttUp: useCallback(() => { void controller.current?.pttUp(); }, []),
     messages,

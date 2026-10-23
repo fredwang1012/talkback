@@ -1,5 +1,5 @@
 /**
- * Read-mode lip-sync (#80): pure decisions for ReaderEngine and the Reader page.
+ * Read-mode lip-sync (#80, always on since #92): pure decisions for ReaderEngine and the Reader page.
  *
  * Each TTS chunk being read gets a Boson avatar clip of its audio (the same stream, start gate and drift control as
  * Talkback: talk/clipVideo, talk/startGate, talk/faceSync). The server lip-syncs the face BOUND TO THE VOICE it is
@@ -13,16 +13,17 @@ import type { Face } from "../api";
 /** Clips are opened this many chunks ahead of the one playing: enough to hide Boson's ~2 s start, few enough to keep
  * at most two renders in flight (the server locks per clip and rate-limits renders). */
 export const READ_CLIP_AHEAD = 1;
-/** The first word after Play waits this long at most for its clip (the toggle promises a short pause). */
+/** The first word after Play waits this long at most for its clip; past that the talk loop starts with the voice. */
 export const READ_START_WAIT_MS = 6000;
 /** Between chunks the voice waits less: the next clip is normally prefetched; if not, the talk loop stands in and
  * the clip rejoins by rendezvous rather than the reading pausing for seconds. */
 export const READ_CHAIN_WAIT_MS = 1000;
 
-/** Boson Higgs Avatar at the streamed 640x640 (docs.boson.ai/pricing, 2026-10): $0.09 per minute of rendered video. */
-export const AVATAR_USD_PER_MIN = 0.09;
-export const readLipSyncCost = (): string =>
-  `About $${AVATAR_USD_PER_MIN.toFixed(2)} per minute of reading; lines rendered before are free.`;
+/**
+ * Lip-sync is always on in read mode (#92) when there is audio, but only at 1x: the clip is rendered at the voice's
+ * natural pace, so at other speeds the face would drift; the talk loop stands in there, silently.
+ */
+export const readClipsOn = (audioAvailable: boolean, speed: number): boolean => audioAvailable && speed === 1;
 
 /** Seconds of speech in a chunk's text (the clip is as long as the audio), for the spend estimate before metadata. */
 export const speechSeconds = (ttsText: string): number => Math.max(1, ttsText.length / 15);
@@ -53,7 +54,3 @@ export function lipSyncVoiceFor(faces: ReadFaces, speaker: string, chunkVoice: s
   const narratorVoice = faces.voiceFor("narrator");
   return narrator && narrator.voice === narratorVoice ? narratorVoice : null;
 }
-
-/** Whether the "Lip-sync while reading" toggle makes sense: some face on screen can be lip-synced. */
-export const readLipSyncable = (faces: ReadFaces, speakers: string[]): boolean =>
-  speakers.some((s) => lipSyncVoiceFor(faces, s, faces.voiceFor(s)) !== null);
