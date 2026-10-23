@@ -697,7 +697,7 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
 .choices-segmented .choice-title { font-weight: 500; color: var(--ink-soft); font-size: 0.9rem; }
 .choices-segmented .choice.is-checked { background: var(--brass); }
 .choices-segmented .choice.is-checked .choice-title { color: var(--ground); font-weight: 600; }
-.narrator-pick { display: grid; grid-template-columns: auto 1fr; gap: var(--s3); align-items: center; }
+.narrator-pick { display: grid; grid-template-columns: 5.5rem 1fr; /* fixed label column: stacked toggles line up at the same width */ gap: var(--s3); align-items: center; }
 .narrator-pick-label { font-weight: 600; }
 .gender-list summary { cursor: pointer; color: var(--ink-soft); padding: 6px 0; }
 .gender-list ul { list-style: none; margin: var(--s2) 0 0; padding: 0; display: grid; gap: var(--s2); }
