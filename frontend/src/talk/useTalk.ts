@@ -4,7 +4,7 @@ import { MicCapture } from "../audio/capture";
 import { RingPlayer } from "../audio/playback";
 import { spend } from "../spend";
 import type { LogEntry } from "../ui/DebugDrawer";
-import { addNarration, addQuestion, addToolChip, appendSentence, fillNarration, finishAnswer, loadChat, priorTurns, saveChat, setPendingText, type ChatMessage } from "./chatLog";
+import { addNarration, addQuestion, addToolChip, appendSentence, fillNarration, finishAnswer, loadChat, markInterrupted, priorTurns, saveChat, setPendingText, type ChatMessage } from "./chatLog";
 import { createReadAloud, speechParts } from "../reader/readAloud";
 import { detectLanguage, type Detected } from "./language";
 import { FaceSync } from "./faceSync";
@@ -31,6 +31,8 @@ export type TalkUi = {
   faceSync: FaceSync; // owns the persistent lip-sync <video> and keeps it locked to the voice
   clipShown: boolean; // the lip-sync video has a decoded frame and is in step: show it over the talk loop
   narrating?: boolean; // a narrator recap is being read aloud now: the narrator's face shows (lip-synced like answers)
+  handsFree?: boolean; // #10: the mic stays open; speaking interrupts the character and silence ends the question
+  setHandsFree?: (on: boolean) => void;
   logs: LogEntry[];
   pttDown: () => void;
   pttUp: () => void;
@@ -110,6 +112,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   enabledRef.current = enabled;
   const [narratingKey, setNarratingKey] = useState<string | null>(null);
   const [livePaused, setLivePaused] = useState(false);
+  const [handsFree, setHandsFreeState] = useState(false);
   /** The message of the answer being given now (retrieving or speaking), if any. */
   const liveMsgId = () => {
     const c = controller.current;
@@ -137,7 +140,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       tokenProvider: fetchRealtimeKey,
       createPlayer: (onSpeaking) => new RingPlayer(onSpeaking) as unknown as PlayerLike,
       createMic: (onChunk, onLevel) => new MicCapture(onChunk, onLevel) as unknown as MicLike,
-      onLevel: setLevel,
+      onLevel: (rms) => { setLevel(rms); talk?.noteLevel(rms); },
       onAudioChunk: (b64, first) => { if (first) rtMsgId = pendingId(); if (rtMsgId !== undefined) replayStore.current.addPcm(rtMsgId, b64); },
       historyProvider: () => priorTurns(msgs.current, latest.current.speakerId),
       onLog: (dir, type, raw) => {
@@ -191,6 +194,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         return run(name, args);
       },
       onToolRun: (chip) => setMessages((m) => addToolChip(m, chip)),
+      onInterrupted: () => setMessages(markInterrupted),
       onState: (st) => { setState(st); if (st !== "answering") setLivePaused(false); if (["listening", "retrieving", "answering"].includes(st)) { replayer.current?.stop(); narration.current?.stop(); } if (["reading", "talk-idle", "resuming"].includes(st)) setMessages(finishAnswer); },
       onToast: setToast,
       onCaption: (text) => { setCaption(text); if (!viaGemini && text) setMessages((m) => setPendingText(m, text)); },
@@ -216,7 +220,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       return runSentences(item.parts, replaySpeaker);
     }, setReplayingId, (e) => setToast(e instanceof Error ? e.message : String(e)));
     return () => {
-      replayer.current?.stop(); replayer.current = null; narration.current?.reset(); gate.reset(); sync?.leave(); talk?.dispose(); client.close(); controller.current = null; clientRef.current = null; setState("reading"); setSpeaking(false); };
+      replayer.current?.stop(); replayer.current = null; narration.current?.reset(); gate.reset(); sync?.leave(); talk?.dispose(); client.close(); controller.current = null; clientRef.current = null; setState("reading"); setSpeaking(false); setHandsFreeState(false); };
   }, [bookId, enabled, viaGemini]);
 
   useEffect(() => { controller.current?.setAutoResume(autoResume); }, [autoResume, enabled]);
@@ -236,6 +240,13 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   return {
     state, caption, toast, level, latency, speaking, question, language, faceSync: faceSync.current, clipShown, logs,
     narrating: narratingKey !== null,
+    handsFree,
+    setHandsFree: useCallback((on: boolean) => {
+      const c = controller.current;
+      if (!c) return;
+      setHandsFreeState(on);
+      void c.setHandsFree(on).then(() => { if (!c.isHandsFree) setHandsFreeState(false); }); // the mic was refused: back off
+    }, []),
     pttDown: useCallback(() => { void controller.current?.pttDown(); }, []),
     pttUp: useCallback(() => { void controller.current?.pttUp(); }, []),
     messages,

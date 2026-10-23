@@ -5,6 +5,7 @@ import { TOOL_DEFS } from "./tools";
 
 const WS_URL = "wss://api.boson.ai/v1/realtime?model=higgs-realtime";
 const OPEN = 1; // WebSocket.OPEN, spelled out so tests need no global WebSocket
+const PREFIX_CHUNKS = 3; // ~100 ms each
 
 /** Short and behavioural: the role comes from per-response instructions (brief 3.4 prompting lesson). */
 export const SESSION_INSTRUCTIONS =
@@ -92,6 +93,8 @@ export class TalkClient implements TalkSession {
   private player: PlayerLike;
   private mic: MicLike;
   private micOn = false;
+  private monitor = false; // hands-free (#10): the mic stays open between turns; chunks are kept briefly, not sent
+  private recent: string[] = []; // the last PREFIX_CHUNKS while monitoring: sent first when a turn starts, so no word is clipped
   private pendingAudio: string[] = [];
   private commitWhenOpen = false;
   private listeners = new Set<(e: SessionEvent) => void>();
@@ -200,6 +203,7 @@ export class TalkClient implements TalkSession {
   close(): void {
     this.ws?.close(1000, "client disconnect");
     this.ws = null;
+    this.monitor = false;
     void this.mic.stop();
     void this.player.close();
   }
@@ -209,11 +213,23 @@ export class TalkClient implements TalkSession {
   async startMic(): Promise<void> {
     this.micOn = true;
     this.commitWhenOpen = false;
+    for (const b64 of this.recent.splice(0)) this.onMicChunk(b64); // the ~300 ms before the gate opened
     await this.mic.start();
   }
 
+  /** Hands-free (#10): keep the microphone open between turns so speech can be detected; nothing is sent until startMic. */
+  async setMonitor(on: boolean): Promise<void> {
+    this.monitor = on;
+    this.recent = [];
+    if (on) await this.mic.start();
+    else if (!this.micOn) await this.mic.stop();
+  }
+
   private onMicChunk(b64: string): void {
-    if (!this.micOn) return;
+    if (!this.micOn) {
+      if (this.monitor) { this.recent.push(b64); if (this.recent.length > PREFIX_CHUNKS) this.recent.shift(); }
+      return;
+    }
     if (this.isOpen) this.send(inputAudioAppend(b64));
     else this.pendingAudio.push(b64); // still connecting: keep it and send in order once open
   }
@@ -226,7 +242,7 @@ export class TalkClient implements TalkSession {
 
   async stopMic(discard = false): Promise<void> {
     this.micOn = false;
-    await this.mic.stop();
+    if (!this.monitor) await this.mic.stop();
     if (discard) {
       this.pendingAudio = [];
       this.commitWhenOpen = false;

@@ -103,6 +103,22 @@ describe("TalkbackView", () => {
     expect(talk.clearMessages).toHaveBeenCalled();
   });
 
+  it("renders a tool chip, an interrupted reply, and the hands-free toggle (off by default)", () => {
+    const setHandsFree = vi.fn();
+    const messages = [
+      { id: 1, role: "user", speakerId: "narrator", text: "Read chapter two" },
+      { id: 2, role: "tool", speakerId: "tool", text: "Jumped to Chapter II" },
+      { id: 3, role: "character", speakerId: "narrator", text: "Here we go", interrupted: true },
+    ] as TalkUi["messages"];
+    view(novel, fakeTalk({ messages, handsFree: false, setHandsFree }));
+    expect(host.querySelector(".tool-chip")!.textContent).toBe("Jumped to Chapter II");
+    expect(host.querySelector(".bubble.interrupted")!.textContent).toContain("interrupted");
+    const hf = host.querySelector<HTMLButtonElement>(".hands-free")!;
+    expect(hf.getAttribute("aria-pressed")).toBe("false");
+    act(() => hf.click());
+    expect(setHandsFree).toHaveBeenCalledWith(true);
+  });
+
   it("shows a labelled replay button only on finished replies that can be replayed", () => {
     const replay = vi.fn();
     const messages = [

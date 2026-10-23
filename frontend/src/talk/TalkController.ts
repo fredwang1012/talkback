@@ -8,6 +8,7 @@ import { micErrorMessage } from "../audio/mediaErrors";
 
 import type { SentenceSpeaker } from "./sentencePlayer";
 import type { TimingEvent } from "./speechGate";
+import { createVoiceGate } from "./handsFree";
 import { parseIntent, type ToolOutcome, type ToolRunner } from "./tools";
 
 /** How many queued sentences are synthesised ahead of the one being spoken. */
@@ -46,6 +47,8 @@ export interface TalkSession {
   interrupt(): Promise<void>;
   /** Hand the results of a `tool-call` back and let the model go on speaking. Optional: a session without tools never asks. */
   returnTools?(results: ToolResult[]): void;
+  /** Hands-free (#10): keep the mic open between turns (levels keep coming) without sending audio. Optional. */
+  setMonitor?(on: boolean): Promise<void>;
   /** Hold local playback where it is (the reply keeps arriving and waits), and continue it. Optional. */
   pausePlayback?(): Promise<void>;
   resumePlayback?(): Promise<void>;
@@ -92,6 +95,8 @@ export interface TalkDeps {
   tools?: ToolRunner;
   /** A tool ran: the chip to show in the chat ("Jumped to Chapter 3"). */
   onToolRun?: (chip: string) => void;
+  /** The reader cut the answer being spoken off (barge-in, #10): mark its bubble; the next answer is told. */
+  onInterrupted?: () => void;
   /** True while answer audio is coming out of the speakers (drives the waveform). */
   onSpeaking?: (speaking: boolean) => void;
   now?: () => number;
@@ -115,6 +120,9 @@ export class TalkController {
   private latency: Latency = {};
   private run: { abort: AbortController; timer: ReturnType<typeof setTimeout> | null } | null = null; // the Gemini answer in flight
   private forceResume = false; // a tool asked for reading to go on after the answer, whatever the auto-resume setting
+  private handsFree = false; // #10: the voice gate starts and ends turns instead of the mic button
+  private handsFreeTurn = false; // the current turn was started by the gate (never a tap)
+  private gate = createVoiceGate();
   private off: () => void;
 
   constructor(deps: TalkDeps) {
@@ -197,15 +205,42 @@ export class TalkController {
     this.waiters = [];
   }
 
+  // ---- hands-free (#10) -----------------------------------------------------------------------------------
+
+  get isHandsFree(): boolean { return this.handsFree; }
+
+  /** Turn hands-free on or off: the mic stays open and `noteLevel` drives the turns. Off by default. */
+  async setHandsFree(on: boolean): Promise<void> {
+    if (on === this.handsFree) return;
+    this.handsFree = on;
+    this.gate.reset();
+    try { await this.d.session.setMonitor?.(on); } catch (e) {
+      this.handsFree = false;
+      this.d.onToast?.(micErrorMessage(e));
+    }
+  }
+
+  /** A microphone level reading (hands-free only): speech during an answer barges in; silence after speech ends the turn. */
+  noteLevel(rms: number): void {
+    if (!this.handsFree) return;
+    const ev = this.gate.feed(rms, this.d.now());
+    if (ev === "start" && ["reading", "talk-idle", "answering", "resuming"].includes(this._state)) void this.beginTurn(true);
+    else if (ev === "stop" && this._state === "listening" && this.handsFreeTurn) void this.pttUp();
+  }
+
   // ---- push to talk ---------------------------------------------------------------------------------------
 
-  async pttDown(): Promise<void> {
+  pttDown(): Promise<void> { return this.beginTurn(false); }
+
+  private async beginTurn(handsFree: boolean): Promise<void> {
+    this.handsFreeTurn = handsFree;
     this.clearResumeTimer(); // pressing during the 1.5 s window starts a follow-up question
     const turn = ++this.turn;
     this.pressedAt = this.d.now();
     const wasAnswering = this._state === "answering";
     const wasBusy = ["transcribing", "retrieving"].includes(this._state);
     const viaAnswer = this.run !== null;
+    if (wasAnswering) this.d.onInterrupted?.(); // barge-in (#10): the bubble shows it was cut off, the next answer is told
     this.cancelAnswer(); // barge-in: stop the clip, drop the queue, abort the stream
 
     if (this.resumeIndex === null) {
@@ -229,8 +264,10 @@ export class TalkController {
     if (this._state !== "listening") return;
     const turn = this.turn;
     const held = this.d.now() - this.pressedAt;
+    const tap = held < this.d.tapMs && !this.handsFreeTurn; // the gate never taps
+    this.handsFreeTurn = false;
 
-    if (held < this.d.tapMs) { // a tap toggles play/pause instead of asking a question
+    if (tap) { // a tap toggles play/pause instead of asking a question
       await this.d.session.stopMic(true);
       if (this.talkback) { this.resumeIndex = null; this.set("talk-idle"); return; }
       const wasPlaying = this.wasPlayingBeforePress;
@@ -264,6 +301,7 @@ export class TalkController {
     const wasAnswering = this._state === "answering";
     const wasBusy = ["transcribing", "retrieving"].includes(this._state);
     const viaAnswer = this.run !== null;
+    if (wasAnswering) this.d.onInterrupted?.();
     this.cancelAnswer();
     if (this.resumeIndex === null) {
       this.wasPlayingBeforePress = this.d.reader.isPlaying();

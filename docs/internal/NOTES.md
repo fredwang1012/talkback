@@ -653,3 +653,22 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
 - Gemini answer path (no Realtime, so no function calling): `parseIntent` recognises a few plain phrasings ("read chapter 3",
   "jump to the part where ...", "keep reading", "pause", "a bit faster", "one voice", "recap the last chapter", "bookmark
   this", "show me the cast") and runs the same tool without calling Gemini; anything else is a question. Refusals toast.
+
+## Barge-in: interrupt a character mid-answer (#10, 2026-10-23)
+- Realtime: the mic press (or Space, or a typed question) while an answer plays does, in this order: local playback
+  flush (the audible stop, well under 0.15 s), `conversation.item.truncate` at the ms actually heard (`audio_end_ms`),
+  `response.cancel`, wait for the cancelled `response.done`, then open the mic. Already in TalkClient.interrupt; now
+  covered by fake-socket tests (test/bargeIn.test.ts). Gemini + TTS: the press aborts the stream and stops the
+  sentence clip (lip-sync included); no socket traffic.
+- The cut-off bubble is marked `interrupted` ("· interrupted", an em dash after the text), and `priorTurns` appends
+  " [the reader interrupted here]" to that reply, so the next answer (both paths) knows what was not heard.
+- Hands-free (off by default, Talkback view button): a client-side voice gate (talk/handsFree.ts) over the capture
+  worklet's RMS. Speech over 0.04 RMS for 150 ms starts a turn (barging in if the character is talking); 700 ms under
+  it commits the turn; a gate turn is never a tap. The mic stays open between turns (`TalkClient.setMonitor`), keeps
+  the last ~300 ms and sends it first so the first word is not clipped. Tuned for laptop mics; echo cancellation is on,
+  headphones recommended.
+- Why not Boson `server_vad` / `semantic_vad`: the migration guide says `create_response`/`interrupt_response` are
+  accepted but have no effect, i.e. the server always answers on end of turn by itself. That answer would not carry the
+  per-response retrieval instructions (spoiler-safe context, persona), so turns stay manual (`turn_detection: null`).
+  The session still sets `noise_reduction: near_field`. If Boson adds `create_response: false`, `server_vad` with
+  `threshold` ~0.6-0.7 (its default moved to 0.85) would replace the local gate.

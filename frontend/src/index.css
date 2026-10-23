@@ -410,6 +410,7 @@ button:disabled { cursor: not-allowed; }
 .bubble { max-width: 85%; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--brass-soft); background: var(--ground-raised); }
 .bubble.user { align-self: flex-end; border-color: var(--seal); }
 .bubble.character { align-self: flex-start; }
+.bubble.interrupted p::after { content: " —"; color: var(--ink-faint); }
 .tool-chip { align-self: flex-start; font-size: 0.8rem; letter-spacing: 0.03em; color: var(--brass); border: 1px solid var(--brass-soft); border-radius: 999px; padding: 3px 12px; background: var(--ground-sunk); }
 .tool-chip::before { content: "⚙ "; }
 .bubble .who-line { display: block; font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--brass); margin-bottom: 4px; }

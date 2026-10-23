@@ -39,7 +39,7 @@ function useStableStatus(raw: TalkbackStatus, answering: boolean): TalkbackStatu
 }
 
 const STATUS_TEXT: Record<TalkbackStatus, string> = {
-  idle: "Ready. Hold the microphone (or Space) to ask, or type below.",
+  idle: "Ready. Hold the microphone (or Space) to ask, or type below. Press it while the character talks to interrupt.",
   listening: "Listening…",
   thinking: "Thinking…",
   speaking: "Speaking…",
@@ -146,6 +146,12 @@ export default function TalkbackView({
               Spoilers: {spoilers ? "on" : "off"}
             </button>
           )}
+          {talk.setHandsFree && (
+            <button className="spoiler-toggle hands-free" aria-pressed={!!talk.handsFree} onClick={() => talk.setHandsFree?.(!talk.handsFree)}
+                    title="Keep the microphone open: just speak to interrupt or ask; a pause ends your question. Headphones help.">
+              Hands-free: {talk.handsFree ? "on" : "off"}
+            </button>
+          )}
         </div>
 
         <div className="tb-chat">
@@ -154,11 +160,12 @@ export default function TalkbackView({
             {talk.messages.map((m) => m.role === "tool" ? (
               <div key={m.id} className="tool-chip" role="status">{m.text}</div>
             ) : (
-              <div key={m.id} className={`bubble ${m.role}`}>
+              <div key={m.id} className={`bubble ${m.role}${m.interrupted ? " interrupted" : ""}`}>
                 <span className="who-line">
                   {m.role === "user" ? "You" : m.role === "narrator" ? "Narrator" : speakerName(book, m.speakerId)}
                   {m.via === "typed" && m.role === "user" && <small> typed</small>}
                   {m.role === "narrator" && m.recap && <small> · Recap: {m.recap}</small>}
+                  {m.interrupted && <small> · interrupted</small>}
                 </span>
                 <p>{m.text || (m.pending || m.loading ? "…" : "")}</p>
                 {m.role !== "user" && (m.id === talk.liveId ? !!m.text : !m.pending && talk.replayable?.has(m.id)) && (() => {

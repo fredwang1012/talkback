@@ -10,6 +10,7 @@ export type ChatMessage = {
   recap?: string; // role "narrator": what was recapped, e.g. "Last chapter: The Pool of Tears"
   loading?: boolean; // role "narrator": the recap is still being fetched
   quiet?: boolean; // role "narrator": nothing to recap (a note, not read aloud)
+  interrupted?: boolean; // role "character": the reader cut this answer off (barge-in, #10); the text is what was heard
 };
 
 export const MAX_MESSAGES = 50;
@@ -45,6 +46,12 @@ export function addToolChip(m: ChatMessage[], text: string): ChatMessage[] {
   return cap(i < 0 ? [...m, chip] : [...m.slice(0, i), chip, ...m.slice(i)]);
 }
 
+/** The reader barged in: the pending answer is marked as cut off (its text stays as what was heard). */
+export function markInterrupted(m: ChatMessage[]): ChatMessage[] {
+  const i = m.findLastIndex((x) => x.pending);
+  return i < 0 ? m : m.map((x, j) => (j === i ? { ...x, interrupted: true } : x));
+}
+
 /** Append a sentence to the pending answer; ignored when none is pending. */
 export function appendSentence(m: ChatMessage[], sentence: string): ChatMessage[] {
   const i = m.findLastIndex((x) => x.pending);
@@ -67,6 +74,8 @@ export function finishAnswer(m: ChatMessage[]): ChatMessage[] {
 }
 
 export type Turn = { role: "user" | "character"; text: string };
+/** Appended to a cut-off reply in the history, so the next answer knows the reader did not hear the rest (#10). */
+export const INTERRUPTED_MARK = " [the reader interrupted here]";
 export const HISTORY_TURNS = 6;
 const HISTORY_CHARS = 500;
 
@@ -82,7 +91,7 @@ export function priorTurns(m: ChatMessage[], speakerId: string, n = HISTORY_TURN
   return m.slice(0, end)
     .filter((x) => (x.role === "user" || x.role === "character") && x.speakerId === speakerId && !x.pending && x.text.trim())
     .slice(-n)
-    .map((x) => ({ role: x.role as Turn["role"], text: x.text.trim().slice(0, HISTORY_CHARS) }));
+    .map((x) => ({ role: x.role as Turn["role"], text: x.text.trim().slice(0, HISTORY_CHARS) + (x.interrupted ? INTERRUPTED_MARK : "") }));
 }
 
 // ---- per-book store (memory, mirrored to sessionStorage) ----
