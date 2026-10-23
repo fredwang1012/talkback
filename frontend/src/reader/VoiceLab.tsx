@@ -1,4 +1,5 @@
 import { micErrorMessage } from "../audio/mediaErrors";
+import { toCloneAudio } from "../audio/toWav";
 import { useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { animateFace, cloneVoice, deleteFace, deleteVoice, uploadFace, type Book, type Cast, type Face } from "../api";
 import { PRESETS, castFace, castVoice, isNovel, runAnimate, withAssignment } from "./castLogic";
@@ -90,7 +91,8 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
     setBusy(true);
     setStatus(null);
     try {
-      const out = await cloneVoice(clip.blob, clip.filename, transcript, name.trim(), consent, face);
+      const audio = await toCloneAudio(clip.blob, clip.filename);
+      const out = await cloneVoice(audio.blob, audio.filename, transcript, name.trim(), consent, face);
       onCloned((c) => ({ ...c, [out.name]: out.voice }));
       if (out.face) onFacesChanged();
       setStatus({ kind: "ok", text: `Created "${out.name}". Pick it for any speaker in the voice lists above.` });
