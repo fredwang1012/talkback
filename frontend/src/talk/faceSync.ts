@@ -232,6 +232,10 @@ export class FaceSync implements ClipSync {
       if (phase === "shown" || phase === "starting") { v.pause(); phase = "paused"; }
       else if (phase === "seeking" || phase === "armed") { cancelArm(); phase = "hidden"; }
     };
+    // the voice is over: the face goes down at once. Without this the clip froze on its last frame ('pause' comes
+    // before 'ended') and stayed up until the next clip joined, so a next voice that did not wait for its own clip
+    // started under the previous sentence's still face (#104)
+    const onVoiceEnded = () => { if (voiceOn) { hide(); phase = "done"; } };
     const onLoaded = () => {
       loaded = true;
       if (phase === "loading" && offset() > 0 && Math.abs(v.currentTime - offset()) > 0.02) v.currentTime = offset();
@@ -252,7 +256,7 @@ export class FaceSync implements ClipSync {
     ];
     for (const [t, f] of handlers) v.addEventListener(t, f);
     const canListen = typeof audio.addEventListener === "function";
-    const audioHandlers: [string, () => void][] = [["playing", onVoicePlaying], ["pause", onVoicePause]];
+    const audioHandlers: [string, () => void][] = [["playing", onVoicePlaying], ["pause", onVoicePause], ["ended", onVoiceEnded]];
     if (canListen) for (const [t, f] of audioHandlers) audio.addEventListener!(t, f);
     this.active = {
       openGate: () => openGate(),

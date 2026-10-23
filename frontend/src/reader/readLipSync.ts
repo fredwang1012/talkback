@@ -10,14 +10,32 @@
 
 import type { Face } from "../api";
 
-/** Clips are opened this many chunks ahead of the one playing: enough to hide Boson's ~2 s start, few enough to keep
- * at most two renders in flight (the server locks per clip and rate-limits renders). */
+/** Clips are opened at least this many chunks ahead of the one playing: enough to hide Boson's ~2 s start behind a
+ * normal chunk, few enough to keep renders in flight low (the server locks per clip and rate-limits renders). */
 export const READ_CLIP_AHEAD = 1;
+/** Short chunks (#104): more clips open ahead, until the next unopened clip has this much speech as head start
+ * (Boson's first fragment takes ~1.5-3 s, then ~0.8 s must be buffered before the voice starts with it)... */
+export const READ_CLIP_LEAD_S = 4;
+/** ...but never more than this many ahead. */
+export const READ_CLIP_AHEAD_MAX = 3;
 /** The first word after Play waits this long at most for its clip; past that the talk loop starts with the voice. */
 export const READ_START_WAIT_MS = 6000;
-/** Between chunks the voice waits less: the next clip is normally prefetched; if not, the talk loop stands in and
- * the clip rejoins by rendezvous rather than the reading pausing for seconds. */
-export const READ_CHAIN_WAIT_MS = 1000;
+/** Between chunks the voice waits less: the next clip is normally prefetched. Was 1 s, which short chunks overran
+ * (their next clip had ~1 s of head start), so the voice started before its face (#104). */
+export const READ_CHAIN_WAIT_MS = 3000;
+
+/**
+ * How many clips to hold ahead of chunk `i` (at least `min`, at most `max`): one more while the speech from the start
+ * of chunk `i` to the start of the next clip held is shorter than `leadS`. `speechS(k)` is chunk k's speech length.
+ */
+export function clipAheadFor(i: number, last: number, speechS: (k: number) => number,
+  { min = READ_CLIP_AHEAD, max = READ_CLIP_AHEAD_MAX, leadS = READ_CLIP_LEAD_S } = {}): number {
+  let ahead = min;
+  let lead = 0;
+  for (let k = i; k < i + ahead; k++) lead += speechS(k);
+  while (ahead < max && i + ahead < last && lead < leadS) { lead += speechS(i + ahead); ahead++; }
+  return ahead;
+}
 
 /**
  * Lip-sync is always on in read mode (#92) when there is audio, but only at 1x: the clip is rendered at the voice's

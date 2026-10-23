@@ -176,7 +176,7 @@ export class FakeVoice extends Queue {
       if (t >= this.soundAt) {
         if (t - dtMs < this.soundAt) { this.queue("playing"); if (this.startedAt === null) this.startedAt = this.soundAt; }
         else this.pos += dtMs / 1000;
-        if (this.pos >= this.duration) { this.pos = this.duration; this.paused = true; this.flush(); this.onended?.(); return; }
+        if (this.pos >= this.duration) { this.pos = this.duration; this.paused = true; this.queue("pause"); this.queue("ended"); this.flush(); this.onended?.(); return; } // like Chrome: pause, then ended
       }
     }
     this.flush();

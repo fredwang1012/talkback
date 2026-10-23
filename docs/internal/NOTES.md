@@ -672,3 +672,15 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   per-response retrieval instructions (spoiler-safe context, persona), so turns stay manual (`turn_detection: null`).
   The session still sets `noise_reduction: near_field`. If Boson adds `create_response: false`, `server_vad` with
   `threshold` ~0.6-0.7 (its default moved to 0.85) would replace the local gate.
+
+## Short chunks: voice before face (#104, 2026-10-23, fake-clock tests, no Boson calls)
+- Cause (read mode): (1) when a chunk's voice ended, FaceSync kept the old clip attached and SHOWN, frozen on its last
+  frame ('pause' arrives before 'ended'), until the next clip joined; (2) the next clip opened only when the current
+  voice started (1 ahead), so a ~1 s chunk gave it ~1 s of head start against Boson's 1.5-3 s first fragment + ~0.8 s
+  pre-roll, and the 1 s chained gate timed out: the next voice started under the previous chunk's still face, and its
+  own clip joined late (rendezvous) or never. Talkback was not affected the same way (its speaker leaves the sync at
+  each sentence end and waits up to 6 s per sentence).
+- Fix: FaceSync hides the face on the voice's `ended`; ReaderEngine leaves the sync when a chunk ends; clips open ahead
+  until the next unopened one has >= 4 s of speech as head start (max 3 ahead, readLipSync.clipAheadFor); chained wait
+  1 s -> 3 s. More renders in flight with short chunks: the server's 12/min avatar bucket can still refuse some (talk
+  loop then).
