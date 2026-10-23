@@ -20,6 +20,7 @@ from starlette.datastructures import Headers
 from pydantic import BaseModel, Field
 
 from . import books, cast, face_detect, faces, ingest_upload, multilingual, public_client, recap, retrieval, tts_cache, users, voices
+from .delivery import apply_speed
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
@@ -268,6 +269,7 @@ class TtsRequest(BaseModel):
     chunk_id: str
     voice_override: str | None = None
     cached_only: bool = False  # demo mode: serve pre-rendered audio only, never call Boson
+    speed: Literal["very_slow", "slow", "fast", "very_fast"] | None = None  # natural speed (#78): Boson speed tag, own cache entry
 
 
 @app.post("/api/tts", dependencies=[Depends(require_access)])
@@ -287,6 +289,7 @@ async def tts(req: TtsRequest, request: Request):
                 tags = cast.tags_for(book, c.speaker) if ch else None
                 if tags is not None and tts_text.startswith(ch.voice_tags):  # the user's pitch/speed replaces the book's
                     tts_text = tags + tts_text[len(ch.voice_tags):]
+                tts_text = apply_speed(tts_text, req.speed)
                 cached = tts_cache.is_cached(tts_text, voice)
                 if req.cached_only and not cached:
                     raise HTTPException(409, "This line is not pre-rendered yet. Run preprocess/prerender_tts.py before the demo.")

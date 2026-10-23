@@ -842,3 +842,11 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   HP2 1, HP4 1 (egg song), others 0. Known misses: Sorting Hat's last 3 short stanzas, Twinkle's second half (lead-in
   'in this way:—' has no singing word), Toad's song (lead-in ends on a bare dash), 'Weasley is our King'.
   No book.json was rebuilt: songs are sung after a book's chunks are rebuilt (preprocess/chunk_tts.py) and in new uploads.
+
+## #78 Natural reading speed (prosody speed tags)
+- Opt-in "Natural speed" checkbox in the player bar (default off, localStorage `talkback.naturalSpeed`; hidden in demo, which only plays pre-rendered audio). Off = playbackRate exactly as before.
+- On: 0.75x -> `<|prosody:speed_slow|>` (~0.85x), 1.25x -> `speed_fast` (~1.2x), 1.5x -> `speed_very_fast` (~1.4x); 1x has no tag; tagged audio plays at 1.0. Boson docs (tags page): speed is a delivery token, put at the start; a new delivery group replaces the previous one.
+- Backend: `POST /api/tts` takes optional `speed`; `delivery.apply_speed` puts the tag first (replacing a voice-tag speed) so the tts_text, hence the cache key, differs: normal audio is never overwritten. Lip-sync clips are keyed by audio url, so they are rendered per tag (extra cost, hence the opt-in and the UI hint).
+- Engine: `setSpeed(speed, tag)`; on a tag change only entries outside the new tag are dropped and only the window [current, prefetchEnd] is fetched again. The chunk playing now finishes in its own audio (rate matches that audio); the change applies from the next chunk.
+- Live check: 1 Boson call (marcus, `speed_fast`, 1 sentence) returned audio; saved in the session scratchpad speed/fast.mp3 (3.04 s for 11 words).
+- Not covered: very_slow is unused (no reader speed maps to it); the speeds still 1.1/1.0 etc. use playbackRate.

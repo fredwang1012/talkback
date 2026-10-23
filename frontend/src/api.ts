@@ -147,11 +147,11 @@ export type WordTiming = { start: number; end: number; char_start: number; char_
 export type TtsResponse = { chunk_id: string; voice: string; audio_url: string; timestamps: WordTiming[] | null; cached: boolean };
 
 /** Throws an Error carrying the server's readable message (e.g. a missing key or a billing refusal). */
-export async function fetchTts(bookId: string, chunkId: string, voiceOverride?: string, cachedOnly = false): Promise<TtsResponse> {
+export async function fetchTts(bookId: string, chunkId: string, voiceOverride?: string, cachedOnly = false, speed?: string | null): Promise<TtsResponse> {
   const res = await timedFetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ book_id: bookId, chunk_id: chunkId, voice_override: voiceOverride ?? null, cached_only: cachedOnly }),
+    body: JSON.stringify({ book_id: bookId, chunk_id: chunkId, voice_override: voiceOverride ?? null, cached_only: cachedOnly, ...(speed ? { speed } : {}) }),
   }, 60000); // a cache miss synthesises speech, which can take a while
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
