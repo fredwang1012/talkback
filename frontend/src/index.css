@@ -200,6 +200,24 @@ button:disabled { cursor: not-allowed; }
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 0.95rem; line-height: 1.5;
   white-space: pre-wrap; overflow-x: auto; background: var(--ground-sunk); padding: 0.75em 1em; border-radius: 6px;
 }
+/* textbook figures (#40): the page crops are dark on white, so they sit on a light card in either theme */
+.para.para-figure { margin-block: var(--s5); }
+.para-figure .figure-img {
+  display: block; width: 100%; padding: var(--s3); border: 0; border-radius: var(--r-md);
+  background: #fbf8f0; cursor: zoom-in;
+}
+.para-figure .figure-img img { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; height: auto; }
+.para-figure .figure-wait {
+  min-height: 8rem; display: grid; place-items: center; cursor: default;
+  color: var(--ground-sunk); font: 0.9rem var(--font-ui);
+}
+.para-figure figcaption { margin-top: var(--s2); font-size: 0.92rem; line-height: 1.5; }
+.figure-zoom {
+  position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: var(--s3); padding: var(--s5); background: rgba(5, 12, 10, 0.92); cursor: zoom-out;
+}
+.figure-zoom img { max-width: 100%; max-height: 85vh; background: #fbf8f0; padding: var(--s3); border-radius: var(--r-md); }
+.figure-zoom p { max-width: var(--measure); color: #f4efe3; font-size: 0.95rem; text-align: center; }
 
 .stage {
   position: sticky; top: 0; height: 100vh; overflow-y: auto;

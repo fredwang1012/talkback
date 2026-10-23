@@ -52,7 +52,9 @@ class Paragraph(BaseModel):
     text: str
     segments: list[Segment] = []
     tts_chunks: list[TtsChunk] = []
-    kind: Literal["code"] | None = None  # "code": a program / pseudocode listing, shown but not read aloud
+    kind: Literal["code", "figure"] | None = None  # "code": a program / pseudocode listing, shown but not read aloud;
+    # "figure": a textbook figure (#40), `text` is its caption (read aloud) and `figure` the image file name
+    figure: str | None = None  # under data/books/<id>/figures/, served by /api/books/<id>/figures/<name>
 
 
 class Character(BaseModel):

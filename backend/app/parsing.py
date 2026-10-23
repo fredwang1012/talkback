@@ -6,6 +6,7 @@ from .schema import Paragraph, Section
 
 HEADING_MARK = "\x01"  # prefix pdf_to_text puts on headings found by font size alone
 CODE_MARK = "\x02"     # prefix pdf_to_text puts on a program / pseudocode listing (its lines separated by \n)
+FIGURE_MARK = "\x03"   # prefix pdf_to_text puts on a figure: its image file name, a newline, then its caption
 ROMAN = re.compile(r"^[IVXLC]+\.$")
 CURLY = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
 BLANK_LINE = re.compile(r"\n\s*\n")
@@ -76,6 +77,15 @@ def parse(raw: str, start_marker: str | None, end_marker: str | None,
                     current = Section(id="s1", title="", start_para=len(paragraphs))
                     sections.append(current)
                 paragraphs.append(Paragraph(idx=len(paragraphs), section_id=current.id, text=code, kind="code"))
+            continue
+        if block.startswith(FIGURE_MARK):
+            name, _, caption = block[1:].partition("\n")
+            if name.strip():
+                if current is None:
+                    current = Section(id="s1", title="", start_para=len(paragraphs))
+                    sections.append(current)
+                paragraphs.append(Paragraph(idx=len(paragraphs), section_id=current.id, text=normalize(caption) or "Figure",
+                                            kind="figure", figure=name.strip()))
             continue
         if heading and block.count("\n") == 1 and len(block) < 70:
             block = block.replace("\n", " ")  # "CHAPTER 8" on one line, its title on the next

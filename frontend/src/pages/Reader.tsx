@@ -32,7 +32,8 @@ import { useTalk } from "../talk/useTalk";
 import { DebugDrawer } from "../ui/DebugDrawer";
 import { debugEnabled } from "../ui/debugFlag";
 import {
-  clampIndex, flattenChunks, loadPosition, readerPara, savePosition, silentDurationMs,
+  clampIndex, flattenChunks, loadPosition, loadReadCaptions, nextChunk as nextToRead, readerPara, saveReadCaptions, savePosition,
+  silentDurationMs,
 } from "../reader/position";
 
 const SPEEDS = [0.75, 1, 1.25, 1.5];
@@ -45,6 +46,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [autoResume, setAutoResume] = useState(true);
+  const [readCaptions, setReadCaptions] = useState(loadReadCaptions); // figure captions read aloud (#40)
   const [speakerId, setSpeakerId] = useState("narrator");
   const [avatars, setAvatars] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<"read" | "talk">("read");
@@ -84,8 +86,11 @@ export default function Reader({ bookId }: { bookId: string }) {
   const getAudio = useCallback(() => (engineRef.current?.currentAudio() as unknown as FollowAudio | null) ?? null, []);
   const indexRef = useRef(0);
   const playingRef = useRef(false);
+  const readCaptionsRef = useRef(readCaptions);
   indexRef.current = index;
   playingRef.current = playing;
+  readCaptionsRef.current = readCaptions;
+  useEffect(() => { engineRef.current?.setSkipCaptions(!readCaptions); saveReadCaptions(readCaptions); }, [readCaptions]);
 
   useEffect(() => {
     fetchBook(bookId).then((b) => {
@@ -126,6 +131,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       sync: readSync.current as FaceSync,
     }, indexRef.current);
     engineRef.current = engine;
+    engine.setSkipCaptions(!readCaptionsRef.current);
     const off = engine.on((s) => {
       setIndex(s.index);
       setPlaying(s.state === "playing" || s.state === "loading");
@@ -293,10 +299,11 @@ export default function Reader({ bookId }: { bookId: string }) {
   // Silent preview: advance at an estimated reading pace until real audio exists.
   useEffect(() => {
     if (audioAvailable || !playing || chunks.length === 0) return;
-    if (index >= last) { setPlaying(false); return; }
-    const t = window.setTimeout(() => setIndex((i) => clampIndex(i + 1, chunks.length)), silentDurationMs(chunks[index], speed));
+    const next = nextToRead(chunks, index, !readCaptions);
+    if (next < 0) { setPlaying(false); return; }
+    const t = window.setTimeout(() => setIndex(next), silentDurationMs(chunks[index], speed));
     return () => window.clearTimeout(t);
-  }, [audioAvailable, playing, index, speed, chunks, last]);
+  }, [audioAvailable, playing, index, speed, chunks, readCaptions]);
 
   // Keep the active sentence in view, unless the reader scrolled by hand in the last 5 seconds.
   useEffect(() => {
@@ -425,6 +432,8 @@ export default function Reader({ bookId }: { bookId: string }) {
         speed={speed} speeds={SPEEDS} onSpeed={setSpeed}
         onVoices={() => setLabOpen(true)}
         autoResume={autoResume} onAutoResume={setAutoResume}
+        hasFigures={book.kind === "textbook" && book.paragraphs.some((p) => p.kind === "figure")}
+        readCaptions={readCaptions} onReadCaptions={setReadCaptions}
         para={para} totalParas={book.paragraphs.length}
         atStart={index === 0} atEnd={index >= last}
         hasCast={book.characters.length > 0}

@@ -15,7 +15,8 @@ export type Paragraph = {
   text: string;
   segments: Segment[];
   tts_chunks: TtsChunk[];
-  kind?: "code" | null; // textbook code listing: shown in a code font, not read aloud
+  kind?: "code" | "figure" | null; // textbook code listing: shown in a code font, not read aloud; figure (#40): `text` is its caption
+  figure?: string | null; // the figure's image file (kind "figure"), see figureUrl
 };
 export type Character = {
   id: string;
@@ -66,6 +67,18 @@ export type Health = { ok: boolean; boson_key_set: boolean; access_required: boo
 export function authHeaders(): Record<string, string> {
   const token = getAccessToken();
   return token ? { "X-Talkback-Token": token } : {};
+}
+
+/** A textbook figure's image (#40), served with the book's own gate. */
+export function figureUrl(bookId: string, name: string): string {
+  return `/api/books/${encodeURIComponent(bookId)}/figures/${encodeURIComponent(name)}`;
+}
+
+/** The figure as an object URL: fetched with the access code, which an <img src> cannot send. Revoke it when done. */
+export async function fetchFigure(bookId: string, name: string): Promise<string> {
+  const res = await timedFetch(figureUrl(bookId, name), { headers: authHeaders() });
+  if (!res.ok) throw new Error(`Figure failed: ${res.status}`);
+  return URL.createObjectURL(await res.blob());
 }
 
 /** fetch with a deadline, so a stalled server shows an error instead of an endless spinner. */

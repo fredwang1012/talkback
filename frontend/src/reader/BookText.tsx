@@ -2,6 +2,7 @@ import { Fragment, memo } from "react";
 import type { Book } from "../api";
 import type { FlatChunk } from "./position";
 import ChapterList from "./ChapterList";
+import Figure from "./Figure";
 import { isNested } from "./chapterTree";
 import { cleanTitle } from "./cleanTitle";
 
@@ -83,7 +84,9 @@ function BookText({ book, chunks, index, onPick, word }: Props) {
         return (
           <Fragment key={p.idx}>
             {section && section.title && <h2 className="section-mark">{cleanTitle(section.title)}</h2>}
-            <p className={p.kind === "code" ? "para para-code" : "para"} data-para={p.idx}>{parts}</p>
+            {p.kind === "figure" && p.figure
+              ? <Figure bookId={book.id} name={p.figure} caption={p.text} para={p.idx}>{parts}</Figure>
+              : <p className={p.kind === "code" ? "para para-code" : "para"} data-para={p.idx}>{parts}</p>}
           </Fragment>
         );
       })}

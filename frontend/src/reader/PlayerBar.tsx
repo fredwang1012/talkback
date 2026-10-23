@@ -5,6 +5,7 @@ type Props = {
   speed: number; speeds: number[]; onSpeed: (s: number) => void;
   onVoices: () => void;
   autoResume: boolean; onAutoResume: (v: boolean) => void;
+  hasFigures?: boolean; readCaptions?: boolean; onReadCaptions?: (v: boolean) => void; // textbook figures (#40)
   para: number; totalParas: number; atStart: boolean; atEnd: boolean; hasCast: boolean;
   onRecap: (c: RecapChoice) => void;
   inSeries: boolean;
@@ -40,6 +41,12 @@ export default function PlayerBar(p: Props) {
         <input type="checkbox" checked={p.autoResume} onChange={(e) => p.onAutoResume(e.target.checked)} />
         Auto-resume
       </label>
+      {p.hasFigures && (
+        <label>
+          <input type="checkbox" checked={p.readCaptions ?? true} onChange={(e) => p.onReadCaptions?.(e.target.checked)} />
+          Read captions
+        </label>
+      )}
       <RecapMenu className="recap-btn" inSeries={p.inSeries} onPick={p.onRecap} />
       <span className="pos">¶ {p.para + 1} / {p.totalParas}</span>
       <p className="note" role={p.audioError ? "alert" : undefined}>
