@@ -77,10 +77,12 @@ class Paragraph(BaseModel):
     text: str
     segments: list[Segment] = []
     tts_chunks: list[TtsChunk] = []
-    # "code": a program / pseudocode listing, shown but not read aloud; "math": a display equation (see `math`)
-    kind: Literal["code", "math"] | None = None
+    # "code": a program / pseudocode listing, shown but not read aloud; "math": a display equation (see `math`);
+    # "figure": a textbook figure (#40), `text` is its caption (read aloud) and `figure` the image file name
+    kind: Literal["code", "math", "figure"] | None = None
     math: MathBlock | None = None
     inline_math: list[InlineMath] = []
+    figure: str | None = None  # under data/books/<id>/figures/, served by /api/books/<id>/figures/<name>
 
 
 class Character(BaseModel):

@@ -778,3 +778,29 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   `voice` + `linked: true` (no copy). Deleting the voice deletes only faces made with the clone (no `linked`) and
   unlinks borrowed ones (`faces.unlink_voice`). The old `face` file upload still works.
 - Realtime (Boson realtime) answers are audio only, as before; nothing to lip-sync there.
+## Display equations in uploaded textbooks (#41, 2026-10-23)
+- PDFs keep drawn glyphs, not LaTeX, so equations extracted as garbled text ("ˆβ1 = Pn i=1..."). Now, during PDF
+  extraction (ingest_upload._mark_math), a display equation becomes its own paragraph (`kind="math"`, `math: MathBlock`
+  with page, bbox, number): math-font lines (CMMI/CMSY/CMEX..., Symbol, *Math) clustered by row, excluded when they
+  share a row with prose (inline math stays in its sentence), and accepted only when set off (indented, taller than a
+  text line, or more than the page's normal leading above and below). Pseudocode is immune. Novels never keep them.
+- After publish, a background job crops each equation from the PDF (200 dpi greyscale PNG, data/books/<id>/equations/,
+  served at /api/books/<id>/equations/<eq>.png without the access code since an <img> cannot send it; guard_book only)
+  and, when Gemini on Vertex is configured (UPLOAD_ENRICH + GCP_PROJECT), sends the pictures 8 per call for LaTeX and a
+  plain-English reading, under the upload spend caps. Locally (no GCP_PROJECT) only the pictures are made.
+- Reader: KaTeX (trust off; refused \href etc. fall back) when LaTeX exists, else the crop (inverted on the dark
+  theme), else the text. Spoken: one chunk, the Gemini reading ("Equation three point four: ..."), else the text when
+  it extracted cleanly, else "Equation three point four." Digits after the point are read one by one (3.18 -> "three
+  point one eight").
+- ISLR (1st printing): 272 equations, 163 of 173 numbered ones found; misses are prose hypotheses (3.12/3.13) and
+  "maximize ... subject to" problems (9.9-9.15), plus (3.27) loses its number (it sits beside the prose condition
+  "if ith person is female"). The bogus "1 B" section (a fraction of (5.8) read as a heading) is gone. Crops of the
+  whole book: 0.8 s, ~1 MB. Inline math inside sentences is unchanged (still extracted text).
+- Books uploaded before this change have no math paragraphs; re-upload to get them.
+## Textbook figures in the reader (#40, 2026-10-23)
+- The IR textbook's figures (01bool, Figures 1.1-1.7) contain no vector drawings and no real pictures: they are text (matrix cells, posting lists, pseudocode) plus rules and boxes stored as thin embedded images. So `get_images` / `get_drawings` alone would find none of them. Figures are found from their caption instead (`_take_figures`): a "Figure N" line set small or bold, and everything between it and the nearest prose above it (else below it). The crop (page.get_pixmap(clip=...), 150 dpi, longest side <= 2000 px) is saved to `data/books/<id>/figures/fig-N.png`, and the figure becomes a paragraph of kind "figure" (text = caption, read aloud by default) placed between paragraphs. The text inside the figure no longer leaks into the body text.
+- Prose test: a body-size line of 5+ words that starts at the document's text column left edge (indent allowed) and reaches its right edge; a block with such a line is a paragraph, so its short last line is too. Below a caption any 5-word sentence stops the walk. The column is measured over the whole document: a page that is mostly figure measured 179-437 pt instead of 167-501 and made Figure 1.4's "Doc 2" lines look like prose.
+- Pages with prose in both halves (two columns) are skipped (captions dropped as before). Figures are taken before the contents-page test: a numeric table made its whole page look like a contents page, which drops the page's prose too.
+- A figure met mid-sentence (at the top of the page a sentence runs on to) goes after that paragraph, so the sentence stays whole.
+- Served by GET /api/books/<id>/figures/fig-N.png with the book's gate (access code + guard_book); the reader fetches it with the access header into an object URL. "Read captions" (player bar, textbooks with figures) skips caption chunks in continuous reading and prefetch without changing the chunk list, so saved positions stay valid.
+- Only new uploads get figures (a figure adds a paragraph); re-upload older textbooks. Tables ("Table N") are still dropped as before.
