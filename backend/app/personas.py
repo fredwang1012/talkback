@@ -1,4 +1,5 @@
 """Talk prompts (brief section 7.4). All prompt logic lives here so it is testable; keep them short and behavioural."""
+from . import multilingual
 from .schema import Book
 
 MAX_INSTRUCTIONS_CHARS = 8000   # Boson Realtime instructions
@@ -86,9 +87,17 @@ def format_passages(passages: list[dict]) -> str:
         for p in passages)
 
 
+LANGUAGE_RULE = ("The reader wrote in {lang}. Answer only in {lang}, even though the book, the notes and the passages "
+                 "below are in English: translate what they say, but keep the names as the book has them.\n\n")
+
+
 def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages: list[dict],
-                       limit: int = MAX_INSTRUCTIONS_CHARS, *, spoilers: bool = False) -> str:
-    """Render the Talk prompt for `speaker_id` ("narrator" or a character id). Raises KeyError for unknown ids."""
+                       limit: int = MAX_INSTRUCTIONS_CHARS, *, spoilers: bool = False,
+                       reply_language: str | None = None) -> str:
+    """Render the Talk prompt for `speaker_id` ("narrator" or a character id). Raises KeyError for unknown ids.
+
+    `reply_language` (#12): the question's language when it is not English. The rule goes first, so it survives the
+    length cap and is not lost under a long English prompt."""
     text_passages = format_passages(passages)
     story = story_so_far.strip() or "(the story has only just begun)"
     if book.kind == "textbook":
@@ -101,6 +110,8 @@ def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages:
             raise KeyError(speaker_id)
         out = (CHARACTER_FULL_TEMPLATE if spoilers else CHARACTER_TEMPLATE).format(name=character.name, title=book.title, persona=character.persona,
                                         story_so_far=story, passages=text_passages)
+    if reply_language:
+        out = LANGUAGE_RULE.format(lang=reply_language) + out
     return out[:limit]
 
 
@@ -128,7 +139,7 @@ def build_answer_prompt(book: Book, speaker_id: str, story_so_far: str, passages
     `history` is the earlier chat with this speaker. It only gives the conversation continuity: the system prompt (built from
     the reader's place) is still the only source of story facts, so the spoiler rule is unchanged."""
     system = build_instructions(book, speaker_id, story_so_far, passages, MAX_ANSWER_PROMPT_CHARS - len(ANSWER_SUFFIX),
-                                spoilers=spoilers)
+                                spoilers=spoilers, reply_language=multilingual.foreign_language(query))
     earlier = format_history(history)
     if earlier:
         return system + ANSWER_SUFFIX, (
