@@ -8,6 +8,7 @@ import { micErrorMessage } from "../audio/mediaErrors";
 
 import type { SentenceSpeaker } from "./sentencePlayer";
 import type { TimingEvent } from "./speechGate";
+import { parseIntent, type ToolOutcome, type ToolRunner } from "./tools";
 
 /** How many queued sentences are synthesised ahead of the one being spoken. */
 export const PREFETCH_DEPTH = 3;
@@ -15,8 +16,13 @@ export const PREFETCH_DEPTH = 3;
 export type TalkState =
   | "reading" | "listening" | "transcribing" | "retrieving" | "answering" | "resuming" | "talk-idle";
 
+/** A function call the model made (#72): ours to run, then answer with `returnTools`. */
+export type ToolCall = { callId: string; name: string; args: Record<string, unknown> };
+export type ToolResult = { callId: string; output: string };
+
 export type SessionEvent =
   | { type: "transcript"; text: string }
+  | { type: "tool-call"; calls: ToolCall[] }
   | { type: "audio-start" }
   | { type: "caption"; text: string; done: boolean }
   | { type: "response-done"; status: "completed" | "cancelled" | "failed" }
@@ -38,6 +44,8 @@ export interface TalkSession {
   respond(instructions: string): void;
   /** Flush local playback, truncate the interrupted item at the played position and cancel the response. */
   interrupt(): Promise<void>;
+  /** Hand the results of a `tool-call` back and let the model go on speaking. Optional: a session without tools never asks. */
+  returnTools?(results: ToolResult[]): void;
   /** Hold local playback where it is (the reply keeps arriving and waits), and continue it. Optional. */
   pausePlayback?(): Promise<void>;
   resumePlayback?(): Promise<void>;
@@ -80,6 +88,10 @@ export interface TalkDeps {
   onTiming?: (e: TimingEvent) => void;
   /** The question as transcribed, so the UI can show it and a language badge. */
   onTranscript?: (text: string) => void;
+  /** Runs a reader tool (#72) for the character: Realtime function calls, or a plain spoken command on the Gemini path. */
+  tools?: ToolRunner;
+  /** A tool ran: the chip to show in the chat ("Jumped to Chapter 3"). */
+  onToolRun?: (chip: string) => void;
   /** True while answer audio is coming out of the speakers (drives the waveform). */
   onSpeaking?: (speaking: boolean) => void;
   now?: () => number;
@@ -102,6 +114,7 @@ export class TalkController {
   private waiters: { predicate: (e: SessionEvent) => boolean; resolve: (e: SessionEvent | null) => void }[] = [];
   private latency: Latency = {};
   private run: { abort: AbortController; timer: ReturnType<typeof setTimeout> | null } | null = null; // the Gemini answer in flight
+  private forceResume = false; // a tool asked for reading to go on after the answer, whatever the auto-resume setting
   private off: () => void;
 
   constructor(deps: TalkDeps) {
@@ -287,6 +300,16 @@ export class TalkController {
     this.set("retrieving");
     const r0 = this.d.now();
     if (this.d.answer && this.d.speaker) {
+      // Gemini writes the answer (no Realtime, so no function calling): a plain spoken command is acted on here instead
+      const intent = this.d.tools ? parseIntent(query) : null;
+      if (intent && this.d.tools) {
+        const outcome = this.runTool(intent.name, intent.args);
+        if (outcome.ok) { this.turn++; this.endTurn(); return; }
+        this.d.onToast?.(outcome.output); // refused (e.g. a spoiler jump): tell the reader, no question is sent
+        this.turn++;
+        this.endTurn();
+        return;
+      }
       void this.streamAndSpeak(turn, query, r0);
       return;
     }
@@ -420,6 +443,7 @@ export class TalkController {
       if (w.predicate(e)) { this.waiters = this.waiters.filter((x) => x !== w); w.resolve(e); }
     }
     if (e.type === "caption") this.d.onCaption?.(e.text, e.done);
+    if (e.type === "tool-call" && ["retrieving", "answering"].includes(this._state) && !this.run) this.onToolCalls(e.calls);
     if (e.type === "audio-start" && this._state === "answering") this.setSpeaking(true);
     if (e.type === "playback-drained") this.setSpeaking(false);
     if (e.type === "error") {
@@ -430,8 +454,38 @@ export class TalkController {
     if (e.type === "playback-drained" && this._state === "answering") this.afterAnswer();
   }
 
+  // ---- tools (#72) -----------------------------------------------------------------------------------------
+
+  /** The model stopped to act: run each call in the reader, hand the results back, and let it go on speaking. */
+  private onToolCalls(calls: ToolCall[]): void {
+    const results: ToolResult[] = calls.map((c) => {
+      const outcome = this.d.tools ? this.runTool(c.name, c.args) : { ok: false, output: "Tools are not available here.", chip: null };
+      return { callId: c.callId, output: outcome.output };
+    });
+    this.set("answering"); // the spoken confirmation follows
+    this.d.session.returnTools?.(results);
+  }
+
+  /** Run one tool and apply what it means for the loop: where reading continues (or that it does not) once the answer ends. */
+  private runTool(name: string, args: Record<string, unknown>): ToolOutcome {
+    let outcome: ToolOutcome;
+    try { outcome = (this.d.tools as ToolRunner)(name, args); } catch (e) { outcome = { ok: false, output: `The tool failed: ${e instanceof Error ? e.message : String(e)}`, chip: null }; }
+    if (outcome.chip) this.d.onToolRun?.(outcome.chip);
+    if (!outcome.ok) return outcome;
+    if (outcome.moveTo !== undefined) this.resumeIndex = outcome.moveTo; // reading goes on there, if it goes on at all
+    if (outcome.play) { this.resumeIndex ??= this.d.reader.currentIndex(); this.wasPlayingBeforePress = true; this.forceResume = true; }
+    if (outcome.pause) { this.wasPlayingBeforePress = false; this.forceResume = false; }
+    return outcome;
+  }
+
+  /** The turn ends without a spoken answer (a command on the Gemini path): read on where the tool said, or wait. */
+  private endTurn(): void {
+    if (this.resumeIndex !== null && this.wasPlayingBeforePress) this.backToReading();
+    else { this.resumeIndex = null; this.forceResume = false; this.set("talk-idle"); }
+  }
+
   private afterAnswer(): void {
-    if (this.autoResume && this.resumeIndex !== null && this.wasPlayingBeforePress) {
+    if ((this.autoResume || this.forceResume) && this.resumeIndex !== null && this.wasPlayingBeforePress) {
       const turn = this.turn;
       this.set("resuming");
       this.resumeTimer = setTimeout(() => {
@@ -449,6 +503,7 @@ export class TalkController {
     const index = this.resumeIndex;
     const wasPlaying = this.wasPlayingBeforePress;
     this.resumeIndex = null;
+    this.forceResume = false;
     this.clearResumeTimer();
     if (index !== null && wasPlaying) {
       this.set("reading");

@@ -4,7 +4,7 @@ import { MicCapture } from "../audio/capture";
 import { RingPlayer } from "../audio/playback";
 import { spend } from "../spend";
 import type { LogEntry } from "../ui/DebugDrawer";
-import { addNarration, addQuestion, appendSentence, fillNarration, finishAnswer, loadChat, priorTurns, saveChat, setPendingText, type ChatMessage } from "./chatLog";
+import { addNarration, addQuestion, addToolChip, appendSentence, fillNarration, finishAnswer, loadChat, priorTurns, saveChat, setPendingText, type ChatMessage } from "./chatLog";
 import { createReadAloud, speechParts } from "../reader/readAloud";
 import { detectLanguage, type Detected } from "./language";
 import { FaceSync } from "./faceSync";
@@ -14,6 +14,7 @@ import { createSentenceSpeaker, type Clip } from "./sentencePlayer";
 import { createReplayPlayer, createReplayStore, runPcm, runSentences, type ReplayItem } from "./replay";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
 import { TalkController, type Latency, type ReaderControl, type TalkState } from "./TalkController";
+import type { ToolRunner } from "./tools";
 
 /** Gemini (via /api/answer) writes the answer and Boson TTS speaks it only when the server says so; else Realtime answers itself. */
 export const answersViaGemini = (health: Health | null): boolean => health?.answer_backend === "gemini";
@@ -65,10 +66,11 @@ type Args = {
   spoilers?: boolean; // full-book mode: the reader allows spoilers (novels only)
   talkback?: boolean; // the dedicated conversation view is open: a mic tap never toggles reading
   narratorVoice?: string | null; // reads recaps aloud in the chat
+  tools?: ToolRunner; // the reader tools the character may call (#72): jump, read chapter, pause/resume, voices, speed, recap, bookmark, cast
 };
 
 /** Owns the Talk session for the reader screen. The real mic, speaker and socket are created once per book. */
-export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, canLipSync = () => false, narratorCanLipSync = () => false, spoilers = false, talkback = false, narratorVoice = null }: Args): TalkUi {
+export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, canLipSync = () => false, narratorCanLipSync = () => false, spoilers = false, talkback = false, narratorVoice = null, tools }: Args): TalkUi {
   const [state, setState] = useState<TalkState>("reading");
   const [caption, setCaption] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -126,8 +128,8 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   }
   const clientRef = useRef<TalkClient | null>(null);
   const viaGemini = answersViaGemini(health);
-  const latest = useRef({ reader, voiceFor, speakerId, canLipSync, narratorCanLipSync, spoilers });
-  latest.current = { reader, voiceFor, speakerId, canLipSync, narratorCanLipSync, spoilers };
+  const latest = useRef({ reader, voiceFor, speakerId, canLipSync, narratorCanLipSync, spoilers, tools });
+  latest.current = { reader, voiceFor, speakerId, canLipSync, narratorCanLipSync, spoilers, tools };
 
   useEffect(() => {
     if (!enabled) return;
@@ -183,6 +185,12 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         }, undefined, { sync: faceSync.current as FaceSync, onPlaying: gate.playing, onTiming: logTiming }),
       } : {}),
       voiceFor: (id) => latest.current.voiceFor(id),
+      tools: (name, args) => {
+        const run = latest.current.tools;
+        if (!run) return { ok: false, output: "Tools are not available here.", chip: null };
+        return run(name, args);
+      },
+      onToolRun: (chip) => setMessages((m) => addToolChip(m, chip)),
       onState: (st) => { setState(st); if (st !== "answering") setLivePaused(false); if (["listening", "retrieving", "answering"].includes(st)) { replayer.current?.stop(); narration.current?.stop(); } if (["reading", "talk-idle", "resuming"].includes(st)) setMessages(finishAnswer); },
       onToast: setToast,
       onCaption: (text) => { setCaption(text); if (!viaGemini && text) setMessages((m) => setPendingText(m, text)); },

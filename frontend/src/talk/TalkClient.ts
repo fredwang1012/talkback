@@ -1,13 +1,15 @@
 import { AUDIO_RATE } from "../audio/constants";
-import { describeClose, historyItem, inputAudioAppend, truncateItem, type ClientEvent, type ServerEvent } from "../realtime/events";
-import type { SessionEvent, TalkSession } from "./TalkController";
+import { describeClose, functionCallOutput, historyItem, inputAudioAppend, truncateItem, type ClientEvent, type ServerEvent } from "../realtime/events";
+import type { SessionEvent, TalkSession, ToolCall, ToolResult } from "./TalkController";
+import { TOOL_DEFS } from "./tools";
 
 const WS_URL = "wss://api.boson.ai/v1/realtime?model=higgs-realtime";
 const OPEN = 1; // WebSocket.OPEN, spelled out so tests need no global WebSocket
 
 /** Short and behavioural: the role comes from per-response instructions (brief 3.4 prompting lesson). */
 export const SESSION_INSTRUCTIONS =
-  "You are a spoken reading companion. Follow the instructions given with each response. Speak naturally; no markdown.";
+  "You are a spoken reading companion. Follow the instructions given with each response. Speak naturally; no markdown. " +
+  "When the reader asks you to act on the book (jump, read a chapter, pause, resume, voices, speed, recap, bookmark, cast), call the tool, then confirm in one short sentence.";
 
 export interface SocketLike {
   readyState: number;
@@ -51,12 +53,14 @@ export interface TalkClientDeps {
   voiceChangeWaitMs?: number;
   /** Waits between retries when Boson refuses a connection with close code 1013 (concurrency limit). */
   backoffMs?: number[];
+  /** The function tools declared to the session (#72); `[]` declares none. Never Boson's server-side web_search. */
+  tools?: readonly unknown[];
 }
 
 /** Close code 1013 before the session opened: too many concurrent connections. Safe to retry after a pause. */
 export class ConnectionLimitError extends Error {}
 
-export function sessionConfig(voice: string): ClientEvent {
+export function sessionConfig(voice: string, tools: readonly unknown[] = TOOL_DEFS): ClientEvent {
   return {
     type: "session.update",
     session: {
@@ -64,6 +68,8 @@ export function sessionConfig(voice: string): ClientEvent {
       model: "higgs-realtime",
       instructions: SESSION_INSTRUCTIONS,
       output_modalities: ["audio"],
+      tools, // client function tools only: the model asks, the browser acts (see tools.ts)
+      tool_choice: "auto",
       audio: {
         input: {
           format: { type: "audio/pcm", rate: AUDIO_RATE },
@@ -96,6 +102,8 @@ export class TalkClient implements TalkSession {
   private audioStarted = false;
   private assistantItemId: string | null = null;
   private caption = "";
+  private lastInstructions = "";
+  private pendingCalls: ToolCall[] = []; // tool calls announced by function_call_arguments.done, until response.done
 
   constructor(deps: TalkClientDeps) {
     this.d = { cancelWaitMs: 2000, voiceChangeWaitMs: 3000, backoffMs: [1000, 2000, 4000], ...deps };
@@ -151,7 +159,7 @@ export class TalkClient implements TalkSession {
       this.ws = ws;
       ws.onopen = () => {
         opened = true;
-        this.send(sessionConfig(voice)); // the first session.update starts the session; no need to wait for session.created
+        this.send(sessionConfig(voice, this.d.tools)); // the first session.update starts the session; no need to wait for session.created
         this.seedHistory();
         this.flushPending();
         resolve();
@@ -233,8 +241,16 @@ export class TalkClient implements TalkSession {
 
   respond(instructions: string): void {
     this.resetResponse();
+    this.lastInstructions = instructions;
     this.responseActive = true;
     this.send({ type: "response.create", response: { instructions, max_output_tokens: 600 } });
+  }
+
+  /** Tool calls done (#72): hand every result back, then ask for the spoken continuation under the same instructions. */
+  returnTools(results: ToolResult[]): void {
+    for (const r of results) this.send(functionCallOutput(r.callId, r.output));
+    this.responseActive = true;
+    this.send({ type: "response.create", response: { instructions: this.lastInstructions, max_output_tokens: 600 } });
   }
 
   /** Pause / resume the reply being played (#90): the rest of the reply keeps arriving and waits in the ring buffer. */
@@ -282,6 +298,22 @@ export class TalkClient implements TalkSession {
     this.audioStarted = false;
     this.assistantItemId = null;
     this.caption = "";
+    this.pendingCalls = [];
+  }
+
+  /** The tool calls of a finished response that are ours to run: `executor` "client" (the server runs its own, e.g. web_search). */
+  private clientCalls(response: unknown): ToolCall[] {
+    const output = (response as { output?: unknown[] } | undefined)?.output;
+    const calls: ToolCall[] = [];
+    let listed = false;
+    for (const raw of Array.isArray(output) ? output : []) {
+      const item = raw as { type?: string; call_id?: string; name?: string; arguments?: string; executor?: string };
+      if (item.type !== "function_call" || typeof item.call_id !== "string" || typeof item.name !== "string") continue;
+      listed = true;
+      if (item.executor !== undefined && item.executor !== "client") continue;
+      calls.push({ callId: item.call_id, name: item.name, args: parseArgs(item.arguments) });
+    }
+    return listed ? calls : this.pendingCalls; // a response.done without its items: only the *.arguments.done events named them
   }
 
   private onMessage(raw: string): void {
@@ -321,9 +353,20 @@ export class TalkClient implements TalkSession {
       case "response.output_audio_transcript.done":
         this.emit({ type: "caption", text: String(evt.transcript ?? this.caption), done: true });
         break;
+      case "response.function_call_arguments.done":
+        if (typeof evt.call_id === "string" && typeof evt.name === "string") {
+          this.pendingCalls.push({ callId: evt.call_id, name: evt.name, args: parseArgs(evt.arguments) });
+        }
+        break;
       case "response.done": {
         const status = (evt.response as { status?: string } | undefined)?.status;
         this.responseActive = false;
+        const calls = status === "cancelled" ? [] : this.clientCalls(evt.response);
+        this.pendingCalls = [];
+        if (calls.length) { // the model stopped to act: run the tools, then returnTools() continues the answer
+          this.emit({ type: "tool-call", calls });
+          break;
+        }
         this.responseDone = true;
         this.emit({ type: "response-done", status: status === "cancelled" ? "cancelled" : status === "failed" ? "failed" : "completed" });
         if (!this.audioStarted) this.emit({ type: "playback-drained" }); // nothing was spoken, nothing to wait for
@@ -350,4 +393,10 @@ export class TalkClient implements TalkSession {
       this.responseDone = false;
     }
   }
+}
+
+/** A tool call's JSON arguments, or {} when they are missing or malformed (the tool reports the problem, never throws). */
+function parseArgs(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "string" || !raw.trim()) return {};
+  try { const v = JSON.parse(raw); return v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {}; } catch { return {}; }
 }

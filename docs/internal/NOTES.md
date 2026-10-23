@@ -632,3 +632,24 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   be names run together (the IR PDF: "Christopher D. Manning Prabhakar Raghavan Hinrich Schütze"): the fast LLM, which
   sees the title page, is then asked for the list (schema `authors: list[str]`), and its answer replaces the metadata.
   When no LLM can be used the metadata string is kept as is.
+
+## Voice agent: Realtime tools act on the reader (#72, 2026-10-23)
+- `frontend/src/talk/tools.ts` declares ten client function tools to `session.update` (`tools[]`, `tool_choice: auto`):
+  jump_to (chapter number / title / Roman numeral / "last" / "bookmark", or a quoted passage), read_chapter, resume_reading,
+  pause_reading, set_voice_mode (one/two), set_narrator (male/female), set_speed (1.25 / faster / slower / normal),
+  open_recap (chapter/book/series), bookmark, show_cast. Boson's server-side `{"type": "web_search"}` is never declared
+  (novel spoilers). `runTool` is pure: a `ToolContext` snapshot + `ToolActions` (Reader.tsx wires seek/pause/cast/speed/
+  recap/Voices panel), so every tool is unit-tested without a DOM.
+- Flow (TalkClient): `response.function_call_arguments.done` is remembered; `response.done` with a `function_call` item
+  whose `executor` is `"client"` (server-run tools are skipped) becomes a `tool-call` session event instead of a finished
+  answer; TalkController runs the tool, `returnTools()` sends `function_call_output` per call and a `response.create` with
+  the same per-response instructions, and the model speaks the confirmation. A cancelled response drops its calls.
+- Spoiler guard: `resolveJump` refuses any target whose first chunk's paragraph is past `readerPara` when spoilers are off
+  (a quoted passage lands on the nearest match at or before the reader; bookmarks set with spoilers on are checked too).
+  The model is told why in the tool output so it can say so; the reader never moves.
+- After the answer: a tool that moved the reader sets where auto-resume continues (read_chapter / resume_reading force
+  a resume even with auto-resume off and switch Talkback back to the page; pause_reading stops the resume). A chip
+  ("Jumped to Chapter II") is a `role: "tool"` chat message, kept in the log, never sent back as history.
+- Gemini answer path (no Realtime, so no function calling): `parseIntent` recognises a few plain phrasings ("read chapter 3",
+  "jump to the part where ...", "keep reading", "pause", "a bit faster", "one voice", "recap the last chapter", "bookmark
+  this", "show me the cast") and runs the same tool without calling Gemini; anything else is a question. Refusals toast.

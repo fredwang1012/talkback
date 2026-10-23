@@ -151,7 +151,9 @@ export default function TalkbackView({
         <div className="tb-chat">
           <div className="tb-log" ref={log} role="log" aria-live="polite" aria-label="Conversation" tabIndex={0}>
             {talk.messages.length === 0 && <p className="empty-note">Nothing said yet. Ask {name} about the story so far.</p>}
-            {talk.messages.map((m) => (
+            {talk.messages.map((m) => m.role === "tool" ? (
+              <div key={m.id} className="tool-chip" role="status">{m.text}</div>
+            ) : (
               <div key={m.id} className={`bubble ${m.role}`}>
                 <span className="who-line">
                   {m.role === "user" ? "You" : m.role === "narrator" ? "Narrator" : speakerName(book, m.speakerId)}

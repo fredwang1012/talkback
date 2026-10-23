@@ -7,7 +7,7 @@ import {
 } from "../api";
 import {
   PRESETS, PREVIEW_LINE, castVoice, dropReferences, createCastSaver, emptyCast, isNovel, loadTalkChoice, migrateOldOverrides,
-  readingFaceId, saveTalkChoice, talkFaceId, talkVoice, type TalkChoice,
+  narratorGender, readingFaceId, saveTalkChoice, talkFaceId, talkVoice, voiceMode, withVoiceMode, type TalkChoice,
 } from "../reader/castLogic";
 import { DEMO_SPEAKER, DEMO_START_PARA, firstChunkAtOrAfter, isDemo } from "../demo";
 import BookText from "../reader/BookText";
@@ -28,6 +28,7 @@ import VoiceLab from "../reader/VoiceLab";
 import { spend, type SpendSnapshot } from "../spend";
 import { openClipVideo } from "../talk/clipVideo";
 import { FaceSync } from "../talk/faceSync";
+import { runTool, type ToolActions, type ToolContext } from "../talk/tools";
 import { useTalk } from "../talk/useTalk";
 import { DebugDrawer } from "../ui/DebugDrawer";
 import { debugEnabled } from "../ui/debugFlag";
@@ -86,6 +87,8 @@ export default function Reader({ bookId }: { bookId: string }) {
   const playingRef = useRef(false);
   indexRef.current = index;
   playingRef.current = playing;
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
   useEffect(() => {
     fetchBook(bookId).then((b) => {
@@ -202,6 +205,32 @@ export default function Reader({ bookId }: { bookId: string }) {
     () => [...PRESETS.map((v) => ({ value: v, label: v })), ...Object.entries(cloned).map(([n, v]) => ({ value: v, label: `${n} (cloned)` }))],
     [cloned]);
 
+  // The reader tools a character can call (#72): the snapshot and the actions read the latest state through refs, so
+  // the runner handed to the talk loop never goes stale. The spoiler guard lives in runTool.
+  const toolDeps = useRef<{ ctx: () => ToolContext; act: ToolActions } | null>(null);
+  toolDeps.current = book ? {
+    ctx: () => ({
+      bookId: book.id, sections: book.sections, paragraphs: book.paragraphs, characters: book.characters, chunks,
+      index: indexRef.current, readerPara: readerPara(chunks, indexRef.current), spoilers: spoilers && book.kind === "novel",
+      playing: engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current,
+      speed, speeds: SPEEDS, voiceMode: voiceMode(cast), narrator: narratorGender(cast), inSeries: !!book.series,
+    }),
+    act: {
+      seek: (i) => { lastManualScroll.current = 0; const next = clampIndex(i, chunks.length); if (engineRef.current) engineRef.current.seek(next); else setIndex(next); },
+      pause: () => (engineRef.current ? engineRef.current.pause() : setPlaying(false)),
+      setVoiceMode: (m) => changeCast(withVoiceMode(cast, m)),
+      setNarrator: (g) => changeCast({ ...cast, narrator_gender: g }),
+      setSpeed,
+      openRecap: (scope) => recap({ scope, label: scope === "chapter" ? "Last chapter" : scope === "book" ? "This book so far" : "The series so far" }),
+      showCast: () => setLabOpen(true),
+    },
+  } : null;
+  const toolRunner = useCallback((name: string, args: Record<string, unknown>) => {
+    const d = toolDeps.current;
+    if (!d) return { ok: false, output: "The book is still loading.", chip: null };
+    return runTool(name, args, d.ctx(), d.act);
+  }, []);
+
   // Talk mode: push-to-talk questions, answered from what has been read so far (needs the Boson key).
   const talk = useTalk({
     bookId,
@@ -215,6 +244,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     talkback: mode === "talk",
     voiceFor: talkVoiceFor,
     narratorVoice: audioAvailable ? narratorVoice : null,
+    tools: toolRunner,
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
       currentIndex: () => indexRef.current,
@@ -222,6 +252,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       pause: () => (engineRef.current ? engineRef.current.pause() : setPlaying(false)),
       play: () => (engineRef.current ? engineRef.current.play() : setPlaying(true)),
       resumeAt: (i) => {
+        if (modeRef.current === "talk") setMode("read"); // a tool asked for reading to go on (#72): show the page, keep the chat
         if (engineRef.current) { engineRef.current.seek(i); engineRef.current.play(); }
         else { setIndex(clampIndex(i, chunks.length)); setPlaying(true); }
       },

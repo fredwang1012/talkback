@@ -2,7 +2,7 @@
 
 export type ChatMessage = {
   id: number;
-  role: "user" | "character" | "narrator"; // "narrator": a recap read out by the narrator (never sent to the model)
+  role: "user" | "character" | "narrator" | "tool"; // "narrator": a recap read out by the narrator; "tool": a chip for an action the character took (#72); neither is sent to the model
   speakerId: string; // who answered (role "character"); who was asked (role "user")
   text: string;
   via?: "voice" | "typed";
@@ -36,6 +36,13 @@ export function addNarration(m: ChatMessage[], recap: string): ChatMessage[] {
 export function fillNarration(m: ChatMessage[], id: number, text: string | null, recap?: string, quiet = false): ChatMessage[] {
   if (text === null) return m.filter((x) => x.id !== id);
   return m.map((x) => (x.id === id ? { ...x, text, loading: false, ...(recap ? { recap } : {}), ...(quiet ? { quiet } : {}) } : x));
+}
+
+/** A chip for a tool the character ran ("Jumped to Chapter 3"), placed before the answer still being spoken. */
+export function addToolChip(m: ChatMessage[], text: string): ChatMessage[] {
+  const chip: ChatMessage = { id: nextId(m), role: "tool", speakerId: "tool", text };
+  const i = m.findLastIndex((x) => x.pending);
+  return cap(i < 0 ? [...m, chip] : [...m.slice(0, i), chip, ...m.slice(i)]);
 }
 
 /** Append a sentence to the pending answer; ignored when none is pending. */
@@ -73,7 +80,7 @@ export function priorTurns(m: ChatMessage[], speakerId: string, n = HISTORY_TURN
   let end = m.length;
   if (end && m[end - 1].pending) end = end >= 2 && m[end - 2].role === "user" ? end - 2 : end - 1;
   return m.slice(0, end)
-    .filter((x) => x.role !== "narrator" && x.speakerId === speakerId && !x.pending && x.text.trim())
+    .filter((x) => (x.role === "user" || x.role === "character") && x.speakerId === speakerId && !x.pending && x.text.trim())
     .slice(-n)
     .map((x) => ({ role: x.role as Turn["role"], text: x.text.trim().slice(0, HISTORY_CHARS) }));
 }
@@ -89,7 +96,7 @@ export function loadChat(bookId: string): ChatMessage[] {
   try {
     const v = JSON.parse(sessionStorage.getItem(key(bookId)) ?? "null");
     if (Array.isArray(v)) {
-      const m = cap(v.filter((x): x is ChatMessage => x && typeof x.text === "string" && (x.role === "user" || x.role === "character" || x.role === "narrator"))
+      const m = cap(v.filter((x): x is ChatMessage => x && typeof x.text === "string" && (x.role === "user" || x.role === "character" || x.role === "narrator" || x.role === "tool"))
         .filter((x) => !x.loading).map((x) => ({ ...x, pending: false })));
       mem.set(bookId, m);
       return m;
