@@ -1,5 +1,9 @@
 """Novel enrichment for uploaded books: cast -> segment -> summaries -> index, saving the book after every stage.
 
+The cast call also gives the series and volume number (enrich/cast.py). Segmentation ends with the free attribution
+pass (enrich/attribute.py: untagged replies, action beats) and, with MINOR_VOICES, stand-in voices for uncast speakers,
+so an upload gets the same speaker data as the built-in books (#115).
+
 The book is already readable (narrator only) when this starts; voices, recap and character talk switch on as each
 stage lands. Cost controls: `estimate()` before starting, a per-book cap, and a cumulative cap tracked in
 data/usage/upload_spend.json (see spend.py). Errors never take the book away: it stays readable with what was saved.
@@ -15,6 +19,7 @@ from .. import books
 from ..config import settings
 from ..schema import Book
 from ..ttschunks import chunk_paragraph
+from . import attribute as attribute_mod
 from . import cast as cast_mod
 from . import minor as minor_mod
 from . import segment as seg_mod
@@ -38,6 +43,8 @@ FAILED = "Character processing stopped early; the book is still readable with th
 FALLBACK_DONE = "Characters detected with a simple fallback (no LLM key configured). Add ANTHROPIC_API_KEY for full voices and recap."
 BOOK_CAP_MARGIN = 1.25  # a running job stops when its real spend passes the per-book cap by this factor
 ESTIMATE_MARGIN = 1.15
+CAST_OUT_TOKENS = 3000 + cast_mod.SERIES_OUT_TOKENS  # the cast answer: characters, voices, series
+ATTRIBUTE_MESSAGE = "Giving untagged lines to their speakers"
 
 Report = Callable[..., None]  # report(status=, stage=, progress=, message=, estimate_usd=)
 Indexer = Callable[[Book], Awaitable[None]]
@@ -52,7 +59,7 @@ def estimate(book: Book, provider: str | None = None) -> float:
     provider = effective_provider(provider)
     total = sum(len(p.text) for p in book.paragraphs)
     # cast: one call (a long book is sampled), Sonnet-tier
-    usd = estimate_usd(provider, "smart", min(total, cast_mod.CAST_MAX_CHARS) + len(cast_mod.UPLOAD_SYSTEM), 3000)
+    usd = estimate_usd(provider, "smart", min(total, cast_mod.CAST_MAX_CHARS) + len(cast_mod.UPLOAD_SYSTEM), CAST_OUT_TOKENS)
     # segmentation: batches of paragraphs that contain quotes; the model re-emits the text
     quoted = [len(p.text) for p in book.paragraphs if '"' in p.text or "“" in p.text]
     calls = math.ceil(len(quoted) / seg_mod.BATCH)
@@ -156,8 +163,8 @@ async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save:
     stage = state["stage"] = "segment"
     report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
     counts = await seg_mod.segment_book(book, llm, LLMRefusal, seg_mod.FAST, _Throttle(report, stage))
-    if settings.minor_voices:  # free, offline: generic voices for uncast speakers
-        counts["minor"] = len(minor_mod.assign_minor_voices(book))
+    report(status="running", stage=stage, progress=round(_offset(stage) + WEIGHTS[stage], 3), message=ATTRIBUTE_MESSAGE)
+    counts.update(attribute_speakers(book))
     rebuild_chunks(book)
     await checkpoint()
     log.info("segmented book: %s", counts)
@@ -174,6 +181,16 @@ async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save:
     if indexer is not None:
         await indexer(book)
     return degraded
+
+
+def attribute_speakers(book: Book) -> dict[str, int]:
+    """Free, offline: untagged dialogue to the right cast member (#17 rules), and with MINOR_VOICES the uncast speakers'
+    lines to the two stand-in voices. Same rules as preprocess/attribute.py and minor_voices.py for built-in books."""
+    if settings.minor_voices:  # one attribution pass that also handles uncast speakers
+        decisions = minor_mod.assign_minor_voices(book)
+        return {"minor": len(decisions)}
+    decisions = attribute_mod.attribute_book(book)
+    return {"attributed": sum(1 for d in decisions if d.speaker)}
 
 
 async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Indexer | None) -> bool:
