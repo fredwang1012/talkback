@@ -24,7 +24,7 @@ from typing import NamedTuple
 
 from . import retrieval
 from .config import settings
-from .parsing import CODE_MARK, HEADING_MARK, parse
+from .parsing import CODE_MARK, EQ_MARK, EQ_SEP, HEADING_MARK, parse
 from .schema import Book, Narrator, Paragraph, Section
 from .ttschunks import chunk_paragraph, sentence_spans, split_long
 
@@ -148,6 +148,199 @@ def _is_mono(spans: list[dict]) -> bool:
     """Whether every non-blank span of a line is set in a monospace font."""
     real = [s for s in spans if s["text"].strip()]
     return bool(real) and all(_MONO_FONT.search(s["font"]) for s in real)
+
+
+# ---- display equations (#41) ----
+# TeX math italic / symbols / big operators (CMMI, CMSY, CMEX and their AMS / Latin Modern / tx / px kin), OpenType
+# math fonts (Cambria Math, STIX, XITS...) and the classic Symbol / MT Extra fonts of word processors.
+_MATH_FONT = re.compile(
+    r"^(?:[A-Z]{6}\+)?(?:CM(?:MI|SY|EX|BSY|MIB|BMI)\d|MSAM|MSBM|EU(?:FM|FB|SM|SB|EX)|RSFS|STIX|XITS|Asana|Euclid|"
+    r"MathematicalPi|Symbol|MT-?Extra|(?:rtx|ntx|tx|px|zx)(?:mi|sy|ex|ia)|esint|stmary|wasy|.*math)", re.I)
+_BIG_OP_FONT = re.compile(r"^(?:[A-Z]{6}\+)?(?:CMEX|EUEX|(?:rtx|ntx|tx|px)ex)", re.I)
+_PROSE_WORD = re.compile(r"[A-Za-z\u00C0-\u024F]{3,}")
+# operator names set upright in math; never counted as prose
+_MATH_WORDS = {"log", "exp", "sin", "cos", "tan", "max", "min", "arg", "argmin", "argmax", "var", "cov", "cor", "det",
+               "lim", "sup", "inf", "sign", "diag", "trace", "mod", "gcd", "sqrt", "rss", "tss", "mse", "rse", "logit"}
+EQ_WEAK_CHARS = 24       # a prose-free line this short (a limit, an exponent, "(3.4)") may belong to an equation
+EQ_ROW_GAP = 18.0        # points: a candidate this close beside a prose line on the same row is inline math
+EQ_LINE_GAP = 0.6        # rows of one display equation are at most this many line heights apart
+EQ_MAX_HEIGHT = 220.0    # points: a taller cluster is a page of formulas or a misread figure, not one equation
+EQ_MAX_PIECES = 60       # lines: a bigger cluster is a plot drawn as text (markers, tick labels), not an equation
+EQ_PAGE_LINES = 25_000   # pages with more lines than this are not searched (plots drawn as text reach ~19,000)
+EQ_PAGE_MAX = 60         # equations per page
+NOT_MATH, WEAK, STRONG = 0, 1, 2
+
+
+def _math_class(spans: list[dict]) -> int:
+    """STRONG: the line is an equation (at most two prose words, and a big operator, or math-font letters with an
+    operator or at least three of them); WEAK: a short prose-free piece that may be part of one (a limit, an exponent,
+    "SE(β0)", an equation number); else NOT_MATH. A table row such as "R2 0.612" is WEAK, never an equation alone."""
+    math_alpha = big = symbols = prose_words = prose_letters = nonspace = 0
+    has_op = False
+    for s in spans:
+        t = s["text"]
+        if not t.strip():
+            continue
+        nonspace += sum(not c.isspace() for c in t)
+        has_op = has_op or any(unicodedata.category(c) == "Sm" for c in t)
+        font = s["font"]
+        if _MATH_FONT.search(font):
+            math_alpha += sum(c.isalpha() for c in t)
+            if _BIG_OP_FONT.search(font):
+                big += sum(not c.isspace() for c in t)
+            continue
+        symbols += sum(1 for c in t if (unicodedata.category(c) == "Sm" and c not in "-<>") or "\u0370" <= c <= "\u03ff")
+        if _MONO_FONT.search(font):
+            continue  # variable names set in a code font ("sales = β0 + β1 × TV")
+        for w in _PROSE_WORD.findall(t):
+            if w.lower() not in _MATH_WORDS:
+                prose_words += 1
+                prose_letters += len(w)
+    if not nonspace:
+        return NOT_MATH
+    prose_free = prose_words <= 2 and prose_letters <= 0.4 * nonspace
+    if prose_free and (big or (math_alpha and (has_op or math_alpha >= 3)) or (symbols >= 2 and prose_words == 0)):
+        return STRONG
+    return WEAK if prose_words == 0 and nonspace <= EQ_WEAK_CHARS else NOT_MATH
+
+
+EQ_INDENT = 0.12        # a cluster starting this far (share of the text width) right of the margin is set off
+
+
+def _mark_math(blocks: list[list[tuple]], info: list[list[tuple[int, bool]]], pno: int) -> list[list[tuple]]:
+    """Turn each display equation of a page into one EQ_MARK line standing alone where its first piece was.
+
+    `info[b][l]` is (class, lost glyphs) of line l of block b: the class from _math_class, and whether the raw text
+    had control codes (glyphs of math fonts that extract as nothing) so the text is no faithful reading.
+
+    A display equation is a cluster of STRONG / WEAK lines (with at least one STRONG) whose rows hold no prose: math
+    beside prose on the same row is inline and stays in its sentence. Rows closer than EQ_LINE_GAP line heights join
+    one cluster (a fraction's numerator and denominator, a sum's limits, a second line). The cluster must also be set
+    off: indented / centred, taller than a text line (stacked rows, big delimiters), or with more than the page's
+    normal leading to the prose above and below it, so the last line of a paragraph ("of β1.") is never taken for one.
+    """
+    if sum(map(len, blocks)) > EQ_PAGE_LINES:
+        return blocks
+    code = {bi for bi, blk in enumerate(blocks) if _code_score(blk)}  # pseudocode sets its arrows in math fonts too
+    flat = [(bi, li, ln, NOT_MATH if bi in code else info[bi][li][0])
+            for bi, blk in enumerate(blocks) for li, ln in enumerate(blk)]
+    if not any(c == STRONG for *_, c in flat):
+        return blocks
+    prose = sorted((ln for _bi, _li, ln, c in flat if c == NOT_MATH), key=lambda p: p[2])
+    tops = [p[2] for p in prose]
+    tallest = max((p[4] - p[2] for p in prose), default=0.0)
+
+    def beside_prose(ln: tuple, share: float) -> bool:
+        h = ln[4] - ln[2]
+        for p in prose[bisect.bisect_left(tops, ln[2] - tallest):bisect.bisect_right(tops, ln[4])]:
+            overlap = min(ln[4], p[4]) - max(ln[2], p[2])
+            if overlap > share * min(h, p[4] - p[2]) and max(ln[1], p[1]) - min(ln[3], p[3]) < EQ_ROW_GAP:
+                return True
+        return False
+
+    # a WEAK piece (an inline sum's limit) touching a prose row belongs to that row; a STRONG line must share it more
+    cands = sorted(((ln[2], bi, li) for bi, li, ln, c in flat
+                    if c != NOT_MATH and not beside_prose(ln, 0.4 if c == STRONG else 0.2)))
+    clusters: list[list[tuple[int, int]]] = []
+    bottom = 0.0
+    for y0, bi, li in cands:
+        ln = blocks[bi][li]
+        if clusters and y0 - bottom <= EQ_LINE_GAP * max(ln[4] - ln[2], 1.0):
+            clusters[-1].append((bi, li))
+            bottom = max(bottom, ln[4])
+        else:
+            clusters.append([(bi, li)])
+            bottom = ln[4]
+    if prose:
+        x0s, x1s = sorted(p[1] for p in prose), sorted(p[3] for p in prose)
+        left, right = x0s[len(x0s) // 5], x1s[len(x1s) * 9 // 10]
+        heights = sorted(p[4] - p[2] for p in prose)
+        line_h = heights[len(heights) // 2]
+    else:
+        left = right = line_h = 0.0
+    gaps = sorted(b[1][2] - b[0][4] for blk in blocks for b in zip(blk, blk[1:]) if b[1][2] >= b[0][4] - 1)
+    leading = max(gaps[len(gaps) // 2], 0.0) if gaps else 0.0  # the page's normal space between lines of prose
+
+    def set_off(lns: list[tuple]) -> bool:
+        x0, y0, x1, y1 = min(l[1] for l in lns), min(l[2] for l in lns), max(l[3] for l in lns), max(l[4] for l in lns)
+        if right > left and x0 - left >= EQ_INDENT * (right - left):
+            return True
+        if line_h and y1 - y0 > 1.5 * line_h:
+            return True
+        lead = leading + 0.2 * min(l[4] - l[2] for l in lns)
+        above = [y0 - p[4] for p in prose if p[4] <= y0 + 1 and p[1] < x1 and x0 < p[3]]
+        below = [p[2] - y1 for p in prose if p[2] >= y1 - 1 and p[1] < x1 and x0 < p[3]]
+        return (not above or min(above) > lead) and (not below or min(below) > lead)
+
+    member: dict[tuple[int, int], int] = {}
+    for n, cl in enumerate(clusters):
+        lns = [blocks[bi][li] for bi, li in cl]
+        if len(cl) <= EQ_MAX_PIECES and any(info[bi][li][0] == STRONG and bi not in code for bi, li in cl) \
+                and max(l[4] for l in lns) - min(l[2] for l in lns) <= EQ_MAX_HEIGHT and set_off(lns):
+            member.update({k: n for k in cl})
+    if not member:
+        return blocks
+    out: list[list[tuple]] = []
+    done: set[int] = set()
+    for bi, blk in enumerate(blocks):
+        cur: list[tuple] = []
+        for li, ln in enumerate(blk):
+            n = member.get((bi, li))
+            if n is None:
+                cur.append(ln)
+                continue
+            if n in done:
+                continue
+            done.add(n)
+            if cur:
+                out.append(cur)
+                cur = []
+            if len(done) > EQ_PAGE_MAX:
+                out.append([blocks[b][l] for b, l in clusters[n]])
+                continue
+            out.append([_equation_line(pno, [blocks[b][l] for b, l in clusters[n]],
+                                       any(info[b][l][1] for b, l in clusters[n]))])
+        if cur:
+            out.append(cur)
+    return out
+
+
+_EQ_NUMBER_TAIL = re.compile(r"\s*,?\s*\((\d{1,3}(?:\.\d{1,3}){0,2}[a-z]?)\)$")
+
+
+def _equation_line(pno: int, lns: list[tuple], lost_glyphs: bool) -> tuple:
+    """One EQ_MARK line for a cluster of equation lines (see parsing.EQ_MARK): its pieces row by row, left to right,
+    and the equation number (wherever it sat) moved to the end."""
+    x0, y0 = min(l[1] for l in lns), min(l[2] for l in lns)
+    x1, y1 = max(l[3] for l in lns), max(l[4] for l in lns)
+    rows: list[list[tuple]] = []
+    row_bottom = 0.0
+    for l in sorted(lns, key=lambda l: (l[2] + l[4]) / 2):
+        mid = (l[2] + l[4]) / 2
+        if rows and mid <= row_bottom:
+            rows[-1].append(l)
+            row_bottom = max(row_bottom, l[4])
+        else:
+            rows.append([l])
+            row_bottom = l[4]
+    texts = [l[0] for row in rows for l in sorted(row, key=lambda l: l[1])]
+    number = None
+    tails = [(l[3], l[0]) for l in lns if _EQ_NUMBER_TAIL.search(l[0])]
+    if tails:
+        tail = max(tails)[1]
+        number = _EQ_NUMBER_TAIL.search(tail).group(1)
+        i = texts.index(tail)
+        texts[i] = _EQ_NUMBER_TAIL.sub("", tail)
+    content = [t for t in texts if t]
+    text = " ".join(content) + (f" ({number})" if number else "")
+    garbled = lost_glyphs or len(content) > 1 or any(unicodedata.category(c) in ("Sk", "Mn", "Lm") for c in text)
+    head = f"{pno} {x0:.1f} {y0:.1f} {x1:.1f} {y1:.1f} {int(garbled)}"
+    return (EQ_MARK + head + EQ_SEP + text, x0, y0, x1, y1, max(l[5] for l in lns), False, False)
+
+
+def plain_text(raw: str) -> str:
+    """pdf_to_text output without the equation markers' positions (for samples shown to a model)."""
+    return re.sub(EQ_MARK + "[^" + EQ_SEP + "]*" + EQ_SEP, "", raw)
 
 
 def _font_info(spans: list[dict]) -> tuple[float, bool]:
@@ -280,7 +473,7 @@ def _drop_contents(blocks: list[list[tuple]]) -> list[list[tuple]]:
     for blk in blocks:
         if len(blk) == 1 and _CONTENTS.match(blk[0][0]):
             continue
-        blk = [ln for ln in blk if not _has_dot_leader(ln[0])]
+        blk = [ln for ln in blk if ln[0].startswith(EQ_MARK) or not _has_dot_leader(ln[0])]
         if blk:
             out.append(blk)
     return out
@@ -451,7 +644,7 @@ def _heading_candidate(blk: list[tuple], body: float) -> tuple[str, bool] | None
     if len(blk) > 2:
         return None
     text = " ".join(ln[0] for ln in blk)
-    if _FRONT_MATTER.search(text) or text.startswith(CODE_MARK):
+    if _FRONT_MATTER.search(text) or text.startswith((CODE_MARK, EQ_MARK)):
         return None
     size = max(ln[5] for ln in blk)
     if _is_heading(text):
@@ -501,7 +694,7 @@ def _mark_headings(blocks: list[list[tuple]], body: float, figures: list[tuple] 
         if i - 1 in drop:
             continue
         if cand is None:
-            out.append([ln[:7] + (ln[0].startswith(CODE_MARK),) for ln in blk])  # a listing stands alone
+            out.append([ln[:7] + (ln[0].startswith((CODE_MARK, EQ_MARK)),) for ln in blk])  # listings, equations stand alone
             continue
         text, by_font = cand
         nxt = cands[i] if i < len(blocks) and i not in drop else None
@@ -539,7 +732,8 @@ def _is_toc_page(blocks: list[list[tuple]]) -> bool:
     lines = [ln[0] for blk in blocks for ln in blk]
     if len(lines) < TOC_MIN_LINES:
         return False
-    tocish = sum(1 for t in lines if _TOC_NUMBER.match(t) or (_TOC_TRAILING.search(t) and len(t) <= 120))
+    tocish = sum(1 for t in lines if not t.startswith(EQ_MARK)
+                 and (_TOC_NUMBER.match(t) or (_TOC_TRAILING.search(t) and len(t) <= 120)))
     return tocish >= TOC_FRACTION * len(lines)
 
 
@@ -555,7 +749,7 @@ def _header_core(blk: list[tuple], body: float) -> tuple[str, bool] | None:
     '484 Bibliography' counts only beside strong 'Bibliography 485' headers on facing pages.
     """
     text = " ".join(ln[0] for ln in blk)
-    if len(blk) > 3 or len(text) > 100 or _BARE_LABEL.match(text):
+    if len(blk) > 3 or len(text) > 100 or _BARE_LABEL.match(text) or text.startswith(EQ_MARK):
         return None
     size = max(ln[5] for ln in blk)
     trailing = bool(_TRAIL_NUM.search(text)) and bool(re.search(r"[A-Za-z]\s+\d{1,4}$", text))
@@ -627,6 +821,7 @@ def pdf_to_text(data: bytes) -> str:
         figures: list[list[tuple]] = []  # page -> labelled figure regions (see _figure_regions)
         for page in doc:
             blocks = []
+            info = []  # per line: (math class, glyphs lost), see _mark_math
             rects = []  # images and drawing clusters: figure candidates
             raw_blocks = page.get_text("dict")["blocks"]
             for b in raw_blocks:
@@ -634,9 +829,10 @@ def pdf_to_text(data: bytes) -> str:
                     rects.append(tuple(b["bbox"]))
                 if b.get("type") != 0:
                     continue
-                lines = []
+                lines, line_info = [], []
                 for ln in b["lines"]:
-                    t = _clean_line_text("".join(s["text"] for s in ln["spans"]))
+                    raw_text = "".join(s["text"] for s in ln["spans"])
+                    t = _clean_line_text(raw_text)
                     if t and abs(ln["dir"][1]) > 0.2:
                         continue  # rotated text: an axis label or a margin stamp, never body text or a heading
                     if t:
@@ -644,11 +840,14 @@ def pdf_to_text(data: bytes) -> str:
                         size, bold = _font_info(ln["spans"])
                         sizes[size] += len(t)
                         lines.append((t, x0, y0, x1, y1, size, bold, _is_mono(ln["spans"])))
+                        line_info.append((_math_class(ln["spans"]), bool(_CONTROL.search(raw_text))))
                         total += len(t) + 1
                         if total > MAX_CHARS:  # checked per line so extraction stops as soon as the cap is crossed
                             raise UploadError("The document has too much text (5 million characters maximum).")
                 if lines:
                     blocks.append(lines)
+                    info.append(line_info)
+            blocks = _mark_math(blocks, info, page.number)
             pages.append(blocks)
             widths.append(page.rect.width)
             figures.append(_page_figures(doc, page, blocks, rects))
@@ -664,6 +863,8 @@ def pdf_to_text(data: bytes) -> str:
 
     def is_noise(block) -> bool:
         text = " ".join(ln[0] for ln in block)
+        if text.startswith(EQ_MARK):
+            return False
         if _BARE_NUMBER.match(text) and body and max(ln[5] for ln in block) >= body * HEADING_BIG:
             return False  # a big lone number is a chapter number, not a page number
         return key(block) in repeated or bool(_PAGE_NUMBER.match(text))
@@ -741,8 +942,8 @@ def _cap_paragraphs(sections: list[Section], paragraphs: list[Paragraph]) -> lis
     new_start: dict[int, int] = {}
     for p in paragraphs:
         new_start[p.idx] = len(out)
-        for piece in split_paragraph(p.text):
-            out.append(Paragraph(idx=len(out), section_id=p.section_id, text=piece, kind=p.kind))
+        for piece in ([p.text] if p.kind == "math" else split_paragraph(p.text)):
+            out.append(Paragraph(idx=len(out), section_id=p.section_id, text=piece, kind=p.kind, math=p.math))
     for s in sections:
         s.start_para = new_start.get(s.start_para, len(out))
     return out
@@ -761,9 +962,9 @@ def section_level(title: str) -> int:
 def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_detected: dict | None = None) -> Book:
     sections, paragraphs = parse(raw, None, None, HEADING_REGEX)
     paragraphs = _cap_paragraphs(sections, paragraphs)
-    if kind != "textbook":  # only textbooks skip listings; elsewhere a monospace block is just text to read
+    if kind != "textbook":  # only textbooks skip listings and set equations; elsewhere they are just text to read
         for p in paragraphs:
-            p.kind = None
+            p.kind = p.math = None
     if kind == "textbook":  # novels keep a flat chapter list
         for sec in sections:
             sec.level = section_level(sec.title)
@@ -787,6 +988,93 @@ def process_upload(book_id: str, title: str, author: str, kind: str, data: bytes
     chunks = retrieval.make_chunks(book)
     retrieval.save_index(settings.data_dir / "books" / book_id / "index", chunks, None)
     return book, chunks
+
+
+# ---- equation pictures (#41): cropped from the PDF after the book is published ----
+
+EQ_DPI = 200
+EQ_PAD = 2.0             # points around the equation's text box (fraction bars, accents, big delimiters)
+EQ_MAX_PIXELS = 4_000_000
+EQ_MAX_BOOK = 1500       # pictures per book
+
+
+def equation_url(book_id: str, eq_id: str) -> str:
+    return f"/api/books/{book_id}/equations/{eq_id}.png"
+
+
+def equation_path(book_id: str, eq_id: str) -> Path:
+    return settings.data_dir / "books" / book_id / "equations" / f"{eq_id}.png"
+
+
+def _book_json(book_id: str) -> Path:
+    return settings.data_dir / "books" / book_id / "book.json"
+
+
+def render_equations(book_id: str, data: bytes, stop=lambda: False) -> dict[str, tuple[bytes, str]]:
+    """Worker thread: crop every equation of the published book from the PDF into equations/<id>.png and record the
+    picture in book.json. Returns {equation id: (PNG, extracted text)} for the model. `stop()` is checked between
+    pictures (a deleted book): nothing more is written, and the folder is never recreated."""
+    import pymupdf
+    path = _book_json(book_id)
+    try:
+        book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    eqs = [p for p in book.paragraphs if p.kind == "math" and p.math is not None][:EQ_MAX_BOOK]
+    if not eqs:
+        return {}
+    out_dir = path.parent / "equations"
+    try:
+        out_dir.mkdir(exist_ok=True)  # never parents: a deleted book's folder must not come back
+    except OSError:
+        return {}
+    found: dict[str, tuple[bytes, str]] = {}
+    with pymupdf.open(stream=data, filetype="pdf") as doc:
+        for p in eqs:
+            m = p.math
+            if stop():
+                return {}
+            if not 0 <= m.page < doc.page_count:
+                continue
+            page = doc[m.page]
+            x0, y0, x1, y1 = m.bbox
+            clip = pymupdf.Rect(x0 - EQ_PAD, y0 - EQ_PAD, x1 + EQ_PAD, y1 + EQ_PAD) & page.rect
+            if clip.is_empty or clip.width * clip.height * (EQ_DPI / 72) ** 2 > EQ_MAX_PIXELS:
+                continue
+            png = page.get_pixmap(clip=clip, dpi=EQ_DPI, colorspace=pymupdf.csGRAY, alpha=False).tobytes("png")
+            equation_path(book_id, m.id).write_bytes(png)
+            found[m.id] = (png, p.text)
+    if stop():
+        return {}
+    if found:
+        update_equations(book_id, {k: {"image": equation_url(book_id, k)} for k in found})
+    return found
+
+
+_eq_lock = threading.Lock()   # read-modify-write of book.json by the equation job's threads
+
+
+def update_equations(book_id: str, fields: dict[str, dict]) -> int:
+    """Set MathBlock fields ({equation id: {image|latex|spoken: value}}) in book.json and re-chunk those paragraphs.
+    Returns how many equations changed; nothing is written when book.json is gone (a deleted book)."""
+    from . import books
+    path = _book_json(book_id)
+    with _eq_lock:
+        try:
+            book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return 0
+        n = 0
+        for p in book.paragraphs:
+            new = fields.get(p.math.id) if p.math is not None else None
+            if not new:
+                continue
+            p.math = p.math.model_copy(update=new)
+            p.tts_chunks = chunk_paragraph(p, book)
+            n += 1
+        if n:
+            books.save_book(path, book)
+    return n
 
 
 def publish_book(book: Book) -> None:

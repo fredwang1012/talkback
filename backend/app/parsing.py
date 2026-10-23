@@ -2,10 +2,41 @@
 import re
 import unicodedata
 
-from .schema import Paragraph, Section
+from .schema import MathBlock, Paragraph, Section
 
 HEADING_MARK = "\x01"  # prefix pdf_to_text puts on headings found by font size alone
 CODE_MARK = "\x02"     # prefix pdf_to_text puts on a program / pseudocode listing (its lines separated by \n)
+# prefix pdf_to_text puts on a display equation: EQ_MARK "page x0 y0 x1 y1 garbled" EQ_SEP extracted text.
+# \x1c-\x1f count as whitespace for str.split and re's \s, so the separator must be below them.
+EQ_MARK = "\x03"
+EQ_SEP = "\x04"
+_EQ_NUMBER = re.compile(r"\s*\((\d{1,3}(?:\.\d{1,3}){0,2}[a-z]?)\)[.,;]?$")
+EQUATION_TEXT = "(equation)"  # the shown text of an equation whose glyphs did not extract at all
+
+
+def split_equation_number(text: str) -> tuple[str, str | None]:
+    """("y = 2x", "3.4") from "y = 2x, (3.4)": the trailing equation number, if any, taken off."""
+    m = _EQ_NUMBER.search(text)
+    if not m:
+        return text, None
+    return text[:m.start()].rstrip(" ,;"), m.group(1)
+
+
+def _equation(block: str, n: int) -> tuple[str, MathBlock] | None:
+    """(shown text, MathBlock) from an EQ_MARK block, or None when its header is malformed."""
+    head, sep, text = block[1:].partition(EQ_SEP)
+    parts = head.split()
+    if not sep or len(parts) != 6:
+        return None
+    try:
+        page, bbox, garbled = int(parts[0]), [float(v) for v in parts[1:5]], parts[5] == "1"
+    except ValueError:
+        return None
+    text = normalize(text)
+    _, number = split_equation_number(text)
+    return text or EQUATION_TEXT, MathBlock(id=f"e{n}", page=page, bbox=bbox, number=number, garbled=garbled)
+
+
 ROMAN = re.compile(r"^[IVXLC]+\.$")
 CURLY = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
 BLANK_LINE = re.compile(r"\n\s*\n")
@@ -65,9 +96,20 @@ def parse(raw: str, start_marker: str | None, end_marker: str | None,
     sections: list[Section] = []
     paragraphs: list[Paragraph] = []
     current = None
+    equations = 0
     for block in BLANK_LINE.split(body):
         block = block.strip()
         if not block:
+            continue
+        if block.startswith(EQ_MARK):
+            eq = _equation(block, equations + 1)
+            if eq is None:
+                continue
+            equations += 1
+            if current is None:
+                current = Section(id="s1", title="", start_para=len(paragraphs))
+                sections.append(current)
+            paragraphs.append(Paragraph(idx=len(paragraphs), section_id=current.id, text=eq[0], kind="math", math=eq[1]))
             continue
         if block.startswith(CODE_MARK):
             code = "\n".join(" ".join(ln.split()) for ln in block[1:].split("\n") if ln.strip())

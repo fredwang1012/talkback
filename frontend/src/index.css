@@ -22,6 +22,8 @@
   --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px; --s8: 72px;
   /* reading column */
   --measure: 40rem;
+  /* equation crops are black on white: inverted and screened onto the dark ground, multiplied onto the light one */
+  --math-img-filter: invert(1); --math-img-blend: screen;
 }
 
 @media (prefers-color-scheme: light) {
@@ -37,6 +39,7 @@
     --brass-soft: rgba(122, 90, 30, 0.25);
     --seal: #8c2f24;
     --seal-bright: #a8392b;
+    --math-img-filter: none; --math-img-blend: multiply;
   }
 }
 
@@ -196,6 +199,15 @@ button:disabled { cursor: not-allowed; }
 }
 .para .sentence .word { background: var(--brass); color: var(--ground); border-radius: 2px; padding: 0 1px; }
 .para .gap { white-space: pre-wrap; }
+.para.para-math { text-align: center; overflow-x: auto; overflow-y: hidden; margin-block: 1em; }
+.para.para-math .sentence { display: block; padding: 0.25em 0.5em; }
+.para.para-math .katex-display { margin: 0; }
+.para.para-math .math-img {
+  display: block; margin: 0 auto; max-width: 100%; height: auto;
+  filter: var(--math-img-filter); mix-blend-mode: var(--math-img-blend); opacity: 0.8;
+}
+.para.para-math .sentence.active .math-img, .para.para-math .sentence:hover .math-img { opacity: 1; }
+.para.para-math .math-text { font-style: italic; }
 .para.para-code {
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 0.95rem; line-height: 1.5;
   white-space: pre-wrap; overflow-x: auto; background: var(--ground-sunk); padding: 0.75em 1em; border-radius: 6px;

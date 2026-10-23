@@ -9,13 +9,25 @@ export type TtsChunk = {
   char_start: number;
   char_end: number;
 };
+/** A display equation of an uploaded textbook: its cropped picture and, once Gemini has read it, LaTeX and a spoken form. */
+export type MathBlock = {
+  id: string;
+  page: number;
+  bbox: number[];
+  number?: string | null; // "3.4"
+  garbled?: boolean;      // the paragraph text is not a faithful reading of the equation
+  image?: string | null;
+  latex?: string | null;
+  spoken?: string | null;
+};
 export type Paragraph = {
   idx: number;
   section_id: string;
   text: string;
   segments: Segment[];
   tts_chunks: TtsChunk[];
-  kind?: "code" | null; // textbook code listing: shown in a code font, not read aloud
+  kind?: "code" | "math" | null; // code: a textbook listing, shown in a code font, not read aloud; math: an equation
+  math?: MathBlock | null;
 };
 export type Character = {
   id: string;

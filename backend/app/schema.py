@@ -46,13 +46,28 @@ class TtsChunk(BaseModel):
     char_end: int
 
 
+class MathBlock(BaseModel):
+    """A display equation of an uploaded PDF textbook: where it sits on the page, its picture, and (when Gemini read
+    the picture) its LaTeX and how to say it. The paragraph's `text` keeps the extracted glyphs as the last fallback."""
+    id: str                     # "e12": names the cropped picture
+    page: int                   # 0-based PDF page
+    bbox: list[float]           # x0, y0, x1, y1 in PDF points
+    number: str | None = None   # "3.4" when the equation ends in "(3.4)"
+    garbled: bool = False       # the extracted text is no faithful reading (stacked fractions, big operators, accents)
+    image: str | None = None    # URL of the cropped picture
+    latex: str | None = None
+    spoken: str | None = None
+
+
 class Paragraph(BaseModel):
     idx: int
     section_id: str
     text: str
     segments: list[Segment] = []
     tts_chunks: list[TtsChunk] = []
-    kind: Literal["code"] | None = None  # "code": a program / pseudocode listing, shown but not read aloud
+    # "code": a program / pseudocode listing, shown but not read aloud; "math": a display equation (see `math`)
+    kind: Literal["code", "math"] | None = None
+    math: MathBlock | None = None
 
 
 class Character(BaseModel):
