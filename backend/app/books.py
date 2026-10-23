@@ -71,13 +71,24 @@ def _series_entries() -> list[tuple[str, str, int]]:
     return entries
 
 
+def same_library(a: str, b: str) -> bool:
+    """Built-in books join built-in books; an upload ("u-" id) only joins uploads of the same owner, so one account's
+    book never feeds another account's recap or answers (#115)."""
+    if a.startswith("u-") != b.startswith("u-"):
+        return False
+    if not a.startswith("u-"):
+        return True
+    from . import users
+    return users.book_owner_ns(a) == users.book_owner_ns(b)
+
+
 def earlier_in_series(book: Book) -> list[Book]:
-    """Books of the same series that come before `book`, in series order (all already read by its reader)."""
+    """Books of the same series and library that come before `book`, in series order (all already read by its reader)."""
     if not book.series or book.series_index is None:
         return []
     out = []
     for bid, series, idx in _series_entries():
-        if series == book.series and idx < book.series_index:
+        if series == book.series and idx < book.series_index and same_library(book.id, bid):
             other = load_book(bid)
             if other:
                 out.append(other)

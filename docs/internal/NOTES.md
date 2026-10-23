@@ -813,3 +813,11 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   9642 of ~104k chunks change, 806k chars, $12.09 if every changed chunk were re-voiced (HP1-7 $10.15, five classics
   $1.09, IR textbook $0.85); only 16 changed chunks ($0.05) have audio in the local cache under the book's own voice.
   `pause` makes up ~85% of the changes; real sfx hits are rare (HP1-7: 8 cough/screaming, classics: 0).
+## Upload parity (#115)
+- Audit of built-in vs uploaded books: uploads already match on cast, aliases, first_para, emotions/styles, stand-ins,
+  summaries and index. Gaps fixed: the #17 attribution pass now always runs after segmentation (it ran only inside the
+  MINOR_VOICES pass); the cast call also returns `series` / `series_index` (slugged, e.g. "harry-potter"; a series
+  already set is kept); `books.earlier_in_series` only joins books of the same library (built-in with built-in, an
+  upload with the same owner's uploads).
+- Left as proposals: textbook summaries (~$0.05 per 100K chars, IR book ~$1.60), personas from earliest spoken lines
+  (+~$0.004/novel, changes the spoiler window), resegment with a stronger tier, PDF cover image (free).
