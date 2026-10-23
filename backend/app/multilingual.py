@@ -94,7 +94,7 @@ async def translate(text: str) -> str:
     from .gcp import usage
     global _client
     if _client is None:
-        _client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gcp_region)
+        _client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
     config = types.GenerateContentConfig(system_instruction=TRANSLATE_SYSTEM, temperature=0, max_output_tokens=200,
                                          thinking_config=types.ThinkingConfig(thinking_budget=0))
     try:
