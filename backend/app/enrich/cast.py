@@ -27,7 +27,7 @@ class CastCharacter(BaseModel):
     aliases: list[str] = Field(description="every way the text refers to this character, e.g. 'Hagrid', 'Rubeus Hagrid'")
     first_para: int = Field(description="index of the first paragraph where this character appears (speaks or is mentioned)")
     gender: Literal["male", "female", "unknown"]
-    persona: str = Field(description="at most 3 sentences: personality, speaking style, verbal tics")
+    persona: str = Field(description="at most 4 sentences: concrete speaking style, self-reference, signature words and verbal tics")
     voice: Voice
     voice_tags: VoiceTag
 
@@ -46,7 +46,7 @@ Rules:
 - The narrator's voice must equal that character's voice.
 - Available voices: chloe (female, friendly, clear), eleanor (female, calm, professional), jake (male, energetic, dramatic), marcus (male, enthusiastic, professorial), nora (female, calm, narrative), oliver (male, calm, thoughtful, reflective).
 - Give each character the voice that fits their gender, age and temperament. Voices may be shared only when there are more characters than voices; then differentiate with voice_tags (pitch_low, pitch_high, speed_slow, speed_fast). Use "" when no tag is needed.
-- Personas are at most 3 sentences, written to be spoken in first person by a roleplay actor: temperament, how they talk, verbal tics. Use only facts from the text. Do not reveal plot twists or the ending in any persona.
+- Personas are at most 4 sentences of direction to a roleplay actor: concrete speech habits (how they refer to themselves and others, signature words, dialect, quoted example phrases), not generic adjectives. Use only facts from the text. Do not reveal plot twists or the ending in any persona.
 - Paragraphs are numbered [0], [1], ... Use those numbers for first_para."""
 
 class MainCharacter(BaseModel):
@@ -78,6 +78,12 @@ Rules:
 - aliases: every name the text uses for them, as written. Never use a bare common word, or a name shared with another character.
 - Paragraphs are numbered [0], [1], ... Use those numbers for first_para."""
 
+PERSONA_GUIDE = """Make it specific to THIS character, never a generic type:
+- Name concrete speech habits: how they refer to themselves and to others (even if odd, such as third person, or a title for everyone), signature words and sentence shape, dialect or non-standard grammar, and what their speech does when they are nervous, angry or excited.
+- Quote one or two short phrases that appear in the text given, as models of the voice.
+- Do not lean on bare adjectives such as friendly, wise, kind, nervous or mysterious: tie every trait to something audible. Keep canon speech habits as they are in the text.
+- Write it as direction to the actor ("Speaks ...", "Drops ..."), not as "I speak"."""
+
 PERSONA_PARAS = 40  # a persona is written from the paragraphs up to first_para + this many (earliest lines only)
 
 
@@ -87,8 +93,9 @@ class PersonaResult(BaseModel):
 
 
 PERSONA_SYSTEM = """You describe how one character comes across in their earliest lines of a story, for a roleplay actor who will speak as them.
-Write at most 3 sentences about MANNER only: temperament, diction, how they address others, verbal tics. Describe them ONLY as they come across in the text given.
-Do not state plot facts, secrets, relationships, events or outcomes, and do not use outside knowledge of the book or anything that comes later."""
+Write at most 4 sentences about MANNER only: temperament, diction, how they address others, verbal tics. Describe them ONLY as they come across in the text given.
+{guide}
+Do not state plot facts, secrets, relationships, events or outcomes, and do not use outside knowledge of the book or anything that comes later.""".replace("{guide}", PERSONA_GUIDE)
 
 
 def persona_cutoff(book: Book, first_para: int) -> int:

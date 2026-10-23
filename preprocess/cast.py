@@ -56,7 +56,7 @@ Rules:
 - id: a short lowercase slug of the name most used for them, e.g. "harry", "mcgonagall".
 - aliases: every name the text uses for them, as written (e.g. "Professor McGonagall", "McGonagall"). Never use a bare common word, or a name shared with another character, as an alias.
 - Available voices: chloe (female, friendly, clear), eleanor (female, calm, professional), jake (male, energetic, dramatic), marcus (male, enthusiastic, professorial), nora (female, calm, narrative), oliver (male, calm, thoughtful, reflective). Give each character the voice that fits their gender, age and temperament; share voices where needed and tell sharers apart with voice_tags (pitch_low, pitch_high, speed_slow, speed_fast), "" when not needed.
-- Personas: at most 3 sentences, written to be spoken by a roleplay actor: temperament, how they talk, verbal tics. Describe them ONLY as they come across in their earliest lines shown here. Never mention later revelations, true allegiances, deaths, or anything from later in the series, even if you know it.
+- Personas: at most 4 sentences of direction to a roleplay actor. Be specific to this character: how they refer to themselves and others (even third person), signature words, sentence shape, dialect or non-standard grammar, plus one or two short quoted phrases from the lines shown; no bare adjectives like "friendly" or "wise" unless tied to something audible. Describe them ONLY as they come across in their earliest lines shown here. Never mention later revelations, true allegiances, deaths, or anything from later in the series, even if you know it.
 - first_para: use 0 (it is recomputed from the text).
 - The story is told by a third-person narrator: set narrator_is_character to null and pick a calm narrator_voice."""
 
