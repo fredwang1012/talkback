@@ -1,6 +1,7 @@
 import { isAutoplayBlock, TAP_TO_PLAY } from "../audio/mediaErrors";
 import type { ClipSync, VideoClip } from "../talk/sentencePlayer";
 import { gateVoiceOnClip, type ClipGate } from "../talk/startGate";
+import { rateFor, type SpeedTag } from "./naturalSpeed";
 import { prefetchEnd } from "./prefetch";
 import { nextChunk, type FlatChunk } from "./position";
 import { clipAheadFor, clipWindow, READ_CHAIN_WAIT_MS, READ_START_WAIT_MS, speechSeconds } from "./readLipSync";
@@ -35,7 +36,7 @@ export type Snapshot = { state: EngineState; index: number; error: string | null
 export type ClipSource = (chunk: FlatChunk, audioUrl: string, voice: string | undefined) => Promise<VideoClip> | null;
 
 export type EngineDeps = {
-  fetchTts: (chunk: FlatChunk, voiceOverride?: string) => Promise<TtsResult>;
+  fetchTts: (chunk: FlatChunk, voiceOverride?: string, speed?: SpeedTag | null) => Promise<TtsResult>;
   createAudio: (url: string) => AudioLike;
   sync?: ClipSync;        // the read-mode face's lip-sync video (talk/faceSync); clips are only opened with one
   startWaitMs?: number;   // the first word after Play waits this long at most for its clip
@@ -46,6 +47,7 @@ export type EngineDeps = {
 type Loaded = { audio: AudioLike; timestamps: WordTiming[] | null; url: string; voice: string | undefined };
 type Entry = {
   promise: Promise<Loaded>; resolved: boolean; voice: string | undefined; loaded?: Loaded;
+  speed: SpeedTag | null; // natural speed (#78): the Boson speed tag the audio was voiced with (null: plain audio)
   video?: Promise<VideoClip | null>; // the chunk's lip-sync clip, once opened (null: none, or the render failed)
   clipJoined?: boolean;              // the clip was attached to the face: starting this chunk over needs a fresh one
 };
@@ -65,6 +67,7 @@ export class ReaderEngine {
   private index = 0;
   private error: string | null = null;
   private speed = 1;
+  private speedTag: SpeedTag | null = null; // natural speed (#78): new fetches carry this tag and play at 1.0x
   private narratorOnlyVoice: string | null = null; // set when "full cast" is off
   private voiceResolver: ((chunk: FlatChunk) => string | undefined) | null = null; // local cast: voice per chunk
   private currentVoice: string | undefined;
@@ -110,13 +113,13 @@ export class ReaderEngine {
     let e = this.entries.get(i);
     if (!e) {
       const chunk = this.chunks[i];
-      const entry: Entry = { resolved: false, voice: this.voiceOf(i), promise: null as unknown as Promise<Loaded> };
-      entry.promise = this.deps.fetchTts(chunk, entry.voice).then((r) => {
+      const entry: Entry = { resolved: false, voice: this.voiceOf(i), speed: this.speedTag, promise: null as unknown as Promise<Loaded> };
+      entry.promise = (entry.speed ? this.deps.fetchTts(chunk, entry.voice, entry.speed) : this.deps.fetchTts(chunk, entry.voice)).then((r) => {
         const audio = this.deps.createAudio(r.audio_url);
         audio.preload = "auto";
         audio.load?.(); // start downloading the audio now so the chunk is buffered when its turn comes
         audio.preservesPitch = true;
-        audio.playbackRate = this.speed;
+        audio.playbackRate = rateFor(this.speed, entry.speed);
         entry.resolved = true;
         entry.loaded = { audio, timestamps: r.timestamps, url: r.audio_url, voice: entry.voice ?? r.voice };
         return entry.loaded;
@@ -173,7 +176,8 @@ export class ReaderEngine {
   private speechAt(k: number): number {
     const d = this.entries.get(k)?.loaded?.audio.duration;
     const s = typeof d === "number" && Number.isFinite(d) && d > 0 ? d : speechSeconds(this.chunks[k]?.tts_text ?? "");
-    return s / (this.speed > 0 ? this.speed : 1);
+    const rate = rateFor(this.speed, this.entries.get(k)?.speed ?? this.speedTag);
+    return s / (rate > 0 ? rate : 1);
   }
 
   /** The chunk's clip, opened once its audio is known. `fresh`: the chunk starts over, so a clip that was already
@@ -289,7 +293,7 @@ export class ReaderEngine {
       this.current = loaded;
       this.currentVoice = entry.voice;
       loaded.audio.currentTime = at;
-      loaded.audio.playbackRate = this.speed;
+      loaded.audio.playbackRate = rateFor(this.speed, entry.speed);
       loaded.audio.onended = () => this.handleEnded(gen);
       await loaded.audio.play();
       if (gen !== this.gen) return;
@@ -364,10 +368,26 @@ export class ReaderEngine {
   next(): void { this.seek(this.index + 1); }
   prev(): void { this.seek(this.index - 1); }
 
-  setSpeed(speed: number): void {
+  /** `tag`: natural speed (#78), the Boson speed tag for this speed (null: plain audio at playbackRate). Audio voiced
+   * with another tag is stale: only the window [current, prefetchEnd] is fetched again, never the whole book, and the
+   * chunk playing now finishes in the voice it has (at the rate that matches it). */
+  setSpeed(speed: number, tag: SpeedTag | null = null): void {
+    const changed = tag !== this.speedTag;
     this.speed = speed;
-    if (this.current) this.current.audio.playbackRate = speed;
-    for (const e of this.entries.values()) e.promise.then((l) => { l.audio.playbackRate = speed; }).catch(() => {});
+    this.speedTag = tag;
+    if (changed) {
+      for (const [k, e] of [...this.entries]) {
+        if (e.speed === tag) continue;
+        if (e.loaded && e.loaded === this.current) continue; // keeps playing; its clip stays with it
+        this.dropEntry(k, e);
+      }
+    }
+    if (this.current) {
+      const cur = [...this.entries.values()].find((e) => e.loaded === this.current);
+      this.current.audio.playbackRate = rateFor(speed, cur ? cur.speed : tag);
+    }
+    for (const e of this.entries.values()) e.promise.then((l) => { l.audio.playbackRate = rateFor(speed, e.speed); }).catch(() => {});
+    if (changed && this.wantPlay && (this.state === "playing" || this.state === "loading")) this.prefetchFrom(this.index);
   }
 
   /** Full cast off: read everything in the narrator's voice. Applies at once, mid-chunk if playing. */

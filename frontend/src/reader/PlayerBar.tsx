@@ -3,6 +3,7 @@ import RecapMenu, { type RecapChoice } from "./RecapMenu";
 type Props = {
   playing: boolean; onToggle: () => void; onPrev: () => void; onNext: () => void;
   speed: number; speeds: number[]; onSpeed: (s: number) => void;
+  naturalSpeed?: boolean; onNaturalSpeed?: (v: boolean) => void; // #78: re-voice with Boson speed tags (hidden when absent)
   onVoices: () => void;
   autoResume: boolean; onAutoResume: (v: boolean) => void;
   hasFigures?: boolean; readCaptions?: boolean; onReadCaptions?: (v: boolean) => void; // textbook figures (#40)
@@ -36,6 +37,12 @@ export default function PlayerBar(p: Props) {
           {p.speeds.map((s) => <option key={s} value={s}>{s}x</option>)}
         </select>
       </label>
+      {p.onNaturalSpeed && p.audioAvailable && (
+        <label title="Natural speed re-voices the audio at 0.75x, 1.25x and 1.5x. It uses Boson credit.">
+          <input type="checkbox" checked={!!p.naturalSpeed} onChange={(e) => p.onNaturalSpeed?.(e.target.checked)} />
+          Natural speed
+        </label>
+      )}
       <button className="recap-btn" onClick={p.onVoices}>Voices</button>
       <label>
         <input type="checkbox" checked={p.autoResume} onChange={(e) => p.onAutoResume(e.target.checked)} />
@@ -55,7 +62,9 @@ export default function PlayerBar(p: Props) {
           : p.audioNotice
             ? p.audioNotice
             : p.audioAvailable
-            ? p.loading ? "Preparing audio…" : "Reading aloud. Click a sentence to jump."
+            ? p.loading ? "Preparing audio…"
+              : p.naturalSpeed ? "Natural speed re-voices audio at 0.75x, 1.25x and 1.5x (uses Boson credit)."
+              : "Reading aloud. Click a sentence to jump."
             : "No audio yet: play moves through the text at an estimated reading pace. Voices need the Boson API key."}
       </p>
     </footer>
