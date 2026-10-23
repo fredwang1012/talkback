@@ -673,6 +673,26 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   The session still sets `noise_reduction: near_field`. If Boson adds `create_response: false`, `server_vad` with
   `threshold` ~0.6-0.7 (its default moved to 0.85) would replace the local gate.
 
+## Spoken turns live: tool calls, barge-in leftovers, hands-free echo (#102, #97, #99, #100, #103, 2026-10-23)
+- Spoken commands failed where typed ones worked because the *question* was lost, not the tool. `pttUp` waited a fixed
+  2.5 s for the transcript from the key release; on the first turn of a session the commit is deferred until the socket
+  opens (key fetch + connect), and STT runs after that, so the window expired, the query was "" and it still went to
+  Gemini (`/api/answer` -> "The answer could not be generated") or to retrieval. Now `beginTurn` keeps the
+  ensureOpen/interrupt promises, `pttUp` awaits them, the window (6 s) starts at the real commit, an empty or failed
+  transcript ends the turn with "I didn't catch that" and never asks an empty question (#99 as well).
+- `parseIntent` strips transcription prose ("Okay, read chapter 2, please!" / "Could you ...?") before matching.
+- Realtime: every `returnTools()` re-arms the 15 s answer watchdog (a tool call's continuation is a new response that can
+  go missing); only the latest watchdog acts. A typed question is sent as a user `input_text` item before
+  `response.create` (#97): the instructions carry the passages, not the question.
+- Barge-in (#100): the old answer's `output_audio.delta` / caption deltas keep arriving after the local flush (the server
+  runs ahead of real time); TalkClient drops all output from the interrupt until the next `response.created`. The mic
+  starts at once; audio and the commit are held in the client until the cancel is acknowledged (`response.done` or
+  `response_not_active`), then sent in order. A cancel never acknowledged fails the turn with a message.
+- Boson's AssistantItem content takes `{type: "text"}`; `output_text` (history seeding) was rejected with 22 pydantic errors.
+- Hands-free echo (#103): `getUserMedia` asks for echoCancellation + noiseSuppression + autoGainControl. While the
+  character speaks (and 300 ms after) the gate uses `HANDS_FREE_OVER_SPEECH` (0.10 RMS for 400 ms) instead of the idle
+  profile (0.04 for 150 ms): residual echo and a cough do not interrupt, clear sustained speech does, the mic button /
+  Space always does. The toggle says "Hands-free (use headphones)".
 ## Short chunks: voice before face (#104, 2026-10-23, fake-clock tests, no Boson calls)
 - Cause (read mode): (1) when a chunk's voice ended, FaceSync kept the old clip attached and SHOWN, frozen on its last
   frame ('pause' arrives before 'ended'), until the next clip joined; (2) the next clip opened only when the current
@@ -694,26 +714,6 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   therefore waits longer before its first word, and if the render still falls behind the face drops to the talk loop
   and rejoins (unchanged fallback). Talkback answers and recaps have no speed control, so they are unaffected.
 
-## Spoken turns live: tool calls, barge-in leftovers, hands-free echo (#102, #97, #99, #100, #103, 2026-10-23)
-- Spoken commands failed where typed ones worked because the *question* was lost, not the tool. `pttUp` waited a fixed
-  2.5 s for the transcript from the key release; on the first turn of a session the commit is deferred until the socket
-  opens (key fetch + connect), and STT runs after that, so the window expired, the query was "" and it still went to
-  Gemini (`/api/answer` -> "The answer could not be generated") or to retrieval. Now `beginTurn` keeps the
-  ensureOpen/interrupt promises, `pttUp` awaits them, the window (6 s) starts at the real commit, an empty or failed
-  transcript ends the turn with "I didn't catch that" and never asks an empty question (#99 as well).
-- `parseIntent` strips transcription prose ("Okay, read chapter 2, please!" / "Could you ...?") before matching.
-- Realtime: every `returnTools()` re-arms the 15 s answer watchdog (a tool call's continuation is a new response that can
-  go missing); only the latest watchdog acts. A typed question is sent as a user `input_text` item before
-  `response.create` (#97): the instructions carry the passages, not the question.
-- Barge-in (#100): the old answer's `output_audio.delta` / caption deltas keep arriving after the local flush (the server
-  runs ahead of real time); TalkClient drops all output from the interrupt until the next `response.created`. The mic
-  starts at once; audio and the commit are held in the client until the cancel is acknowledged (`response.done` or
-  `response_not_active`), then sent in order. A cancel never acknowledged fails the turn with a message.
-- Boson's AssistantItem content takes `{type: "text"}`; `output_text` (history seeding) was rejected with 22 pydantic errors.
-- Hands-free echo (#103): `getUserMedia` asks for echoCancellation + noiseSuppression + autoGainControl. While the
-  character speaks (and 300 ms after) the gate uses `HANDS_FREE_OVER_SPEECH` (0.10 RMS for 400 ms) instead of the idle
-  profile (0.04 for 150 ms): residual echo and a cough do not interrupt, clear sustained speech does, the mic button /
-  Space always does. The toggle says "Hands-free (use headphones)".
 
 ## Lip-sync for any voice x face (#113)
 - Before: lip-sync requests sent only the voice and the server animated `faces.voice_face_path(voice)`, so only a
