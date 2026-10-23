@@ -241,3 +241,20 @@ def is_scene_break(text: str) -> bool:
     if not t or len(t) > SCENE_BREAK_MAX:
         return False
     return all(c in _BREAK_CHARS or c.isspace() for c in t) and any(c in _BREAK_MARKS for c in t)
+
+
+# ---------- natural reading speed (#78) ----------
+
+SPEEDS = ("very_slow", "slow", "fast", "very_fast")  # Boson prosody:speed_* values (~0.65x, 0.85x, 1.2x, 1.4x)
+_SPEED_TAG = re.compile(r"<\|prosody:speed_[a-z_]+\|>")
+
+
+def apply_speed(tts_text: str, speed: str | None) -> str:
+    """tts_text with a Boson speed tag first (a delivery token: at the start it covers the whole chunk). None: unchanged.
+
+    A speed tag already in the text (the cast's voice tag) is replaced, since a second one would fight the first."""
+    if speed is None:
+        return tts_text
+    if speed not in SPEEDS:
+        raise ValueError(f"unknown speed '{speed}'")
+    return f"<|prosody:speed_{speed}|>" + _SPEED_TAG.sub("", tts_text)
