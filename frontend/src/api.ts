@@ -187,7 +187,7 @@ export async function fetchRetrieve(bookId: string, query: string, readerPara: n
  */
 export async function streamAnswer(
   bookId: string, query: string, readerPara: number, speakerId: string,
-  onSentence: (text: string) => void, signal?: AbortSignal, spoilers = false,
+  onSentence: (text: string, emotion?: string) => void, signal?: AbortSignal, spoilers = false,
   history: { role: "user" | "character"; text: string }[] = [],
 ): Promise<void> {
   const res = await timedFetch("/api/answer", {
@@ -209,9 +209,11 @@ export async function streamAnswer(
   let buf = "";
   const handle = (line: string) => {
     if (!line.trim()) return;
-    let msg: { type?: string; text?: string; message?: string };
+    let msg: { type?: string; text?: string; message?: string; emotion?: unknown };
     try { msg = JSON.parse(line); } catch { return; } // tolerate a garbled line
-    if (msg.type === "sentence" && typeof msg.text === "string") onSentence(msg.text);
+    if (msg.type === "sentence" && typeof msg.text === "string") {
+      onSentence(msg.text, typeof msg.emotion === "string" && msg.emotion ? msg.emotion : undefined); // #14
+    }
     else if (msg.type === "error") throw new Error(msg.message || "The answer failed.");
   };
   try {
@@ -235,12 +237,15 @@ export async function streamAnswer(
   }
 }
 
-/** Synthesises one sentence in a voice (cached server-side) and returns where to fetch the audio. */
-export async function speak(text: string, voice: string): Promise<TtsResponse> {
+/**
+ * Synthesises one sentence in a voice (cached server-side) and returns where to fetch the audio. `emotion` (#14) is an
+ * answer sentence's feeling; the server checks it and sends it to Boson as a delivery tag.
+ */
+export async function speak(text: string, voice: string, emotion?: string): Promise<TtsResponse> {
   const res = await timedFetch("/api/speak", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ text, voice }),
+    body: JSON.stringify({ text, voice, ...(emotion ? { emotion } : {}) }),
   }, 30000);
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);

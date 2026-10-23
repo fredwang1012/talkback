@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .config import settings
 from .enrich import pipeline, spend
 from .enrich.llm import SpendLimit, make_llm, price_usd
+from . import emotion
 from .personas import build_answer_prompt
 from .ratelimit import TokenBucket, client_key, normalize_ip
 from .schema import Book, ChatTurn, Character, Paragraph, Section
@@ -568,7 +569,7 @@ async def public_answer(req: AnswerRequest, request: Request):
         answer_budget.mark_started(token)
         _started_slots[slot] = time.monotonic()
         deadline = asyncio.get_running_loop().time() + ANSWER_DEADLINE_SECONDS
-        gen = get_public_answerer().stream_sentences(system, user, on_usage=on_usage)
+        gen = emotion.tag_sentences(get_public_answerer().stream_sentences(system, user, on_usage=on_usage))
         try:
             try:
                 it = gen.__aiter__()
@@ -576,10 +577,10 @@ async def public_answer(req: AnswerRequest, request: Request):
                     remaining = deadline - asyncio.get_running_loop().time()
                     try:
                         async with asyncio.timeout(max(remaining, 0.0)):
-                            sentence = await it.__anext__()
+                            sentence, feeling = await it.__anext__()
                     except StopAsyncIteration:
                         break
-                    yield json.dumps({"type": "sentence", "text": sentence}, ensure_ascii=False) + "\n"
+                    yield json.dumps(emotion.sentence_line(sentence, feeling), ensure_ascii=False) + "\n"
                     if deadline - asyncio.get_running_loop().time() <= 0:
                         raise TimeoutError
             except TimeoutError:
