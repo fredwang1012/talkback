@@ -1,7 +1,7 @@
 """Split paragraphs into Boson TTS chunks (<= 280 chars, sentence-aligned). Shared by preprocess/chunk_tts.py and uploads."""
 import re
 
-from .delivery import apply_styles, detect_expressive, is_scene_break, speech_tag, with_sfx
+from .delivery import SONG_MAX_PARAS, apply_styles, detect_expressive, is_scene_break, speech_tag, sung_from, with_sfx
 from .schema import Book, Paragraph, Segment, TtsChunk
 from .textnorm import normalize_for_tts
 
@@ -110,6 +110,41 @@ def lead_pause(p: Paragraph, book: Book) -> str | None:
     return None
 
 
+def _groups(p: Paragraph, text: str, base: int) -> list[tuple[int, int]]:
+    """Whole sentences packed greedily up to MAX_CHARS (over-long sentences split first), as paragraph offsets.
+    Inline math (#41) is measured by its spoken form."""
+    pieces: list[tuple[int, int]] = []
+    for s, e in sentence_spans(text):
+        if e - s > MAX_CHARS:
+            pieces += split_long(text[s:e], base + s)
+        else:
+            pieces.append((base + s, base + e))
+    if p.inline_math:
+        pieces = [q for s, e in pieces for q in _fit_pieces(p, s, e)]
+    groups: list[tuple[int, int]] = []
+    for s, e in pieces:
+        if groups and len(spoken_text(p, groups[-1][0], e)) <= MAX_CHARS:
+            groups[-1] = (groups[-1][0], e)
+        else:
+            groups.append((s, e))
+    return groups
+
+
+def sing_offset(p: Paragraph, book: Book) -> int | None:
+    """Offset in p.text from which the paragraph is sung (#74), or None. Looks back over the same chapter only."""
+    if p.kind == "code" or len(p.text) > 4000:
+        return None
+    starts = {s.start_para for s in book.sections}
+    prev: list[str] = []
+    cur = p
+    while len(prev) <= SONG_MAX_PARAS and cur.idx not in starts:
+        cur = _prev_paragraph(cur, book)
+        if cur is None:
+            break
+        prev.insert(0, cur.text)
+    return sung_from(prev, p.text)
+
+
 CODE_SPOKEN = "Code listing skipped."
 EQUATION_SPOKEN = "Equation."
 
@@ -186,6 +221,7 @@ def chunk_paragraph(p: Paragraph, book: Book, *, expressive: bool = True) -> lis
     chunks: list[TtsChunk] = []
     cursor = 0
     pause = lead_pause(p, book) if expressive else None
+    sing_at = sing_offset(p, book) if expressive else None
     for si, seg in enumerate(segments):
         seg_text = seg.text.strip()
         if not seg_text:
@@ -198,30 +234,26 @@ def chunk_paragraph(p: Paragraph, book: Book, *, expressive: bool = True) -> lis
             voice, tags = chars[seg.speaker].voice, chars[seg.speaker].voice_tags
         else:
             voice, tags = narrator_voice, ""
-        # pack whole sentences greedily up to MAX_CHARS; over-long sentences are split first
-        pieces: list[tuple[int, int]] = []
-        for s, e in sentence_spans(seg_text):
-            if e - s > MAX_CHARS:
-                pieces += split_long(seg_text[s:e], base + s)
-            else:
-                pieces.append((base + s, base + e))
-        if p.inline_math:
-            pieces = [q for s, e in pieces for q in _fit_pieces(p, s, e)]
-        groups: list[tuple[int, int]] = []
-        for s, e in pieces:
-            if groups and len(spoken_text(p, groups[-1][0], e)) <= MAX_CHARS:
-                groups[-1] = (groups[-1][0], e)
-            else:
-                groups.append((s, e))
         is_char = seg.speaker in chars
-        extra = {"tag": speech_tag(segments, si), "expressive": detect_expressive(segments, si)}             if expressive and is_char else {}
-        for s, e in groups:
-            spoken = spoken_text(p, s, e)
-            text = build_tts_text(spoken, tags, seg.emotion, seg.style, sfx=is_char, pause=pause, **extra)                 if expressive else _legacy_tts_text(spoken, tags, seg.emotion, seg.style, is_char)
-            pause = None  # only the paragraph's first chunk
-            chunks.append(TtsChunk(
-                id=f"p{p.idx}c{len(chunks)}", speaker=seg.speaker if is_char else "narrator",
-                voice=voice, tts_text=text, char_start=s, char_end=e))
+        extra = ({"tag": speech_tag(segments, si), "expressive": detect_expressive(segments, si)}
+                 if expressive and is_char else {})
+        parts = [(base, seg_text)]
+        if sing_at is not None and base < sing_at < cursor:  # the song starts inside this segment (after 'sing:')
+            parts = [(base, p.text[base:sing_at].rstrip()), (sing_at, p.text[sing_at:cursor])]
+        for part_base, part_text in parts:
+            sung = sing_at is not None and part_base >= sing_at
+            for s, e in _groups(p, part_text, part_base):
+                spoken = spoken_text(p, s, e)
+                if not expressive:
+                    text = _legacy_tts_text(spoken, tags, seg.emotion, seg.style, is_char)
+                elif sung:  # singing replaces whisper/shout; no sfx or expressive_* inside a song
+                    text = build_tts_text(spoken, tags, seg.emotion, "singing", pause=pause)
+                else:
+                    text = build_tts_text(spoken, tags, seg.emotion, seg.style, sfx=is_char, pause=pause, **extra)
+                pause = None  # only the paragraph's first chunk
+                chunks.append(TtsChunk(
+                    id=f"p{p.idx}c{len(chunks)}", speaker=seg.speaker if is_char else "narrator",
+                    voice=voice, tts_text=text, char_start=s, char_end=e))
     return chunks
 
 
