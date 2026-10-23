@@ -154,7 +154,7 @@ export default function Reader({ bookId }: { bookId: string }) {
         speech = { ...SPEECH_IDLE, speaking: sounding };
       } else {
         levelRef.current = lvl;
-        speech = sounding ? stepSpeech(speech, lvl, now - last) : SPEECH_IDLE;
+        speech = sounding ? stepSpeech(speech, lvl, now - last) : { ...SPEECH_IDLE, peak: speech.peak }; // keep the voice's peak across pauses
       }
       last = now;
       setReadSpeaking((cur) => (cur === speech.speaking ? cur : speech.speaking));
