@@ -115,6 +115,21 @@ def test_a_body_sentence_starting_with_figure_is_not_a_caption(tmp_path):
     assert "Figure 2.1 shows" in text and not figure_paras(text)
 
 
+def test_a_figure_and_a_display_equation_on_one_page_stay_apart(tmp_path):
+    """#40 and #41 together: each keeps its own marker, the equation stays a math paragraph beside the figure."""
+    def page(p):
+        prose(p, 60, 200)
+        p.insert_text((200, 232), "y = b + a x + e", fontsize=11, fontname="symb")
+        p.insert_text((470, 232), "(3.4)", fontsize=11)
+        prose(p, 255, 330, AFTER)
+        y = table_figure(p, 370)
+        prose(p, y + 10, y + 150)
+    book = build_book("u-x-00000000", "T", "", "textbook", pdf_to_text(build(page, lambda p: prose(p, 60, 300)), tmp_path))
+    kinds = [(p.kind, p.figure or (p.math.number if p.math else None)) for p in book.paragraphs if p.kind]
+    assert kinds == [("math", "3.4"), ("figure", "fig-1.png")]
+    assert not any(c in p.text for p in book.paragraphs for c in "\x02\x03\x04\x05")
+
+
 def test_parse_and_build_book_make_figure_paragraphs_for_textbooks_only():
     raw = "Intro text here.\n\n" + FIGURE_MARK + "fig-1.png\nFigure 1.1: A matrix.\n\nMore text."
     _, paras = parse(raw, None, None)

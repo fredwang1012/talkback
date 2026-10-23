@@ -1,5 +1,7 @@
 import { Fragment, memo } from "react";
-import type { Book } from "../api";
+import "katex/dist/katex.min.css";
+import type { Book, Paragraph } from "../api";
+import { equationView, imageWidth } from "./equation";
 import type { FlatChunk } from "./position";
 import ChapterList from "./ChapterList";
 import Figure from "./Figure";
@@ -59,6 +61,24 @@ function BookText({ book, chunks, index, onPick, word }: Props) {
       </header>
       {chapterNav}
       {book.paragraphs.slice(from, to).map((p) => {
+        const section = sectionAt.get(p.idx);
+        const heading = section && section.title && <h2 className="section-mark">{cleanTitle(section.title)}</h2>;
+        if (p.kind === "math") {
+          const c = p.tts_chunks[0];
+          const i = c ? indexById.get(c.id) ?? 0 : -1;
+          const state = i === index ? "active" : i < index ? "past" : "";
+          return (
+            <Fragment key={p.idx}>
+              {heading}
+              <div className="para para-math" data-para={p.idx}>
+                <span className={`sentence ${state}`} data-active={i === index} role="button" tabIndex={-1}
+                      onClick={() => i >= 0 && onPick(i)}>
+                  <Equation p={p} />
+                </span>
+              </div>
+            </Fragment>
+          );
+        }
         const parts: React.ReactNode[] = [];
         let cursor = 0;
         for (const c of p.tts_chunks) {
@@ -80,10 +100,9 @@ function BookText({ book, chunks, index, onPick, word }: Props) {
           cursor = c.char_end;
         }
         if (cursor < p.text.length) parts.push(<span className="gap" key="tail">{p.text.slice(cursor)}</span>);
-        const section = sectionAt.get(p.idx);
         return (
           <Fragment key={p.idx}>
-            {section && section.title && <h2 className="section-mark">{cleanTitle(section.title)}</h2>}
+            {heading}
             {p.kind === "figure" && p.figure
               ? <Figure bookId={book.id} name={p.figure} caption={p.text} para={p.idx}>{parts}</Figure>
               : <p className={p.kind === "code" ? "para para-code" : "para"} data-para={p.idx}>{parts}</p>}
@@ -93,6 +112,17 @@ function BookText({ book, chunks, index, onPick, word }: Props) {
       {chapterNav}
     </article>
   );
+}
+
+/** A display equation: typeset from its LaTeX, else the picture cropped from the PDF, else the extracted text. */
+function Equation({ p }: { p: Paragraph }) {
+  const view = equationView(p.math);
+  const spoken = p.tts_chunks[0]?.tts_text ?? p.text;
+  if (view.kind === "latex") return <span className="math-tex" dangerouslySetInnerHTML={{ __html: view.html }} />;
+  if (view.kind === "image") {
+    return <img className="math-img" src={view.src} alt={spoken} loading="lazy" style={{ width: imageWidth(p.math) }} />;
+  }
+  return <span className="math-text">{p.text}</span>;
 }
 
 /** The sentence being read, with the word currently spoken marked. */

@@ -633,6 +633,30 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   sees the title page, is then asked for the list (schema `authors: list[str]`), and its answer replaces the metadata.
   When no LLM can be used the metadata string is kept as is.
 
+## Display equations in uploaded textbooks (#41, 2026-10-23)
+- PDFs keep drawn glyphs, not LaTeX, so equations extracted as garbled text ("ˆβ1 = Pn i=1..."). Now, during PDF
+  extraction (ingest_upload._mark_math), a display equation becomes its own paragraph (`kind="math"`, `math: MathBlock`
+  with page, bbox, number): math-font lines (CMMI/CMSY/CMEX..., Symbol, *Math) clustered by row, excluded when they
+  share a row with prose (inline math stays in its sentence), and accepted only when set off (indented, taller than a
+  text line, or more than the page's normal leading above and below). Pseudocode is immune. Novels never keep them.
+- After publish, a background job crops each equation from the PDF (200 dpi greyscale PNG, data/books/<id>/equations/,
+  served at /api/books/<id>/equations/<eq>.png without the access code since an <img> cannot send it; guard_book only)
+  and, when Gemini on Vertex is configured (UPLOAD_ENRICH + GCP_PROJECT), sends the pictures 8 per call for LaTeX and a
+  plain-English reading, under the upload spend caps. Locally (no GCP_PROJECT) only the pictures are made.
+- Reader: KaTeX (trust off; refused \href etc. fall back) when LaTeX exists, else the crop (inverted on the dark
+  theme), else the text. Spoken: one chunk, the Gemini reading ("Equation three point four: ..."), else the text when
+  it extracted cleanly, else "Equation three point four." Digits after the point are read one by one (3.18 -> "three
+  point one eight").
+- ISLR (1st printing): 272 equations, 163 of 173 numbered ones found; misses are prose hypotheses (3.12/3.13) and
+  "maximize ... subject to" problems (9.9-9.15), plus (3.27) loses its number (it sits beside the prose condition
+  "if ith person is female"). The bogus "1 B" section (a fraction of (5.8) read as a heading) is gone. Crops of the
+  whole book: 0.8 s, ~1 MB. Inline math inside sentences is unchanged (still extracted text).
+- Books uploaded before this change have no math paragraphs; re-upload to get them.
+- A new GCP project cannot call gemini-2.5-flash (404) and Gemini 3 is served only from the `global` location, so
+  `.env` sets GEMINI_MODEL=gemini-3.5-flash and GEMINI_LOCATION=global (config.gemini_region). Gemini 3 rejects
+  thinking_budget (400): the provider drops it and retries, and adds 8192 output tokens because the model spends the
+  cap on hidden thoughts (two equations took ~1,500 thought tokens).
+
 ## Voice agent: Realtime tools act on the reader (#72, 2026-10-23)
 - `frontend/src/talk/tools.ts` declares ten client function tools to `session.update` (`tools[]`, `tool_choice: auto`):
   jump_to (chapter number / title / Roman numeral / "last" / "bookmark", or a quoted passage), read_chapter, resume_reading,
@@ -734,3 +758,4 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
 - A figure met mid-sentence (at the top of the page a sentence runs on to) goes after that paragraph, so the sentence stays whole.
 - Served by GET /api/books/<id>/figures/fig-N.png with the book's gate (access code + guard_book); the reader fetches it with the access header into an object URL. "Read captions" (player bar, textbooks with figures) skips caption chunks in continuous reading and prefetch without changing the chunk list, so saved positions stay valid.
 - Only new uploads get figures (a figure adds a paragraph); re-upload older textbooks. Tables ("Table N") are still dropped as before.
+- Text markers from pdf_to_text to parse(): \x01 heading, \x02 code listing, \x03 + \x04 equation (#41), \x05 figure. Each feature needs its own (both #40 and #41 first used \x03; a test with a figure and an equation on one page guards it).

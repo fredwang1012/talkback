@@ -24,6 +24,7 @@ from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
 from .enrich import describe as describe_book
+from .enrich import equations as enrich_equations
 from .enrich import pipeline as enrich_pipeline
 from .enrich.detect import detect_kind
 from .gcp import usage
@@ -775,6 +776,8 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
         _ingest_guard.release(token)
         if hash_key is not None:   # book.json is written by now (or the ingest failed): the disk check takes over
             _hash_claims.pop(hash_key, None)
+    if ready is not None and kind == "textbook" and ext == ".pdf" and any(p.kind == "math" for p in ready.paragraphs):
+        _start_equations(book_id, data)
     if ready is not None and settings.retrieval_backend == "vertex":
         await _index_in_background(ready, chunks)
     if ready is not None and kind == "novel" and settings.upload_enrich and book_id not in _deleted:
@@ -796,7 +799,7 @@ async def _ingest_work(book_id: str, title: str, author: str, kind: str, data: b
     raw, detected = None, None
     if kind == "auto":  # decide novel or textbook from the extracted text
         raw = await asyncio.to_thread(ingest_upload.extract_text, data, ext, ingest_upload.figures_dir(book_id))
-        kind, confidence, method = await detect_kind(raw, book_id=book_id)
+        kind, confidence, method = await detect_kind(ingest_upload.plain_text(raw), book_id=book_id)
         detected = {"kind": kind, "confidence": confidence, "method": method}
     book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext,
                                            raw, detected)
@@ -806,6 +809,51 @@ async def _ingest_work(book_id: str, title: str, author: str, kind: str, data: b
     if settings.retrieval_backend == "vertex":
         _set_index(book_id, state="queued", done=0, total=len(chunks))
     return book, chunks, kind
+
+
+_equation_jobs: set[str] = set()   # textbooks whose equation pictures / LaTeX are being made
+_equation_tasks: set[asyncio.Task] = set()
+
+
+def _start_equations(book_id: str, data: bytes) -> None:
+    """Crop the published textbook's equations, then (Gemini configured) read them as LaTeX, in the background."""
+    if book_id in _equation_jobs:
+        return
+    _equation_jobs.add(book_id)
+    task = asyncio.create_task(_equations_job(book_id, data))
+    _equation_tasks.add(task)
+    task.add_done_callback(_equation_tasks.discard)
+
+
+async def _equations_job(book_id: str, data: bytes) -> None:
+    """Pictures first (the reader shows them at once), then LaTeX and spoken readings. Never raises; the book stays
+    readable with whatever was saved."""
+    try:
+        crops = await asyncio.to_thread(ingest_upload.render_equations, book_id, data, lambda: book_id in _deleted)
+        if crops and enrich_equations.available() and book_id not in _deleted:
+            readings = await enrich_equations.transcribe(book_id, crops)
+            if readings and book_id not in _deleted:
+                await asyncio.to_thread(ingest_upload.update_equations, book_id, readings)
+    except Exception as e:
+        logging.getLogger(__name__).warning("equations of %s failed: %s", book_id, type(e).__name__)
+    finally:
+        _equation_jobs.discard(book_id)
+
+
+_EQ_ID = re.compile(r"^e\d{1,5}$")
+
+
+@app.get("/api/books/{book_id}/equations/{eq_id}.png")
+def equation_picture(book_id: str, eq_id: str):
+    """A cropped equation picture. Not behind the access code (an <img> cannot send it), like /portraits: a few
+    formulas, never the text; PER_USER still serves only the books the caller may see."""
+    if not books._ID.match(book_id) or not _EQ_ID.match(eq_id):
+        raise HTTPException(404, "Not found")
+    users.guard_book(book_id)
+    path = ingest_upload.equation_path(book_id, eq_id)
+    if not path.is_file():
+        raise HTTPException(404, "Not found")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @app.post("/api/books/upload", status_code=202, dependencies=[Depends(require_access)])
@@ -986,7 +1034,8 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
     except HTTPException:  # an upload from before status files
         st = {"status": "ready"}
     # Check and claim in one synchronous block (no await before the claim): concurrent requests cannot both pass.
-    if (st.get("enrich") or {}).get("status") == "running" or book_id in _enrich_jobs or book_id in _kind_claims:
+    if (st.get("enrich") or {}).get("status") == "running" or book_id in _enrich_jobs or book_id in _kind_claims \
+            or book_id in _equation_jobs:
         raise HTTPException(409, "This book is still being processed; try again when it finishes.")
     if book.kind == body.kind:
         return st
