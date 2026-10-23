@@ -211,7 +211,16 @@ def _math_class(spans: list[dict]) -> int:
 # sub/superscripts (smaller or shifted spans). A plain italic x reads fine and is left as text.
 _GLUE_WORD = re.compile(r"[A-Za-z\u00C0-\u024F]{2,}|\b(?:i\.e|e\.g|cf|etc|vs)\b")
 _LEAD_CATEGORIES = {"Ps", "Sk", "Sm", "Lm", "Mn", "Zs"}   # brackets, accents, operators may open a formula
-_TRAIL_PUNCT = re.compile(r"[\s,.;:]+$")
+
+
+def _trail_punct_len(t: str) -> int:
+    """Length of the trailing run of whitespace and , . ; : (a linear scan: a regex search here is quadratic on long runs)."""
+    i = len(t)
+    while i > 0 and (t[i - 1] in ",.;:" or t[i - 1].isspace()):
+        i -= 1
+    return len(t) - i
+
+
 _STRUCTURE_CHARS = set("∑∫∬∭∮∏∐√∛∜")
 INLINE_SMALL = 0.85     # a span this much smaller than the run's main size is a sub/superscript
 INLINE_SHIFT = 0.2      # ... or one whose baseline is this many font sizes off
@@ -287,11 +296,12 @@ def _inline_runs(spans: list[dict]) -> list[tuple[int, int, int]]:
             e -= 1
         cut = 0
         while e > s and roles[e - 1] == "g":
-            tail = _TRAIL_PUNCT.search(spans[e - 1]["text"])
-            if not tail:
+            text = spans[e - 1]["text"]
+            n = _trail_punct_len(text)
+            if not n:
                 break
-            if tail.start() > 0:
-                cut = len(tail.group())
+            if n < len(text):
+                cut = n
                 break
             e -= 1
         run = spans[s:e]
