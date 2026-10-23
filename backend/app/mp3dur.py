@@ -1,6 +1,6 @@
 """Estimate an MP3's duration from its own frame headers (no dependencies)."""
 
-FALLBACK_BYTES_PER_SECOND = 4000  # our TTS mp3s are 32 kbit/s
+FALLBACK_BYTES_PER_SECOND = 8000  # cached TTS mp3s are really 64 kbit/s (24 kHz mono)
 
 _BITRATES = {  # kbit/s, Layer III; index 1..14
     1: [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],
