@@ -36,12 +36,12 @@ def test_put_persists_and_round_trips(env):  # noqa: F811
     fid = faces.create_face(PNG, "Ana")["id"]
     (settings.data_dir / "voices.json").write_text(json.dumps({"me": "voice_abc"}), encoding="utf-8")
     body = {"main": ["king"], "narrator": {"voice": "nora", "face": fid},
-            "characters": {"king": {"voice": "voice_abc", "face": None}}, "mode": "cast"}
+            "characters": {"king": {"voice": "voice_abc", "face": None}}, "mode": "one"}
     r = client.put("/api/books/demo/cast", json=body)
     assert r.status_code == 200
     expect = {"main": ["king"], "narrator": {"voice": "nora", "tags": None, "face": fid},
               "characters": {"harry": {"voice": None, "tags": None, "face": None},
-                                "king": {"voice": "voice_abc", "tags": None, "face": None}}, **TWO, "mode": "cast"}
+                                "king": {"voice": "voice_abc", "tags": None, "face": None}}, **TWO, "mode": "one"}
     assert r.json() == expect
     assert client.get("/api/books/demo/cast").json() == expect
     d = settings.data_dir / "books" / "demo"
@@ -81,21 +81,19 @@ def test_main_defaults_skip_characters_marked_minor(env):  # noqa: F811
 
 def test_tts_uses_the_cast_voice_unless_overridden(env, monkeypatch):  # noqa: F811
     client, _ = env
-    client.put("/api/books/demo/cast", json={"mode": "cast"})
-    assert client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0"}).json()["voice"] == "marcus"
-    client.put("/api/books/demo/cast", json={"mode": "cast", "narrator": {"voice": "nora"}})
+    client.put("/api/books/demo/cast", json={"mode": "one", "male": {"voice": "nora"}})
     assert client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0"}).json()["voice"] == "nora"
     r = client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "voice_override": "jake"})
     assert r.json()["voice"] == "jake"
-    client.put("/api/books/demo/cast", json={"mode": "cast", "narrator": {"voice": None}})
+    client.put("/api/books/demo/cast", json={"mode": "one", "male": {"voice": "marcus"}})
     assert client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0"}).json()["voice"] == "marcus"
 
 
-def test_a_cast_voice_that_was_removed_falls_back_to_the_book_voice(env):  # noqa: F811
+def test_a_cast_voice_that_was_removed_falls_back_to_the_default(env):  # noqa: F811
     book = cast.Book.model_validate_json((settings.data_dir / "books" / "demo" / "book.json").read_text(encoding="utf-8"))
     (settings.data_dir / "books" / "demo" / "cast_settings.json").write_text(
-        json.dumps({"mode": "cast", "narrator": {"voice": "voice_gone"}}), encoding="utf-8")
-    assert cast.voice_for(book, "narrator") is None
+        json.dumps({"mode": "two", "male": {"voice": "voice_gone"}}), encoding="utf-8")
+    assert cast.voice_for(book, "narrator") == cast.default_slot_voice(book, "male")
 
 
 def test_cast_needs_the_access_code(env, monkeypatch):  # noqa: F811

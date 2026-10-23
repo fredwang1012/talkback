@@ -172,7 +172,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     book ? faceById(talkFaceId(book, cast, talkChoice, id, talkVoiceFor(id), faces)) : undefined;
   const narratorVoice = book ? castVoice(book, cast, "narrator") : null;
   const current = chunks[index];
-  // read mode: who reads a chunk, by the reader's own voice -> face resolution (two voices or full cast); a speaker
+  // read mode: who reads a chunk, by the reader's own voice -> face resolution (one or two voices); a speaker
   // without a face is read by the narrator's face (reader/readLipSync)
   const readFaces: ReadFaces = {
     faceFor: (s) => (book ? faceById(readingFaceId(book, cast, s)) ?? null : null),

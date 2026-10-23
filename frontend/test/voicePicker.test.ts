@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Book, Cast, Face } from "../src/api";
 import VoiceLab from "../src/reader/VoiceLab";
-import { TwoVoices } from "../src/reader/VoicePicker";
+import { NovelVoices } from "../src/reader/VoicePicker";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -32,7 +32,7 @@ const checked = (label: string) => radios(label).find((r) => r.getAttribute("ari
 
 function renderTwo(c: Cast = cast()) {
   const onCast = vi.fn(); const onPreview = vi.fn();
-  act(() => root.render(createElement(TwoVoices, { book: novel, cast: c, onCast, cloned: { Me: "vc_me" }, faces, onPreview, audioAvailable: true })));
+  act(() => root.render(createElement(NovelVoices, { book: novel, cast: c, onCast, cloned: { Me: "vc_me" }, faces, onPreview, audioAvailable: true })));
   return { onCast, onPreview };
 }
 
@@ -89,19 +89,53 @@ describe("voices panel", () => {
     onPreview: vi.fn(), audioAvailable: true, onClose: vi.fn(),
   });
 
-  it("a textbook gets one narrator card and no mode switch", () => {
+  it("a textbook gets one voice card (voice + face) and no mode switch", () => {
     act(() => root.render(createElement(VoiceLab, props(textbook))));
     expect(host.textContent).not.toContain("Two voices");
+    expect(host.textContent).not.toContain("One voice");
+    expect(host.querySelectorAll(".voice-card")).toHaveLength(1);
+    expect(radios("Narrator: face").length).toBe(2);
     expect(radios("Narrator: voice").length).toBe(6);
     expect(group("Male voice: voice")).toBeNull();
   });
 
-  it("a novel can switch to Full cast", () => {
+  it("a novel has no Full cast and no mode select at the top: a One voice / Two voices toggle, Two voices by default (#93)", () => {
     const onCast = vi.fn();
     act(() => root.render(createElement(VoiceLab, props(novel, onCast))));
-    const full = [...host.querySelectorAll("button")].find((b) => b.textContent === "Full cast")!;
-    expect(full.getAttribute("aria-pressed")).toBe("false");
-    act(() => { full.click(); });
-    expect(onCast.mock.lastCall![0].mode).toBe("cast");
+    expect(host.textContent).not.toContain("Full cast");
+    expect(host.querySelector(".lab-cast, select")).toBeNull(); // no per-character voice / pitch / face rows
+    expect(radios("How many voices").map((r) => r.textContent)).toEqual(["One voice", "Two voices"]);
+    expect(checked("How many voices")).toBe("Two voices");
+    act(() => { radios("How many voices")[0].click(); });
+    expect(onCast.mock.lastCall![0].mode).toBe("one");
+  });
+
+  it("an old Full cast setting shows as Two voices", () => {
+    act(() => root.render(createElement(VoiceLab, { ...props(novel), cast: { ...cast(), mode: "cast" } })));
+    expect(checked("How many voices")).toBe("Two voices");
+    expect(host.querySelector('.voice-card[aria-disabled="true"]')).toBeNull();
+  });
+});
+
+describe("one voice mode (#93)", () => {
+  it("greys out the voice that does not narrate, says why, and hides the gender list", () => {
+    const { onCast } = renderTwo({ ...cast(), mode: "one" }); // the narrator is the female voice (book default)
+    expect(checked("How many voices")).toBe("One voice");
+    const male = host.querySelector<HTMLElement>('.voice-card[aria-label="Male voice"]')!;
+    const female = host.querySelector<HTMLElement>('.voice-card[aria-label="Female voice"]')!;
+    expect(male.getAttribute("aria-disabled")).toBe("true");
+    expect(male.classList.contains("is-disabled")).toBe(true);
+    expect(male.textContent).toContain("Not used: every line reads in the narrator's voice.");
+    expect(female.getAttribute("aria-disabled")).toBeNull();
+    expect(radios("Male voice: voice").every((r) => r.getAttribute("aria-disabled") === "true" && r.tabIndex === -1)).toBe(true);
+    act(() => { radios("Male voice: voice")[1].click(); });
+    expect(onCast).not.toHaveBeenCalled();
+    expect([...male.querySelectorAll("button")].every((b) => b.disabled)).toBe(true);
+    expect(group("Harry reads in")).toBeNull();
+    // picking the male voice as narrator swaps which card is greyed out
+    act(() => { radios("Narrator")[0].click(); });
+    expect(onCast.mock.lastCall![0].narrator_gender).toBe("male");
+    act(() => { radios("How many voices")[1].click(); });
+    expect(onCast.mock.lastCall![0].mode).toBe("two");
   });
 });

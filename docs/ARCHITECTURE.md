@@ -1,6 +1,6 @@
 # Talkback architecture
 
-Talkback reads the Harry Potter series aloud (word-highlighted, optionally full cast) and lets you stop and ask a
+Talkback reads the Harry Potter series aloud (word-highlighted, in one or two voices) and lets you stop and ask a
 question out loud. The answer is grounded only in what you have read so far, spoken in the voice of whoever you are
 talking to, and the reading picks up where it stopped.
 
@@ -66,10 +66,12 @@ browser, so one choice covers all seven books. Audio is made on demand; nothing 
   one render per face at a time, rate-limited with the lip-sync bucket). Faces made with a voice clone carry that
   voice id, so lip-sync and `/api/voices/faces` read from the same list; the old `data/voice_faces.json` is migrated
   into the library on first access.
-- **Cast settings** (`app/cast.py`): `GET/PUT /api/books/{id}/cast` stores `main` (character ids), the narrator's and
-  each character's `{voice, face}` in `data/books/<id>/cast_settings.json` (atomic write). `null` means the book's own
-  voice / no face. `/api/tts` resolves a chunk's voice as request override, then the cast voice for its speaker, then
-  the book's voice. Every endpoint above is gated by the access code.
+- **Cast settings** (`app/cast.py`): `GET/PUT /api/books/{id}/cast` stores `main` (character ids), the male and the
+  female voice `{voice, face}`, the mode (`"two"`: each speaker in the voice of their gender; `"one"`: everything in
+  the narrator's voice), `narrator_gender` and per-character gender overrides in `data/books/<id>/cast_settings.json`
+  (atomic write). Textbooks use the narrator's `{voice, face}`. The old Full cast mode (`"cast"`) is read as `"two"`
+  (#93). `/api/tts` resolves a chunk's voice as request override, then the cast voice for its speaker, then the
+  book's voice. Every endpoint above is gated by the access code.
 
 ## Uploaded novels: characters after upload (`app/enrich/`)
 

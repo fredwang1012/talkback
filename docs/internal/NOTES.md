@@ -616,3 +616,12 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
 - Silent fallbacks: no face / unbound face / failed or stalled render -> talk loop or still face; read mode at speeds
   other than 1x drops the clip source (reader/readLipSync.readClipsOn) because clips render at the natural pace.
 - Cost: every fresh line spoken by a bound face now renders a clip (~$0.09/min of video, cached per line + voice).
+
+## Voices panel: One voice / Two voices, Full cast removed (#93, 2026-10-23)
+- Novels: a One voice / Two voices segmented toggle (Two voices default), a narrator pick (Male / Female voice) and the
+  two voice cards (voice + face). In One voice mode the card that does not narrate is greyed out (aria-disabled, not
+  focusable) and every line, dialogue included, reads in the narrator's voice; the per-character gender list shows in
+  Two voices only. Textbooks: one card. The per-character voice / pitch / face rows (Full cast) are gone.
+- Migration: cast mode "cast" (stored or sent by an old client) is read as "two" on the server (pydantic before-
+  validator) and in the browser (castLogic.voiceMode, which also maps missing/unknown values). The `characters`
+  assignments stay in cast_settings.json but novels no longer read from them, so per-character pitch tags are dropped.

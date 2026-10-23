@@ -1,10 +1,8 @@
 import { micErrorMessage } from "../audio/mediaErrors";
 import { useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { animateFace, cloneVoice, deleteFace, deleteVoice, uploadFace, type Book, type Cast, type Face } from "../api";
-import {
-  PRESETS, bookVoice, castRows, castFace, castVoice, PITCH_SPEED, BOOK_TAGS, voiceSummary, tagLabel, isNovel, runAnimate, twoVoices, withAssignment,
-} from "./castLogic";
-import { TwoVoices, VoiceCard } from "./VoicePicker";
+import { PRESETS, castFace, castVoice, isNovel, runAnimate, withAssignment } from "./castLogic";
+import { NovelVoices, VoiceCard } from "./VoicePicker";
 
 export { PRESETS };
 const SCRIPT =
@@ -31,7 +29,7 @@ type Props = {
   onClose: () => void;
 };
 
-/** Voices panel (two voices for a novel, one for a textbook, or a full cast) and Voice lab (clone your own voice). */
+/** Voices panel (one or two voices for a novel, one for a textbook) and Voice lab (clone your own voice). */
 export default function VoiceLab({ book, cast, onCast, castError, cloned, onCloned, animating, setAnimating, animErrors, setAnimErrors, faces, onFaces, onFacesChanged, onRemoved, onPreview, audioAvailable, onClose }: Props) {
   const [transcript, setTranscript] = useState(SCRIPT);
   const [name, setName] = useState("");
@@ -100,9 +98,6 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
     }
   }
 
-  const two = twoVoices(book, cast);
-  const rows = castRows(book, cast);
-
   async function submitFace() {
     if (!faceFile) return;
     setFaceBusy(true);
@@ -138,20 +133,6 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
       setAnimErrors((m) => ({ ...m, [f.id]: e instanceof Error ? e.message : String(e) }));
     }
   }
-  const faceOptions = (value: string | null) => (
-    <>
-      <option value="">None</option>
-      {value && !faces.some((f) => f.id === value) && <option value={value}>(removed face)</option>}
-      {faces.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-    </>
-  );
-  const voiceOptions = (value: string, withValue = true) => (
-    <>
-      {withValue && !options.some((o) => o.value === value) && <option value={value}>{value}</option>}
-      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </>
-  );
-  const options = [...PRESETS.map((v) => ({ value: v, label: v })), ...Object.entries(cloned).map(([n, v]) => ({ value: v, label: `${n} (cloned)` }))];
   const canSubmit = !!clip && consent && name.trim().length > 0 && transcript.trim().length > 0 && !busy && audioAvailable;
 
   return (
@@ -162,55 +143,15 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
       </div>
 
       <section aria-label="Voices and faces for reading">
-        {isNovel(book) && (
-          <div className="mode" role="group" aria-label="How many voices">
-            <button aria-pressed={two} onClick={() => onCast({ ...cast, mode: "two" })}>Two voices</button>
-            <button aria-pressed={!two} onClick={() => onCast({ ...cast, mode: "cast" })}>Full cast</button>
-          </div>
-        )}
-        <h3>{!isNovel(book) ? "Voice" : two ? "Voices for this book" : "Cast"}</h3>
-        {!isNovel(book) ? (
+        <h3>{isNovel(book) ? "Voices for this book" : "Voice"}</h3>
+        {isNovel(book) ? (
+          <NovelVoices book={book} cast={cast} onCast={onCast} cloned={cloned} faces={faces}
+                       onPreview={onPreview} audioAvailable={audioAvailable} />
+        ) : (
           <VoiceCard heading="Narrator" gender={null} voice={castVoice(book, cast, "narrator")} face={castFace(book, cast, "narrator")}
                      cloned={cloned} faces={faces} onPreview={onPreview} audioAvailable={audioAvailable}
                      onVoice={(v) => onCast(withAssignment(cast, "narrator", { voice: v }))}
                      onFace={(f) => onCast(withAssignment(cast, "narrator", { face: f }))} />
-        ) : two ? (
-          <TwoVoices book={book} cast={cast} onCast={onCast} cloned={cloned} faces={faces}
-                     onPreview={onPreview} audioAvailable={audioAvailable} />
-        ) : (
-          <ul className="lab-cast">
-            {rows.map((r) => {
-              const value = (r.id === "narrator" ? cast.narrator : cast.characters[r.id])?.voice ?? "";
-              return (
-                <li key={r.id} className="cast-row">
-                  <span className="cast-name">{r.name}<small className="cast-uses"> uses {voiceSummary(book, cast, r.id)}</small></span>
-                  <label className="sr-only" htmlFor={`voice-${r.id}`}>{r.name} voice</label>
-                  <select id={`voice-${r.id}`} value={value} onChange={(e) => onCast(withAssignment(cast, r.id, { voice: e.target.value || null }))}>
-                    <option value="">Book default ({bookVoice(book, r.id)})</option>
-                    {voiceOptions(value, false)}
-                  </select>
-                  {r.id === "narrator" ? <span /> : (
-                    <>
-                      <label className="sr-only" htmlFor={`tags-${r.id}`}>{r.name} pitch and speed</label>
-                      <select id={`tags-${r.id}`} value={cast.characters[r.id]?.tags ?? BOOK_TAGS}
-                        onChange={(e) => onCast(withAssignment(cast, r.id, { tags: e.target.value === BOOK_TAGS ? null : e.target.value }))}>
-                        <option value={BOOK_TAGS}>Book default ({tagLabel(book.characters.find((c) => c.id === r.id)?.voice_tags)})</option>
-                        {PITCH_SPEED.map((t) => <option key={t.value || "none"} value={t.value}>{t.label}</option>)}
-                      </select>
-                    </>
-                  )}
-                  <label className="sr-only" htmlFor={`face-${r.id}`}>{r.name} face</label>
-                  <select id={`face-${r.id}`} value={castFace(book, cast, r.id) ?? ""} onChange={(e) => onCast(withAssignment(cast, r.id, { face: e.target.value || null }))}>
-                    {faceOptions(castFace(book, cast, r.id))}
-                  </select>
-                  <button disabled={!audioAvailable} onClick={() => onPreview(castVoice(book, cast, r.id))} aria-label={`Preview ${r.name}`}>Preview</button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        {!two && isNovel(book) && rows.length === 1 && (
-          <p className="empty-note">No main characters yet. They appear here once the casting step has run.</p>
         )}
         {castError && <p role="alert" className="lab-error">{castError}</p>}
         {!audioAvailable && <p className="empty-note">Previews and cloning need the Boson API key on the server.</p>}

@@ -524,14 +524,15 @@ export type Face = { id: string; name: string; image: string; voice: string | nu
 export type Assignment = { voice: string | null; face: string | null; tags?: string | null }; // tags: pitch/speed override, "" = none
 export type Gender = "male" | "female";
 /**
- * Per-book cast. Novels default to mode "two": every speaker reads in the male or the female voice by gender
- * (`genders` overrides the read-only `auto_genders`), the narrator in the one `narrator_gender` picks. "cast" uses
- * the per-character `narrator` / `characters` assignments. Textbooks use `narrator` only. `auto_genders` and
- * `defaults` come from the server and are ignored when sent back.
+ * Per-book cast. Novels read in the male and the female voice (each with a face). Mode "two" (the default): every
+ * speaker reads in the voice of their gender (`genders` overrides the read-only `auto_genders`), the narrator in the
+ * one `narrator_gender` picks. Mode "one": every line reads in the narrator's voice. "cast" is the removed Full cast
+ * (#93), read as "two" (castLogic.voiceMode); `characters` is kept but no longer read. Textbooks use `narrator` only.
+ * `auto_genders` and `defaults` come from the server and are ignored when sent back.
  */
 export type Cast = {
   main: string[]; narrator: Assignment; characters: Record<string, Assignment>;
-  mode?: "two" | "cast"; male?: Assignment; female?: Assignment; narrator_gender?: Gender | null;
+  mode?: "two" | "one" | "cast"; male?: Assignment; female?: Assignment; narrator_gender?: Gender | null;
   genders?: Record<string, Gender>; auto_genders?: Record<string, Gender | null>;
   defaults?: { male: string; female: string; narrator_gender: Gender };
 };

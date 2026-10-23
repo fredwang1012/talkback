@@ -1,5 +1,6 @@
 """Two-voice reading (issues #85, #86): every speaker of a novel reads in the male or the female voice by gender;
-the narrator uses the one the user picks; textbooks keep their single narrator voice. Resolved at TTS time."""
+the narrator uses the one the user picks; one-voice mode (#93) reads everything in the narrator's voice; textbooks
+keep their single narrator voice. Full cast is gone (#93): an old "cast" setting means two voices. Resolved at TTS time."""
 import base64
 import json
 
@@ -88,13 +89,31 @@ def test_user_picks_the_two_voices_the_narrator_and_a_gender(env, monkeypatch): 
     assert got["male"] == {"voice": "marcus", "tags": None, "face": None}
 
 
-def test_full_cast_mode_keeps_the_per_character_voices(env, monkeypatch):  # noqa: F811
+def test_one_voice_mode_reads_every_line_in_the_narrator_voice(env, monkeypatch):  # noqa: F811
     client, _ = env
     sent = _install(novel(), monkeypatch)
-    (settings.data_dir / "voices.json").write_text(json.dumps({"c": "voice_custom"}), encoding="utf-8")
-    assert client.put("/api/books/demo/cast", json={"mode": "cast", "male": {"voice": "marcus"}}).status_code == 200
-    assert [_voice(client, f"p{i}c0") for i in range(4)] == ["nora", "oliver", "jake", "voice_custom"]
-    assert sent[1] == ("oliver", TAG + "Hello there.")
+    body = {"mode": "one", "male": {"voice": "marcus"}, "female": {"voice": "eleanor"}, "narrator_gender": "male",
+            "genders": {"harry": "female"}}
+    assert client.put("/api/books/demo/cast", json=body).status_code == 200
+    assert client.get("/api/books/demo/cast").json()["mode"] == "one"
+    assert {_voice(client, f"p{i}c0") for i in range(5)} == {"marcus"}
+    assert sent[1] == ("marcus", "Hello there.")  # no per-character pitch either
+    client.put("/api/books/demo/cast", json={**body, "narrator_gender": "female"})
+    assert {_voice(client, f"p{i}c0") for i in range(5)} == {"eleanor"}
+
+
+def test_an_old_full_cast_setting_reads_in_two_voices(env, monkeypatch):  # noqa: F811
+    client, _ = env
+    _install(novel(), monkeypatch)
+    # stored by an older version: full cast is gone (#93), it now means two voices
+    (settings.data_dir / "books" / "demo" / "cast_settings.json").write_text(
+        json.dumps({"mode": "cast", "narrator": {"voice": "oliver"}, "characters": {"harry": {"voice": "oliver"}}}),
+        encoding="utf-8")
+    assert client.get("/api/books/demo/cast").json()["mode"] == "two"
+    assert [_voice(client, f"p{i}c0") for i in range(5)] == ["nora", "jake", "nora", "nora", "nora"]
+    # an old client sending "cast" is saved as two voices too
+    assert client.put("/api/books/demo/cast", json={"mode": "cast"}).json()["mode"] == "two"
+    assert json.loads((settings.data_dir / "books" / "demo" / "cast_settings.json").read_text(encoding="utf-8"))["mode"] == "two"
 
 
 def test_textbook_has_one_voice(env, monkeypatch):  # noqa: F811

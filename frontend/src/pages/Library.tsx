@@ -509,7 +509,7 @@ export default function Library() {
         {accountLabel(me) && (
           <p className="account">{accountLabel(me)} · <a href={SIGN_OUT_URL}>Sign out</a></p>
         )}
-        <p>Books read aloud in full cast. Stop anywhere, ask a question out loud, and the story picks up from the same sentence.</p>
+        <p>Books read aloud in two voices, each with a face. Stop anywhere, ask a question out loud, and the story picks up from the same sentence.</p>
         <div className="library-actions">
           <button type="button" ref={addBtn} className="add-book-go" aria-haspopup="dialog" onClick={() => setAdding(true)}>Add book</button>
         </div>

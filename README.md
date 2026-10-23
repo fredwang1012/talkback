@@ -1,6 +1,6 @@
 # Talkback
 
-Talkback reads a book aloud with a full cast and lets you talk back to the characters. Narration and dialogue are
+Talkback reads a book aloud in two voices (a male and a female one, each with a face) and lets you talk back to the characters. Narration and dialogue are
 voiced with **Higgs Audio TTS 3**, using its expressive tags (emotion, style, prosody, sound effects), with the current
 word highlighted as it is spoken. In **Talkback mode** you talk to one character at a time with push-to-talk over
 **Higgs Realtime**; the answer is spoken in that character's own voice and is grounded only in what you have read so
@@ -42,8 +42,8 @@ nothing else to start. (On Windows PowerShell use `Copy-Item .env.example .env`.
 
 1. On the library page open **Alice's Adventures in Wonderland** and press play. The narrator reads, the current word
    lights up, and the characters speak in their own voices.
-2. Open the **Voices** panel. **One voice** reads everything with the narrator; **Full cast** gives every speaking
-   character their own voice and expressive delivery.
+2. Open the **Voices** panel. **Two voices** (the default) reads every character in the male or the female voice by
+   gender; **One voice** reads everything in the narrator's voice. Pick which voice narrates, and a face for each.
 3. Open **Recap** and pick **Last chapter**, **This book so far** or **The series so far**: the narrator posts a
    spoiler-safe recap (only up to where you are) into the Talkback chat and reads it aloud.
 4. Switch to **Talkback**, pick the **Cheshire Cat** (or the Queen of Hearts, or the Duchess), **hold Space** and ask
@@ -95,8 +95,8 @@ on your Boson key. Remove `PUBLIC_API_URL` from `.env` to never contact the serv
 ## How Higgs Audio is used
 
 - **Higgs TTS 3 (read-aloud).** Each paragraph is split into sentence-aligned chunks (at most 280 characters), one per
-  speaker, and synthesized with timestamps, which drive the word-by-word highlighting. In full-cast mode every speaking
-  character has a fixed voice, and expressive tags are added per segment: emotion and style (e.g. whispering,
+  speaker, and synthesized with timestamps, which drive the word-by-word highlighting. Every speaker reads in the male or
+  the female voice by gender (or all in the narrator's voice), and expressive tags are added per segment: emotion and style (e.g. whispering,
   shouting) from the dialogue segmentation, prosody (pitch and speed) per character voice, and sound effects such as
   laughter inserted by rule. Clips are cached by text and voice.
 - **Higgs Realtime (Talkback).** The browser opens a Realtime session with a short-lived key minted by the backend. It
