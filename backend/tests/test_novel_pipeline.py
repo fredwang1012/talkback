@@ -198,7 +198,10 @@ def test_verbatim_failure_falls_back_to_narrator(data_dir):
     assert ok
     book = saved(data_dir)
     bad = next(p for p in book.paragraphs if "CORRUPT" in p.text)
-    assert [(s.speaker, s.text) for s in bad.segments] == [("narrator", bad.text)]
+    # the segmenter's answer is rejected (narrator only); the free attribution pass then voices the tagged quotes
+    assert " ".join(s.text for s in bad.segments).split() == bad.text.split()
+    assert [s.speaker for s in bad.segments if s.text.startswith('"')] == ["alice", "bob"]
+    assert all(s.speaker == "narrator" for s in bad.segments if not s.text.startswith('"'))
     good = next(p for p in book.paragraphs if p.text.startswith("m0x"))
     assert any(s.speaker == "alice" for s in good.segments)
 

@@ -66,6 +66,31 @@ class MainCast(BaseModel):
     characters: list[MainCharacter]
     narrator_voice: Voice
     narrator_is_character: str | None = Field(description="character id if the narrator is a character in the story (first-person), else null")
+    series: str | None = Field(default=None, description="name of the book series this is a volume of, e.g. 'Harry Potter', else null")
+    series_index: int | None = Field(default=None, description="this book's number in that series in reading order (1 = first), else null")
+
+
+SERIES_OUT_TOKENS = 30  # the two series fields of the cast answer (for estimates)
+SERIES_MAX_INDEX = 99
+_SERIES_EDGE = re.compile(r"^(?:the)\s+|\s+(?:series|saga|books|novels|trilogy|sequence)$", re.I)
+
+
+def series_slug(name: str | None) -> str | None:
+    """'The Harry Potter series' -> 'harry-potter' (the Library groups by this, the built-in books use the same form)."""
+    text = (name or "").strip()
+    for _ in range(2):
+        text = _SERIES_EDGE.sub("", text).strip()
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60].strip("-")
+    return slug or None
+
+
+def apply_series(book: Book, result: MainCast) -> None:
+    """Series and volume number from the cast answer; a series already set (by hand or a re-run) is kept."""
+    if book.series:
+        return
+    book.series = series_slug(result.series)
+    idx = result.series_index
+    book.series_index = idx if book.series and isinstance(idx, int) and 1 <= idx <= SERIES_MAX_INDEX else None
 
 
 UPLOAD_SYSTEM = f"""You are casting an audiobook with a text-to-speech system. Read the story and name its main characters.
@@ -76,7 +101,8 @@ Rules:
 - Available voices: chloe (female, friendly, clear), eleanor (female, calm, professional), jake (male, energetic, dramatic), marcus (male, enthusiastic, professorial), nora (female, calm, narrative), oliver (male, calm, thoughtful, reflective).
 - Give each character the voice that fits their gender, age and temperament. Voices may be shared only when there are more characters than voices; then differentiate with voice_tags (pitch_low, pitch_high, speed_slow, speed_fast). Use "" when no tag is needed.
 - aliases: every name the text uses for them, as written. Never use a bare common word, or a name shared with another character.
-- Paragraphs are numbered [0], [1], ... Use those numbers for first_para."""
+- Paragraphs are numbered [0], [1], ... Use those numbers for first_para.
+- series and series_index: only when the title, title page or text shows this book is a numbered volume of a series (or it is a well-known volume of one), give the series name (e.g. "Harry Potter") and the volume number in reading order (1 = first). Otherwise null for both."""
 
 PERSONA_GUIDE = """Make it specific to THIS character, never a generic type:
 - Name concrete speech habits: how they refer to themselves and to others (even if odd, such as third person, or a title for everyone), signature words and sentence shape, dialect or non-standard grammar, and what their speech does when they are nervous, angry or excited.
@@ -167,6 +193,7 @@ async def cast_novel(book: Book, call: Callable[..., Awaitable], tier: str = "sm
     user = f'Title: "{book.title}" by {book.author}\n\n{numbered_sample(book)}'
     result = await call(tier, UPLOAD_SYSTEM, user, MainCast, max_tokens=4000, effort="medium")
     apply_cast(book, result, MAIN_MAX, mark_main=True)
+    apply_series(book, result)
 
     async def persona(c: Character) -> None:
         try:
