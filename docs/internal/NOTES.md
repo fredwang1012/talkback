@@ -756,3 +756,24 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   9642 of ~104k chunks change, 806k chars, $12.09 if every changed chunk were re-voiced (HP1-7 $10.15, five classics
   $1.09, IR textbook $0.85); only 16 changed chunks ($0.05) have audio in the local cache under the book's own voice.
   `pause` makes up ~85% of the changes; real sfx hits are rare (HP1-7: 8 cough/screaming, classics: 0).
+
+## Singing songs and poems: `<|style:singing|>` (#74, 2026-10-23)
+- Probe (2 Boson calls, ~$0.004): higgs-tts-3, preset `marcus`, the Hatter's 'Twinkle, twinkle, little bat' with and
+  without `<|style:singing|>` at the start (same request as `BosonClient.create_speech`). The tag is not spoken (timestamp
+  words are the same 22 words) and the sung take is 10.4 s against 7.0 s spoken. Listen before trusting it.
+- Rules (`delivery.is_sing_lead_in`, `verse_score`, `sung_from`; wired in `ttschunks.sing_offset` / `chunk_paragraph`):
+  a song starts after a lead-in whose last sentence mentions sing/sang/sung/song/chorus/lullaby/hum/carol/croon and ends on
+  ':' or ':—' (or on the verb 'sing'/'sang', or is a 'CHORUS.' line), with no repeat/recite/read and no negation before
+  the word. 'sang out' and 'sing-song' don't count; a bare dash doesn't either (HP5 Quidditch commentary). The next
+  paragraph is sung if it opens a quote (or reads as verse) and no narration follows a closing quote; the song goes on
+  while each paragraph reopens a quote the previous one left open, or reads as verse (>= 2 capitalised small words
+  mid-sentence, i.e. flattened line starts). Inline lead-ins ('the hat began to sing: "Oh, you...') split the segment
+  at the quote. Caps: <= 700 chars per paragraph, <= 8 paragraphs per song, same chapter only.
+- A sung chunk gets voice tags, style:singing (replacing whispering/shouting), emotion, pause, text: no sfx and no
+  expressive_*. `chunk_paragraph(expressive=False)` never sings.
+- Recited verse is left alone ('How doth', 'Father William', ''Tis the voice of the Lobster').
+- `scripts/estimate_expressive.py --list-sung` lists what would be sung. Main checkout data: Alice 10 paragraphs (13
+  chunks: lullaby + two choruses, Twinkle bat, Lobster Quadrille, Beautiful Soup), Peter Pan 5, HP1 4 (Sorting Hat),
+  HP2 1, HP4 1 (egg song), others 0. Known misses: Sorting Hat's last 3 short stanzas, Twinkle's second half (lead-in
+  'in this way:—' has no singing word), Toad's song (lead-in ends on a bare dash), 'Weasley is our King'.
+  No book.json was rebuilt: songs are sung after a book's chunks are rebuilt (preprocess/chunk_tts.py) and in new uploads.

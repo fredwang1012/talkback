@@ -241,3 +241,128 @@ def is_scene_break(text: str) -> bool:
     if not t or len(t) > SCENE_BREAK_MAX:
         return False
     return all(c in _BREAK_CHARS or c.isspace() for c in t) and any(c in _BREAK_MARKS for c in t)
+
+
+# ---------- singing (#74) ----------
+# A song is verse the story says is SUNG: a lead-in ('...began to sing this:—', 'singing a sort of lullaby ... every
+# line:', 'CHORUS.') followed by quoted or verse-like paragraphs. Verse that is repeated or recited is never sung, nor is
+# talk about singing. A false 'singing' on prose sounds terrible, so every check errs towards no tag.
+
+_SING = re.compile(
+    r"(?<![-\w])(?:sing(?:s|ing)?|sang|sung|songs?|chorus|lullaby|hum(?:s|med|ming)|carol(?:s|led|ling)?"
+    r"|croon(?:s|ed|ing)?)(?![-\w])(?!\s+out\b)", re.I)  # 'sang out' = called out; 'sing-song' is a tone of voice
+_RECITE = re.compile(r"\b(?:repeat\w*|recit\w*|read(?:s|ing)?)\b", re.I)
+_SING_NEG = re.compile(r"n't\b|\b(?:not|never|no|without)\b", re.I)
+# ends on ':' / ':—', or on the verb; never on a bare dash ('...booing and singing — "— dodges Warrington' is commentary)
+_LEAD_END = re.compile(r"(?::\s*[—–-]*|\b(?:sing|sang))\s*$", re.I)
+_HEADING = re.compile(r"[\W_]*(?:chorus|refrain)[\W_]*", re.I)  # a 'CHORUS.' line before a quoted chorus
+_OPEN_Q = "\"“'‘"
+_VERSE_WORDS = frozenset(
+    "and but or nor for yet so the a an how who what where when why while with without like to in on of at by from up "
+    "down if as all that this these those his her its your my our their they he she you we it there then than though "
+    "till until through because oh o no now will would can could shall should may might must let some each every upon "
+    "into over under before after not".split())
+_LINE_START = re.compile(r"(?<=[a-z,;:—–)])[ \t]+([A-Z][a-z']*)(?![\w'-])")
+SONG_MAX_CHARS = 700  # a longer paragraph is not sung (each chunk is <= 280 chars anyway)
+SONG_MAX_PARAS = 8  # a song is cut off after this many paragraphs
+_LEAD_TAIL = 400  # the lead-in is the last sentence; only the end of a long paragraph is looked at
+
+
+def is_sing_lead_in(text: str) -> bool:
+    """Narration that introduces a song right after it: its last sentence mentions singing and ends on ':' or ':—'
+    (or on 'sing' / 'sang'), without 'repeat' / 'recite' and without a negation before the singing word."""
+    t = text.strip()
+    if _HEADING.fullmatch(t):
+        return True
+    t = t[-_LEAD_TAIL:]
+    clause = t if len(t) <= 80 else _SENT_END.split(t)[-1]
+    if not _LEAD_END.search(clause) or _RECITE.search(clause):
+        return False
+    return any(not _SING_NEG.search(clause[:m.start()].replace("’", "'")) for m in _SING.finditer(clause))
+
+
+def verse_score(text: str) -> int:
+    """How many verse lines seem to start mid-sentence: a capitalised small word ('And', 'Where', 'How') right after a
+    lowercase word or , ; : — (lines run together when verse is flattened into one paragraph). Names don't count, a
+    capital after an opening quote is dialogue, and hits closer than 3 words count once."""
+    hits, last = 0, -10
+    for m in _LINE_START.finditer(text):
+        if m.group(1).lower() not in _VERSE_WORDS:
+            continue
+        pos = text.count(" ", 0, m.start(1))
+        if pos - last >= 3:
+            hits += 1
+        last = pos
+    return hits
+
+
+def _last_dq(text: str) -> tuple[int, bool] | None:
+    """(index, is_opening) of the last double quote, or None."""
+    k = max(text.rfind('"'), text.rfind("“"), text.rfind("”"))
+    if k < 0:
+        return None
+    ch = text[k]
+    opening = ch == "“" or (ch == '"' and (k == 0 or text[k - 1].isspace() or text[k - 1] in "([—–-"))
+    return k, opening
+
+
+def _quote_open(text: str) -> bool:
+    """The paragraph ends inside a quotation (a multi-paragraph quote reopens on the next paragraph). Counted by parity,
+    so quotes nested inside a song ('But the snail replied "Too far, too far!" and...') don't close it."""
+    if "“" in text or "”" in text:
+        return text.count("“") > text.count("”")
+    return text.count('"') % 2 == 1
+
+
+def _no_narration_after_quote(text: str) -> bool:
+    """False when a quote closes and narration follows ('"La la," she said, and...')."""
+    if _quote_open(text):
+        return True
+    last = _last_dq(text)
+    return last is None or last[1] or not any(c.isalpha() for c in text[last[0] + 1:])
+
+
+def _song_body(text: str, *, quoted: bool) -> bool:
+    t = text.strip()
+    return (0 < len(t) <= SONG_MAX_CHARS and _no_narration_after_quote(t)
+            and (t[0] in _OPEN_Q if quoted else (t[0] in _OPEN_Q or verse_score(t) >= 2)))
+
+
+def _inline_song(text: str) -> int | None:
+    """Offset of a song that starts inside the paragraph after its lead-in ('the hat began to sing: "Oh, you...')."""
+    for m in re.finditer(r":\s*[—–-]*\s*([\"“])", text[-(SONG_MAX_CHARS + _LEAD_TAIL):]):
+        q = len(text) - len(text[-(SONG_MAX_CHARS + _LEAD_TAIL):]) + m.start(1)
+        if text[q + 1:q + 2].isspace() or text.count('"', 0, q) % 2 or text.count("“", 0, q) > text.count("”", 0, q):
+            continue  # a closing quote ('"Twinkle, twinkle—" and went on'), not one that opens the song
+        if is_sing_lead_in(text[:q]) and _song_body(text[q:], quoted=True):
+            return q
+    return None
+
+
+def _continues(prev: str, text: str) -> bool:
+    """`text` goes on with the song sung in `prev`: the song's quote was left open (each paragraph of a multi-paragraph
+    quotation reopens with a quote mark and only the last one closes), or `text` reads as verse."""
+    t = text.strip()
+    if not t or len(t) > SONG_MAX_CHARS:
+        return False
+    if t[0] in "\"“" and prev.rstrip()[-1:] not in "\"”'’":
+        return True
+    return verse_score(t) >= 2 and _no_narration_after_quote(t)
+
+
+def sung_from(prev: Sequence[str], text: str) -> int | None:
+    """Offset in `text` from which the paragraph is sung (0 = all of it), or None. `prev` are the paragraphs before it,
+    oldest first (only the last SONG_MAX_PARAS + 1 matter; pass only those of the same chapter)."""
+    window = list(prev[-(SONG_MAX_PARAS + 1):]) + [text]
+    state: int | None = None  # sung offset of the previous paragraph
+    run = 0  # paragraphs of the current song so far
+    for k, t in enumerate(window):
+        before = window[k - 1] if k else ""
+        if state is None and k and is_sing_lead_in(before)                 and _song_body(t, quoted=not before.rstrip().endswith((":", "—", "–", "-"))):
+            state, run = 0, 1
+        elif state is not None and run < SONG_MAX_PARAS and _continues(before, t):
+            state, run = 0, run + 1
+        else:
+            state = _inline_song(t)
+            run = 1 if state is not None else 0
+    return state
