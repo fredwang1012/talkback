@@ -18,7 +18,7 @@ def test_skips_id3v2_tag():
 
 
 def test_not_mp3_falls_back_to_8000_bytes_per_second():
-    assert mp3_seconds(b"\x00" * 8000) == 2.0
+    assert mp3_seconds(b"\x00" * 8000) == 1.0
     assert mp3_seconds(b"") == 0.0
 
 
