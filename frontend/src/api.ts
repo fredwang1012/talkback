@@ -1,4 +1,5 @@
 import { getAccessToken } from "./accessToken";
+import { faceFileName } from "./reader/labForms";
 
 export type Segment = { speaker: string; text: string; emotion: string | null };
 export type TtsChunk = {
@@ -551,6 +552,14 @@ export async function uploadFace(image: File, name: string): Promise<Face> {
   const res = await timedFetch("/api/faces", { method: "POST", headers: authHeaders(), body: form }, 60000);
   if (!res.ok) throw await readError(res, "Face upload failed");
   return res.json() as Promise<Face>;
+}
+
+/** An existing face's image as a File, so a new voice can be linked to it through /api/voices/clone (#111). */
+export async function fetchFaceFile(face: Face): Promise<File> {
+  const res = await timedFetch(face.image, { headers: authHeaders() }, 30000);
+  if (!res.ok) throw await readError(res, "Could not read that face");
+  const blob = await res.blob();
+  return new File([blob], faceFileName(res.headers.get("content-type") ?? blob.type), { type: blob.type || "image/jpeg" });
 }
 
 /** The main face's box as fractions of the image (x, y of the top-left corner). */

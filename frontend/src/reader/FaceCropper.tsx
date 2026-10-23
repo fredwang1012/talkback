@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { detectFace, type FaceBox } from "../api";
 import { cropJpeg, moveCrop, proposeCrop, resizeCrop, type Crop } from "./faceCrop";
+import { loadedSize, objectUrlEffect } from "./labForms";
 
 type Drag = { mode: "move" | "resize"; px: number; py: number; start: Crop; scale: number };
 
 /** Proposes a head-and-shoulders square over the chosen photo (#109); the user drags or resizes it, then Use hands the
  * cropped portrait.jpg to onUse. Works without detection (a centred square near the top). */
 export default function FaceCropper({ file, onUse, onCancel }: { file: File; onUse: (f: File) => void; onCancel: () => void }) {
-  const url = useMemo(() => URL.createObjectURL(file), [file]);
-  useEffect(() => () => URL.revokeObjectURL(url), [url]);
-  const img = useRef<HTMLImageElement | null>(null);
+  // created in an effect, not useMemo: StrictMode's mount/cleanup/mount revoked a memoised URL for good (#111)
+  const [url, setUrl] = useState<string | null>(null);
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => { setSize(null); return objectUrlEffect(file, setUrl); }, [file]);
+  const img = useRef<HTMLImageElement | null>(null);
+  const imgRef = (el: HTMLImageElement | null) => { img.current = el; const s = loadedSize(el); if (s) setSize((o) => (o && o.w === s.w && o.h === s.h ? o : s)); };
   const [box, setBox] = useState<FaceBox | null | undefined>(undefined); // undefined: still finding
   const [crop, setCrop] = useState<Crop | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -65,13 +68,14 @@ export default function FaceCropper({ file, onUse, onCancel }: { file: File; onU
   }
 
   const pct = (v: number, of: number) => `${(v / of) * 100}%`;
-  const note = box === undefined ? "Finding your face…"
+  const note = !size ? "Loading the photo…" : box === undefined ? "Finding your face…"
     : box ? "Drag the square to adjust, or pull its corner to resize." : "No face found: place the square over your head and shoulders.";
   return (
     <span className="crop">
       <span className="crop-frame" onPointerMove={move} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
-        <img ref={img} src={url} alt="Chosen photo" draggable={false}
-             onLoad={(e) => setSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })} />
+        {url && <img ref={imgRef} src={url} alt="Chosen photo" draggable={false}
+             onLoad={(e) => { setError(null); setSize(loadedSize(e.currentTarget)); }}
+             onError={() => setError("Could not show that photo. Try a PNG, JPEG or WebP file.")} />}
         {crop && size && (
           <span className="crop-square" role="slider" tabIndex={0} aria-label="Portrait crop (arrow keys move, + and - resize)"
                 aria-valuetext={`${crop.side} px square`} onPointerDown={(e) => down(e, "move")} onKeyDown={key}

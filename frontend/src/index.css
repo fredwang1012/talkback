@@ -650,6 +650,11 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
 }
 .add-dialog::backdrop { background: rgba(6, 14, 12, 0.62); }
 .add-dialog .add-book { margin: 0; max-width: none; padding: var(--s6); }
+/* Voice lab's Add voice / Add face dialogs (#111): the Add book dialog's frame, the lab's field styles */
+.add-dialog .lab-dialog { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s6); }
+.lab-dialog h2 { font-family: var(--font-title); font-weight: 400; font-size: 1.6rem; margin: 0; }
+.lab-dialog .lab-missing { margin: 0; color: var(--ink-soft); font-size: 0.88rem; }
+.lab-add { display: flex; gap: var(--s3); flex-wrap: wrap; }
 .add-book-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s3); }
 .add-book-head h2 { margin-bottom: var(--s4); }
 .add-book-actions { display: flex; gap: var(--s3); flex-wrap: wrap; align-items: center; }
@@ -657,7 +662,7 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
 @media (max-width: 760px) {
   .series-open .series-card { flex-direction: column; align-items: stretch; }
   .series-books { padding-left: 0; border-left: 0; }
-  .add-dialog .add-book { padding: var(--s5) var(--s4); }
+  .add-dialog .add-book, .add-dialog .lab-dialog { padding: var(--s5) var(--s4); }
 }
 .replay-btn { margin-top: 6px; min-width: 32px; min-height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--brass-soft); background: transparent; color: var(--brass); cursor: pointer; font-size: 0.8rem; }
 .replay-btn:hover, .replay-btn[aria-pressed="true"] { background: var(--brass-soft); }
