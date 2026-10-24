@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import books, ingest_upload, retrieval, tts_cache, voices
+from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
 from .gcp import usage
@@ -208,7 +209,7 @@ class RetrieveRequest(BaseModel):
     query: str = Field(default="", max_length=500)
     reader_para: int = Field(ge=0)
     speaker_id: str = "narrator"
-    k: int = Field(default=4, ge=1, le=8)
+    k: int = Field(default=DEFAULT_K, ge=1, le=12)
     spoilers: bool = False  # full-book mode (novels): reader allows spoilers; default stays spoiler-safe
 
 
@@ -261,8 +262,10 @@ def _series_context(book: Book) -> dict:
     return {"earlier": frozenset(b.id for b in earlier), "recap": books.series_recap(book)}
 
 
-def _resolve_talk(book_id: str, speaker_id: str, reader_para: int):
-    """Shared 404/403 checks for talk endpoints: returns (book, speaker or None, clamped reader_para)."""
+def _resolve_talk(book_id: str, speaker_id: str, reader_para: int, spoilers: bool = False):
+    """Shared 404/403 checks for talk endpoints: returns (book, speaker or None, clamped reader_para).
+
+    Full-book mode (`spoilers`) lifts the "not met yet" gate: every character is available."""
     book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
@@ -270,7 +273,7 @@ def _resolve_talk(book_id: str, speaker_id: str, reader_para: int):
         raise HTTPException(404, "Unknown speaker")
     reader_para = min(reader_para, len(book.paragraphs) - 1)
     speaker = next((c for c in book.characters if c.id == speaker_id), None)
-    if speaker and book.kind == "novel" and speaker.first_para > reader_para:
+    if speaker and book.kind == "novel" and not spoilers and speaker.first_para > reader_para:
         raise HTTPException(403, f"{speaker.name} has not appeared yet at this point in the story.")  # server-side gate
     return book, speaker, reader_para
 
@@ -279,9 +282,10 @@ def _resolve_talk(book_id: str, speaker_id: str, reader_para: int):
 async def retrieve(req: RetrieveRequest, request: Request):
     if not retrieve_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many lookups; wait a moment.")
-    book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para)
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, spoilers=req.spoilers,
-                                    **_series_context(book))
+    book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
+    # realtime (Boson) instructions must stay short: fewer passages and a smaller character cap than /api/answer
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, min(req.k, REALTIME_K),
+                                    spoilers=req.spoilers, max_chars=REALTIME_MAX_PASSAGE_CHARS, **_series_context(book))
     out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"], spoilers=req.spoilers)
     out["persona"] = speaker.persona if speaker else None
     return out
@@ -304,7 +308,7 @@ def _line(obj: dict) -> str:
 async def answer(req: RetrieveRequest, request: Request):
     if not answer_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many questions; wait a moment.")
-    book, _, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para)
+    book, _, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
     t0 = time.monotonic()
     out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, spoilers=req.spoilers,
                                     **_series_context(book))

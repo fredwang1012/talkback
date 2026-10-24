@@ -90,10 +90,10 @@ function Waveform() {
 
 export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, mode, onMode, pinned, needsCode, onCode, onOpenLab, faces, voiceFor, readingVoice, spoilers, onSpoilers, lipSync, onLipSync }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
-  const { met, locked } = splitCharacters(book.characters, para);
-  const speaker = met.find((c) => c.id === speakerId);
   const tutor = book.kind === "textbook";
   const fullBook = !tutor && spoilers;
+  const { met, locked } = splitCharacters(book.characters, para, fullBook);
+  const speaker = met.find((c) => c.id === speakerId);
   const name = speaker?.name ?? (tutor ? "Tutor" : "Narrator");
   const blurb = speaker ? speaker.persona : tutor ? "Explains the chapter in plain words. Ask about anything." : book.narrator?.is_character
     ? `Tells the story as ${book.characters.find((c) => c.id === book.narrator?.is_character)?.name ?? "a character"}.`

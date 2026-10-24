@@ -26,7 +26,7 @@ class VertexIndex:
             return False
         return not spoiler_safe or (isinstance(d.get("para_end"), int) and d["para_end"] <= reader_para)
 
-    async def asearch(self, query: str, reader_para: int, k: int = 4, *, spoiler_safe: bool = True) -> list[Chunk]:
+    async def asearch(self, query: str, reader_para: int, k: int = 8, *, spoiler_safe: bool = True) -> list[Chunk]:
         """Top-k chunks: earlier-book chunks first, then this book's in book order."""
         if not query.strip():
             return []

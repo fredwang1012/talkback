@@ -99,3 +99,32 @@ def test_endpoints_thread_spoilers(env, monkeypatch):
     monkeypatch.setattr(main, "get_answerer", lambda: fake)
     post(client, speaker_id="narrator", reader_para=0, query="King", spoilers=True)
     assert "chosen to allow spoilers" in fake.prompts[0][0]
+
+
+def test_full_book_mode_unlocks_unmet_characters(env, monkeypatch):
+    client, _ = env
+    monkeypatch.setattr(main, "get_answerer", lambda: FakeAnswerer(["Ok."]))
+    assert post(client, speaker_id="king", reader_para=1).status_code == 403
+    assert post(client, speaker_id="king", reader_para=1, spoilers=True).status_code == 200
+    body = {"book_id": "demo", "query": "x", "reader_para": 1, "speaker_id": "king"}
+    assert client.post("/api/retrieve", json=body).status_code == 403
+    assert client.post("/api/retrieve", json={**body, "spoilers": True}).status_code == 200
+    assert post(client, speaker_id="ghost", spoilers=True).status_code == 404  # unknown ids still 404
+
+
+def test_realtime_retrieve_is_capped_below_answer(env):
+    client, _ = env
+    j = client.post("/api/retrieve", json={"book_id": "demo", "query": "x", "reader_para": 1, "k": 12}).json()
+    assert sum(len(p["text"]) for p in j["passages"]) <= retrieval.REALTIME_MAX_PASSAGE_CHARS
+    assert len(j["passages"]) <= retrieval.REALTIME_K + 1  # + the "what just happened" passage
+    assert len(j["instructions"]) <= 8000
+
+
+def test_quality_rules_in_every_prompt():
+    book = make_book(10)
+    book.characters = [Character(id="c", name="Cee", first_para=0, voice="v", persona="Wry.")]
+    for sp in ("narrator", "c"):
+        for spoilers in (False, True):
+            t = build_instructions(book, sp, "story", [], spoilers=spoilers)
+            assert "specifically and in detail" in t and "never invent facts" in t
+            assert ("never confirm, deny, reassure or tease" in t) == (not spoilers)

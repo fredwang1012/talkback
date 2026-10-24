@@ -75,3 +75,20 @@ describe("saved position", () => {
     expect(() => savePosition("b", 3)).not.toThrow();
   });
 });
+
+describe("splitCharacters in full-book mode", () => {
+  const chars = [
+    { id: "a", name: "A", first_para: 0 },
+    { id: "b", name: "B", first_para: 50 },
+  ] as unknown as Character[];
+  it("locks later characters by default", () => {
+    const r = splitCharacters(chars, 5);
+    expect(r.met.map((c) => c.id)).toEqual(["a"]);
+    expect(r.locked.map((c) => c.id)).toEqual(["b"]);
+  });
+  it("unlocks everyone when spoilers are on", () => {
+    const r = splitCharacters(chars, 5, true);
+    expect(r.met.map((c) => c.id)).toEqual(["a", "b"]);
+    expect(r.locked).toEqual([]);
+  });
+});
