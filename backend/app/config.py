@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # Who writes talk-mode answers. None = follow retrieval_backend (vertex -> gemini, local -> realtime).
     answer_backend: Literal["gemini", "realtime"] | None = None
     gemini_model: str = "gemini-2.5-flash"
+    # Web search (Grounding with Google Search) on Gemini answers: textbooks and novels with spoilers on only (websearch.py).
+    web_search: bool = True
+    grounded_daily_cap: int = 100        # grounded answers per UTC day on this app, persisted (data/usage)
+    public_grounded_daily_cap: int = 50  # public service: grounded answers per UTC day, on top of the answer budget
 
     def gemini_region(self) -> str:
         return self.gemini_location or self.gcp_region

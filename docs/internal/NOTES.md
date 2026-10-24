@@ -690,6 +690,11 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   (`TypeError` on the CQL paper; short excerpts never hit a second glyph on the same line).
 - A paper the heuristic calls a novel is stored with formulas flattened to text (only textbooks keep them). Moving
   that PDF to Textbooks reads the file again and crops the pictures; the kind flag alone left the flat text in place.
+  Merged onto the locked kind change: the PDF is read outside the write lock, then sections/paragraphs are put into a
+  fresh read under `books.update_book` (other writers' fields survive), summaries are dropped (old paragraph numbers)
+  so the textbook notes run under the caps, chunks are rebuilt with `rechunk_book`, and the retrieval index is rebuilt
+  like an upload's (local chunks; Vertex: stale datapoints deleted, new chunks indexed in the background). Kept
+  characters keep their old `first_para`, and paragraph numbers change, so a saved reading position may shift.
 - An inline crop's height is the picture. The padding that keeps a KaTeX limit off the next line was also on the
   image, and with border-box it shrank the picture to about two thirds. A tall delimiter is placed by the middle
   of its real box: a band around its reported baseline (the top of the glyph) glued the brackets of the equation
@@ -740,6 +745,7 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   per-response retrieval instructions (spoiler-safe context, persona), so turns stay manual (`turn_detection: null`).
   The session still sets `noise_reduction: near_field`. If Boson adds `create_response: false`, `server_vad` with
   `threshold` ~0.6-0.7 (its default moved to 0.85) would replace the local gate.
+  **Superseded by #135 (below): `create_response: false` is honoured live, so hands-free now uses `semantic_vad`.**
 
 ## Spoken turns live: tool calls, barge-in leftovers, hands-free echo (#102, #97, #99, #100, #103, 2026-10-23)
 - Spoken commands failed where typed ones worked because the *question* was lost, not the tool. `pttUp` waited a fixed
@@ -975,3 +981,132 @@ the deployed talkback-public-00001 is the Oct 21 code):
   least $0.02 (so opening tickets cannot be repeated for free).
 - Test note: tests/test_kind.py::test_concurrent_kind_changes_start_only_one_enrichment failed once in a full run and
   passed on every rerun (timing flake, unrelated code path).
+
+## Review of integration PR #133 (backend fixes)
+- book.json writers share one re-entrant lock per file (`books.write_lock`): rechunk upgrade (stamp re-checked inside
+  the lock), equation updates, textbook notes, kind change (`books.update_book`, fresh read), enrich checkpoints and
+  ingest publish. `save_book` writes a per-call temp file (`book.json.<uuid>.tmp`) and `os.replace`s it; on Windows a
+  replace over a file a reader has open is retried briefly (this was the cause of the test_kind flake above).
+- Known transient (not fixed): rechunking an old book (chunk_rules upgrade) can shift chunk ids (`p{idx}c{n}`) when a
+  paragraph gains a singing split. A reader that loaded the old book JSON before the upgrade asks for the old ids until
+  it reloads the book, so a few chunks may play the wrong audio once. There is no book version / ETag the client
+  could check; the upgrade runs once per book at startup, so a reload after deploy clears it.
+- Enrichment CPU (attribution + whole-book rechunk) runs in a worker thread; the minor-voice pass no longer rechunks
+  on its own (the segment stage rechunks once). TTS chunking uses a per-book `BookIndex` (30k paras x 3k sections:
+  9.4 s -> 1.8 s, committed books byte-identical).
+- Emotion markers: `emotion.strip_tags` removes every `<|...|>` (repeatedly, then stray `|`); split_marker is linear and
+  capped at 2000 chars; `/api/speak` strips tags from its text. An empty textbook-notes result is now a failure (keeps
+  earlier notes); `start_enrich` purges abandoned equation tickets.
+
+## #135 (backend): non-English TTS and two more sound effects
+
+- `/api/speak` takes an optional `language` (ISO 639-3, validated against `app/tts_lang.py`, the 102 documented languages;
+  the docs give names only, so the codes are ours: all 102 plus `cmn` were accepted live by Boson, 2026-10-23). English
+  (absent or `eng`) is unchanged. Any other language is requested with `timestamps: false`, `language` and `normalize: true`
+  (timestamps switch normalization off; they exist only for English, Chinese and Spanish, and a live Spanish clip with
+  timestamps read "1888" unnormalized). The reply is then raw audio, so `timestamps` is null and the caption highlights the
+  whole sentence. `cache_key` gains language and mode for non-English only, so English keys do not change.
+- delivery.py already had laughter, sigh, crying, sniff, cough (Ahem/Cough) and screaming (#73). Added `sneeze`
+  (Achoo, Ah-choo, Atishoo) and `humming` (Hmm-hmm / Mmm, only when the speech tag says hummed/humming). Never in
+  narration or sung chunks; one sfx per chunk. `burping` is deliberately not used. CHUNK_RULES_VERSION is 2.
+  Effect on the committed public-domain books and Alice: 0 chunks change (rules are strict; there is no Achoo or hummed
+  line in them), so the bump only upgrades uploads and keeps books stamped.
+- `<|reset|>`: the docs say only that a new group of delivery tokens replaces the old one and that reset returns to
+  neutral; sfx are not delivery tokens and chunks are synthesized independently, so no reset is emitted. A live clip with
+  style + sfx + `<|reset|>` was accepted and no tag was read aloud (tag words absent from word timestamps).
+## Realtime hands-free on Boson turn detection, voice-timed captions, fast "didn't catch that" (#135, 2026-10-23)
+- Live probes (about $0.005 in total: ~1.5 min of input audio, one short reply), `higgs-realtime`, the 2 s TTS clip
+  "What is the capital of France?" streamed in real time:
+  - `turn_detection` **cannot change mid-session**: `session.update` after the start -> 400 `turn_detection cannot be
+    changed after session start`. So hands-free on/off reopens the socket (seeded history keeps the chat).
+    `transcription.language` *can* change mid-session (`session.updated` echoes it).
+  - `semantic_vad` + `create_response: false` + `interrupt_response: false` is echoed and honoured. Sequence:
+    `speech_started` (item_id, audio_start_ms) -> `speech_stopped` -> `committed` (~0.05-0.1 s later) ->
+    `transcription.completed` (0.15-0.4 s after the commit) -> nothing until our `response.create`. A
+    `speech_started` while our response was active did not cancel it.
+  - `noise_reduction: near_field` under server VAD started the turn ~1 s late and transcribed only "France." (also
+    split the question into fragments transcribed as "嗯。" at threshold 0.5). Without it: start at 436 ms, one turn,
+    "What is the capital of France?". Server-turn sessions therefore send no noise_reduction (the capture still has
+    the browser's noise suppression and echo cancellation); push-to-talk keeps near_field.
+  - Semantic's default `silence_duration_ms` 100 and threshold 0.85 cut the start; shipped: threshold 0.6, silence 500.
+  - A wrong transcription hint (`language: "es"` on English speech) gave **no transcript event at all**.
+  - `response.output_audio_transcript.delta` is followed by `.length` for the same fragment, `length_ms` per fragment
+    (not cumulative): "Hello!" 840 ms, " How can I assist you today?" 2680 ms (= the reply's 3.52 s). Fragments are
+    about a sentence, so captions interpolate words inside a fragment.
+- Hands-free (TalkController `serverTurns`, on in useTalk unless `?gate=local` or localStorage `talkback:gate=local`):
+  the session opens at once with semantic_vad (fallback chain: server_vad if refused, then manual turns + the local
+  gate, `turn-mode` event); the mic streams continuously (up to 3 s held while connecting). speech_started starts the
+  turn (reader paused, no extra mic start); speech_stopped -> transcribing; the transcript runs the normal flow
+  (`/api/retrieve` instructions, spoiler-safe) and we send `response.create`. Speech restarting within 600 ms of a stop
+  continues the same question (transcripts joined; the server can split one question). An answer the server starts by
+  itself is cancelled and never played (and would mean the docs' "no effect" became true again).
+- Echo guard: a speech_started while the character speaks (or within the 300 ms tail) counts only with the strict
+  local gate (`HANDS_FREE_OVER_SPEECH`, 0.10 RMS for 400 ms) speaking; otherwise it is on probation until the level
+  confirms it, and if it never does, its committed item is deleted (`conversation.item.delete`) and its transcript
+  ignored. Headphones advice stays. If the session closed (5 min idle), the idle gate reopens it on speech; the held
+  audio goes first.
+- Captions: TalkClient builds [text, start, end] from `.length` and reveals by the player's played position
+  (`RingPlayer.playedMs`, an AudioContext-clock estimate; it stops while paused); the full caption lands when playback
+  drains. Without a playback clock: as before (as it arrives). On a cut (`interrupt`) the `heard` event carries the
+  words up to the flushed position, and `chatLog.cutHeard` trims the interrupted (or stopped) reply to them, so the
+  bubble and `priorTurns` memory match what was said.
+- Fast failure: a `committed` with no transcript within 1.5 s (`FAST_FAIL_MS`), or an empty transcript, ends the turn
+  with "I didn't catch that" (push-to-talk too; the 6 s window stays only when no committed event comes). A failure
+  while a language hint is set clears the hint.
+- Language: `language.clearLanguage` (a script, or >= 2 stopwords of one language and more than any other); the newest
+  clear one of the last three questions sets `transcription.language` (ISO 639-1; English -> none). Gemini-path
+  answers pass it to `/api/speak` as ISO 639-3 (`spa`, `fra`, ...; only when not English); the backend then returns
+  `timestamps: null`, which the answer path never needed (sentence-level bubbles and playback).
+- Not verified live: the echo guard with real laptop speakers (needs a person), how fine `.length` fragments are for
+  long answers, `semantic_vad` on real (not TTS) speech with pauses.
+
+## Web search on Talk answers (Grounding with Google Search), branch feat/web-search-answers
+- Rule (server-side, `app/websearch.allowed`): web search only when `book.kind == "textbook"` or `spoilers` is on, and
+  `WEB_SEARCH` is true (default). A novel read spoiler-safe never gets the tool (the web would leak later events):
+  enforced in `/api/answer` and in the public `/api/public/answer` (a client can only opt out, `web_search: false`).
+- API (google-genai 2.31, Vertex docs): `GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())])`.
+  gemini-2.5-flash is supported. Sources are `candidate.grounding_metadata.grounding_chunks[].web.{uri,title,domain}`;
+  on Vertex the uri is a `vertexaisearch.cloud.google.com/grounding-api-redirect/...` link and the title is the domain.
+  Limits: 1M grounded prompts/day; search tools cannot be combined with function calling in one request.
+- Pricing (cloud.google.com/vertex-ai/generative-ai/pricing, read 2026-10-23): Gemini 2.0 Flash, 2.5 Flash and 2.5
+  Flash-Lite share 1,500 free Grounding Prompts per day; past that $35 per 1,000 grounded prompts (one charge per prompt
+  however many queries), billed only when the prompt returns at least one web source. (Gemini 3: 5,000 free queries
+  per month, then $14 per 1,000 queries, per query.) Search-result input tokens are not charged. gemini-2.5-flash
+  tokens: $0.30 / 1M in, $2.50 / 1M out.
+- Display terms (Vertex "Grounding with Google Search" docs): show the Search Suggestions
+  (`search_entry_point.rendered_content`, Google's HTML/CSS) exactly as provided, visible whenever the grounded answer
+  is, the same width as the answer; tapping a chip goes straight to the Google results page (in-app or separate
+  browser), nothing between; no other search results next to it. Its CSS handles light/dark itself
+  (`prefers-color-scheme`); the docs say nothing about scripts, iframes or new tabs. Done: the backend passes the markup
+  unmodified (string <= 32 KB, `websearch.clean_suggestions`) as `search_suggestions` on the `sources` line (local
+  route, public route, and the clone re-checks what the service sends); the reply shows it in
+  `<iframe class="search-suggestions" srcdoc sandbox="allow-popups allow-popups-to-escape-sandbox"
+  referrerpolicy="no-referrer">` (no scripts, opaque origin), full bubble width, fixed 64 px height (a sandbox without
+  scripts cannot measure itself; Google's chips are one scrollable row). The srcdoc wraps the markup in a document with
+  `<base target="_blank">` (chips open google.com in a new tab: a framed google.com page refuses to load) and
+  `color-scheme: light dark`; the markup itself is not changed. Plain source links stay above it. Not checked against a
+  live rendered_content in the browser (no paid call): if Google's markup is taller than one row it is clipped/scrolls
+  inside the frame; adjust `SUGGESTIONS_HEIGHT` after a manual look.
+- Prompt: `personas.WEB_SEARCH_RULE`, appended after the length cap and before the spoken-output + emotion rules (the
+  emotion rule stays last, the language rule stays first). Book passages stay the main source; web for background,
+  definitions, author/history, (textbooks) current facts and worked examples; say "outside the book" briefly; keep the
+  voice; at most four short sentences; no URLs spoken.
+- Stream: `GeminiAnswerer.stream_sentences(..., web_search=True, on_sources=cb)` collects grounding chunks, cleans them
+  (`websearch.clean_sources`: http(s) only, dedup, <= 5) and reports them after the last sentence; the route sends one
+  NDJSON `{"type":"sources","sources":[{uri,title}]}` line before `done`. If the grounded request is refused at start
+  it retries once without the tool. Usage log: `usage.record("llm", ..., grounded=True, sources=n)`.
+- Caps: local `GROUNDED_DAILY_CAP` (default 100/UTC day, `data/usage/grounded_answers.json`), past it the plain answer.
+  Public service: `PUBLIC_GROUNDED_DAILY_CAP` (default 50, `public_grounded_answers.json`) and each grounded answer
+  reserves an extra $0.035 (`GROUNDED_USD`, worst case past the free tier) on the existing daily answer budget, settled
+  to that fee only when sources came back; no room -> plain answer. Generic `DailyCount` moved to `app/daily_count.py`.
+- Frontend: `api.streamAnswer(..., onSources)`, `chatLog.setSources` + `ChatMessage.sources` (re-cleaned on load from
+  sessionStorage, never in the history sent back), `reader/SourceLinks.tsx` under character bubbles. useTalk.ts change
+  is one line (the extra callback) to keep merges with the TalkClient/handsFree work easy.
+- Realtime path (ANSWER_BACKEND=realtime / Boson): unchanged. Boson's own web_search tool was not added; voice answers
+  through Realtime never search the web.
+- Live check (3 real calls, ~$0.0025 of model tokens, grounding inside the free daily tier): a textbook question
+  (tf-idf vs BM25) came back grounded with 5 sources (sigmacomputing, wikipedia, ibm, myscale, medium) but ran to 12
+  sentences, so the rule now caps answers at four sentences. A spoilers-on Alice question ("who inspired you, when was
+  it published") had the tool but the model answered from memory both times (0 sources, no "outside the book" phrase):
+  Gemini decides when to search; well-known facts often skip it. Not re-checked after the four-sentence rule (call
+  budget). Also seen: the sentence splitter breaks after "Mr." (pre-existing, `_split`).

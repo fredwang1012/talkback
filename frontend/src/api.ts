@@ -183,14 +183,47 @@ export async function fetchRetrieve(bookId: string, query: string, readerPara: n
   return res.json() as Promise<RetrieveResponse>;
 }
 
+/** A web page a grounded answer used (#web search): shown as a link under the reply, never spoken. */
+export type Source = { uri: string; title: string };
+export const MAX_SOURCES = 5;
+export const MAX_SUGGESTIONS = 32_000;
+/** What a grounded answer sends in its `sources` line: the web links and Google's Search Suggestions markup. */
+export type Grounding = { sources: Source[]; suggestions?: string };
+
 /**
- * Streams the spoken answer from /api/answer (NDJSON: `sentence` lines, then `done` or `error`).
+ * Google's Search Suggestions HTML (search_entry_point.rendered_content), unmodified: Google's terms require showing it
+ * as provided. Only a string of plausible size is kept; it is displayed only inside a sandboxed iframe (SourceLinks).
+ */
+export function cleanSuggestions(raw: unknown): string | undefined {
+  return typeof raw === "string" && raw.trim() && raw.length <= MAX_SUGGESTIONS ? raw : undefined;
+}
+
+/** Plain http(s) links from untrusted data (the stream, sessionStorage): no other schemes, no duplicates, short. */
+export function cleanSources(raw: unknown): Source[] {
+  const out: Source[] = [];
+  if (!Array.isArray(raw)) return out;
+  for (const s of raw) {
+    const uri = (s as { uri?: unknown })?.uri;
+    const title = (s as { title?: unknown })?.title;
+    if (typeof uri !== "string" || uri.length > 2048 || !/^https?:\/\/[^\s]+$/i.test(uri) || out.some((o) => o.uri === uri)) continue;
+    let host = "";
+    try { host = new URL(uri).hostname; } catch { continue; }
+    out.push({ uri, title: (typeof title === "string" && title.trim() ? title.trim() : host).slice(0, 120) });
+    if (out.length >= MAX_SOURCES) break;
+  }
+  return out;
+}
+
+/**
+ * Streams the spoken answer from /api/answer (NDJSON: `sentence` lines, then `done` or `error`). A grounded answer
+ * (web search: textbooks, or novels with spoilers on) also sends one `sources` line, reported through `onSources`.
  * Only the response headers have a deadline; the body can take as long as the model needs. `signal` aborts it.
  */
 export async function streamAnswer(
   bookId: string, query: string, readerPara: number, speakerId: string,
   onSentence: (text: string, emotion?: string) => void, signal?: AbortSignal, spoilers = false,
   history: { role: "user" | "character"; text: string }[] = [],
+  onSources?: (grounding: Grounding) => void,
 ): Promise<void> {
   const res = await timedFetch("/api/answer", {
     method: "POST",
@@ -211,10 +244,15 @@ export async function streamAnswer(
   let buf = "";
   const handle = (line: string) => {
     if (!line.trim()) return;
-    let msg: { type?: string; text?: string; message?: string; emotion?: unknown };
+    let msg: { type?: string; text?: string; message?: string; emotion?: unknown; sources?: unknown; search_suggestions?: unknown };
     try { msg = JSON.parse(line); } catch { return; } // tolerate a garbled line
     if (msg.type === "sentence" && typeof msg.text === "string") {
       onSentence(msg.text, typeof msg.emotion === "string" && msg.emotion ? msg.emotion : undefined); // #14
+    }
+    else if (msg.type === "sources") {
+      const sources = cleanSources(msg.sources);
+      const suggestions = cleanSuggestions(msg.search_suggestions);
+      if (sources.length || suggestions) onSources?.({ sources, ...(suggestions ? { suggestions } : {}) });
     }
     else if (msg.type === "error") throw new Error(msg.message || "The answer failed.");
   };
@@ -243,11 +281,13 @@ export async function streamAnswer(
  * Synthesises one sentence in a voice (cached server-side) and returns where to fetch the audio. `emotion` (#14) is an
  * answer sentence's feeling; the server checks it and sends it to Boson as a delivery tag.
  */
-export async function speak(text: string, voice: string, emotion?: string): Promise<TtsResponse> {
+/** `language`: ISO 639-3 of a non-English answer (#135); the backend then asks Boson for normalized speech without
+ * word timestamps (the response's `timestamps` is null). Never sent for English. */
+export async function speak(text: string, voice: string, emotion?: string, language?: string | null): Promise<TtsResponse> {
   const res = await timedFetch("/api/speak", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ text, voice, ...(emotion ? { emotion } : {}) }),
+    body: JSON.stringify({ text, voice, ...(emotion ? { emotion } : {}), ...(language && language !== "eng" ? { language } : {}) }),
   }, 30000);
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);

@@ -1,5 +1,6 @@
 /** A small language guess from the transcript, shown as a badge ("Heard: Español"). Not used to steer the model:
- * Higgs Realtime detects the language itself and answers in kind. Returns null when there is too little to go on. */
+ * Higgs Realtime detects the language itself and answers in kind. Returns null when there is too little to go on.
+ * #135: a *clear* guess (`clearLanguage`) also sets the Realtime transcription hint and the TTS language of answers. */
 export type Detected = { code: string; name: string };
 
 const SCRIPTS: { code: string; name: string; re: RegExp }[] = [
@@ -37,4 +38,45 @@ export function detectLanguage(text: string): Detected | null {
   }
   if (best) return { code: best.code, name: best.name };
   return words.length >= 3 ? { code: "en", name: "English" } : null; // Latin script, no stopwords: assume English
+}
+
+/**
+ * A guess confident enough to act on (#135): a script, or at least two stopwords of one language and more than of any
+ * other. A wrong transcription hint is costly (live: an "es" hint on English speech gave no transcript at all), so
+ * anything less clear is null.
+ */
+export function clearLanguage(text: string): Detected | null {
+  const t = text.trim();
+  if (t.length < 2) return null;
+  for (const s of SCRIPTS) if (s.re.test(t)) return { code: s.code, name: s.name };
+  const words = t.toLowerCase().match(/[\p{L}']+/gu) ?? [];
+  const scores = STOPWORDS.map((lang) => { const set = new Set(lang.words); return { lang, score: words.filter((w) => set.has(w)).length }; })
+    .sort((a, b) => b.score - a.score);
+  const [best, second] = scores;
+  if (!best || best.score < 2 || best.score <= (second?.score ?? 0)) return null;
+  return { code: best.lang.code, name: best.lang.name };
+}
+
+/** The Realtime transcription hint (ISO 639-1) from the reader's recent questions, oldest first: the newest of the last
+ * three that is clear decides; English, or nothing clear, gives null (no hint). */
+export function transcriptionHint(recent: string[]): string | null {
+  for (const q of recent.slice(-3).reverse()) {
+    const d = clearLanguage(q);
+    if (d) return d.code === "en" ? null : d.code;
+  }
+  return null;
+}
+
+/** ISO 639-1 (the detector's codes) -> ISO 639-3 for /api/speak `language`; null for English and anything unknown. */
+const ISO_639_3: Record<string, string> = {
+  es: "spa", fr: "fra", de: "deu", pt: "por", it: "ita", ja: "jpn", ko: "kor", zh: "zho", ru: "rus", ar: "ara",
+  hi: "hin", he: "heb", el: "ell", th: "tha",
+};
+export function toIso6393(code: string | null | undefined): string | null {
+  return (code && ISO_639_3[code]) || null;
+}
+
+/** The language to voice an answer in (ISO 639-3), when the reader's recent questions are clearly not English. */
+export function answerLanguage(recent: string[]): string | null {
+  return toIso6393(transcriptionHint(recent));
 }

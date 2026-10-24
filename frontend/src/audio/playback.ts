@@ -31,6 +31,13 @@ export class RingPlayer {
   private pendingFlush: Array<(ms: number) => void> = [];
   /** Held by pausePlayback: the context is suspended on purpose, so new audio must not wake it. */
   private held = false;
+  /**
+   * Main-thread estimate of the played position (#135 voice-timed captions), on the AudioContext clock: everything
+   * queued since reset, minus what is still ahead of the clock. The clock stops while the context is suspended
+   * (pause), so the estimate pauses with the voice. Truncation still uses the worklet's exact count (flush).
+   */
+  private queuedMs = 0;
+  private queueEnd = 0; // ctx time (s) at which the queued audio runs out
 
   constructor(onSpeakingChange?: (speaking: boolean) => void) {
     this.onSpeakingChange = onSpeakingChange;
@@ -98,6 +105,12 @@ export class RingPlayer {
     // Never let a context that went to sleep swallow a whole reply silently.
     if (this.ctx?.state === "suspended" && !this.held) void this.ctx.resume().catch(() => {});
     const buf = base64ToBytes(base64);
+    if (this.ctx) {
+      const now = this.ctx.currentTime;
+      const ms = (buf.byteLength / 2 / AUDIO_RATE) * 1000;
+      this.queueEnd = Math.max(this.queueEnd, now) + ms / 1000;
+      this.queuedMs += ms;
+    }
     // The second argument transfers ownership of the buffer to the audio thread
     // instead of copying it. At ~120 chunks per reply the copies would add up.
     this.node.port.postMessage({ type: "samples", payload: buf }, [buf]);
@@ -111,6 +124,15 @@ export class RingPlayer {
    */
   reset(): void {
     this.node?.port.postMessage({ type: "reset" });
+    this.queuedMs = 0;
+    this.queueEnd = this.ctx?.currentTime ?? 0;
+  }
+
+  /** Milliseconds of this reply played so far (since reset), estimated without stopping playback (#135). */
+  playedMs(): number {
+    if (!this.ctx) return 0;
+    const ahead = Math.max(0, this.queueEnd - this.ctx.currentTime) * 1000;
+    return Math.max(0, this.queuedMs - ahead);
   }
 
   /**
@@ -123,6 +145,8 @@ export class RingPlayer {
   flush(): Promise<number> {
     if (!this.node) return Promise.resolve(0);
     if (this.held) { this.held = false; void this.ctx?.resume().catch(() => {}); } // the worklet must run to answer
+    this.queuedMs = this.playedMs(); // the rest is dropped
+    this.queueEnd = this.ctx?.currentTime ?? 0;
     return new Promise((resolve) => {
       this.pendingFlush.push(resolve);
       this.node!.port.postMessage({ type: "flush" });

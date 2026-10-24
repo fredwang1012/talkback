@@ -139,6 +139,9 @@ _WEEP_TAG = re.compile(
     r"\b(?:sob(?:bed|s|bing)|wept|weep(?:s|ing)?|crying(?!\s+out)|in\s+tears|burst\s+into\s+tears"
     r"|cried\s+(?:bitterly|softly|quietly|piteously|harder|silently|herself|himself|themselves))\b", re.I)
 _SCREAM_TAG = re.compile(r"\b(?:scream(?:ed|s|ing)?|shriek(?:ed|s|ing)?)\b", re.I)
+_HUM_TAG = re.compile(r"\b(?:hum(?:med|s|ming)|humm?ing)\b", re.I)
+_HUM_WORD = re.compile(r"(?:h?m{2,}|hm)(?:-h?m+)*")  # 'Hmm-hmm-hmm', 'Mmm': only when the speech tag says hummed
+_SNEEZE_WORD = re.compile(r"a[h-]*t?-?choo|atishoo|ahtishoo|kerchoo")  # 'Achoo', 'Ah-choo', 'Atishoo'
 _SIGH_WORD = re.compile(r"sigh|a+hh+|ah-h+|a+h+-h+|haa+h+")
 _SOB_WORD = re.compile(r"sob|boo-?hoo(?:-?hoo)*")
 _SCREAM_WORD = re.compile(r"a{2,}h+|a{3,}(?:r*gh)?")
@@ -182,6 +185,10 @@ def sfx_at(spoken: str, tag: str = "") -> tuple[int, str] | None:
     at = lead.end()
     if _LAUGH.fullmatch(first.replace("-", "")) or (first == "ho" and second == "ho"):
         return at, "laughter"
+    if _SNEEZE_WORD.fullmatch(first):
+        return at, "sneeze"
+    if _HUM_WORD.fullmatch(first) and _says(_HUM_TAG, tag):
+        return at, "humming"
     if first == "ahem":
         return at, "cough"
     if first == "cough" and (alone or second == "cough"):

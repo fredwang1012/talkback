@@ -43,7 +43,7 @@ This script deploys Talkback to Cloud Run. Nothing has been done yet. It will:
   4. gcloud builds submit --tag ${IMAGE}
   5. gcloud run deploy ${SERVICE} in ${REGION} as ${SA}
        RETRIEVAL_BACKEND=vertex, TRUST_PROXY=true, UPLOAD_LLM=gemini, UPLOAD_ENRICH=true, UPLOAD_CONFIRM=false,
-       UPLOAD_BOOK_CAP_USD=4, UPLOAD_TOTAL_CAP_USD=15, USAGE_LOG_FILE=false (usage goes to Cloud Logging only),
+       UPLOAD_BOOK_CAP_USD, UPLOAD_TOTAL_CAP_USD (default 1000: caps lifted for the hackathon; export lower values to restore them), USAGE_LOG_FILE=false (usage goes to Cloud Logging only),
        PER_USER=true, IAP_AUDIENCE=${IAP_AUDIENCE}, OWNER_EMAILS=${OWNER_EMAILS}, OWNER_ONLY_BOOKS=hp* (per-account data;
        on first start the shared voice/face/cast data is copied to the owner, see docs/DEPLOY.md),
        secret BOSON_API_KEY, bucket mounted at /app/data, min 0 / max 1 instance, no CPU throttling, 1Gi, 1 CPU,
@@ -88,7 +88,7 @@ gcloud run deploy "${SERVICE}" \
   --region "${REGION}" \
   --image "${IMAGE}" \
   --service-account "${SA}" \
-  --set-env-vars "RETRIEVAL_BACKEND=vertex,TRUST_PROXY=true,GCP_PROJECT=${PROJECT},GCP_REGION=${REGION},CORS_ORIGINS=http://localhost:5173,UPLOAD_LLM=gemini,UPLOAD_ENRICH=true,UPLOAD_CONFIRM=false,UPLOAD_BOOK_CAP_USD=4,UPLOAD_TOTAL_CAP_USD=15,USAGE_LOG_FILE=false,PER_USER=true,IAP_AUDIENCE=${IAP_AUDIENCE},OWNER_EMAILS=${OWNER_EMAILS},OWNER_ONLY_BOOKS=hp*" \
+  --set-env-vars "RETRIEVAL_BACKEND=vertex,TRUST_PROXY=true,GCP_PROJECT=${PROJECT},GCP_REGION=${REGION},CORS_ORIGINS=http://localhost:5173,UPLOAD_LLM=gemini,UPLOAD_ENRICH=true,UPLOAD_CONFIRM=false,UPLOAD_BOOK_CAP_USD=${UPLOAD_BOOK_CAP_USD:-1000},UPLOAD_TOTAL_CAP_USD=${UPLOAD_TOTAL_CAP_USD:-1000},GROUNDED_DAILY_CAP=${GROUNDED_DAILY_CAP:-100000},USAGE_LOG_FILE=false,PER_USER=true,IAP_AUDIENCE=${IAP_AUDIENCE},OWNER_EMAILS=${OWNER_EMAILS},OWNER_ONLY_BOOKS=hp*" \
   --set-secrets "BOSON_API_KEY=boson-api-key:latest" \
   --execution-environment gen2 \
   --add-volume "name=data,type=cloud-storage,bucket=${BUCKET}" \

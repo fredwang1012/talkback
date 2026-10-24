@@ -12,6 +12,7 @@ import asyncio
 import logging
 import math
 import time
+import traceback
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -23,6 +24,7 @@ from . import attribute as attribute_mod
 from . import cast as cast_mod
 from . import minor as minor_mod
 from . import segment as seg_mod
+from . import series_link
 from . import spend
 from . import summaries as sum_mod
 from . import textbook as tb_mod
@@ -40,7 +42,8 @@ MESSAGES = {
 }
 TOO_LONG = "This book is too long to process with characters; it will be read by the narrator."
 BUDGET_USED = "Character processing is paused for now; this book will be read by the narrator."
-FAILED = "Character processing stopped early; the book is still readable with the narrator."
+FAILED = "Character processing stopped early; you can try again. The book is still readable with the narrator."
+INTERRUPTED = "Character processing was interrupted; you can try again. The book is still readable with the narrator."
 FALLBACK_DONE = "Characters detected with a simple fallback (no LLM key configured). Add ANTHROPIC_API_KEY for full voices and recap."
 # textbooks: only recap notes (no characters, no dialogue split)
 TEXTBOOK_MESSAGE = "Writing study notes for the recap"
@@ -49,6 +52,7 @@ TEXTBOOK_TOO_LONG = "This textbook is too long for recap notes; it can still be 
 TEXTBOOK_BUDGET_USED = "Recap notes are paused for now; the textbook can still be read and searched."
 TEXTBOOK_FAILED = "Recap notes stopped early; the textbook is still readable."
 TEXTBOOK_CONFIRM = "Study notes for the recap need processing."
+FLUSH_NEAR = 0.75      # past this share of a cap the spend is flushed after every call
 BOOK_CAP_MARGIN = 1.25  # a running job stops when its real spend passes the per-book cap by this factor
 ESTIMATE_MARGIN = 1.15
 CAST_OUT_TOKENS = 3000 + cast_mod.SERIES_OUT_TOKENS  # the cast answer: characters, voices, series
@@ -78,12 +82,15 @@ def estimate(book: Book, provider: str | None = None) -> float:
     notes, cond, note_chars = sum_mod.estimate_calls(book)
     in_chars = note_chars + notes * len(sum_mod.NOTE_SYSTEM) + cond * (len(sum_mod.CONDENSE_SYSTEM) + min(cond, 60) * 150 * 6)
     usd += estimate_usd(provider, "fast", in_chars, notes * 220 + cond * 300)
+    usd += series_link.MAX_CHECKS * series_link.check_estimate_usd(provider)  # library series checks (#134)
     return round(usd * ESTIMATE_MARGIN, 4)
 
 
-def check_caps(estimate_usd_: float, textbook: bool = False) -> str | None:
-    """None when enrichment may start; else the plain message to show the reader."""
-    if estimate_usd_ > settings.upload_book_cap_usd:
+def check_caps(estimate_usd_: float, textbook: bool = False, book_id: str | None = None) -> str | None:
+    """None when enrichment may start; else the plain message to show the reader. With `book_id`, what the book has
+    already cost (earlier runs and retries) counts against the per-book cap too."""
+    already = spend.book_usd(book_id) if book_id else 0.0
+    if estimate_usd_ + already > settings.upload_book_cap_usd:
         return TEXTBOOK_TOO_LONG if textbook else TOO_LONG
     if spend.total_usd() + estimate_usd_ > settings.upload_total_cap_usd:
         return TEXTBOOK_BUDGET_USED if textbook else BUDGET_USED
@@ -115,7 +122,7 @@ def _book_path(book_id: str) -> Path:
 
 
 def rebuild_chunks(book: Book) -> None:
-    rechunk_book(book)  # stamps Book.chunk_rules
+    rechunk_book(book, strict=False)  # stamps Book.chunk_rules; a paragraph whose segments do not fit goes to the narrator
 
 
 def _meter(book_id: str, llm: LLM) -> None:
@@ -124,23 +131,27 @@ def _meter(book_id: str, llm: LLM) -> None:
 
     def on_usage(provider: str, model: str, n_in: int, n_out: int, usd: float) -> None:
         total = spend.add(book_id, provider, usd, flush_now=False)  # file writes happen off the loop (see flush)
-        if llm.calls % 25 == 0:
+        # near a cap every call reaches disk: a crash then cannot lose spend and let a resume overshoot the cap
+        near = spend.book_usd(book_id) >= cap * FLUSH_NEAR or total >= settings.upload_total_cap_usd * FLUSH_NEAR
+        if near or llm.calls % 25 == 0:
             asyncio.get_running_loop().create_task(asyncio.to_thread(spend.flush))
         if total >= settings.upload_total_cap_usd:
             raise SpendLimit("upload budget used")
-        if llm.usd > cap:
+        if spend.book_usd(book_id) > cap:   # cumulative over every run of this book, not just this one
             raise SpendLimit("book cap")
 
     llm.on_usage = on_usage
 
 
-async def enrich_book(book_id: str, report: Report, *, llm: LLM | None = None, indexer: Indexer | None = None) -> bool:
-    """Run every stage on data/books/<id>/book.json. Returns True when all stages finished. Never raises."""
+async def enrich_book(book_id: str, report: Report, *, llm: LLM | None = None, indexer: Indexer | None = None,
+                      resume: bool = False) -> bool:
+    """Run every stage on data/books/<id>/book.json. Returns True when all stages finished. Never raises.
+    resume: stages whose result was already saved by an earlier, interrupted run are not paid for again."""
     path = _book_path(book_id)
     llm = llm or make_llm()
     _meter(book_id, llm)
     try:
-        return await _run(book_id, path, report, llm, indexer)
+        return await _run(book_id, path, report, llm, indexer, resume)
     finally:
         await asyncio.shield(asyncio.to_thread(spend.flush))
 
@@ -170,10 +181,15 @@ async def enrich_textbook(book_id: str, report: Report, *, llm: LLM | None = Non
     _meter(book_id, llm)
     state = {"stage": "summaries"}
     out: list = []
+    capped = False
     try:
         book = Book.model_validate_json(_book_path(book_id).read_text(encoding="utf-8"))
         _, subs = tb_mod.plan(book)
         await run_textbook_stage(book, report, llm, state=state, include_subsections=subs, out=out)
+        if not out:   # every section call failed: nothing to save, and the notes from before stay
+            log.warning("textbook notes for %s: no section could be summarised", book_id)
+            report(status="error", stage="summaries", message=TEXTBOOK_FAILED)
+            return False
         if not await asyncio.to_thread(tb_mod.save_summaries, book_id, out):
             report(status="error", stage="summaries", message=TEXTBOOK_FAILED)
             return False
@@ -184,24 +200,27 @@ async def enrich_textbook(book_id: str, report: Report, *, llm: LLM | None = Non
         raise
     except SpendLimit as e:
         log.warning("textbook notes for %s stopped: %s", book_id, e)
+        capped = True
         msg = TEXTBOOK_BUDGET_USED if "budget" in str(e) else TEXTBOOK_TOO_LONG
     except Exception as e:
-        log.warning("textbook notes for %s failed: %s", book_id, type(e).__name__)
+        log.warning("textbook notes for %s failed: %s at %s", book_id, type(e).__name__, where(e))
         msg = TEXTBOOK_FAILED
     finally:
         await asyncio.shield(asyncio.to_thread(spend.flush))
     if out:
         await asyncio.to_thread(tb_mod.save_summaries, book_id, list(out))
-    report(status="error", stage=state["stage"], message=msg)
+    report(status="refused" if capped else "error", stage=state["stage"], message=msg)   # a cap stop is final: no retry
     return False
 
 
 async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save: Callable[[Book], Awaitable[None]] | None = None,
-                     indexer: Indexer | None = None, allow_fallback: bool = True) -> bool:
+                     indexer: Indexer | None = None, allow_fallback: bool = True, resume: bool = False) -> bool:
     """Cast, segment and summarise `book` in place; `save` runs after each stage. Returns True when degraded.
 
     `state["stage"]` always names the stage in progress (for the caller's error message). Raises on failure.
-    With allow_fallback=False a missing LLM is an error instead of a name-based cast.
+    With allow_fallback=False a missing LLM is an error instead of a name-based cast. With resume=True, the cast is not
+    redone when the book already has one, and cast + segmentation are not redone when it already has summaries (each
+    stage is saved only when complete, and the summaries stage runs after the other two).
     """
     degraded = False
 
@@ -209,10 +228,12 @@ async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save:
         if save is not None:
             await save(book)
 
+    have_cast, have_summaries = resume and bool(book.characters), resume and bool(book.summaries)
     stage = state["stage"] = "cast"
     report(status="running", stage=stage, progress=0.0, message=MESSAGES[stage])
     try:
-        await cast_mod.cast_novel(book, llm)
+        if not have_cast:
+            await cast_mod.cast_novel(book, llm)
     except (asyncio.CancelledError, SpendLimit):
         raise
     except Exception as e:
@@ -223,36 +244,44 @@ async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save:
         book.characters, book.narrator = [], None
         cast_mod.fallback_cast(book)
         degraded = True
-    if book.narrator and book.narrator.is_character:
+    if book.narrator and book.narrator.is_character and not have_cast:
         await asyncio.to_thread(rebuild_chunks, book)  # a first-person narrator reads in that character's voice
     await checkpoint()
     _Throttle(report, stage)(1.0)
 
     stage = state["stage"] = "segment"
     report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
-    counts = await seg_mod.segment_book(book, llm, LLMRefusal, seg_mod.FAST, _Throttle(report, stage))
-    report(status="running", stage=stage, progress=round(_offset(stage) + WEIGHTS[stage], 3), message=ATTRIBUTE_MESSAGE)
+    if not have_summaries:   # else segmented before the interruption (the summaries stage comes after it)
+        counts = await seg_mod.segment_book(book, llm, LLMRefusal, seg_mod.FAST, _Throttle(report, stage))
+        report(status="running", stage=stage, progress=round(_offset(stage) + WEIGHTS[stage], 3), message=ATTRIBUTE_MESSAGE)
 
-    def attribute_and_rechunk() -> dict[str, int]:  # seconds of CPU on a long novel: off the event loop
-        found = attribute_speakers(book)
-        rebuild_chunks(book)
-        return found
-    counts.update(await asyncio.to_thread(attribute_and_rechunk))
-    await checkpoint()
-    log.info("segmented book: %s", counts)
-    if counts.get("fallback") and not (counts.get("llm") or counts.get("retry")):
-        degraded = True
+        def attribute_and_rechunk() -> dict[str, int]:  # seconds of CPU on a long novel: off the event loop
+            found = attribute_speakers(book)
+            rebuild_chunks(book)
+            return found
+        counts.update(await asyncio.to_thread(attribute_and_rechunk))
+        await checkpoint()
+        log.info("segmented book: %s", counts)
+        if counts.get("fallback") and not (counts.get("llm") or counts.get("retry")):
+            degraded = True
 
-    stage = state["stage"] = "summaries"
-    report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
-    book.summaries = await sum_mod.build_summaries(book, llm, _Throttle(report, stage))
-    await checkpoint()
+        stage = state["stage"] = "summaries"
+        report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
+        book.summaries = await sum_mod.build_summaries(book, llm, _Throttle(report, stage))
+        await checkpoint()
 
     stage = state["stage"] = "index"
     report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
     if indexer is not None:
         await indexer(book)
     return degraded
+
+
+def where(e: BaseException, depth: int = 6) -> str:
+    """The innermost `depth` frames of e's traceback as 'file.py:line in func' (never the message: it may quote book
+    text or a key)."""
+    frames = traceback.extract_tb(e.__traceback__)[-depth:]
+    return " <- ".join(f"{Path(f.filename).name}:{f.lineno} in {f.name}" for f in reversed(frames)) or "?"
 
 
 def attribute_speakers(book: Book) -> dict[str, int]:
@@ -265,7 +294,7 @@ def attribute_speakers(book: Book) -> dict[str, int]:
     return {"attributed": sum(1 for d in decisions if d.speaker)}
 
 
-async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Indexer | None) -> bool:
+async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Indexer | None, resume: bool = False) -> bool:
     state = {"stage": STAGES[0]}
 
     async def save(book: Book) -> None:
@@ -273,17 +302,18 @@ async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Inde
 
     try:
         book = Book.model_validate_json(path.read_text(encoding="utf-8"))
-        degraded = await run_stages(book, report, llm, state=state, save=save, indexer=indexer)
+        degraded = await run_stages(book, report, llm, state=state, save=save, indexer=indexer, resume=resume)
         report(status="done", stage="done", progress=1.0, degraded=degraded or None,
                message=FALLBACK_DONE if degraded else "Characters, recap and search are ready.")
         log.info("enriched %s: $%.4f in %d calls", book_id, llm.usd, llm.calls)
+        await series_link.reconcile(book_id, llm)   # stack with the same author's other uploads (#134); never raises
         return True
     except asyncio.CancelledError:
         raise
     except SpendLimit as e:
         log.warning("enrichment of %s stopped in %s: %s", book_id, state["stage"], e)
-        report(status="error", stage=state["stage"], message=BUDGET_USED if "budget" in str(e) else TOO_LONG)
+        report(status="refused", stage=state["stage"], message=BUDGET_USED if "budget" in str(e) else TOO_LONG)  # final: no retry
     except Exception as e:
-        log.warning("enrichment of %s failed in %s: %s", book_id, state["stage"], type(e).__name__)
+        log.warning("enrichment of %s failed in %s: %s at %s", book_id, state["stage"], type(e).__name__, where(e))
         report(status="error", stage=state["stage"], message=FAILED)
     return False

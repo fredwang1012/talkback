@@ -208,7 +208,7 @@ def test_total_cap_stops_a_running_job_and_keeps_what_was_written(data_dir, monk
     on_disk(data_dir)
     monkeypatch.setattr(settings, "upload_total_cap_usd", 1e-9)  # the first call's usage passes it
     ok, events = run_textbook()
-    assert not ok and events[-1]["status"] == "error" and events[-1]["message"] == pipeline.TEXTBOOK_BUDGET_USED
+    assert not ok and events[-1]["status"] == "refused" and events[-1]["message"] == pipeline.TEXTBOOK_BUDGET_USED
     assert len(saved(data_dir).summaries) <= 1
 
 
@@ -542,3 +542,50 @@ def test_script_refuses_a_novel(data_dir):
     mod = importlib.import_module("summarize_textbook")
     lines: list[str] = []
     assert mod.main(["--book", "u-nv-aaaaaaaa", "--yes"], run=None, out=lines.append) != 0
+
+
+# ---------- every section call failed (review of #133) ----------
+
+class FailAll(FakeLLM):
+    async def complete(self, system, user, schema, tier, max_tokens, effort) -> Raw:
+        self.calls.append((system, user))
+        raise RuntimeError("boom")
+
+
+OLD_NOTE = Summary(upto_para=7, text="An older note.", section_id="c1")
+
+
+def test_all_failed_section_calls_report_failure_and_keep_old_notes(data_dir):
+    book = textbook()
+    book.summaries = [OLD_NOTE]
+    on_disk(data_dir, book)
+    ok, events = run_textbook(fake=FailAll())
+    assert not ok and events[-1]["status"] == "error" and events[-1]["message"] == pipeline.TEXTBOOK_FAILED
+    assert saved(data_dir).summaries == [OLD_NOTE]
+
+
+def test_public_api_textbook_job_with_no_notes_is_an_error(served, monkeypatch):
+    monkeypatch.setattr(public_api, "make_llm", lambda *a, **k: make_llm(FailAll()))
+    with TestClient(served) as c:
+        job = c.post("/api/public/enrich", json=public_body()).json()["job_id"]
+        for _ in range(400):
+            v = c.get(f"/api/public/enrich/{job}").json()
+            if v["status"] != "running":
+                break
+            asyncio.run(asyncio.sleep(0.02))
+    assert v["status"] == "error" and v["code"] == "failed", v
+
+
+def test_public_client_empty_notes_is_a_failure_and_keeps_old_notes(data_dir):
+    book = textbook()
+    book.summaries = [OLD_NOTE]
+    on_disk(data_dir, book)
+
+    def handler(req: httpx.Request):
+        if req.method == "POST":
+            return httpx.Response(202, json={"job_id": "j", "estimate_usd": 0.01})
+        return httpx.Response(200, json={"status": "done", "result": {"characters": [], "summaries": []}})
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://public")
+    events: list[dict] = []
+    ok = asyncio.run(public_client.summarize_textbook(BOOK_ID, lambda **f: events.append(f), client=client, sleep=fast_sleep))
+    assert not ok and events[-1]["status"] == "error" and saved(data_dir).summaries == [OLD_NOTE]

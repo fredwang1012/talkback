@@ -1,4 +1,5 @@
 """Split paragraphs into Boson TTS chunks (<= 280 chars, sentence-aligned). Shared by preprocess/chunk_tts.py and uploads."""
+import logging
 import re
 
 from .delivery import SONG_MAX_PARAS, apply_styles, detect_expressive, is_scene_break, speech_tag, sung_from, with_sfx
@@ -9,8 +10,10 @@ MAX_CHARS = 280
 # Bump whenever chunk_paragraph's output can change (tags, pauses, sfx, splitting, normalisation): every book built
 # with a lower Book.chunk_rules is re-chunked once by the server (books.load_book). History:
 #   1: expressive delivery (#73: lead pauses, sfx, expressive_*) and singing (#74). Books without the field are 0.
-CHUNK_RULES_VERSION = 1
+#   2: sneeze and humming sound effects (#135).
+CHUNK_RULES_VERSION = 2
 DEFAULT_VOICE = "default"
+log = logging.getLogger("talkback.ttschunks")
 ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "st", "messrs", "capt", "col", "prof", "no", "vs", "etc", "sr", "jr", "gen", "lt"}
 
 _SENT_END = re.compile(r"""(?<![.!?])[.!?]++["')\]]*+(?=\s)""")  # lookbehind + possessive: linear on punctuation runs
@@ -291,12 +294,25 @@ def chunk_paragraph(p: Paragraph, book: Book, *, expressive: bool = True, index:
     return chunks
 
 
-def rechunk_book(book: Book) -> None:
+def rechunk_book(book: Book, strict: bool = True) -> None:
     """Rebuild every paragraph's tts_chunks with the current rules and stamp CHUNK_RULES_VERSION. Keeps segment
-    styles (apply_styles only fills in missing ones). Raises ValueError if a segment does not match its paragraph."""
+    styles (apply_styles only fills in missing ones). A segment that does not match its paragraph raises ValueError,
+    unless strict=False (the upload pipeline): that paragraph is then read by the narrator instead, so one bad
+    paragraph never fails the whole book."""
     index = BookIndex(book)   # fresh: segments / sections may have changed since any cached one
+    bad: list[int] = []
     for p in book.paragraphs:
-        p.tts_chunks = chunk_paragraph(p, book, index=index)
+        try:
+            p.tts_chunks = chunk_paragraph(p, book, index=index)
+        except ValueError:
+            if strict:
+                raise
+            bad.append(p.idx)
+            p.segments = [Segment(speaker="narrator", text=p.text.strip())]
+            p.tts_chunks = chunk_paragraph(p, book, index=index)
+    if bad:  # paragraph numbers only, never book text
+        log.warning("%s: %d paragraph(s) read by the narrator, segments did not match the text: paragraph %s",
+                    book.id, len(bad), ", ".join(map(str, bad[:20])))
     book.chunk_rules = CHUNK_RULES_VERSION
 
 

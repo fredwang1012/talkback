@@ -72,13 +72,13 @@ class MainCast(BaseModel):
 
 SERIES_OUT_TOKENS = 30  # the two series fields of the cast answer (for estimates)
 SERIES_MAX_INDEX = 99
-_SERIES_EDGE = re.compile(r"^(?:the)\s+|\s+(?:series|saga|books|novels|trilogy|sequence)$", re.I)
+_SERIES_EDGE = re.compile(r"^(?:the)\s+|\s+(?:series|saga|books|novels|trilogy|tetralogy|quartet|quintet|sequence|cycle|chronicles|chronicle|universe)$", re.I)
 
 
 def series_slug(name: str | None) -> str | None:
     """'The Harry Potter series' -> 'harry-potter' (the Library groups by this, the built-in books use the same form)."""
     text = (name or "").strip()
-    for _ in range(2):
+    for _ in range(3):
         text = _SERIES_EDGE.sub("", text).strip()
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60].strip("-")
     return slug or None
@@ -102,7 +102,7 @@ Rules:
 - Give each character the voice that fits their gender, age and temperament. Voices may be shared only when there are more characters than voices; then differentiate with voice_tags (pitch_low, pitch_high, speed_slow, speed_fast). Use "" when no tag is needed.
 - aliases: every name the text uses for them, as written. Never use a bare common word, or a name shared with another character.
 - Paragraphs are numbered [0], [1], ... Use those numbers for first_para.
-- series and series_index: only when the title, title page or text shows this book is a numbered volume of a series (or it is a well-known volume of one), give the series name (e.g. "Harry Potter") and the volume number in reading order (1 = first). Otherwise null for both."""
+- series and series_index: give them when this book is a volume of a series, whether or not the text says so: the title, title page or text shows it, or it is a well-known volume of one. The first book of a well-known series counts too ("Dune" is volume 1 of the Dune series; "Harry Potter and the Philosopher's Stone" is volume 1 of Harry Potter). Name the series by its common short name ("Dune", "Harry Potter", not "The Dune Chronicles series") and give the volume number in reading order (1 = first). Otherwise null for both."""
 
 PERSONA_GUIDE = """Make it specific to THIS character, never a generic type:
 - Name concrete speech habits: how they refer to themselves and to others (even if odd, such as third person, or a title for everyone), signature words and sentence shape, dialect or non-standard grammar, and what their speech does when they are nervous, angry or excited.

@@ -293,24 +293,34 @@ def attribute_book(book: Book, apply: bool = True,
                 history.append((p.idx, speaker))
         last_dialogue = p.idx
         if apply and any(x.decision and x.decision.speaker for x in pieces):
-            p.segments = _rebuild(pieces)
+            p.segments = _rebuild(pieces, p.text) or p.segments
     return decisions
 
 
-def _rebuild(pieces: list[_Piece]) -> list[Segment]:
-    """Segments from pieces: character lines keep their segment, newly attributed quotes become segments, narration merges."""
+def _rebuild(pieces: list[_Piece], text: str) -> list[Segment] | None:
+    """Segments from pieces: character lines keep their segment, newly attributed quotes become segments, narration
+    merges. Merged narration is cut from the paragraph `text` itself (what separates two pieces is not always one
+    space: 'shrugged—"nothing', 'dark," he'), so the result tiles it verbatim. None if a piece is not found in order."""
     out: list[Segment] = []
+    starts: list[int] = []   # paragraph offset where each out segment starts
+    cursor = 0
     for x in pieces:
         if not x.text:
             continue
+        at = text.find(x.text, cursor)
+        if at < 0:
+            return None
+        cursor = at + len(x.text)
         if x.kind == "char":
             out.append(x.seg)  # type: ignore[arg-type]
         elif x.kind == "cand" and x.speaker != "narrator":
             out.append(Segment(speaker=x.speaker, text=x.text))
         elif out and out[-1].speaker == "narrator":
-            out[-1] = Segment(speaker="narrator", text=out[-1].text + " " + x.text)
+            out[-1] = Segment(speaker="narrator", text=text[starts[-1]:cursor])
+            continue
         else:
             out.append(Segment(speaker="narrator", text=x.text))
+        starts.append(at)
     return out
 
 
@@ -392,5 +402,5 @@ async def llm_attribute(book: Book, ambiguous: list[Decision], call: Callable[..
         for x in pieces:
             if x.kind == "cand" and x.text in want:
                 x.speaker = want[x.text]
-        p.segments = _rebuild(pieces)
+        p.segments = _rebuild(pieces, p.text) or p.segments
     return changed

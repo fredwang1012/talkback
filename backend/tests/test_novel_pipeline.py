@@ -544,7 +544,7 @@ def test_job_stops_when_cumulative_cap_is_reached_mid_job(data_dir, monkeypatch)
     monkeypatch.setattr(settings, "upload_total_cap_usd", 15.0)
     fake = FakeProvider()
     ok, events, _ = run_pipeline("u-test-aaaaaaaa", fake)
-    assert not ok and events[-1]["status"] == "error" and events[-1]["message"] == pipeline.BUDGET_USED
+    assert not ok and events[-1]["status"] == "refused" and events[-1]["message"] == pipeline.BUDGET_USED
     assert len(fake.calls) == 1  # the cast call went out, every later call was refused locally
     assert saved(data_dir).paragraphs  # still readable
 
@@ -628,7 +628,7 @@ def test_confirm_mode_waits_then_starts_on_post(client, monkeypatch):
 
 
 def test_enrich_endpoint_409_without_waiting_book_and_404(client):
-    book_id = upload(client, kind="textbook").json()["book_id"]
+    book_id = upload(client).json()["book_id"]   # enriched already: neither waiting nor failed (a failed job may be retried)
     assert client.post(f"/api/books/{book_id}/enrich").status_code == 409
     assert client.post("/api/books/nope-nope/enrich").status_code == 404
 
@@ -649,7 +649,8 @@ def test_confirm_mode_refused_when_caps_hit(client, monkeypatch):
     st = client.get(f"/api/books/{book_id}/status").json()
     assert st["enrich"] == {"status": "refused", "message": pipeline.TOO_LONG}
     assert client.get(f"/api/books/{book_id}").status_code == 200 and not client.fake.calls
-    assert client.post(f"/api/books/{book_id}/enrich").status_code == 409
+    r = client.post(f"/api/books/{book_id}/enrich")   # retry allowed, but the caps are checked again: still refused
+    assert r.status_code == 202 and r.json()["enrich"]["status"] == "refused" and not client.fake.calls
 
 
 def test_demo_mode_refusal_is_silent_but_plain(client, monkeypatch):
@@ -792,9 +793,9 @@ def cpu_calls(monkeypatch):
     calls: list[tuple[str, bool]] = []
     real_rechunk, real_attr = pipeline.rechunk_book, pipeline.attribute_speakers
 
-    def rechunk(book):
+    def rechunk(book, **kw):
         calls.append(("rechunk", threading.current_thread() is threading.main_thread()))
-        real_rechunk(book)
+        real_rechunk(book, **kw)
 
     def attribute(book):
         calls.append(("attribute", threading.current_thread() is threading.main_thread()))

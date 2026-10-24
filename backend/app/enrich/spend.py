@@ -44,6 +44,12 @@ def total_usd() -> float:
         return float(_load().get("total_usd", 0.0))
 
 
+def book_usd(book_id: str) -> float:
+    """Everything recorded so far for this book (all earlier runs and retries included)."""
+    with _lock:
+        return float((_load().get("books") or {}).get(book_id, 0.0))
+
+
 def _write(data: dict, path: Path) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -2,10 +2,12 @@ import { useEffect, useRef, useState, type DragEvent, type FormEvent, type Keybo
 import {
   accountLabel, changeKind, deleteBook, fetchBooks, fetchHiddenBooks, hideBook, restoreBook, waitForDeletion, type HiddenBook, fetchMe, SIGN_OUT_URL, type Me, pollEnrichment, pollUpload, startEnrichment, uploadBook, describeBook,
   type BookStatus, type BookSummary, type UploadKind,
-  enrichDoneNote,
+  enrichDoneNote, fetchBookStatus,
 } from "../api";
 import { clearAccessToken, getAccessToken } from "../accessToken";
 import { canDelete, cardActions, groupShelves, hiddenLabel, kindLabel, moveTarget, seriesBlurb, seriesTitle, wrapIndex, type CardAction, type SeriesGroup } from "../shelves";
+import { VolumeNote, noteFromEnrich, type MoveNote } from "./VolumeNote";
+import { isProcessing, sameList, stageKey, startListRefresh } from "../liveList";
 import { conflictPatch, fileProblem, isBusyError, isDeletingConflict, jobFinished, jobLine, jobProgress, titleFromFile, uploadSettled, type UploadJob, autoFill } from "../uploads";
 
 const pct = (p: number | undefined) => Math.round(Math.max(0, Math.min(1, p ?? 0)) * 100);
@@ -151,7 +153,6 @@ const sleep = (ms: number, signal: AbortSignal) => new Promise<void>((resolve) =
 /** An uploaded book whose card is already gone while the server finishes removing it (search entries, files). */
 type Removal = { book: BookSummary; state: "running" | "error"; message?: string };
 
-type MoveNote = { id: string; text: string; progress?: number; confirm?: number };
 
 /** A card's "…" menu (menu button pattern): arrow keys move, Esc closes and returns focus, a click outside closes. */
 function CardMenu({ b, busy, onPick }: { b: BookSummary; busy: boolean; onPick: (a: CardAction) => void }) {
@@ -248,17 +249,7 @@ function Volume({ b, busy, note, onMove, onConfirm, onDelete, onHide }: {
           </div>
         </div>
       )}
-      {note && (
-        <div className="volume-note" role="status">
-          <span>{note.text}{note.progress !== undefined && ` (${pct(note.progress)}%)`}</span>
-          {note.progress !== undefined && <progress max={100} value={pct(note.progress)} aria-label={`Processing ${b.title}`} />}
-          {note.confirm !== undefined && (
-            <button type="button" className="volume-move" onClick={() => onConfirm(b)}>
-              Process with characters (~${note.confirm.toFixed(2)})
-            </button>
-          )}
-        </div>
-      )}
+      {note && <VolumeNote title={b.title} note={note} onConfirm={() => onConfirm(b)} onRetry={() => onConfirm(b)} />}
     </div>
   );
 }
@@ -321,9 +312,38 @@ export default function Library() {
   const alive = useRef<AbortController>(new AbortController());
   const abortRef = useRef<AbortController | null>(null);
 
-  const load = () => fetchBooks().then(setBooks).catch((e: Error) => setError(e.message));
+  const load = () => fetchBooks().then((next) => setBooks((cur) => (sameList(cur, next) ? cur : next))).catch((e: Error) => setError(e.message));
+  const [serverBusy, setServerBusy] = useState(0);   // listed uploads whose enrichment or indexing is still running or queued
+  const refresher = useRef<{ poke: () => void } | null>(null);
   const loadHidden = () => fetchHiddenBooks().then(setHidden).catch(() => setHidden([]));
   useEffect(() => { load(); loadHidden(); fetchMe().then(setMe); }, []);
+  // an upload whose character processing was interrupted (a server restart) or failed offers "Try again" on its card
+  useEffect(() => {
+    const c = new AbortController();
+    const uploads = (books ?? []).filter((b) => b.id.startsWith("u-"));
+    let busy = 0, answered = 0; if (books && uploads.length === 0) setServerBusy(0);
+    for (const b of uploads) {
+      fetchBookStatus(b.id).then((st) => {
+        answered++;
+        if (st.status === "ready" && (st.enrich?.status === "running" || st.index?.state === "running" || st.index?.state === "queued")) busy++;
+        if (!c.signal.aborted && answered === uploads.length) setServerBusy(busy);
+        const n = st.enrich?.status === "error" ? noteFromEnrich(b.id, st.enrich) : null;
+        if (n && !c.signal.aborted) setNotes((cur) => (cur[b.id] ? cur : { ...cur, [b.id]: n }));
+      }).catch(() => { answered++; if (!c.signal.aborted && answered === uploads.length) setServerBusy(busy); });
+    }
+    return () => c.abort();
+  }, [books]);
+  // while an upload is processing (its series may be set any moment), keep the list fresh; stop when idle
+  const processing = isProcessing(jobs, serverBusy);
+  useEffect(() => {
+    if (!processing) return;
+    const r = startListRefresh({
+      fetch: fetchBooks,
+      apply: (next) => setBooks((cur) => (sameList(cur, next) ? cur : next)),
+    });
+    refresher.current = r;
+    return () => { r.stop(); if (refresher.current === r) refresher.current = null; };
+  }, [processing]);
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => { const c = new AbortController(); alive.current = c; return () => c.abort(); }, []);
 
@@ -339,10 +359,7 @@ export default function Library() {
       st = await pollEnrichment(b.id, show, ctl.signal);
       if (!st || ctl.signal.aborted) return;
     }
-    const e = st.enrich;
-    if (e?.status === "awaiting_confirmation") setNote(b.id, { id: b.id, text: e.message ?? "Characters, voices and recap need processing.", confirm: e.estimate_usd ?? 0 });
-    else if (e?.status === "refused" || e?.status === "error") setNote(b.id, { id: b.id, text: e.message ?? "Character processing did not run." });
-    else setNote(b.id, null);
+    setNote(b.id, noteFromEnrich(b.id, st.enrich));
     await load();
   }
 
@@ -418,9 +435,13 @@ export default function Library() {
   async function followJob(key: string, bookId: string) {
     const signal = alive.current.signal;
     let listed = false;
+    let lastStage = "";
     const onUpdate = (s: BookStatus) => {
       updJob(key, { phase: "processing", status: s });
+      const stage = stageKey(s);
       if (s.status === "ready" && !listed) { listed = true; load(); }
+      else if (s.status === "ready" && stage !== lastStage) refresher.current ? refresher.current.poke() : load();
+      lastStage = stage;
     };
     try {
       const st = await pollUpload(bookId, uploadSettled, onUpdate, signal);

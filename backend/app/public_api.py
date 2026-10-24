@@ -3,7 +3,7 @@ full upload processing (cast, dialogue split, summaries; textbooks: recap notes 
 
 Exposes ONLY GET /api/health, POST /api/public/enrich (+ GET /api/public/enrich/{job_id}), POST /api/public/answer,
 the small single calls POST /api/public/translate (a question for search, #12), /api/public/detect (novel or textbook),
-/api/public/describe (title and author) and /api/public/faces/detect (face box, #109), and the equation readings of an
+/api/public/describe (title and author), /api/public/series (volume of a series, #134) and /api/public/faces/detect (face box, #109), and the equation readings of an
 uploaded textbook (#41): POST /api/public/equations (an estimate-first ticket) then POST /api/public/equations/{ticket}
 (a few pictures per request). Everything else is 404 (no docs, no static frontend, no media, no book data). Gemini only.
 
@@ -37,12 +37,14 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .config import settings
 from .enrich import describe as describe_mod
 from .enrich import detect as detect_mod
-from .enrich import equations, pipeline, spend, textbook
+from .enrich import equations, pipeline, series_early, series_link, spend, textbook
 from .enrich.llm import CHARS_PER_TOKEN, SpendLimit, make_llm, price_usd
 from . import face_detect, multilingual
 from . import emotion
 from .personas import build_answer_prompt
 from .ratelimit import TokenBucket, client_key, normalize_ip
+from .daily_count import DailyCount
+from . import websearch
 from .schema import Book, ChatTurn, Character, Paragraph, Section
 from .uploadlimit import _reply
 
@@ -63,6 +65,7 @@ ANSWER_DEADLINE_SECONDS = 120  # hard limit on one answer stream
 STARTED_GRACE_SECONDS = 60     # a started reservation or slot that outlives deadline + grace is leaked: charged in full
 MAX_OUTPUT_TOKENS = 700        # GeminiAnswerer max_output_tokens: the most one answer can cost in output
 MAX_JOBS_KEPT = 50
+GROUNDED_USD = 0.035           # one grounded prompt past Vertex's free daily tier ($35 / 1,000), on the answer budget
 
 ID_PATTERN = r"^[A-Za-z0-9_.-]{1,80}$"
 
@@ -75,6 +78,7 @@ MSG_FACE_CAP = "The free face detection for today has been used up."
 # small single calls (translate, detect, describe, face box): counted on the daily answer budget
 SMALL_BODY_LIMIT = 32 * 1024
 TRANSLATE_MAX_CHARS = multilingual.MAX_QUERY_CHARS
+SERIES_MAX_CHARS = 600
 DETECT_MAX_CHARS = detect_mod.SAMPLE_CHARS + 200          # the sample plus its "[...]" joins
 DESCRIBE_MAX_CHARS = describe_mod.MAX_CHARS
 TRANSLATE_SECONDS = 4.0      # the clone's answer waits no longer (multilingual.TRANSLATE_TIMEOUT_S)
@@ -164,6 +168,7 @@ class AnswerRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
     spoilers: bool = False
     history: list[ChatTurn] = Field(default_factory=list, max_length=8)
+    web_search: bool = True   # a client may turn web search off; it never turns it on (websearch.allowed decides)
 
     @field_validator("passages")
     @classmethod
@@ -172,7 +177,7 @@ class AnswerRequest(BaseModel):
             raise ValueError("passages too long")
         return v
 
-    def prompt(self) -> tuple[str, str]:
+    def prompt(self, web_search: bool = False) -> tuple[str, str]:
         """The same prompt /api/answer builds locally, from a stub book holding only what the prompt uses."""
         chars = []
         if self.speaker_id != "narrator":
@@ -181,7 +186,7 @@ class AnswerRequest(BaseModel):
         book = Book(id="public", title=self.title, author="", kind=self.kind, license="n/a", sections=[],
                     paragraphs=[], characters=chars)
         return build_answer_prompt(book, self.speaker_id, self.story_so_far, [p.model_dump() for p in self.passages],
-                                   self.query, spoilers=self.spoilers, history=self.history)
+                                   self.query, spoilers=self.spoilers, history=self.history, web_search=web_search)
 
 
 class TextRequest(BaseModel):
@@ -365,6 +370,8 @@ async def _run_job(job: Job, book: Book, llm=None) -> None:
                 _, subs = textbook.plan(book, "gemini", cap=settings.public_book_cap_usd)
                 book.summaries = await pipeline.run_textbook_stage(book, job.report, llm, state=state,
                                                                    include_subsections=subs)
+                if not book.summaries:   # every section call failed: not a result
+                    raise RuntimeError("no textbook notes")
                 degraded, done_msg = False, pipeline.TEXTBOOK_DONE
             else:
                 degraded = await pipeline.run_stages(book, job.report, llm, state=state, allow_fallback=False)
@@ -381,7 +388,7 @@ async def _run_job(job: Job, book: Book, llm=None) -> None:
         raise
     except Exception as e:  # never leak details (they may quote the book)
         job.status, job.code, job.message = "error", "failed", "Processing failed."
-        log.warning("enrich job %s failed in %s: %s", job.id, state["stage"], type(e).__name__)
+        log.warning("enrich job %s failed in %s: %s at %s", job.id, state["stage"], type(e).__name__, pipeline.where(e))
     finally:
         job.finished = time.monotonic()
         job.usd = llm.usd
@@ -526,34 +533,8 @@ class IpBudget:
 ip_budget = IpBudget()
 
 
-class DailyCount:
-    """Calls of the current UTC day in data/usage/<file> (written atomically), for a small daily call cap."""
-
-    def __init__(self, file: str):
-        self.file, self.day, self.n, self.path = file, None, 0, None
-        self.lock = threading.Lock()
-
-    def take(self, limit: int) -> bool:
-        with self.lock:
-            path = settings.data_dir / "usage" / self.file
-            today = datetime.now(timezone.utc).date().isoformat()
-            if self.path != path:
-                self.path, self.day, self.n = path, None, 0
-                try:
-                    data = json.loads(path.read_text(encoding="utf-8"))
-                    self.day, self.n = data.get("day"), int(data.get("n", 0))
-                except (OSError, ValueError, TypeError):
-                    pass
-            if self.day != today:
-                self.day, self.n = today, 0
-            if self.n >= limit:
-                return False
-            self.n += 1
-            spend._write({"day": self.day, "n": self.n}, self.path)
-            return True
-
-
 face_calls = DailyCount(FACE_CALLS_FILE)
+grounded_calls = DailyCount(websearch.PUBLIC_FILE)   # grounded answers per UTC day (settings.public_grounded_daily_cap)
 
 
 class Ticket:
@@ -629,7 +610,10 @@ class BodyLimit:
     """Bound the request body of every POST endpoint before it is parsed (Content-Length required)."""
     LIMITS = {"/api/public/enrich": ENRICH_BODY_LIMIT, "/api/public/answer": ANSWER_BODY_LIMIT,
               "/api/public/translate": SMALL_BODY_LIMIT, "/api/public/detect": SMALL_BODY_LIMIT,
-              "/api/public/describe": SMALL_BODY_LIMIT, "/api/public/faces/detect": FACE_BODY_LIMIT,
+              "/api/public/describe": SMALL_BODY_LIMIT, "/api/public/series": SMALL_BODY_LIMIT,
+              "/api/public/series-early": SMALL_BODY_LIMIT,
+              "/api/public/series-early": SMALL_BODY_LIMIT,
+              "/api/public/faces/detect": FACE_BODY_LIMIT,
               "/api/public/equations": 1024}
 
     def __init__(self, app):
@@ -747,11 +731,27 @@ async def enrich_status(job_id: str, request: Request):
 async def public_answer(req: AnswerRequest, request: Request):
     if not answer_bucket.allow(client_key(request)):
         raise PublicError(429, "rate", "Too many questions; wait a moment.")
-    system, user = req.prompt()
-    cost = price_usd("gemini", "fast", int((len(system) + len(user)) / 3.5) + 1, MAX_OUTPUT_TOKENS)
-    token = answer_budget.reserve(cost)
+    # web search: textbooks and spoilers-on novels only (never a spoiler-safe novel), when the budget has room for
+    # its fee and today's grounded sub-cap is not used up; otherwise the plain answer
+    grounded, token = False, None
+    if req.web_search and websearch.allowed(req.kind, req.spoilers):
+        system, user = req.prompt(web_search=True)
+        cost = price_usd("gemini", "fast", int((len(system) + len(user)) / 3.5) + 1, MAX_OUTPUT_TOKENS)
+        token = answer_budget.reserve(cost + GROUNDED_USD)
+        if token is not None and not grounded_calls.take(settings.public_grounded_daily_cap):
+            answer_budget.settle(token, 0.0)
+            token = None
+        grounded = token is not None
+    if not grounded:
+        system, user = req.prompt()
+        cost = price_usd("gemini", "fast", int((len(system) + len(user)) / 3.5) + 1, MAX_OUTPUT_TOKENS)
+        token = answer_budget.reserve(cost)
     if token is None:
         raise PublicError(402, "daily_cap", MSG_DAILY_CAP)
+    if grounded:
+        cost += GROUNDED_USD   # the worst case, settled when no usage arrives
+    sources: list[dict] = []
+    suggestions: list[str] = []
     slot = _take_stream_slot()
     if slot is None:
         answer_budget.settle(token, 0.0)
@@ -765,7 +765,7 @@ async def public_answer(req: AnswerRequest, request: Request):
             return
         state["done"] = True
         if state["seen"]:
-            actual = price_usd("gemini", "fast", state["in"], state["out"])
+            actual = price_usd("gemini", "fast", state["in"], state["out"]) + (GROUNDED_USD if sources else 0.0)
         else:
             actual = cost if state["started"] else 0.0
         answer_budget.settle(token, actual)
@@ -780,7 +780,9 @@ async def public_answer(req: AnswerRequest, request: Request):
         answer_budget.mark_started(token)
         _started_slots[slot] = time.monotonic()
         deadline = asyncio.get_running_loop().time() + ANSWER_DEADLINE_SECONDS
-        gen = emotion.tag_sentences(get_public_answerer().stream_sentences(system, user, on_usage=on_usage))
+        search_kw = ({"web_search": True, "on_sources": sources.extend, "on_suggestions": suggestions.append}
+                     if grounded else {})
+        gen = emotion.tag_sentences(get_public_answerer().stream_sentences(system, user, on_usage=on_usage, **search_kw))
         try:
             try:
                 it = gen.__aiter__()
@@ -802,6 +804,9 @@ async def public_answer(req: AnswerRequest, request: Request):
                 log.warning("public answer failed: %s", type(e).__name__)
                 yield json.dumps({"type": "error", "message": "The answer could not be generated; please try again."}) + "\n"
                 return
+            event = websearch.sources_event(sources, suggestions[-1] if suggestions else None)
+            if event:  # web links + Google's Search Suggestions of a grounded answer, shown under it (never spoken)
+                yield json.dumps(event, ensure_ascii=False) + "\n"
             yield json.dumps({"type": "done"}) + "\n"
         finally:
             try:
@@ -880,6 +885,41 @@ async def public_describe(req: TextRequest, request: Request):
     _small_allowed(request)
     out = await _single_call(describe_mod.SYSTEM, req.text, describe_mod.Guess,
                              in_chars=len(describe_mod.SYSTEM) + len(req.text), max_out=describe_mod.OUT_TOKENS,
+                             seconds=SMALL_SECONDS)
+    return out.model_dump()
+
+
+@app.post("/api/public/series")
+async def public_series(req: TextRequest, request: Request):
+    """Is this book a volume of that series, and which number (enrich/series_link.py's prompt; #134). Text only."""
+    if len(req.text) > SERIES_MAX_CHARS:
+        raise PublicError(422, "invalid", "Invalid request: text")
+    _small_allowed(request)
+    out = await _single_call(series_link.SYSTEM, req.text, series_link.SeriesGuess,
+                             in_chars=len(series_link.SYSTEM) + len(req.text), max_out=200, seconds=SMALL_SECONDS)
+    return out.model_dump()
+
+
+@app.post("/api/public/series-early")
+async def public_series_early(req: TextRequest, request: Request):
+    """Series name and volume number from a new upload's title, author and opening text (enrich/series_early.py)."""
+    if len(req.text) > series_early.MAX_REQUEST_CHARS:
+        raise PublicError(422, "invalid", "Invalid request: text")
+    _small_allowed(request)
+    out = await _single_call(series_early.SYSTEM, req.text, series_early.EarlyGuess,
+                             in_chars=len(series_early.SYSTEM) + len(req.text), max_out=series_early.OUT_TOKENS * 5,
+                             seconds=SMALL_SECONDS)
+    return out.model_dump()
+
+
+@app.post("/api/public/series-early")
+async def public_series_early(req: TextRequest, request: Request):
+    """Series name and volume number from a new upload's title, author and opening text (enrich/series_early.py)."""
+    if len(req.text) > series_early.MAX_REQUEST_CHARS:
+        raise PublicError(422, "invalid", "Invalid request: text")
+    _small_allowed(request)
+    out = await _single_call(series_early.SYSTEM, req.text, series_early.EarlyGuess,
+                             in_chars=len(series_early.SYSTEM) + len(req.text), max_out=series_early.OUT_TOKENS * 5,
                              seconds=SMALL_SECONDS)
     return out.model_dump()
 

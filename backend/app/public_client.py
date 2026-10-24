@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from . import books
 from .config import settings
 from .enrich import cast as cast_mod
-from .enrich import equations, pipeline, textbook
+from .enrich import equations, pipeline, series_link, textbook
 from .enrich.minor import MINOR_IDS, MINOR_VOICES
 from .enrich.segment import SegItem, narrator_only, speaker_ids, validate_segments
 from .schema import Book, Character, Narrator, Summary
@@ -291,6 +291,8 @@ async def enrich_book(book_id: str, report: Callable[..., None], *, indexer=None
             await indexer(book)
         report(status="done", stage="done", progress=1.0, degraded=True if note else None,
                message=note or "Characters, recap and search are ready.")
+        if not note:   # stack with the same author's other uploads through the service (#134); never raises
+            await series_link.reconcile(book_id, remote_llm("series"))
         return True
     except asyncio.CancelledError:
         raise
@@ -329,6 +331,8 @@ async def summarize_textbook(book_id: str, report: Callable[..., None], *, clien
             if own:
                 await client.aclose()
         apply_textbook_result(book, result)
+        if not book.summaries:   # nothing usable came back: keep the notes from before
+            raise ValueError("no textbook notes")
         if not await asyncio.to_thread(textbook.save_summaries, book_id, book.summaries):
             raise ValueError("book gone or no longer a textbook")
         report(status="done", stage="done", progress=1.0, message=pipeline.TEXTBOOK_DONE)
@@ -350,6 +354,8 @@ async def summarize_textbook(book_id: str, report: Callable[..., None], *, clien
 def answer_payload(book: Book, speaker, speaker_id: str, out: dict, query: str, spoilers: bool, history=()) -> dict:
     """The request for /api/public/answer from locally retrieved (already spoiler-filtered) passages."""
     extra = {"history": [{"role": t.role, "text": t.text} for t in history]} if history else {}
+    if not settings.web_search:
+        extra["web_search"] = False   # this app turned web search off; the service decides the rest (textbook/spoilers)
     return {**extra, "title": book.title, "kind": book.kind, "speaker_id": speaker_id,
             "speaker_name": speaker.name if speaker else "", "persona": speaker.persona if speaker else "",
             "story_so_far": out["story_so_far"], "query": query, "spoilers": spoilers,
@@ -358,7 +364,7 @@ def answer_payload(book: Book, speaker, speaker_id: str, out: dict, query: str, 
 
 
 async def stream_answer(payload: dict, client: httpx.AsyncClient | None = None) -> AsyncIterator[dict]:
-    """Yield the service's `sentence` messages. Raises PublicFailure (before any sentence for a refused request)."""
+    """Yield the service's `sentence` messages (and a final `sources` one for a grounded answer). Raises PublicFailure (before any sentence for a refused request)."""
     own = client is None
     client = client or httpx.AsyncClient(base_url=_base(), timeout=httpx.Timeout(60.0, connect=10.0))
     try:
@@ -376,6 +382,8 @@ async def stream_answer(payload: dict, client: httpx.AsyncClient | None = None) 
                         continue
                     if msg.get("type") == "sentence" and isinstance(msg.get("text"), str):
                         yield msg
+                    elif msg.get("type") == "sources" and isinstance(msg.get("sources"), list):
+                        yield msg   # web links of a grounded answer (cleaned again by the caller)
                     elif msg.get("type") == "error":
                         raise PublicFailure("unavailable", "error line")
         except httpx.HTTPError as e:

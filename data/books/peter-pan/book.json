@@ -60494,5 +60494,6 @@
  ],
  "series": null,
  "series_index": null,
- "chunk_rules": 1
+ "series_checked": [],
+ "chunk_rules": 2
 }

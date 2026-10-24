@@ -80,12 +80,13 @@ def validate_segments(paragraph: str, items: list[SegItem], speakers: set[str]) 
 
     Quotation marks the model left out (Gemini often drops the quote marks around speech) are put back from the
     paragraph itself, so the repaired segments still tile it verbatim: an opening mark goes with the quote that
-    follows it, a closing mark with the quote it ends.
+    follows it, a closing mark with the quote it ends. Every segment's text is a slice of the paragraph (spaces next
+    to a restored mark included), and the result is checked the way ttschunks.chunk_paragraph reads it.
     """
     if not items:
         return None
     cursor = 0
-    out: list[Segment] = []
+    spans: list[list] = []  # [start, end, item] in paragraph offsets
     for it in items:
         text = it.text.strip()
         if not text:
@@ -93,31 +94,56 @@ def validate_segments(paragraph: str, items: list[SegItem], speakers: set[str]) 
         at = paragraph.find(text, cursor)
         if at < 0:
             return None
-        gap = paragraph[cursor:at].strip()
+        raw_gap = paragraph[cursor:at]
+        gap = raw_gap.strip()
+        start, end = at, at + len(text)
+        opened = False
         if gap:
             if not _is_quotes(gap):  # text missing, reordered, or something skipped between segments
                 return None
-            prev = out[-1] if out else None
-            if prev is not None and prev.text[:1] in _QUOTES and prev.text[-1:] not in _QUOTES:
-                out[-1] = Segment(speaker=prev.speaker, text=prev.text + gap, emotion=prev.emotion, style=prev.style)  # closing mark
+            g0 = cursor + len(raw_gap) - len(raw_gap.lstrip())   # the gap's first and last mark
+            g1 = cursor + len(raw_gap.rstrip())
+            prev = spans[-1] if spans else None
+            prev_text = paragraph[prev[0]:prev[1]] if prev else ""
+            if prev is not None and prev_text[:1] in _QUOTES and prev_text[-1:] not in _QUOTES:
+                prev[1] = g1  # closing mark
             else:
-                text = gap + text  # opening mark (kept adjacent: the gap sat right before the text)
-        cursor = at + len(it.text.strip())
-        if gap and text.startswith(gap):  # an opening mark was added: take the closing mark that follows too
+                start, opened = g0, True  # opening mark
+        cursor = end
+        if opened:  # an opening mark was added: take the closing mark that follows too
             tail = paragraph[cursor:cursor + 1]
-            if tail in _QUOTES and tail:
-                text, cursor = text + tail, cursor + 1
-        speaker = it.speaker if it.speaker in speakers else "narrator"
-        out.append(Segment(speaker=speaker, text=text, emotion=it.emotion,
-                           style=it.style if speaker != "narrator" else None))
-    rest = paragraph[cursor:].strip()
-    if rest:
-        if _is_quotes(rest) and out:
-            last = out[-1]
-            out[-1] = Segment(speaker=last.speaker, text=last.text + rest, emotion=last.emotion, style=last.style)
+            if tail and tail in _QUOTES:
+                end = cursor = cursor + 1
+        spans.append([start, end, it])
+    rest = paragraph[cursor:]
+    if rest.strip():
+        if _is_quotes(rest.strip()):
+            spans[-1][1] = cursor + len(rest.rstrip())
         else:
             return None
-    return out
+    out: list[Segment] = []
+    for start, end, it in spans:
+        speaker = it.speaker if it.speaker in speakers else "narrator"
+        out.append(Segment(speaker=speaker, text=paragraph[start:end].strip(), emotion=it.emotion,
+                           style=it.style if speaker != "narrator" else None))
+    return out if tiles(paragraph, out) else None
+
+
+def tiles(paragraph: str, segments: list[Segment]) -> bool:
+    """True when the segment texts are found in `paragraph` in order (as ttschunks.chunk_paragraph looks them up)
+    and cover all of it but whitespace."""
+    cursor, left = 0, []
+    for s in segments:
+        t = s.text.strip()
+        if not t:
+            continue
+        at = paragraph.find(t, cursor)
+        if at < 0:
+            return False
+        left.append(paragraph[cursor:at])
+        cursor = at + len(t)
+    left.append(paragraph[cursor:])
+    return not "".join(left).strip()
 
 
 def narrator_only(paragraph: str) -> list[Segment]:

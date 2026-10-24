@@ -1329,26 +1329,26 @@ def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_
     return book
 
 
-def restore_as_textbook(book: Book, data: bytes) -> Book:
-    """Re-read a PDF that was stored as a novel, so its equations come back, and refresh the retrieval index.
+def rebuild_textbook_text(book: Book, data: bytes) -> Book:
+    """Re-read the PDF of a book stored as a novel, as a textbook, so its equations come back. Pure: nothing is
+    saved or indexed (the caller applies the result with `apply_textbook_text` under the book's write lock).
 
     A paper the detector calls a novel is stored with every formula turned into plain text. Moving it to Textbooks
-    cannot recover the pictures from that text; the original file is read again. Characters already on the book stay.
-    Summaries do not: their paragraph numbers belong to the old text.
+    cannot recover the pictures from that text; the original file is read again.
     """
     detected = book.kind_detected.model_dump() if book.kind_detected else None
-    rebuilt = build_book(book.id, book.title, book.author, "textbook", extract_text(data, ".pdf"), detected)
-    rebuilt.license = book.license
-    rebuilt.attribution = book.attribution
-    rebuilt.characters = book.characters
-    rebuilt.narrator = book.narrator
-    rebuilt.series = book.series
-    rebuilt.series_index = book.series_index
-    for p in rebuilt.paragraphs:
-        p.tts_chunks = chunk_paragraph(p, rebuilt)
-    chunks = retrieval.make_chunks(rebuilt)
-    retrieval.save_index(settings.data_dir / "books" / book.id / "index", chunks, None)
-    return rebuilt
+    return build_book(book.id, book.title, book.author, "textbook", extract_text(data, ".pdf"), detected)
+
+
+def apply_textbook_text(book: Book, rebuilt: Book) -> None:
+    """Put the re-read text (`rebuild_textbook_text`) into `book` (a fresh read of book.json) and make it a textbook.
+    Everything not derived from the text stays (characters, narrator, series, license, title...). Summaries do not:
+    their paragraph numbers belong to the old text. The TTS chunks are rebuilt with the book's own voices."""
+    book.kind = "textbook"
+    book.sections = rebuilt.sections
+    book.paragraphs = rebuilt.paragraphs
+    book.summaries = []
+    rechunk_book(book)  # stamps Book.chunk_rules
 
 
 def process_upload(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str,
@@ -1579,7 +1579,7 @@ def discard_book(book_id: str) -> None:
         tmp.unlink(missing_ok=True)
 
 
-KIND_KEYS = ("kind", "kind_detected")
+KIND_KEYS = ("kind", "kind_detected", "enrich_retries")   # carried over from the previous status
 
 
 def write_status(book_id: str, status: str, message: str | None = None, enrich: dict | None = None,

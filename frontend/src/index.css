@@ -752,3 +752,8 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
 .crop-square { position: absolute; box-sizing: border-box; border: 2px solid var(--brass); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); cursor: move; touch-action: none; }
 .crop-square:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 .crop-handle { position: absolute; right: -2px; bottom: -2px; width: 18px; height: 18px; background: var(--brass); cursor: nwse-resize; touch-action: none; }
+.bubble .sources { margin-top: 4px; font-size: 0.75rem; opacity: 0.85; display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; }
+.bubble .sources ul { display: contents; list-style: none; margin: 0; padding: 0; }
+.bubble .sources li { display: inline; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bubble .sources a { color: var(--brass); }
+.bubble .search-suggestions { display: block; width: 100%; border: 0; margin-top: 4px; background: transparent; }
