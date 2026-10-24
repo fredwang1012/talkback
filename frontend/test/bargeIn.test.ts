@@ -250,12 +250,13 @@ describe("voice gate (hands-free)", () => {
 
   it("the over-speech profile (#103) needs louder, longer speech: residual echo and blips pass, real speech opens it", () => {
     expect(HANDS_FREE_OVER_SPEECH.threshold).toBeGreaterThanOrEqual(0.08);
-    expect(HANDS_FREE_OVER_SPEECH.minSpeechMs).toBeGreaterThanOrEqual(350);
+    expect(HANDS_FREE_OVER_SPEECH.minSpeechMs).toBeGreaterThanOrEqual(200); // a cough or a click is shorter
+    expect(HANDS_FREE_OVER_SPEECH.minSpeechMs).toBeLessThanOrEqual(300); // the character stops within ~300 ms
     const g = createVoiceGate();
     const strict = HANDS_FREE_OVER_SPEECH;
     for (let t = 0; t < 2000; t += 20) expect(g.feed(0.07, t, strict)).toBeNull(); // what the echo canceller leaves of the character
-    for (let t = 2000; t < 2300; t += 20) expect(g.feed(0.3, t, strict)).toBeNull(); // a 300 ms blip
-    expect(g.feed(0.01, 2300, strict)).toBeNull();
+    for (let t = 2000; t < 2200; t += 20) expect(g.feed(0.3, t, strict)).toBeNull(); // a 200 ms blip
+    expect(g.feed(0.01, 2200, strict)).toBeNull();
     let started: number | null = null;
     for (let t = 2320; t < 3000 && started === null; t += 20) if (g.feed(0.2, t, strict) === "start") started = t;
     expect(started).not.toBeNull();
@@ -393,7 +394,8 @@ describe("barge-in in the loop (TalkController)", () => {
     await ask(h, "Who is Alice?", 6000); // held well past the long tap window
     h.session.emit({ type: "audio-start" });
     expect(h.talk.state).toBe("answering");
-    // the character talks; the reader speaks over them, clearly and for half a second (HANDS_FREE_OVER_SPEECH)
+    // the character talks (the mic hears a little of it); the reader speaks over them, clearly (HANDS_FREE_OVER_SPEECH)
+    for (let i = 0; i < 20; i++) { h.talk.noteLevel(0.03); await tick(20); }
     for (let i = 0; i < 25; i++) { h.talk.noteLevel(0.2); await tick(20); }
     expect(h.talk.state).toBe("listening");
     expect(h.interrupted()).toBe(1);

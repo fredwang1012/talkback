@@ -23,6 +23,7 @@ const nextId = (m: ChatMessage[]) => (m.length ? m[m.length - 1].id + 1 : 1);
 
 /** A question, followed by an empty pending answer from `speakerId` that sentences are appended to. */
 export function addQuestion(m: ChatMessage[], text: string, speakerId: string, via: "voice" | "typed"): ChatMessage[] {
+  if (!text.trim()) return m; // never an empty question bubble
   const id = nextId(m);
   return cap([
     ...m.map((x) => (x.pending ? { ...x, pending: false } : x)),
@@ -49,10 +50,15 @@ export function addToolChip(m: ChatMessage[], text: string): ChatMessage[] {
   return cap(i < 0 ? [...m, chip] : [...m.slice(0, i), chip, ...m.slice(i)]);
 }
 
-/** The reader barged in: the pending answer is marked as cut off (its text stays as what was heard). */
+/**
+ * The reader barged in: the pending answer is marked as cut off (its text stays as what was heard) and closed at once,
+ * so late text of the cancelled answer can never land in it; one with no text yet is removed (no empty bubble).
+ */
 export function markInterrupted(m: ChatMessage[]): ChatMessage[] {
   const i = m.findLastIndex((x) => x.pending);
-  return i < 0 ? m : m.map((x, j) => (j === i ? { ...x, interrupted: true } : x));
+  if (i < 0) return m;
+  if (!m[i].text.trim()) return m.filter((_, j) => j !== i);
+  return m.map((x, j) => (j === i ? { ...x, interrupted: true, pending: false } : x));
 }
 
 /**
@@ -64,8 +70,25 @@ export function markInterrupted(m: ChatMessage[]): ChatMessage[] {
 export function cutHeard(m: ChatMessage[], heard: string): ChatMessage[] {
   const text = heard.trim();
   if (!text) return m;
-  const i = m.findLastIndex((x) => x.role === "character" && (x.interrupted || (x.pending && x.text.trim() !== "")));
-  return i < 0 ? m : m.map((x, j) => (j === i ? { ...x, text } : x));
+  // the newest reply (skipping a new empty pending one): never an older interrupted reply
+  const i = m.findLastIndex((x) => x.role === "character" && !(x.pending && !x.text.trim()));
+  if (i < 0 || !(m[i].interrupted || m[i].pending)) return m;
+  return m.map((x, j) => (j === i ? { ...x, text } : x));
+}
+
+/** Replace the text of answer `id`, only while it is still pending (a closed or interrupted one never changes). */
+export function setTextOf(m: ChatMessage[], id: number | undefined, text: string): ChatMessage[] {
+  const i = id === undefined ? -1 : m.findIndex((x) => x.id === id && x.pending);
+  if (i < 0) return m;
+  return m.map((x, j) => (j === i ? { ...x, text } : x));
+}
+
+/** Append a sentence to answer `id`, only while it is still pending. */
+export function appendSentenceTo(m: ChatMessage[], id: number | undefined, sentence: string): ChatMessage[] {
+  const i = id === undefined ? -1 : m.findIndex((x) => x.id === id && x.pending);
+  if (i < 0 || !sentence.trim()) return m;
+  const t = m[i].text;
+  return m.map((x, j) => (j === i ? { ...x, text: t ? `${t} ${sentence.trim()}` : sentence.trim() } : x));
 }
 
 /** Append a sentence to the pending answer; ignored when none is pending. */

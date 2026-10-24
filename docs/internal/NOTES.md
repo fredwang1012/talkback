@@ -1060,6 +1060,44 @@ the deployed talkback-public-00001 is the Oct 21 code):
 - Not verified live: the echo guard with real laptop speakers (needs a person), how fine `.length` fragments are for
   long answers, `semantic_vad` on real (not TTS) speech with pauses.
 
+## Hands-free echo, "didn't catch that", stacking answers, barge-in (fix/handsfree-echo, 2026-10-23)
+User reports on #135 server-turn hands-free: the character heard itself, "I didn't catch that" came often, answers
+stacked in the chat, interrupting it was unreliable. Root causes (code reading + fake-socket repros, no live probe):
+- The mic streamed to Boson all the time, also while the character played. The echo guard only gated barge-in, so the
+  server VAD still committed turns of the character's own voice: a speech_started arriving after the 300 ms echo tail
+  (VAD + network delay) became a real turn, transcribed as the character's own words (a question bubble with them, and
+  an answer to itself), and a loud echo that passed the strict gate cut the character off.
+- Every committed server turn (clicks, breaths, noise, echo) that had no transcript after 1.5 s showed "I didn't catch
+  that"; 1.5 s was also shorter than the transcription of longer real turns.
+- A barge-in after our response.create but before its response.created: the cancel was "not active", the late
+  response.created reset the drop flag, so the cut-off answer played and its captions went into the bubbles; output was
+  never checked against its response id. The interrupted bubble also stayed pending (late text could land in it), chat
+  writes went to "the last pending bubble", and an empty interrupted bubble was left behind.
+- One clearly Spanish question set the transcription hint (a wrong hint gives no transcript at all).
+Fixes:
+- Mic hold (TalkClient.setMicHold, driven by TalkController.updateMicHold): while the character speaks and
+  MIC_HOLD_TAIL_MS (600) after, no mic audio goes to the server; the held audio is dropped, except on a barge-in.
+- Barge-in in server mode comes from the local strict gate (HANDS_FREE_OVER_SPEECH, now 250 ms) with a threshold
+  relative to the echo: max(0.10, 2.5 x median mic level over the last 2 s of playback; createEchoFloor; the first
+  300 ms always count, later only readings under the bar, so the reader's speech never raises it). On it: cut now
+  (flush + cancel/truncate), release the hold with ~300 ms pre-roll, the server's speech_started continues the turn; if
+  the server never reports speech within BARGE_CONFIRM_MS (2.5 s) the turn ends quietly. The local gate mode uses the
+  same relative threshold.
+- Turns: a server speech_started while held is echo (item deleted on commit). A turn with < MIN_TURN_MS (400 ms) of
+  speech by the local level and no transcript is dropped silently and its items deleted. A real turn without a
+  transcript waits failWaitMs = 2.5 s + turn/4 (max 5 s) before "I didn't catch that", and its items are deleted.
+  EMPTY_TURNS_FALLBACK (2) real empty turns in a row: hands-free switches to the local gate for this session, with
+  the note "I didn't catch that. Hands-free now uses the local voice gate."
+- Response binding: TalkClient tracks the current response id; a cancel before response.created cancels that response
+  when it shows up; any output, caption or response.done of another id is ignored.
+- Chat: useTalk writes captions/sentences only to the answer bubble its question created (setTextOf/appendSentenceTo
+  by id); markInterrupted closes the bubble (an empty one is removed); cutHeard only trims the newest reply; no empty
+  question bubbles.
+- Language: the transcription hint needs the two newest clear questions (of the last three) in the same non-English
+  language; a failed real turn still clears it. The TTS answer language still follows the newest clear question.
+- Not verified live (needs a person with speakers): the echo-relative threshold on real laptop echo, the 600 ms tail
+  for rooms with long reverb, and whether Boson's VAD minds the gaps in the audio while held.
+
 ## Web search on Talk answers (Grounding with Google Search), branch feat/web-search-answers
 - Rule (server-side, `app/websearch.allowed`): web search only when `book.kind == "textbook"` or `spoilers` is on, and
   `WEB_SEARCH` is true (default). A novel read spoiler-safe never gets the tool (the web would leak later events):

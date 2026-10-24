@@ -5,8 +5,9 @@
  * #135: by default hands-free now runs on Boson's own turn detection (`semantic_vad` with `create_response: false`,
  * verified live 2026-10-23: the server detects, commits and transcribes the turn, then waits for our response.create,
  * so the answer still carries the per-response retrieval instructions). This gate is still fed while the server
- * decides: over the character's voice it is the echo guard (a server `speech_started` counts as a barge-in only with
- * clear local speech), and it is the whole mechanism again when the server mode is refused or forced off
+ * decides: the mic is held (nothing sent to the server) while the character speaks and a short tail after, and this
+ * gate (strict profile, relative to the echo level) is what hears a barge-in then; it is the whole mechanism again
+ * when the server mode is refused, keeps missing turns, or is forced off
  * (`localGateForced`: `?gate=local`, or localStorage `talkback:gate` = `local`). Push-to-talk never uses either.
  * Echo cancellation is on in the capture, so the character's own voice mostly stays out; headphones make it
  * reliable; without them the stricter `HANDS_FREE_OVER_SPEECH` profile applies while the character talks.
@@ -21,9 +22,48 @@ export const HANDS_FREE: VoiceGateOptions = { threshold: 0.04, minSpeechMs: 150,
 /**
  * While the character is speaking through the speakers (#103): what the browser's echo canceller leaves of their
  * voice is quiet (well under 0.05 on a laptop) but not nothing, and a cough or a click must not cut them off. A
- * barge-in then needs speech clearly louder than that residue, sustained for most of half a second.
+ * barge-in then needs speech clearly louder than that residue (at least this threshold, and `ECHO_RATIO` times the
+ * echo level measured during this playback, see `createEchoFloor`), sustained for a quarter of a second: the
+ * character stops within about 300 ms of the reader starting to talk.
  */
-export const HANDS_FREE_OVER_SPEECH: VoiceGateOptions = { threshold: 0.10, minSpeechMs: 400, silenceMs: 700 };
+export const HANDS_FREE_OVER_SPEECH: VoiceGateOptions = { threshold: 0.10, minSpeechMs: 250, silenceMs: 700 };
+/** A barge-in must be this many times louder than the echo level the mic hears while the character speaks. */
+export const ECHO_RATIO = 2.5;
+/** How much of the recent playback the echo level is taken over (a median, so a burst of the reader's speech does not move it). */
+export const ECHO_WINDOW_MS = 2000;
+/** The start of a playback during which every mic reading is taken as the character's echo. */
+export const ECHO_LEARN_MS = 300;
+
+/**
+ * The level of the character's own voice as the mic hears it (what the echo canceller leaves), measured while the
+ * character speaks: the median of the readings of the last `ECHO_WINDOW_MS`. The barge-in threshold is relative to it,
+ * so a loud speaker never interrupts itself, while the reader, close to the mic, still does.
+ */
+export function createEchoFloor(windowMs = ECHO_WINDOW_MS) {
+  let readings: { t: number; rms: number }[] = [];
+  return {
+    /**
+     * A reading while the character speaks. The first ECHO_LEARN_MS of a playback (the reader has only just heard it
+     * start) all count; after that only readings under the barge-in threshold, so the reader's own speech over the
+     * character never raises the bar it has to clear.
+     */
+    feed(rms: number, now: number): void {
+      while (readings.length && now - readings[0].t > windowMs) readings.shift();
+      const learning = !readings.length || now - readings[0].t < ECHO_LEARN_MS;
+      if (learning || rms < this.profile().threshold) readings.push({ t: now, rms });
+    },
+    median(): number {
+      if (!readings.length) return 0;
+      const v = readings.map((r) => r.rms).sort((a, b) => a - b);
+      return v[Math.floor(v.length / 2)];
+    },
+    /** The over-speech profile with its threshold raised over the echo heard now. */
+    profile(base: VoiceGateOptions = HANDS_FREE_OVER_SPEECH): VoiceGateOptions {
+      return { ...base, threshold: Math.max(base.threshold, ECHO_RATIO * this.median()) };
+    },
+    reset(): void { readings = []; },
+  };
+}
 
 export type VoiceGateEvent = "start" | "stop" | null;
 
