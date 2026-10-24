@@ -626,12 +626,16 @@ def test_confirm_mode_waits_then_starts_on_post(client, monkeypatch):
     st = client.get(f"/api/books/{book_id}/status").json()
     assert st["enrich"]["status"] == "done"
     assert client.get(f"/api/books/{book_id}").json()["characters"]
-    assert client.post(f"/api/books/{book_id}/enrich").status_code == 409  # already done
+    calls = len(client.fake.calls)
+    again = client.post(f"/api/books/{book_id}/enrich")   # already done: the status is reported, nothing runs again
+    assert again.json()["enrich"]["status"] == "done" and len(client.fake.calls) == calls
 
 
-def test_enrich_endpoint_409_without_waiting_book_and_404(client):
-    book_id = upload(client).json()["book_id"]   # enriched already: neither waiting nor failed (a failed job may be retried)
-    assert client.post(f"/api/books/{book_id}/enrich").status_code == 409
+def test_enrich_endpoint_on_a_done_book_and_404(client):
+    book_id = upload(client).json()["book_id"]   # enriched already: a stale Try again just reports it as done
+    calls = len(client.fake.calls)
+    r = client.post(f"/api/books/{book_id}/enrich")
+    assert r.json()["enrich"]["status"] == "done" and len(client.fake.calls) == calls
     assert client.post("/api/books/nope-nope/enrich").status_code == 404
 
 
