@@ -339,6 +339,7 @@ button:disabled { cursor: not-allowed; }
   .wave span { animation: none; transform: scaleY(0.6); }
 }
 .medallion video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.medallion video.preload { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; } /* warming up the next face's loops */
 
 /* Small screens: the player bar wraps to several rows, so the debug pill is hidden rather than covering it. */
 @media (max-width: 600px) {

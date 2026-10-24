@@ -25,6 +25,7 @@ type Props = {
   onOpenLab: () => void;
   faceFor: (speakerId: string) => FaceT | undefined; // the face shown in Talk mode
   readingFace: FaceT | null; // face of whoever is reading aloud right now in read mode
+  preloadLoops?: string[]; // read mode: the next reader's loop videos, warmed up so a speaker change starts on time
   spoilers: boolean; // full-book mode (novels): answers may use the whole book
   readSpeaking: boolean; // read mode: the audio is audibly speaking right now (not in a pause)
   levelRef: { current: number }; // read mode: live loudness of the audio, for the still-image pulse
@@ -85,7 +86,7 @@ function Waveform() {
   );
 }
 
-export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, getAudio, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, spoilers, readSpeaking, levelRef }: Props) {
+export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, getAudio, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, preloadLoops = [], spoilers, readSpeaking, levelRef }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
   const [remember, setRemember] = useState(true);
   const tutor = book.kind === "textbook";
@@ -117,6 +118,7 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
             : face && readingFace ? <ReadFace face={face} speaking={readSpeaking} levelRef={levelRef} />
             : face ? <FaceView face={face} speaking={faceSpeaking} sync={talk.faceSync} clipShown={talk.clipShown} />
             : portrait ? <img src={portrait} alt="" /> : <span>{name.charAt(0)}</span>}
+          {preloadLoops.map((src) => <video key={src} className="preload" src={src} muted playsInline preload="auto" />)}
         </div>
         <div>
           <h3>{name}</h3>

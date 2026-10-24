@@ -17,6 +17,7 @@ import { ReaderEngine, type AudioLike } from "../reader/ReaderEngine";
 import type { FollowAudio } from "../reader/clipFollow";
 import { AudioLevelMeter } from "../reader/audioLevel";
 import { SPEECH_IDLE, stepSpeech } from "../reader/speechLevel";
+import { loopsToPreload, showReadingFace } from "../reader/readFace";
 import Stage from "../reader/Stage";
 import { toggleMode, validSpeaker } from "../reader/talkbackLogic";
 import TalkbackView, { ModeToggle } from "../reader/TalkbackView";
@@ -166,8 +167,12 @@ export default function Reader({ bookId }: { bookId: string }) {
   const narratorVoice = book ? oneVoice ?? castVoice(book, cast, "narrator") : null;
   const current = chunks[index];
   // the face of whoever reads aloud right now (read mode)
-  const readingFace = book && playing && !loading && current
+  // mounted while the first chunk still loads, so its talking loop is ready on the first word (see reader/readFace)
+  const readingFace = book && current && showReadingFace({ playing, loading })
     ? faceById(readingFaceId(book, cast, style, current.speaker)) ?? null : null;
+  const nextChunk = chunks[index + 1];
+  const nextReadingFace = book && nextChunk && playing ? faceById(readingFaceId(book, cast, style, nextChunk.speaker)) ?? null : null;
+  const preloadLoops = loopsToPreload(readingFace, nextReadingFace);
   const voiceOptions = useMemo(
     () => [...PRESETS.map((v) => ({ value: v, label: v })), ...Object.entries(cloned).map(([n, v]) => ({ value: v, label: `${n} (cloned)` }))],
     [cloned]);
@@ -367,7 +372,7 @@ export default function Reader({ bookId }: { bookId: string }) {
                  pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
                  needsCode={needsCode} onCode={(c, rem) => { setAccessToken(c, rem); setCode(c); }} onOpenLab={() => setLabOpen(true)}
                  faceFor={talkFaceFor}
-                 readingFace={readingFace} spoilers={spoilers}
+                 readingFace={readingFace} preloadLoops={preloadLoops} spoilers={spoilers}
                  readSpeaking={readSpeaking} levelRef={levelRef} />
         )}
       </div>

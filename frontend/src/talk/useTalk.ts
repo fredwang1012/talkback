@@ -154,7 +154,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
           const voice = answerVoice;
           const r = await speak(text, voice);
           if (latest.current.wantLipSync && latest.current.canLipSync(voice)) {
-            // the voice does not wait for this: the video joins when its first fragment is in (see faceSync)
+            // the first word waits (bounded) until this clip can start with it from 0 (start gate: sentencePlayer, faceSync)
             const openVideo = (): Promise<VideoClip> => openClipVideo(r.audio_url, voice);
             const clip = { audio_url: r.audio_url, openVideo };
             if (answerMsgId !== undefined) replayStore.current.addSentence(answerMsgId, text, clip);

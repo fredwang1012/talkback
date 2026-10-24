@@ -33,7 +33,8 @@ export const needsResync = (videoTime: number, audioTime: number, limit = DRIFT_
   Math.abs(driftSeconds(videoTime, audioTime)) > limit;
 
 /** Pipeline stages timed for each answer, relative to the question (first sentence) or to the sentence (the rest). */
-export type TimingStage = "first-sentence" | "tts" | "avatar-first-fragment" | "audio-start";
+/** "face-wait": how long the first word waited for its lip-synced face (start gate, sentencePlayer). */
+export type TimingStage = "first-sentence" | "tts" | "avatar-first-fragment" | "face-wait" | "audio-start";
 
 export interface TimingEvent { stage: TimingStage; ms: number; sentence?: string }
 

@@ -3,10 +3,13 @@
  * next few sentences while the current one plays) and preloads the audio so `play` starts instantly; `play`
  * resolves when the clip ends; `stop` halts it (barge-in).
  *
- * The voice never waits for the face. When synthesis also offers a lip-synced video (`openVideo`), the stream is
- * opened in the background and handed to `hooks.sync` once its first fragment has arrived; until then (and if it
- * fails) the face shows its talk loop. `hooks.onPlaying` reports whether sound is actually coming out, which is
- * what the face follows.
+ * Lip-sync start gate (#66): when synthesis also offers a lip-synced video (`openVideo`) and a face can show it, the
+ * voice waits for its face before the first word, at most `startWaitMs`: the stream is opened, joined to the sync, and
+ * the voice starts when the sync says the clip is buffered enough to start with it from 0. Both then start together
+ * and nothing has to be moved later. A rank-0 prefetch opens the next sentence's stream early, so usually only the
+ * first sentence of an answer waits. If the wait runs out, the voice starts anyway and the face joins when it can (the
+ * talk loop shows until then). Once the voice plays, nothing waits for the face again. `hooks.onPlaying` reports
+ * whether sound is actually coming out, which is what the face follows.
  */
 
 import type { TimingEvent } from "./speechGate";
@@ -24,6 +27,7 @@ export interface AudioLike {
   play(): Promise<void> | void;
   pause(): void;
   currentTime?: number;
+  duration?: number;
   addEventListener?(type: string, fn: () => void): void;
   removeEventListener?(type: string, fn: () => void): void;
 }
@@ -33,26 +37,33 @@ export type VideoClip = { url: string; release: () => void };
 
 export type Clip = { audio_url: string; openVideo?: () => Promise<VideoClip> };
 
-/** Keeps the lip-sync video locked to the voice (see faceSync.ts). `leave` detaches; the speaker releases the clip. */
+/**
+ * Keeps the lip-sync video locked to the voice (see faceSync.ts); it never pauses or moves the voice. `join` before the
+ * voice starts returns a promise that resolves when the voice may start (`late`: the voice already plays). `leave`
+ * detaches; the speaker releases the clip.
+ */
 export interface ClipSync {
-  join(audio: AudioLike, clip: VideoClip): void;
+  join(audio: AudioLike, clip: VideoClip, late?: boolean): Promise<void> | void;
   leave(): void;
-  /** True while the sync itself has paused the voice to let the video catch up (not a real pause). */
-  readonly holding: boolean;
+  /** False when there is no face to show a clip on: the voice then never waits for one. */
+  readonly canShow?: boolean;
 }
+
+/** The longest the first word waits for its lip-synced face (the UI promises answers start later with lip-sync on). */
+export const START_WAIT_MS = 6000;
 
 export interface SpeakerHooks {
   sync?: ClipSync;
   onPlaying?: (on: boolean) => void;
   onTiming?: (e: TimingEvent) => void;
   now?: () => number;
+  startWaitMs?: number;
 }
 
 type Entry = {
   clip: Promise<Clip>;
   audio?: AudioLike;
-  video?: Promise<VideoClip | null>;
-  ready?: VideoClip; // set once the video's first fragment is in
+  video?: Promise<VideoClip | null>; // resolves once the video's first fragment is in (null: no clip)
 };
 
 export function createSentenceSpeaker(
@@ -79,7 +90,6 @@ export function createSentenceSpeaker(
       const t0 = now();
       try {
         const v = await c.openVideo();
-        entry.ready = v;
         emit("avatar-first-fragment", t0, text);
         return v;
       } catch { return null; } // render failed: the talk loop stands in
@@ -125,8 +135,10 @@ export function createSentenceSpeaker(
         let started = false;
         const listeners: [string, () => void][] = [];
         const on = (type: string, fn: () => void) => { audio.addEventListener?.(type, fn); listeners.push([type, fn]); };
+        let cap: ReturnType<typeof setTimeout> | null = null;
         const teardown = () => {
           over = true;
+          if (cap !== null) { clearTimeout(cap); cap = null; }
           if (current?.audio === audio) current = null;
           for (const [t, f] of listeners) audio.removeEventListener?.(t, f);
           hooks.sync?.leave();
@@ -141,20 +153,34 @@ export function createSentenceSpeaker(
           if (!started) { started = true; emit("audio-start", asked, text); }
           hooks.onPlaying?.(true);
         };
-        const quiet = () => { if (!over && !hooks.sync?.holding) hooks.onPlaying?.(false); };
+        const quiet = () => { if (!over) hooks.onPlaying?.(false); };
         audio.onended = settle;
         audio.onerror = () => fail(new Error("Could not play the answer audio."));
         on("playing", playing);
         on("pause", quiet);
         on("waiting", quiet);
-        // the video joins whenever its first fragment is in (a late one seeks to the voice); the voice never waits
-        const attach = (v: VideoClip | null) => { if (v && !over && hooks.sync) hooks.sync.join(audio, v); };
-        if (entry.ready) attach(entry.ready);
-        else void entry.video?.then(attach);
-        Promise.resolve(audio.play()).then(
-          () => { if (!audio.addEventListener) playing(); }, // test doubles without media events
-          (e) => fail(e instanceof Error ? e : new Error(String(e))),
-        );
+        let voiceAsked = false;
+        const startVoice = () => {
+          if (over || voiceAsked) return;
+          voiceAsked = true;
+          if (cap !== null) { clearTimeout(cap); cap = null; }
+          Promise.resolve(audio.play()).then(
+            () => { if (!audio.addEventListener) playing(); }, // test doubles without media events
+            (e) => fail(e instanceof Error ? e : new Error(String(e))),
+          );
+        };
+        const sync = hooks.sync;
+        if (!sync || !res.openVideo || sync.canShow === false || !entry.video) { startVoice(); return; }
+        // start gate: the voice waits (bounded) until its clip can start with it from 0
+        const waitFrom = now();
+        const open = () => { if (!voiceAsked && !over) { emit("face-wait", waitFrom, text); startVoice(); } };
+        cap = setTimeout(open, hooks.startWaitMs ?? START_WAIT_MS);
+        void entry.video.then((v) => {
+          if (over) return;
+          if (!v) { open(); return; } // the render failed: the talk loop stands in
+          const ready = sync.join(audio, v, voiceAsked); // late: the wait ran out, the face joins when it can
+          if (!voiceAsked) void Promise.resolve(ready).then(open);
+        });
       });
     },
     stop() {

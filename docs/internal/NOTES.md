@@ -541,3 +541,15 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   the Vertex deletes and file removal run as a background task with state on `/status` (`deleting` / `delete_error`).
   A retry joins a running delete or resumes a failed one from `deleting.json`. Not done: a startup sweep for
   tombstones left by a restart mid-delete (they are invisible; a DELETE of that id resumes them).
+## Avatar stream timing (offline, from 20 cached lip-sync clips, 2026-10-23, #66)
+- Streamed fMP4: H.264 24 fps (timescale 12288) + AAC 24 kHz, no B-frames, tfdt starts at 0. Fragments: first 0.7927 s
+  (first frame lasts ~2 frames), then 0.75 s (18 frames). Init segment `mvhd` duration 0, no `mehd`: MSE duration is
+  +Infinity, so `seekable` = [0, buffered end] and a seek past the rendered part is clamped to it (Chromium
+  MediaSource::SeekableInternal + HTMLMediaElement::Seek `Nearest`). This clamp caused the ~0.5 s voice rewind.
+- Clips are padded at the end to whole fragments (8.40 s mp3 -> 9.04 s clip). No lead-in: the clip's own AAC track equals
+  our TTS mp3 delayed by a constant +40 ms (= 1024-sample AAC priming not trimmed, no edit list). Lip motion vs voice
+  envelope (rough mouth-region motion): median lag ~0 s. So no constant start offset to apply.
+- Pace: ~1.5-3 s from request to first fragment (up to ~6 s with several streams in flight), then about real time
+  (TTS-ready -> stream-end of 10.7 s for a 9.04 s clip). The first sentence's clip therefore cannot catch up with a voice
+  that starts immediately; the voice now waits (bounded) for ~2 fragments before the first word.
+- TTS mp3s are 32 kbit/s 24 kHz, so `len(data)/16000` in main.py under-counts avatar seconds 4x in usage logging.
