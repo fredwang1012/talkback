@@ -1,0 +1,9 @@
+book_id: scandal-in-bohemia
+title: A Scandal in Bohemia
+author: Arthur Conan Doyle
+kind: novel
+license: Public domain (Project Gutenberg #1661)
+attribution: null
+# Text between these markers (start inclusive, end exclusive) is the book body.
+start_marker: "I. A SCANDAL IN BOHEMIA"
+end_marker: "II. THE RED-HEADED LEAGUE"
