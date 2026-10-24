@@ -61,4 +61,22 @@ describe("clip follower", () => {
     for (let i = 0; i < 5; i++) { adv(100); f.tick(a); }
     expect(Math.abs(v.currentTime - a.currentTime)).toBeLessThan(0.3);
   });
+  it("a clip that ends before its audio stays on its last frame: no restart, no seek loop", () => {
+    let t = 0;
+    const v = new V() as V & { duration: number; ended: boolean };
+    v.duration = 1; v.ended = false;
+    const a: FollowAudio = { currentTime: 0, paused: false, ended: false };
+    const f = createClipFollower(v, () => t);
+    a.currentTime = 0.05; f.tick(a);
+    const seen: number[] = [];
+    for (let i = 0; i < 30; i++) { // 3 s of audio against a 1 s clip
+      t += 100; a.currentTime += 0.1;
+      if (!v.paused) v.currentTime += 0.1 * v.playbackRate;
+      if (v.currentTime >= v.duration) { v.currentTime = v.duration; v.ended = true; v.paused = true; }
+      f.tick(a);
+      seen.push(v.currentTime);
+    }
+    expect(v.plays).toBe(1);
+    expect(seen.slice(-15).every((x) => x === 1)).toBe(true);
+  });
 });

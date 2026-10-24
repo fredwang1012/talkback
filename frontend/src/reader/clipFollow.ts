@@ -3,7 +3,7 @@ import { AudioClock, DriftController } from "../talk/driftController";
 /** The bits of an <audio> / <video> element the follower needs (so it can be tested with fakes). */
 export interface FollowAudio { currentTime: number; paused?: boolean; ended?: boolean; }
 export interface FollowVideo {
-  currentTime: number; playbackRate: number; paused: boolean; ended?: boolean;
+  currentTime: number; playbackRate: number; paused: boolean; ended?: boolean; duration?: number;
   play(): Promise<void> | void; pause(): void;
 }
 
@@ -16,6 +16,11 @@ export const audioSounding = (a: FollowAudio | null | undefined): boolean =>
  * every ~100 ms. The clip starts together with the voice, pauses/ends with it, and drift is corrected by nudging
  * playbackRate (seek only on a big, rare drift) - the same logic as the Talkback face (talk/driftController).
  */
+/** The clip has played to its end (it can be a little shorter than its audio): hold the last frame. */
+const pastEnd = (v: FollowVideo, at: number): boolean =>
+  typeof v.duration === "number" && Number.isFinite(v.duration) && at >= v.duration - 0.05;
+const clipOver = (v: FollowVideo): boolean => !!v.ended || pastEnd(v, v.currentTime);
+
 export function createClipFollower(video: FollowVideo, now: () => number = () => performance.now(), startOffsetS = 0) {
   const ctrl = new DriftController({ startOffsetS });
   let clock = new AudioClock();
@@ -36,15 +41,26 @@ export function createClipFollower(video: FollowVideo, now: () => number = () =>
       if (!wasSounding) { // the voice (re)started: line the clip up and start both together
         wasSounding = true;
         clock.anchor(audio.currentTime, t);
-        video.currentTime = audio.currentTime + ctrl.opts.startOffsetS;
+        const target = audio.currentTime + ctrl.opts.startOffsetS;
         video.playbackRate = 1;
         ctrl.reset();
+        if (pastEnd(video, target)) {
+          video.currentTime = video.duration!; // the voice is past the end of the clip: show its last frame
+          return;
+        }
+        video.currentTime = target;
         void Promise.resolve(video.play()).catch(() => { /* autoplay refused: the portrait stays */ });
+        return;
+      }
+      if (clipOver(video)) { // play() on an ended clip restarts it from frame 0: hold the last frame instead
+        if (video.playbackRate !== 1) video.playbackRate = 1;
         return;
       }
       if (video.paused) { void Promise.resolve(video.play()).catch(() => {}); return; }
       const act = ctrl.update(video.currentTime, clock.sample(audio.currentTime, t), t);
-      if (act.kind === "seek") video.currentTime = act.to;
+      if (act.kind === "seek") {
+        if (!pastEnd(video, act.to)) video.currentTime = act.to; // never seek past the end (that ends it again)
+      }
       else if (act.kind === "rate") video.playbackRate = act.rate;
     },
   };
