@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     # book processing (cast, dialogue, recap notes, equations, series checks); empty = gemini_model. Flash-Lite runs on a
     # separate, less congested Vertex pool, so uploads are not throttled by Talk answers or busy shared capacity.
     enrich_gemini_model: str = ""
+    enrich_fallback_on_429: bool = False   # send rate-limited processing calls to GEMINI_MODEL (pricier, faster when busy)
     # Web search (Grounding with Google Search) on Gemini answers: textbooks and novels with spoilers on only (websearch.py).
     web_search: bool = True
     grounded_daily_cap: int = 100        # grounded answers per UTC day on this app, persisted (data/usage)

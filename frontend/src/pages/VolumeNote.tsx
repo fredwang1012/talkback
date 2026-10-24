@@ -20,7 +20,7 @@ export function VolumeNote({ title, note, onConfirm, onRetry }: { title: string;
       {note.progress !== undefined && <progress max={100} value={pct(note.progress)} aria-label={`Processing ${title}`} />}
       {note.confirm !== undefined && (
         <button type="button" className="volume-move" onClick={onConfirm}>
-          Process with characters (~${note.confirm.toFixed(2)})
+          Process with characters
         </button>
       )}
       {note.retry && (

@@ -188,9 +188,11 @@ class GeminiProvider:
     """Gemini on Vertex AI (the enrichment model, ENRICH_GEMINI_MODEL or GEMINI_MODEL; project and region from settings),
     JSON output.
 
-    When the enrichment model differs from GEMINI_MODEL, GEMINI_MODEL is the fallback: a call the enrichment model keeps
-    refusing with 429s (Vertex shared capacity is per model) or keeps cutting off for length is sent to the fallback,
-    and for COOL_S after a 429 give-up every call goes straight to the fallback."""
+    When the enrichment model differs from GEMINI_MODEL, GEMINI_MODEL is the fallback for a reply the enrichment model
+    cuts off for length twice (the cast of a long novel; a handful of calls per book). With ENRICH_FALLBACK_ON_429 a
+    call it keeps refusing with 429s also goes to the fallback (Vertex capacity is per model), and for COOL_S after such
+    a give-up every call goes straight there. Off by default: Flash costs several times Flash-Lite, so a busy Flash-Lite
+    would move a whole book onto it; waiting is slower but cheap."""
     name = "gemini"
     RETRIES = pacing.BACKGROUND["attempts"]   # 6 attempts: 429s, 5xx and network errors, backoff to 30 s + jitter
     PRIMARY_ATTEMPTS = 3   # with a fallback, give up on a throttled enrichment model after ~3-6 s of backoff
@@ -216,18 +218,27 @@ class GeminiProvider:
     async def complete(self, system, user, schema, tier, max_tokens, effort) -> Raw:
         if not self.fallback:
             return await self._complete_model(self.model, system, user, schema, max_tokens, self.RETRIES)
-        if self._clock() < self._cool_until:
+        on_429 = settings.enrich_fallback_on_429
+        if on_429 and self._clock() < self._cool_until:
             return await self._complete_model(self.fallback, system, user, schema, max_tokens, self.RETRIES)
         try:
-            return await self._complete_model(self.model, system, user, schema, max_tokens, self.PRIMARY_ATTEMPTS)
+            return await self._complete_model(self.model, system, user, schema, max_tokens,
+                                              self.PRIMARY_ATTEMPTS if on_429 else self.RETRIES)
         except Exception as e:
             cut = isinstance(e, _TooLong)
-            if not cut and not pacing.is_rate_limited(e):
+            if not cut and not (on_429 and pacing.is_rate_limited(e)):
                 raise
-            if not cut:
+            if cut:
+                log.warning("%s cut off twice; sending this call to %s", self.model, self.fallback)
+            else:
+                if self._clock() >= self._cool_until:   # one line per switch, not one per call already in flight
+                    log.warning("%s rate limited; using %s for %.0f s", self.model, self.fallback, self.COOL_S)
                 self._cool_until = self._clock() + self.COOL_S
-            log.warning("%s %s; sending this call to %s", self.model, "cut off twice" if cut else "rate limited", self.fallback)
             return await self._complete_model(self.fallback, system, user, schema, max_tokens, self.RETRIES)
+
+    async def complete_again(self, system, user, schema, tier, max_tokens, effort) -> Raw:
+        """A second try after a reply that was not valid JSON: on the fallback model when there is one."""
+        return await self._complete_model(self.fallback or self.model, system, user, schema, max_tokens, self.RETRIES)
 
     async def _complete_model(self, model, system, user, schema, max_tokens, attempts) -> Raw:
         try:
@@ -349,7 +360,21 @@ class LLM:
             try:
                 return schema_model.model_validate_json(raw.text)
             except ValueError as e:
-                raise RuntimeError(f"{raw.model} returned invalid JSON") from e
+                again = getattr(self.provider(name), "complete_again", None)
+                if again is None:
+                    raise RuntimeError(f"{raw.model} returned invalid JSON") from e
+                log.warning("%s returned invalid JSON; trying once more", raw.model)
+            async with self.sem:   # one more try (Gemini: on the fallback model), then give up
+                raw = await again(system, user, schema, tier, max_tokens, effort)
+            try:
+                self._record(name, tier, raw)
+            except SpendLimit as e:
+                self.stopped = e
+                raise
+            try:
+                return schema_model.model_validate_json(raw.text)
+            except ValueError as e:
+                raise RuntimeError(f"{raw.model} returned invalid JSON twice") from e
 
     async def __call__(self, model: str, system: str, user: str, schema_model: type[T], *,
                        max_tokens: int = 4000, effort: str = "low") -> T:

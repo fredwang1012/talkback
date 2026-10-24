@@ -4,7 +4,6 @@ export type VoiceForm = {
   clip: boolean;        // a recording or an uploaded file is ready
   transcript: string;
   name: string;
-  consent: boolean;
   audioAvailable: boolean;
   busy: boolean;
 };
@@ -16,7 +15,6 @@ export function voiceMissing(f: VoiceForm): string[] {
   if (!f.clip) out.push("a recording or an audio file");
   if (!f.transcript.trim()) out.push("the words you said");
   if (!f.name.trim()) out.push("a name for the voice");
-  if (!f.consent) out.push("the consent box ticked");
   return out;
 }
 

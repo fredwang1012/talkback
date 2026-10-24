@@ -88,11 +88,11 @@ gcloud run deploy "${SERVICE}" \
   --region "${REGION}" \
   --image "${IMAGE}" \
   --service-account "${SA}" \
-  --set-env-vars "RETRIEVAL_BACKEND=vertex,TRUST_PROXY=true,GCP_PROJECT=${PROJECT},GCP_REGION=${REGION},CORS_ORIGINS=http://localhost:5173,UPLOAD_LLM=gemini,UPLOAD_ENRICH=true,UPLOAD_CONFIRM=false,UPLOAD_BOOK_CAP_USD=${UPLOAD_BOOK_CAP_USD:-1000},UPLOAD_TOTAL_CAP_USD=${UPLOAD_TOTAL_CAP_USD:-1000},GROUNDED_DAILY_CAP=${GROUNDED_DAILY_CAP:-100000},ENRICH_GEMINI_MODEL=${ENRICH_GEMINI_MODEL:-gemini-2.5-flash-lite},GEMINI_LOCATION=${GEMINI_LOCATION:-global},USAGE_LOG_FILE=false,PER_USER=true,IAP_AUDIENCE=${IAP_AUDIENCE},OWNER_EMAILS=${OWNER_EMAILS},OWNER_ONLY_BOOKS=hp*" \
+  --set-env-vars "RETRIEVAL_BACKEND=vertex,TRUST_PROXY=true,GCP_PROJECT=${PROJECT},GCP_REGION=${REGION},CORS_ORIGINS=http://localhost:5173,UPLOAD_LLM=gemini,UPLOAD_ENRICH=true,UPLOAD_CONFIRM=false,UPLOAD_BOOK_CAP_USD=${UPLOAD_BOOK_CAP_USD:-1000},UPLOAD_TOTAL_CAP_USD=${UPLOAD_TOTAL_CAP_USD:-1000},GROUNDED_DAILY_CAP=${GROUNDED_DAILY_CAP:-100000},ENRICH_GEMINI_MODEL=${ENRICH_GEMINI_MODEL:-gemini-2.5-flash-lite},ENRICH_FALLBACK_ON_429=${ENRICH_FALLBACK_ON_429:-true},GEMINI_LOCATION=${GEMINI_LOCATION:-global},USAGE_LOG_FILE=false,PER_USER=true,IAP_AUDIENCE=${IAP_AUDIENCE},OWNER_EMAILS=${OWNER_EMAILS},OWNER_ONLY_BOOKS=hp*" \
   --set-secrets "BOSON_API_KEY=boson-api-key:latest" \
   --execution-environment gen2 \
   --add-volume "name=data,type=cloud-storage,bucket=${BUCKET}" \
   --add-volume-mount "volume=data,mount-path=/app/data" \
   --min-instances 0 --max-instances 1 --no-cpu-throttling \
-  --memory 1Gi --cpu 1 --timeout 300 \
+  --memory 2Gi --cpu 1 --timeout 300 \
   --no-allow-unauthenticated --iap

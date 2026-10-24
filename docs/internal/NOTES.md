@@ -1298,3 +1298,21 @@ was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-
   no status.json (only log lines), so a clone's tree stays clean; `data/books/*/index/embeddings.npy` (+ `.tmp`) is
   now gitignored (chunks.json stays committed). `_embedder()` loads the model once under a lock (warm-up and the job
   may ask together). Never with the real model in tests; e5-small on ~11k built-in chunks is unmeasured here.
+
+## PDF novels with drop caps and unnumbered chapters (fix/dropcap-chapters, 2026-10-24)
+- Dune-style PDFs open each chapter with a small epigraph + "—attribution" and a 39-86pt initial letter (maybe after
+  an opening quote). pymupdf gives the cap its own line/block: "D" + "une", and '"Y' became a font-size heading.
+  `_merge_drop_caps` (raw spans) joins the cap to the topmost line starting at its right edge within its height;
+  the lines beside it are moved to its left edge. Harry Potter PDFs had the same split ("r. and Mrs. Dursley").
+- `_keep_epigraphs` keeps the smaller text right above a drop-cap paragraph (it was dropped as footnote-size text in
+  books 2-6), raised to at most the body size. `_mark_drop_chapters` puts a "Chapter N" section there when the
+  epigraph has a dash-led attribution and no heading sits over it (a part heading does not count; an all-caps
+  body-size line at the page top such as INTRODUCTION is promoted to a heading). Numbering restarts after
+  BOOK/PART and INTRODUCTION/PROLOGUE/PREFACE/FOREWORD headings; novels nest "Chapter N" under a part (level 2).
+  Fewer than 3 drop-cap chapters in a book: no chapters added. A page holding only the tail of the contents page
+  before it ("Epilogue") is dropped.
+- Checked locally (no paid calls): Dune 48 chapters (22/15/11 under BOOK ONE/TWO/THREE), Messiah 24, Children 64,
+  God Emperor 47, Heretics 47, Chapterhouse 48; the one-PDF collection gets the same 278. IR textbook, CQL paper:
+  identical output. HP7 and the HP collection: same titles, drop-cap words rejoined.
+- Already-uploaded books are not re-parsed: CHUNK_RULES_VERSION only rebuilds TTS chunks from stored paragraphs.
+  Delete and upload the PDF again (the same file is a 409 duplicate while the old copy exists).
