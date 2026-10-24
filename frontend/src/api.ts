@@ -37,9 +37,10 @@ export type Paragraph = {
   text: string;
   segments: Segment[];
   tts_chunks: TtsChunk[];
-  kind?: "code" | "math" | null; // code: a textbook listing, shown in a code font, not read aloud; math: an equation
+  kind?: "code" | "math" | "figure" | null; // code: a textbook listing, shown in a code font, not read aloud; math: an equation; figure (#40): `text` is its caption
   math?: MathBlock | null;
   inline_math?: InlineMath[];
+  figure?: string | null; // the figure's image file (kind "figure"), see figureUrl
 };
 export type Character = {
   id: string;
@@ -90,6 +91,18 @@ export type Health = { ok: boolean; boson_key_set: boolean; access_required: boo
 export function authHeaders(): Record<string, string> {
   const token = getAccessToken();
   return token ? { "X-Talkback-Token": token } : {};
+}
+
+/** A textbook figure's image (#40), served with the book's own gate. */
+export function figureUrl(bookId: string, name: string): string {
+  return `/api/books/${encodeURIComponent(bookId)}/figures/${encodeURIComponent(name)}`;
+}
+
+/** The figure as an object URL: fetched with the access code, which an <img src> cannot send. Revoke it when done. */
+export async function fetchFigure(bookId: string, name: string): Promise<string> {
+  const res = await timedFetch(figureUrl(bookId, name), { headers: authHeaders() });
+  if (!res.ok) throw new Error(`Figure failed: ${res.status}`);
+  return URL.createObjectURL(await res.blob());
 }
 
 /** fetch with a deadline, so a stalled server shows an error instead of an endless spinner. */
@@ -147,11 +160,11 @@ export type WordTiming = { start: number; end: number; char_start: number; char_
 export type TtsResponse = { chunk_id: string; voice: string; audio_url: string; timestamps: WordTiming[] | null; cached: boolean };
 
 /** Throws an Error carrying the server's readable message (e.g. a missing key or a billing refusal). */
-export async function fetchTts(bookId: string, chunkId: string, voiceOverride?: string, cachedOnly = false): Promise<TtsResponse> {
+export async function fetchTts(bookId: string, chunkId: string, voiceOverride?: string, cachedOnly = false, speed?: string | null): Promise<TtsResponse> {
   const res = await timedFetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ book_id: bookId, chunk_id: chunkId, voice_override: voiceOverride ?? null, cached_only: cachedOnly }),
+    body: JSON.stringify({ book_id: bookId, chunk_id: chunkId, voice_override: voiceOverride ?? null, cached_only: cachedOnly, ...(speed ? { speed } : {}) }),
   }, 60000); // a cache miss synthesises speech, which can take a while
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);

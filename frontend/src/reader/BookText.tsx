@@ -4,6 +4,7 @@ import type { Book, Paragraph } from "../api";
 import { equationView, imageHeight, imageWidth, inlineView, pieces } from "./equation";
 import type { FlatChunk } from "./position";
 import ChapterList from "./ChapterList";
+import Figure from "./Figure";
 import { isNested } from "./chapterTree";
 import { cleanTitle } from "./cleanTitle";
 
@@ -104,7 +105,9 @@ function BookText({ book, chunks, index, onPick, word }: Props) {
         return (
           <Fragment key={p.idx}>
             {heading}
-            <p className={p.kind === "code" ? "para para-code" : "para"} data-para={p.idx}>{parts}</p>
+            {p.kind === "figure" && p.figure
+              ? <Figure bookId={book.id} name={p.figure} caption={p.text} para={p.idx}>{parts}</Figure>
+              : <p className={p.kind === "code" ? "para para-code" : "para"} data-para={p.idx}>{parts}</p>}
           </Fragment>
         );
       })}

@@ -19,7 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from pydantic import BaseModel, Field
 
-from . import books, cast, face_detect, faces, ingest_upload, public_client, recap, retrieval, tts_cache, users, voices
+from . import books, cast, face_detect, faces, ingest_upload, multilingual, public_client, recap, retrieval, tts_cache, users, voices
+from .delivery import apply_speed
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
@@ -208,6 +209,21 @@ def restore_book(book_id: str):
 _book_bodies: dict[str, tuple[Book, bytes, bytes]] = {}  # book id -> (book object, json, gzipped json)
 
 
+_FIGURE_NAME = re.compile(r"^fig-\d{1,4}\.png$")
+
+
+@app.get("/api/books/{book_id}/figures/{name}", dependencies=[Depends(require_access)])
+def get_figure(book_id: str, name: str):
+    """A textbook figure (#40), gated like the book itself: the same access code and per-account visibility."""
+    if not books._ID.match(book_id) or not _FIGURE_NAME.match(name):  # both come from the URL: no path walking
+        raise HTTPException(404, "Figure not found")
+    users.guard_book(book_id)
+    path = ingest_upload.figures_dir(book_id) / name
+    if not path.is_file():
+        raise HTTPException(404, "Figure not found")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
+
+
 @app.get("/api/books/{book_id}", response_model=Book, dependencies=[Depends(require_access)])
 def get_book(book_id: str, accept_encoding: str = Header(default="")):
     """The full book. Gated like the paid endpoints: a public deployment must not hand out a copyrighted text.
@@ -268,6 +284,7 @@ class TtsRequest(BaseModel):
     chunk_id: str
     voice_override: str | None = None
     cached_only: bool = False  # demo mode: serve pre-rendered audio only, never call Boson
+    speed: Literal["very_slow", "slow", "fast", "very_fast"] | None = None  # natural speed (#78): Boson speed tag, own cache entry
 
 
 @app.post("/api/tts", dependencies=[Depends(require_access)])
@@ -287,6 +304,7 @@ async def tts(req: TtsRequest, request: Request):
                 tags = cast.tags_for(book, c.speaker) if ch else None
                 if tags is not None and tts_text.startswith(ch.voice_tags):  # the user's pitch/speed replaces the book's
                     tts_text = tags + tts_text[len(ch.voice_tags):]
+                tts_text = apply_speed(tts_text, req.speed)
                 cached = tts_cache.is_cached(tts_text, voice)
                 if req.cached_only and not cached:
                     raise HTTPException(409, "This line is not pre-rendered yet. Run preprocess/prerender_tts.py before the demo.")
@@ -397,10 +415,14 @@ async def retrieve(req: RetrieveRequest, request: Request):
     if not retrieve_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many lookups; wait a moment.")
     book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
+    search = await multilingual.search_query(req.query)  # the book is English: a question in another language is translated
     # realtime (Boson) instructions must stay short: fewer passages and a smaller character cap than /api/answer
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, min(req.k, REALTIME_K),
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), search, reader_para, min(req.k, REALTIME_K),
                                     spoilers=req.spoilers, max_chars=REALTIME_MAX_PASSAGE_CHARS, **_series_context(book))
-    out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"], spoilers=req.spoilers)
+    out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"], spoilers=req.spoilers,
+                                             reply_language=multilingual.foreign_language(req.query))
+    if search != req.query:
+        out["search_query"] = search  # what was searched, for debugging (the browser network panel)
     out["persona"] = speaker.persona if speaker else None
     return out
 
@@ -424,7 +446,8 @@ async def answer(req: RetrieveRequest, request: Request):
         raise HTTPException(429, "Too many questions; wait a moment.")
     book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
     t0 = time.monotonic()
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, spoilers=req.spoilers,
+    search = await multilingual.search_query(req.query)  # searched in English; answered in the reader's language
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), search, reader_para, req.k, spoilers=req.spoilers,
                                     **_series_context(book))
     t_retrieved = time.monotonic()
     retrieve_ms = int((t_retrieved - t0) * 1000)
@@ -786,7 +809,7 @@ async def _ingest_work(book_id: str, title: str, author: str, kind: str, data: b
     _set_status(book_id, "processing", "Reading the PDF" if ext == ".pdf" else "Reading the text")
     raw, detected = None, None
     if kind == "auto":  # decide novel or textbook from the extracted text
-        raw = await asyncio.to_thread(ingest_upload.extract_text, data, ext)
+        raw = await asyncio.to_thread(ingest_upload.extract_text, data, ext, ingest_upload.figures_dir(book_id))
         kind, confidence, method = await detect_kind(ingest_upload.plain_text(raw), book_id=book_id)
         detected = {"kind": kind, "confidence": confidence, "method": method}
     book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext,

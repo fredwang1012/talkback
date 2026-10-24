@@ -778,3 +778,81 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   `voice` + `linked: true` (no copy). Deleting the voice deletes only faces made with the clone (no `linked`) and
   unlinks borrowed ones (`faces.unlink_voice`). The old `face` file upload still works.
 - Realtime (Boson realtime) answers are audio only, as before; nothing to lip-sync there.
+## Display equations in uploaded textbooks (#41, 2026-10-23)
+- PDFs keep drawn glyphs, not LaTeX, so equations extracted as garbled text ("ˆβ1 = Pn i=1..."). Now, during PDF
+  extraction (ingest_upload._mark_math), a display equation becomes its own paragraph (`kind="math"`, `math: MathBlock`
+  with page, bbox, number): math-font lines (CMMI/CMSY/CMEX..., Symbol, *Math) clustered by row, excluded when they
+  share a row with prose (inline math stays in its sentence), and accepted only when set off (indented, taller than a
+  text line, or more than the page's normal leading above and below). Pseudocode is immune. Novels never keep them.
+- After publish, a background job crops each equation from the PDF (200 dpi greyscale PNG, data/books/<id>/equations/,
+  served at /api/books/<id>/equations/<eq>.png without the access code since an <img> cannot send it; guard_book only)
+  and, when Gemini on Vertex is configured (UPLOAD_ENRICH + GCP_PROJECT), sends the pictures 8 per call for LaTeX and a
+  plain-English reading, under the upload spend caps. Locally (no GCP_PROJECT) only the pictures are made.
+- Reader: KaTeX (trust off; refused \href etc. fall back) when LaTeX exists, else the crop (inverted on the dark
+  theme), else the text. Spoken: one chunk, the Gemini reading ("Equation three point four: ..."), else the text when
+  it extracted cleanly, else "Equation three point four." Digits after the point are read one by one (3.18 -> "three
+  point one eight").
+- ISLR (1st printing): 272 equations, 163 of 173 numbered ones found; misses are prose hypotheses (3.12/3.13) and
+  "maximize ... subject to" problems (9.9-9.15), plus (3.27) loses its number (it sits beside the prose condition
+  "if ith person is female"). The bogus "1 B" section (a fraction of (5.8) read as a heading) is gone. Crops of the
+  whole book: 0.8 s, ~1 MB. Inline math inside sentences is unchanged (still extracted text).
+- Books uploaded before this change have no math paragraphs; re-upload to get them.
+## Textbook figures in the reader (#40, 2026-10-23)
+- The IR textbook's figures (01bool, Figures 1.1-1.7) contain no vector drawings and no real pictures: they are text (matrix cells, posting lists, pseudocode) plus rules and boxes stored as thin embedded images. So `get_images` / `get_drawings` alone would find none of them. Figures are found from their caption instead (`_take_figures`): a "Figure N" line set small or bold, and everything between it and the nearest prose above it (else below it). The crop (page.get_pixmap(clip=...), 150 dpi, longest side <= 2000 px) is saved to `data/books/<id>/figures/fig-N.png`, and the figure becomes a paragraph of kind "figure" (text = caption, read aloud by default) placed between paragraphs. The text inside the figure no longer leaks into the body text.
+- Prose test: a body-size line of 5+ words that starts at the document's text column left edge (indent allowed) and reaches its right edge; a block with such a line is a paragraph, so its short last line is too. Below a caption any 5-word sentence stops the walk. The column is measured over the whole document: a page that is mostly figure measured 179-437 pt instead of 167-501 and made Figure 1.4's "Doc 2" lines look like prose.
+- Pages with prose in both halves (two columns) are skipped (captions dropped as before). Figures are taken before the contents-page test: a numeric table made its whole page look like a contents page, which drops the page's prose too.
+- A figure met mid-sentence (at the top of the page a sentence runs on to) goes after that paragraph, so the sentence stays whole.
+- Served by GET /api/books/<id>/figures/fig-N.png with the book's gate (access code + guard_book); the reader fetches it with the access header into an object URL. "Read captions" (player bar, textbooks with figures) skips caption chunks in continuous reading and prefetch without changing the chunk list, so saved positions stay valid.
+- Only new uploads get figures (a figure adds a paragraph); re-upload older textbooks. Tables ("Table N") are still dropped as before.
+
+## More expressive read-aloud tags, rule-based (#73, 2026-10-23, offline: no Boson calls)
+- `backend/app/delivery.py` (no LLM, strict; ambiguous -> no tag). Every sfx goes right before onomatopoeia already at the
+  start of a character's line (after the opening quote); narration never gets one. `speech_tag()` is the short adjacent
+  speech tag (same <=9-word clauses the style rule uses).
+  - sigh: Sigh / Ahh / Ahh-h / Haah, only if the tag says sighed/sighs/sighing.
+  - crying: Sob / Boo-hoo / Boo hoo, only if the tag says sobbed, wept, weeping, crying (not "crying out"), in tears,
+    or "cried bitterly/softly/quietly/piteously/harder/silently/herself...". Plain "cried Alice" means said -> no sfx.
+  - sniff, cough: Sniff / Cough when followed by punctuation or repeated ("Sniff this rose" is a verb); Ahem -> cough.
+  - screaming: Aah+! / Aaargh! with "!", and either uppercase (AAAARGH!) or a screamed/shrieked tag. Lowercase "Aaah!"
+    alone is not tagged (HP4: Mr. Weasley's "Aaah!" is delight).
+  - laughter unchanged.
+- Expressiveness: `<|prosody:expressive_high|>` for a character line that is mostly uppercase with "!", or ends with "!"
+  and its tag says shouted/screamed; `<|prosody:expressive_low|>` for a whispered line (alongside style:whispering).
+  Never added when the voice tags already carry an expressive_* tag.
+- Pauses (`ttschunks.lead_pause`, first chunk of a paragraph only, right before the text): `long_pause` for the first
+  paragraph of every section (after the heading, which is not spoken) and after a separator paragraph (`* * *`, `***`,
+  `#`, `~ ~ ~`; the separator's own chunk is unchanged); `pause` for a dialogue paragraph right after a paragraph of
+  pure narration that ended with . ! or ? (narration ending in ":" or "," introduces the quote, so no pause).
+- tts_text order: voice tags, style, emotion, expressive_*, pause/long_pause, text (sfx inside the text).
+- Chapter-end reset tag: not done. Neither the Boson vocabulary we recorded (above, and delivery.TAG_VALUES) nor the
+  tags page lists a reset tag, so nothing is inserted.
+- Timestamp residue: all new tags are already in TAG_VALUES, so `strip_tag_residue` removes 'prosodylongpause',
+  'prosodyexpressivelow', 'sfxcrying' etc. glued to words (tests in backend/tests/test_expressive.py).
+- Cost: existing book.json files are NOT rebuilt, so cached audio is untouched; the tags appear when a book's chunks are
+  rebuilt (preprocess/chunk_tts.py, re-enrich, new uploads). `scripts/estimate_expressive.py` (offline) compares
+  chunk_paragraph(expressive=False) with the new rules per book. Run on the main checkout's data/books:
+  9642 of ~104k chunks change, 806k chars, $12.09 if every changed chunk were re-voiced (HP1-7 $10.15, five classics
+  $1.09, IR textbook $0.85); only 16 changed chunks ($0.05) have audio in the local cache under the book's own voice.
+  `pause` makes up ~85% of the changes; real sfx hits are rare (HP1-7: 8 cough/screaming, classics: 0).
+
+## Upload parity (#115)
+- Audit of built-in vs uploaded books: uploads already match on cast, aliases, first_para, emotions/styles, stand-ins,
+  summaries and index. Gaps fixed: the #17 attribution pass now always runs after segmentation (it ran only inside the
+  MINOR_VOICES pass); the cast call also returns `series` / `series_index` (slugged, e.g. "harry-potter"; a series
+  already set is kept); `books.earlier_in_series` only joins books of the same library (built-in with built-in, an
+  upload with the same owner's uploads).
+- Left as proposals: textbook summaries (~$0.05 per 100K chars, IR book ~$1.60), personas from earliest spoken lines
+  (+~$0.004/novel, changes the spoiler window), resegment with a stronger tier, PDF cover image (free).
+
+## Questions in other languages (#12, 2026-10-23)
+- Answer language: the prompts already said "Always reply in the language the reader used", but deep in a long English prompt. When the question is clearly not English (`multilingual.foreign_language`: a non-Latin script, or 2+ common words of one language outnumbering English ones), `build_instructions(reply_language=...)` now opens the prompt with "The reader wrote in Spanish. Answer only in Spanish ..." (first, so the length cap never cuts it). Gemini (`build_answer_prompt`, also the public service) sets it from the question; Realtime gets it in the `/api/retrieve` instructions (typed and spoken questions). The model still sees the reader's own words.
+- Search: `multilingual.search_query` translates a non-English question to English with Gemini on Vertex (temperature 0, thinking off, 4 s timeout, 256-entry cache) before `/api/retrieve` and `/api/answer` search; `/api/retrieve` returns `search_query` when it differs. Without GCP_PROJECT, or on any failure, the original question is searched.
+- Why it matters: with BM25 alone (local, no e5 installed; also Vertex books while their index builds) a Spanish question finds nothing relevant. Alice: "¿Qué le pasa a Alicia cuando bebe de la botella?" returned ¶114-118 / 141-142 / 215-221 (unrelated); its English form returns ¶14-17 and ¶109-111 (the bottle scenes).
+- Not live-tested here (this machine has no GCP_PROJECT, and a Realtime check spends Boson credit). The badge (frontend/src/talk/language.ts) uses the same word lists; voice commands (#72 parseIntent) are still English only.
+## #78 Natural reading speed (prosody speed tags)
+- Opt-in "Natural speed" checkbox in the player bar (default off, localStorage `talkback.naturalSpeed`; hidden in demo, which only plays pre-rendered audio). Off = playbackRate exactly as before.
+- On: 0.75x -> `<|prosody:speed_slow|>` (~0.85x), 1.25x -> `speed_fast` (~1.2x), 1.5x -> `speed_very_fast` (~1.4x); 1x has no tag; tagged audio plays at 1.0. Boson docs (tags page): speed is a delivery token, put at the start; a new delivery group replaces the previous one.
+- Backend: `POST /api/tts` takes optional `speed`; `delivery.apply_speed` puts the tag first (replacing a voice-tag speed) so the tts_text, hence the cache key, differs: normal audio is never overwritten. Lip-sync clips are keyed by audio url, so they are rendered per tag (extra cost, hence the opt-in and the UI hint).
+- Engine: `setSpeed(speed, tag)`; on a tag change only entries outside the new tag are dropped and only the window [current, prefetchEnd] is fetched again. The chunk playing now finishes in its own audio (rate matches that audio); the change applies from the next chunk.
+- Live check: 1 Boson call (marcus, `speed_fast`, 1 sentence) returned audio; saved in the session scratchpad speed/fast.mp3 (3.04 s for 11 words).
+- Not covered: very_slow is unused (no reader speed maps to it); the speeds still 1.1/1.0 etc. use playbackRate.

@@ -24,6 +24,7 @@ import { lipSyncTargetFor, readClipsOn, readFaceFor, speechSeconds, type ReadFac
 import Stage from "../reader/Stage";
 import { toggleMode, validSpeaker } from "../reader/talkbackLogic";
 import TalkbackView, { ModeToggle } from "../reader/TalkbackView";
+import { loadNaturalSpeed, saveNaturalSpeed, speedTagFor } from "../reader/naturalSpeed";
 import { loadSpoilers, saveSpoilers } from "../reader/spoilers";
 import VoiceLab from "../reader/VoiceLab";
 import { spend, type SpendSnapshot } from "../spend";
@@ -34,7 +35,8 @@ import { useTalk } from "../talk/useTalk";
 import { DebugDrawer } from "../ui/DebugDrawer";
 import { debugEnabled } from "../ui/debugFlag";
 import {
-  clampIndex, flattenChunks, loadPosition, readerPara, savePosition, silentDurationMs,
+  clampIndex, flattenChunks, loadPosition, loadReadCaptions, nextChunk as nextToRead, readerPara, saveReadCaptions, savePosition,
+  silentDurationMs,
 } from "../reader/position";
 
 const SPEEDS = [0.75, 1, 1.25, 1.5];
@@ -46,7 +48,9 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const [naturalSpeed, setNaturalSpeed] = useState(loadNaturalSpeed); // #78: opt-in, remembered
   const [autoResume, setAutoResume] = useState(true);
+  const [readCaptions, setReadCaptions] = useState(loadReadCaptions); // figure captions read aloud (#40)
   const [speakerId, setSpeakerId] = useState("narrator");
   const [avatars, setAvatars] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<"read" | "talk">("read");
@@ -87,10 +91,13 @@ export default function Reader({ bookId }: { bookId: string }) {
   const getAudio = useCallback(() => (engineRef.current?.currentAudio() as unknown as FollowAudio | null) ?? null, []);
   const indexRef = useRef(0);
   const playingRef = useRef(false);
+  const readCaptionsRef = useRef(readCaptions);
   indexRef.current = index;
   playingRef.current = playing;
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  readCaptionsRef.current = readCaptions;
+  useEffect(() => { engineRef.current?.setSkipCaptions(!readCaptions); saveReadCaptions(readCaptions); }, [readCaptions]);
 
   useEffect(() => {
     fetchBook(bookId).then((b) => {
@@ -122,8 +129,8 @@ export default function Reader({ bookId }: { bookId: string }) {
   useEffect(() => {
     if (!book || !audioAvailable || chunks.length === 0) return;
     const engine = new ReaderEngine(chunks, {
-      fetchTts: async (chunk, voice) => {
-        const r = await fetchTts(book.id, chunk.id, voice, demo); // demo: pre-rendered only
+      fetchTts: async (chunk, voice, speedTag) => {
+        const r = await fetchTts(book.id, chunk.id, voice, demo, speedTag); // demo: pre-rendered only
         if (!r.cached) spend.addTts(chunk.tts_text.length); // only freshly synthesised speech costs money
         return r;
       },
@@ -131,6 +138,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       sync: readSync.current as FaceSync,
     }, indexRef.current);
     engineRef.current = engine;
+    engine.setSkipCaptions(!readCaptionsRef.current);
     const off = engine.on((s) => {
       setIndex(s.index);
       setPlaying(s.state === "playing" || s.state === "loading");
@@ -154,7 +162,7 @@ export default function Reader({ bookId }: { bookId: string }) {
         speech = { ...SPEECH_IDLE, speaking: sounding };
       } else {
         levelRef.current = lvl;
-        speech = sounding ? stepSpeech(speech, lvl, now - last) : SPEECH_IDLE;
+        speech = sounding ? stepSpeech(speech, lvl, now - last) : { ...SPEECH_IDLE, peak: speech.peak }; // keep the voice's peak across pauses
       }
       last = now;
       setReadSpeaking((cur) => (cur === speech.speaking ? cur : speech.speaking));
@@ -284,7 +292,10 @@ export default function Reader({ bookId }: { bookId: string }) {
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
   }, [audioAvailable, pttDown, pttUp]);
 
-  useEffect(() => { engineRef.current?.setSpeed(speed); }, [speed, audioAvailable, book]);
+  // natural speed (#78) needs new audio, which a demo (pre-rendered only) cannot have
+  const speedTag = speedTagFor(speed, naturalSpeed && !demo);
+  useEffect(() => { engineRef.current?.setSpeed(speed, speedTag); }, [speed, speedTag, audioAvailable, book]);
+  useEffect(() => { saveNaturalSpeed(naturalSpeed); }, [naturalSpeed]);
   // a changed cast applies at once, from the local copy (the save runs in the background)
   useEffect(() => {
     engineRef.current?.setVoiceResolver(book && castLoaded
@@ -326,10 +337,11 @@ export default function Reader({ bookId }: { bookId: string }) {
   // Silent preview: advance at an estimated reading pace until real audio exists.
   useEffect(() => {
     if (audioAvailable || !playing || chunks.length === 0) return;
-    if (index >= last) { setPlaying(false); return; }
-    const t = window.setTimeout(() => setIndex((i) => clampIndex(i + 1, chunks.length)), silentDurationMs(chunks[index], speed));
+    const next = nextToRead(chunks, index, !readCaptions);
+    if (next < 0) { setPlaying(false); return; }
+    const t = window.setTimeout(() => setIndex(next), silentDurationMs(chunks[index], speed));
     return () => window.clearTimeout(t);
-  }, [audioAvailable, playing, index, speed, chunks, last]);
+  }, [audioAvailable, playing, index, speed, chunks, readCaptions]);
 
   // Keep the active sentence in view, unless the reader scrolled by hand in the last 5 seconds.
   useEffect(() => {
@@ -458,8 +470,11 @@ export default function Reader({ bookId }: { bookId: string }) {
         playing={playing} loading={loading} onToggle={toggle} onRecap={recap} inSeries={!!book.series}
         onPrev={() => { lastManualScroll.current = 0; step(-1); }} onNext={() => { lastManualScroll.current = 0; step(1); }}
         speed={speed} speeds={SPEEDS} onSpeed={setSpeed}
+        naturalSpeed={naturalSpeed && !demo} onNaturalSpeed={demo ? undefined : setNaturalSpeed}
         onVoices={() => setLabOpen(true)}
         autoResume={autoResume} onAutoResume={setAutoResume}
+        hasFigures={book.kind === "textbook" && book.paragraphs.some((p) => p.kind === "figure")}
+        readCaptions={readCaptions} onReadCaptions={setReadCaptions}
         para={para} totalParas={book.paragraphs.length}
         atStart={index === 0} atEnd={index >= last}
         hasCast={book.characters.length > 0}
