@@ -1,4 +1,5 @@
 /** The Talkback conversation, kept per book for the session. Pure functions plus a small in-memory store. */
+import { cleanSources, cleanSuggestions, type Grounding, type Source } from "../api";
 
 export type ChatMessage = {
   id: number;
@@ -11,6 +12,8 @@ export type ChatMessage = {
   loading?: boolean; // role "narrator": the recap is still being fetched
   quiet?: boolean; // role "narrator": nothing to recap (a note, not read aloud)
   interrupted?: boolean; // role "character": the reader cut this answer off (barge-in, #10); the text is what was heard
+  sources?: Source[]; // role "character": web pages a grounded answer used (shown as links, never spoken or sent back)
+  searchSuggestions?: string; // role "character": Google's Search Suggestions markup of a grounded answer (sandboxed frame)
 };
 
 export const MAX_MESSAGES = 50;
@@ -73,6 +76,15 @@ export function appendSentence(m: ChatMessage[], sentence: string): ChatMessage[
   return m.map((x, j) => (j === i ? { ...x, text: t ? `${t} ${sentence.trim()}` : sentence.trim() } : x));
 }
 
+/** The web sources and Google's Search Suggestions of the pending answer (a grounded answer's last line); ignored when none is pending. */
+export function setSources(m: ChatMessage[], g: Grounding): ChatMessage[] {
+  const i = m.findLastIndex((x) => x.pending);
+  const clean = cleanSources(g.sources);
+  const html = cleanSuggestions(g.suggestions);
+  if (i < 0 || (!clean.length && !html)) return m;
+  return m.map((x, j) => (j === i ? { ...x, ...(clean.length ? { sources: clean } : {}), ...(html ? { searchSuggestions: html } : {}) } : x));
+}
+
 /** Replace the pending answer's text (the realtime path reports the whole caption so far). */
 export function setPendingText(m: ChatMessage[], text: string): ChatMessage[] {
   const i = m.findLastIndex((x) => x.pending);
@@ -119,7 +131,12 @@ export function loadChat(bookId: string): ChatMessage[] {
     const v = JSON.parse(sessionStorage.getItem(key(bookId)) ?? "null");
     if (Array.isArray(v)) {
       const m = cap(v.filter((x): x is ChatMessage => x && typeof x.text === "string" && (x.role === "user" || x.role === "character" || x.role === "narrator" || x.role === "tool"))
-        .filter((x) => !x.loading).map((x) => ({ ...x, pending: false })));
+        .filter((x) => !x.loading).map((x) => {
+          const { sources, searchSuggestions, ...rest } = x;
+          const clean = cleanSources(sources);
+          const html = cleanSuggestions(searchSuggestions);
+          return { ...rest, pending: false, ...(clean.length ? { sources: clean } : {}), ...(html ? { searchSuggestions: html } : {}) };
+        }));
       mem.set(bookId, m);
       return m;
     }

@@ -12,7 +12,7 @@ class FakeAnswerer:
     def __init__(self, sentences, fail_after=None):
         self.sentences, self.fail_after, self.prompts = sentences, fail_after, []
 
-    async def stream_sentences(self, system, user):
+    async def stream_sentences(self, system, user, on_usage=None, **kw):  # kw: web_search, on_sources
         self.prompts.append((system, user))
         for i, s in enumerate(self.sentences):
             if self.fail_after is not None and i == self.fail_after:

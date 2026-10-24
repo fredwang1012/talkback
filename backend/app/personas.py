@@ -132,6 +132,16 @@ ANSWER_SUFFIX = ("\n\nYour reply is spoken aloud word for word, so write only th
                  + ANSWER_EMOTION_RULE)
 
 
+WEB_SEARCH_RULE = ("\n\nWeb search is on for this answer. The notes and passages above stay your main source: answer from "
+                   "them first. You may also search the web for background the book does not give: definitions, "
+                   "real-world context, the author and the book's history, and for a textbook up-to-date facts and worked "
+                   "examples. For anything the notes and passages do not cover, search the web rather than rely on "
+                   "memory. This is the only exception to using just the notes and passages; never invent events of "
+                   "the story. When something comes from outside the book, say so briefly (for example \"outside the book, "
+                   "...\"). Keep your character or tutor voice and keep it short for speech: at most four short spoken "
+                   "sentences, even when the web has more. Never read out web addresses, links or citation numbers.")
+
+
 MAX_HISTORY_TURNS = 8
 
 
@@ -147,16 +157,21 @@ def format_history(history: list | None) -> str:
 
 
 def build_answer_prompt(book: Book, speaker_id: str, story_so_far: str, passages: list[dict], query: str,
-                        *, spoilers: bool = False, history: list | None = None) -> tuple[str, str]:
+                        *, spoilers: bool = False, history: list | None = None,
+                        web_search: bool = False) -> tuple[str, str]:
     """(system, user) for the answer model: the Talk prompt for `speaker_id` plus a spoken-output rule; user is the question.
 
     `history` is the earlier chat with this speaker. It only gives the conversation continuity: the system prompt (built from
-    the reader's place) is still the only source of story facts, so the spoiler rule is unchanged."""
-    system = build_instructions(book, speaker_id, story_so_far, passages, MAX_ANSWER_PROMPT_CHARS - len(ANSWER_SUFFIX),
+    the reader's place) is still the only source of story facts, so the spoiler rule is unchanged.
+
+    `web_search` adds WEB_SEARCH_RULE (the caller enforces when it may: websearch.allowed). It goes after the
+    length cap, before the spoken-output rule, so neither is cut off."""
+    suffix = (WEB_SEARCH_RULE if web_search else "") + ANSWER_SUFFIX
+    system = build_instructions(book, speaker_id, story_so_far, passages, MAX_ANSWER_PROMPT_CHARS - len(suffix),
                                 spoilers=spoilers, reply_language=multilingual.foreign_language(query))
     earlier = format_history(history)
     if earlier:
-        return system + ANSWER_SUFFIX, (
+        return system + suffix, (
             "The conversation so far (it may help you follow the question; it is not a source of story facts):\n"
             f"{earlier}\n\nThe reader now says: {query}")
-    return system + ANSWER_SUFFIX, query
+    return system + suffix, query

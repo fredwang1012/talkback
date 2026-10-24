@@ -354,6 +354,8 @@ async def summarize_textbook(book_id: str, report: Callable[..., None], *, clien
 def answer_payload(book: Book, speaker, speaker_id: str, out: dict, query: str, spoilers: bool, history=()) -> dict:
     """The request for /api/public/answer from locally retrieved (already spoiler-filtered) passages."""
     extra = {"history": [{"role": t.role, "text": t.text} for t in history]} if history else {}
+    if not settings.web_search:
+        extra["web_search"] = False   # this app turned web search off; the service decides the rest (textbook/spoilers)
     return {**extra, "title": book.title, "kind": book.kind, "speaker_id": speaker_id,
             "speaker_name": speaker.name if speaker else "", "persona": speaker.persona if speaker else "",
             "story_so_far": out["story_so_far"], "query": query, "spoilers": spoilers,
@@ -362,7 +364,7 @@ def answer_payload(book: Book, speaker, speaker_id: str, out: dict, query: str, 
 
 
 async def stream_answer(payload: dict, client: httpx.AsyncClient | None = None) -> AsyncIterator[dict]:
-    """Yield the service's `sentence` messages. Raises PublicFailure (before any sentence for a refused request)."""
+    """Yield the service's `sentence` messages (and a final `sources` one for a grounded answer). Raises PublicFailure (before any sentence for a refused request)."""
     own = client is None
     client = client or httpx.AsyncClient(base_url=_base(), timeout=httpx.Timeout(60.0, connect=10.0))
     try:
@@ -380,6 +382,8 @@ async def stream_answer(payload: dict, client: httpx.AsyncClient | None = None) 
                         continue
                     if msg.get("type") == "sentence" and isinstance(msg.get("text"), str):
                         yield msg
+                    elif msg.get("type") == "sources" and isinstance(msg.get("sources"), list):
+                        yield msg   # web links of a grounded answer (cleaned again by the caller)
                     elif msg.get("type") == "error":
                         raise PublicFailure("unavailable", "error line")
         except httpx.HTTPError as e:

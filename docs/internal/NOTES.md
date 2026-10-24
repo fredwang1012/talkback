@@ -1055,3 +1055,53 @@ the deployed talkback-public-00001 is the Oct 21 code):
 - Not verified live: the echo guard with real laptop speakers (needs a person), how fine `.length` fragments are for
   long answers, `semantic_vad` on real (not TTS) speech with pauses.
 
+## Web search on Talk answers (Grounding with Google Search), branch feat/web-search-answers
+- Rule (server-side, `app/websearch.allowed`): web search only when `book.kind == "textbook"` or `spoilers` is on, and
+  `WEB_SEARCH` is true (default). A novel read spoiler-safe never gets the tool (the web would leak later events):
+  enforced in `/api/answer` and in the public `/api/public/answer` (a client can only opt out, `web_search: false`).
+- API (google-genai 2.31, Vertex docs): `GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())])`.
+  gemini-2.5-flash is supported. Sources are `candidate.grounding_metadata.grounding_chunks[].web.{uri,title,domain}`;
+  on Vertex the uri is a `vertexaisearch.cloud.google.com/grounding-api-redirect/...` link and the title is the domain.
+  Limits: 1M grounded prompts/day; search tools cannot be combined with function calling in one request.
+- Pricing (cloud.google.com/vertex-ai/generative-ai/pricing, read 2026-10-23): Gemini 2.0 Flash, 2.5 Flash and 2.5
+  Flash-Lite share 1,500 free Grounding Prompts per day; past that $35 per 1,000 grounded prompts (one charge per prompt
+  however many queries), billed only when the prompt returns at least one web source. (Gemini 3: 5,000 free queries
+  per month, then $14 per 1,000 queries, per query.) Search-result input tokens are not charged. gemini-2.5-flash
+  tokens: $0.30 / 1M in, $2.50 / 1M out.
+- Display terms (Vertex "Grounding with Google Search" docs): show the Search Suggestions
+  (`search_entry_point.rendered_content`, Google's HTML/CSS) exactly as provided, visible whenever the grounded answer
+  is, the same width as the answer; tapping a chip goes straight to the Google results page (in-app or separate
+  browser), nothing between; no other search results next to it. Its CSS handles light/dark itself
+  (`prefers-color-scheme`); the docs say nothing about scripts, iframes or new tabs. Done: the backend passes the markup
+  unmodified (string <= 32 KB, `websearch.clean_suggestions`) as `search_suggestions` on the `sources` line (local
+  route, public route, and the clone re-checks what the service sends); the reply shows it in
+  `<iframe class="search-suggestions" srcdoc sandbox="allow-popups allow-popups-to-escape-sandbox"
+  referrerpolicy="no-referrer">` (no scripts, opaque origin), full bubble width, fixed 64 px height (a sandbox without
+  scripts cannot measure itself; Google's chips are one scrollable row). The srcdoc wraps the markup in a document with
+  `<base target="_blank">` (chips open google.com in a new tab: a framed google.com page refuses to load) and
+  `color-scheme: light dark`; the markup itself is not changed. Plain source links stay above it. Not checked against a
+  live rendered_content in the browser (no paid call): if Google's markup is taller than one row it is clipped/scrolls
+  inside the frame; adjust `SUGGESTIONS_HEIGHT` after a manual look.
+- Prompt: `personas.WEB_SEARCH_RULE`, appended after the length cap and before the spoken-output + emotion rules (the
+  emotion rule stays last, the language rule stays first). Book passages stay the main source; web for background,
+  definitions, author/history, (textbooks) current facts and worked examples; say "outside the book" briefly; keep the
+  voice; at most four short sentences; no URLs spoken.
+- Stream: `GeminiAnswerer.stream_sentences(..., web_search=True, on_sources=cb)` collects grounding chunks, cleans them
+  (`websearch.clean_sources`: http(s) only, dedup, <= 5) and reports them after the last sentence; the route sends one
+  NDJSON `{"type":"sources","sources":[{uri,title}]}` line before `done`. If the grounded request is refused at start
+  it retries once without the tool. Usage log: `usage.record("llm", ..., grounded=True, sources=n)`.
+- Caps: local `GROUNDED_DAILY_CAP` (default 100/UTC day, `data/usage/grounded_answers.json`), past it the plain answer.
+  Public service: `PUBLIC_GROUNDED_DAILY_CAP` (default 50, `public_grounded_answers.json`) and each grounded answer
+  reserves an extra $0.035 (`GROUNDED_USD`, worst case past the free tier) on the existing daily answer budget, settled
+  to that fee only when sources came back; no room -> plain answer. Generic `DailyCount` moved to `app/daily_count.py`.
+- Frontend: `api.streamAnswer(..., onSources)`, `chatLog.setSources` + `ChatMessage.sources` (re-cleaned on load from
+  sessionStorage, never in the history sent back), `reader/SourceLinks.tsx` under character bubbles. useTalk.ts change
+  is one line (the extra callback) to keep merges with the TalkClient/handsFree work easy.
+- Realtime path (ANSWER_BACKEND=realtime / Boson): unchanged. Boson's own web_search tool was not added; voice answers
+  through Realtime never search the web.
+- Live check (3 real calls, ~$0.0025 of model tokens, grounding inside the free daily tier): a textbook question
+  (tf-idf vs BM25) came back grounded with 5 sources (sigmacomputing, wikipedia, ibm, myscale, medium) but ran to 12
+  sentences, so the rule now caps answers at four sentences. A spoilers-on Alice question ("who inspired you, when was
+  it published") had the tool but the model answered from memory both times (0 sources, no "outside the book" phrase):
+  Gemini decides when to search; well-known facts often skip it. Not re-checked after the four-sentence rule (call
+  budget). Also seen: the sentence splitter breaks after "Mr." (pre-existing, `_split`).

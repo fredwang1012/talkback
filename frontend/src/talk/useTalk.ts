@@ -4,7 +4,7 @@ import { MicCapture } from "../audio/capture";
 import { RingPlayer } from "../audio/playback";
 import { spend } from "../spend";
 import type { LogEntry } from "../ui/DebugDrawer";
-import { addNarration, addQuestion, addToolChip, appendSentence, cutHeard, fillNarration, finishAnswer, loadChat, markInterrupted, priorTurns, saveChat, setPendingText, type ChatMessage } from "./chatLog";
+import { addNarration, addQuestion, addToolChip, appendSentence, cutHeard, fillNarration, finishAnswer, loadChat, markInterrupted, priorTurns, saveChat, setPendingText, setSources, type ChatMessage } from "./chatLog";
 import { createReadAloud, speechParts } from "../reader/readAloud";
 import { answerLanguage, detectLanguage, type Detected } from "./language";
 import { localGateForcedHere } from "./handsFree";
@@ -202,7 +202,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
           answerMsgId = pendingId();
           answerEmotion.clear();
           answerLang = answerLanguage([...priorTurns(msgs.current, speaker).filter((t) => t.role === "user").map((t) => t.text), query]);
-          return streamAnswer(bookId, query, para, speaker, (t, emotion) => { answerEmotion.note(t, emotion); setMessages((m) => appendSentence(m, t)); onSentence(t); }, signal, latest.current.spoilers, priorTurns(msgs.current, speaker));
+          return streamAnswer(bookId, query, para, speaker, (t, emotion) => { answerEmotion.note(t, emotion); setMessages((m) => appendSentence(m, t)); onSentence(t); }, signal, latest.current.spoilers, priorTurns(msgs.current, speaker), (s) => setMessages((m) => setSources(m, s)));
         },
         speaker: createSentenceSpeaker(async (text) => {
           const voice = answerVoice;

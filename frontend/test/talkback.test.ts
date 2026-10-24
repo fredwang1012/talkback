@@ -45,6 +45,7 @@ const novel = {
   narrator: null,
 } as unknown as Book;
 const textbook = { ...novel, kind: "textbook", characters: [] } as Book;
+const SUGGESTIONS = '<style>.chip { color: #333; }</style><div class="carousel"><a class="chip" href="https://www.google.com/search?q=n">n</a></div>';
 
 let root: Root;
 let host: HTMLElement;
@@ -196,6 +197,34 @@ describe("TalkbackView", () => {
     expect(host.querySelector(".replay-btn")).toBeNull(); // nothing to pause before the first sentence
   });
 
+  it("shows web sources under an answer as plain links that open in a new tab", () => {
+    const messages = [
+      { id: 1, role: "user", speakerId: "narrator", text: "What is it?" },
+      { id: 2, role: "character", speakerId: "narrator", text: "A gas.",
+        sources: [{ uri: "https://e.org/a", title: "<b>e.org</b>" }, { uri: "javascript:alert(1)", title: "bad" }],
+        searchSuggestions: SUGGESTIONS },
+    ] as TalkUi["messages"];
+    view(textbook, fakeTalk({ messages }));
+    const links = [...host.querySelectorAll<HTMLAnchorElement>(".bubble .sources a")];
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["https://e.org/a"]);
+    expect(links[0].textContent).toBe("<b>e.org</b>");    // text, never HTML
+    expect(links[0].target).toBe("_blank");
+    expect(links[0].rel).toBe("noopener noreferrer");
+    expect(host.querySelector(".bubble .sources b")).toBeNull();
+    expect(host.querySelector(".bubble.user .sources")).toBeNull();
+    // Google's Search Suggestions: shown unmodified, isolated in a sandboxed frame (no scripts, no same origin);
+    // its chips open the Google results in a new tab
+    const frame = host.querySelector<HTMLIFrameElement>(".bubble iframe.search-suggestions")!;
+    expect(frame).not.toBeNull();
+    expect(frame.getAttribute("sandbox")).toBe("allow-popups allow-popups-to-escape-sandbox");
+    const doc = frame.getAttribute("srcdoc")!;
+    expect(doc).toContain(SUGGESTIONS);
+    expect(doc).toContain('<base target="_blank">');
+    expect(doc).not.toMatch(/<script/i);
+    expect(frame.getAttribute("referrerpolicy")).toBe("no-referrer");
+    expect(frame.title).toMatch(/google search suggestions/i);
+  });
+
   it("hold-to-talk with the keyboard presses and releases", () => {
     const talk = fakeTalk();
     view(novel, talk);
@@ -329,5 +358,22 @@ describe("useTalk transcript", () => {
 
     await act(async () => { latest.clearMessages(); });
     expect(latest.messages).toHaveLength(0);
+  });
+
+  it("web sources of an answer land on that reply and are never spoken", async () => {
+    const { streamAnswer } = await import("../src/api");
+    (streamAnswer as ReturnType<typeof vi.fn>).mockImplementationOnce(async (...a: unknown[]) => {
+      (a[4] as (t: string) => void)("It is a gas.");
+      (a[8] as (g: { sources: { uri: string; title: string }[]; suggestions?: string }) => void)?.(
+        { sources: [{ uri: "https://e.org/a", title: "e.org" }], suggestions: SUGGESTIONS });
+    });
+    spoken.length = 0;
+    await act(async () => { root.render(createElement(Harness, { bookId: "hp-src" })); });
+    await act(async () => { latest.ask("What is it?"); });
+    const reply = latest.messages.find((m) => m.role === "character")!;
+    expect(reply.text).toBe("It is a gas.");
+    expect(reply.sources).toEqual([{ uri: "https://e.org/a", title: "e.org" }]);
+    expect(reply.searchSuggestions).toBe(SUGGESTIONS);
+    expect(spoken.join(" ")).not.toContain("e.org");
   });
 });

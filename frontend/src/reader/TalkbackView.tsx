@@ -3,6 +3,7 @@ import type { Book, Face as FaceT } from "../api";
 import type { TalkUi } from "../talk/useTalk";
 import { PRESETS, type TalkChoice } from "./castLogic";
 import { FaceView } from "./FaceView";
+import { SourceLinks } from "./SourceLinks";
 import RecapMenu, { type RecapChoice } from "./RecapMenu";
 import { priorTurns } from "../talk/chatLog";
 import { chapterAt, createStatusGate, showSpoilerToggle, speakerChoices, speakerName, talkbackStatus, type TalkbackStatus } from "./talkbackLogic";
@@ -169,6 +170,7 @@ export default function TalkbackView({
                   {m.interrupted && <small> · interrupted</small>}
                 </span>
                 <p>{m.text || (m.pending || m.loading ? "…" : "")}</p>
+                {m.role === "character" && <SourceLinks sources={m.sources} suggestions={m.searchSuggestions} />}
                 {m.role !== "user" && (m.id === talk.liveId ? !!m.text : !m.pending && talk.replayable?.has(m.id)) && (() => {
                   const on = talk.replayingId === m.id;
                   const verb = on ? "Pause" : talk.isPaused?.(m.id) ? "Resume" : "Play";

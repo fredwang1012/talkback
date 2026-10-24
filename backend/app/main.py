@@ -30,6 +30,7 @@ from .enrich import pipeline as enrich_pipeline
 from .enrich.detect import detect_kind
 from .gcp import usage
 from .personas import build_answer_prompt, build_instructions
+from . import websearch
 from .mp3dur import mp3_seconds
 from .ratelimit import TokenBucket, client_ip
 from .schema import Book, ChatTurn
@@ -451,13 +452,18 @@ async def answer(req: RetrieveRequest, request: Request):
     if _public_answers():  # passages above are already spoiler-filtered here; the service only writes the answer
         return StreamingResponse(_public_answer_stream(book, speaker, req, out, retrieve_ms, t_retrieved),
                                  media_type="application/x-ndjson")
+    # web search only for textbooks and spoilers-on novels (never a spoiler-safe novel), within today's grounded cap
+    grounded = websearch.allowed(book.kind, req.spoilers) and websearch.take_local()
     system, user = build_answer_prompt(book, req.speaker_id, out["story_so_far"], out["passages"], req.query,
-                                        spoilers=req.spoilers, history=req.history)
+                                        spoilers=req.spoilers, history=req.history, web_search=grounded)
+    sources: list[dict] = []
+    suggestions: list[str] = []   # Google's Search Suggestions markup (shown with the answer, as Google requires)
+    search_kw = {"web_search": True, "on_sources": sources.extend, "on_suggestions": suggestions.append} if grounded else {}
 
     async def stream():
         first_ms = None
         try:
-            async for sentence, feeling in emotion.tag_sentences(get_answerer().stream_sentences(system, user)):
+            async for sentence, feeling in emotion.tag_sentences(get_answerer().stream_sentences(system, user, **search_kw)):
                 if first_ms is None:
                     first_ms = int((time.monotonic() - t_retrieved) * 1000)
                 yield _line(emotion.sentence_line(sentence, feeling))
@@ -465,6 +471,9 @@ async def answer(req: RetrieveRequest, request: Request):
             logging.getLogger(__name__).warning("answer stream failed: %s", type(e).__name__)
             yield _line({"type": "error", "message": "The answer could not be generated; please try again."})
             return
+        event = websearch.sources_event(sources, suggestions[-1] if suggestions else None)
+        if event:  # shown under the answer (links + Google's suggestions), never spoken
+            yield _line(event)
         yield _line({"type": "done", "passages": len(out["passages"]), "retrieve_ms": retrieve_ms,
                      "first_sentence_ms": first_ms if first_ms is not None else 0})
 
@@ -473,9 +482,13 @@ async def answer(req: RetrieveRequest, request: Request):
 
 async def _public_answer_stream(book: Book, speaker, req: RetrieveRequest, out: dict, retrieve_ms: int, t_retrieved: float):
     first_ms = None
+    event = None
     payload = public_client.answer_payload(book, speaker, req.speaker_id, out, req.query, req.spoilers, req.history)
     try:
         async for msg in public_client.stream_answer(payload):
+            if msg.get("type") == "sources":
+                event = websearch.sources_event(msg.get("sources"), msg.get("search_suggestions"))  # re-checked here
+                continue
             text, marked = emotion.split_marker(msg["text"])  # the service is not trusted to have stripped markers
             if not text:
                 continue
@@ -489,6 +502,8 @@ async def _public_answer_stream(book: Book, speaker, req: RetrieveRequest, out: 
         yield _line({"type": "error", "message": public_client.ANSWER_LIMIT if e.kind == "limit"
                      else public_client.ANSWER_UNAVAILABLE})
         return
+    if event:
+        yield _line(event)
     yield _line({"type": "done", "passages": len(out["passages"]), "retrieve_ms": retrieve_ms,
                  "first_sentence_ms": first_ms if first_ms is not None else 0})
 

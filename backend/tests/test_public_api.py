@@ -36,7 +36,7 @@ class FakeAnswerer:
     def __init__(self, sentences=("He smiled.", "Then he left."), fail=False):
         self.sentences, self.fail, self.prompts = sentences, fail, []
 
-    async def stream_sentences(self, system, user, on_usage=None):
+    async def stream_sentences(self, system, user, on_usage=None, **kw):  # kw: web_search, on_sources
         self.prompts.append((system, user))
         if self.fail:
             raise RuntimeError(f"boom {MARKER}")
@@ -246,7 +246,8 @@ def test_answer_prompt_matches_the_local_prompt(pub, monkeypatch):
     assert fake.prompts[0] == build_answer_prompt(book, "harry", "Things happened.", passages, "What now?")
     body["spoilers"], body["speaker_id"] = True, "narrator"
     pub.post("/api/public/answer", json=body)
-    assert fake.prompts[1] == build_answer_prompt(book, "narrator", "Things happened.", passages, "What now?", spoilers=True)
+    assert fake.prompts[1] == build_answer_prompt(book, "narrator", "Things happened.", passages, "What now?", spoilers=True,
+                                                  web_search=True)   # spoilers on: web search (websearch.allowed)
 
 
 # ---------- never log request bodies ----------
