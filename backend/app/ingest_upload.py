@@ -11,6 +11,7 @@ PDF extraction heuristics (deliberately simple), working on text lines with thei
 Limits: pages, extracted characters and paragraph length are capped (see constants).
 """
 import hashlib
+import bisect
 import json
 import re
 import secrets
@@ -90,6 +91,14 @@ class Line(NamedTuple):
 
 
 _LIGATURES = str.maketrans({"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl"})
+
+
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]+")  # math fonts (CMEX10 brackets) extract as control codes such as \x01
+
+
+def _clean_line_text(text: str) -> str:
+    """A line's text without ligatures or control codes; "\x01" is the parser's heading mark and must never leak in."""
+    return re.sub(r"\s{2,}", " ", _CONTROL.sub(" ", text.translate(_LIGATURES))).strip()
 
 
 def _norm_key(text: str) -> str:
@@ -371,6 +380,69 @@ def _is_formula(text: str) -> bool:
     return "=" in text or bool(re.search(r"\(\d+\.\d+\)$", text)) or any(unicodedata.category(c) in ("Sm", "So", "Co") and c not in "+-" for c in text)
 
 
+_LEADING_DIGIT = re.compile(r"^\d")
+FIGURE_MARGIN = 3.0     # points: a heading candidate this close to a labelled figure is part of the figure
+FIGURE_LABELS = 3       # a drawing / image region with this many text lines on it is a figure with labels
+FIGURE_MAX_AREA = 0.6   # a region covering more of the page than this is a page background, not a figure
+THIN = 4.0              # points: an image or drawing thinner than this is a rule, not a figure
+# Bounds on figure detection so a crafted PDF cannot spend unbounded CPU / memory on it (a page past any bound is
+# simply treated as having no figures). The IR textbook's largest page content stream is ~250 KB.
+MAX_CONTENT_BYTES = 1_000_000  # raw page content stream: above this, drawings are not even listed
+MAX_DRAWINGS = 2000            # vector paths per page
+MAX_FIGURE_RECTS = 200         # images + drawing clusters per page
+
+
+def _overlaps(a: tuple, b: tuple) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def _figure_regions(rects: list[tuple], lines: list[tuple], page_area: float) -> list[tuple]:
+    """The labelled figures of a page: drawing clusters / images with at least FIGURE_LABELS text lines on them.
+
+    A banner image behind a lone chapter title has one line on it, so the title stays a heading.
+    """
+    if len(rects) > MAX_FIGURE_RECTS or not lines:
+        return []
+    by_top = sorted(lines, key=lambda ln: ln[2])
+    tops = [ln[2] for ln in by_top]
+    tallest = max(ln[4] - ln[2] for ln in by_top)
+    out = []
+    for x0, y0, x1, y1 in rects:
+        if x1 - x0 < THIN or y1 - y0 < THIN or (x1 - x0) * (y1 - y0) > FIGURE_MAX_AREA * page_area:
+            continue
+        r = (x0 - FIGURE_MARGIN, y0 - FIGURE_MARGIN, x1 + FIGURE_MARGIN, y1 + FIGURE_MARGIN)
+        n = 0  # only lines whose top lies within reach of the region are looked at
+        for ln in by_top[bisect.bisect_left(tops, r[1] - tallest):bisect.bisect_right(tops, r[3])]:
+            if _overlaps(r, ln[1:5]):
+                n += 1
+                if n >= FIGURE_LABELS:
+                    out.append(r)
+                    break
+    return out
+
+
+def _page_figures(doc, page, blocks: list[list[tuple]], rects: list[tuple]) -> list[tuple]:
+    """Labelled figure regions of a page: its images (`rects`) plus its clustered vector drawings, within bounds."""
+    if not blocks or len(rects) > MAX_FIGURE_RECTS:
+        return []
+    try:
+        size = sum(len(doc.xref_stream_raw(x) or b"") for x in page.get_contents())
+    except Exception:  # a broken content stream: no figure detection, the text is still read
+        return []
+    if size > MAX_CONTENT_BYTES:
+        return []
+    drawings = page.get_drawings() if size else []
+    if len(drawings) > MAX_DRAWINGS:
+        return []
+    if drawings:
+        rects = rects + [tuple(r) for r in page.cluster_drawings(drawings=drawings)]
+    return _figure_regions(rects, [ln for blk in blocks for ln in blk], abs(page.rect))
+
+
+def _in_figure(blk: list[tuple], figures: list[tuple]) -> bool:
+    return any(_overlaps(f, ln[1:5]) for f in figures for ln in blk)
+
+
 def _heading_candidate(blk: list[tuple], body: float) -> tuple[str, bool] | None:
     """(text, found by font alone) when the block looks like a heading: the regex, or large / bold short text.
 
@@ -381,9 +453,11 @@ def _heading_candidate(blk: list[tuple], body: float) -> tuple[str, bool] | None
     text = " ".join(ln[0] for ln in blk)
     if _FRONT_MATTER.search(text) or text.startswith(CODE_MARK):
         return None
-    if _is_heading(text):
-        return text, False
     size = max(ln[5] for ln in blk)
+    if _is_heading(text):
+        if body and size < body * 0.95 and _LEADING_DIGIT.match(text):
+            return None  # "20 NEWSGROUPS" in a figure or sidebar: a numbered heading is never set below body size
+        return text, False
     if _BARE_NUMBER.match(text):
         return (text, True) if body and size >= body * HEADING_BIG else None
     if _is_formula(text):
@@ -395,14 +469,15 @@ def _heading_candidate(blk: list[tuple], body: float) -> tuple[str, bool] | None
     return None
 
 
-def _mark_headings(blocks: list[list[tuple]], body: float) -> list[list[tuple]]:
+def _mark_headings(blocks: list[list[tuple]], body: float, figures: list[tuple] = ()) -> list[list[tuple]]:
     """Return the page's blocks with each heading turned into one standalone line (flag at index 7).
 
     A run of TOC_RUN or more heading blocks in a row (or a block of that many heading lines) is a table of
     contents and is dropped. A bare "CHAPTER 8" / "Unit 2" is joined with the heading block right after it.
+    Text on a labelled figure (`figures`, see _figure_regions) is never a heading.
     """
     blocks = _split_by_size(blocks)
-    cands = [_heading_candidate(b, body) for b in blocks]
+    cands = [None if figures and _in_figure(b, figures) else _heading_candidate(b, body) for b in blocks]
     for i, b in enumerate(blocks):  # one block of many heading-like lines
         if len(b) >= TOC_RUN and all(_is_heading(ln[0]) for ln in b):
             cands[i] = ("", False)
@@ -472,24 +547,28 @@ _LEAD_NUM = re.compile(r"^(?:\d+(?:\.\d+)*\s+)+")
 _TRAIL_NUM = re.compile(r"(?:\s+\d+(?:\.\d+)*)+$")
 
 
-def _header_core(blk: list[tuple], body: float) -> str | None:
-    """The title text of a block shaped like a running header ('2.4 Title 39', '36 2 Title'), else None.
+def _header_core(blk: list[tuple], body: float) -> tuple[str, bool] | None:
+    """(title text, strong) of a block shaped like a running header ('2.4 Title 39', '36 2 Title'), else None.
 
-    Page-number-first headers ('39 Title') count only when set smaller than the body text, so that a real
-    chapter heading such as '12 The Wedding' is not mistaken for one.
+    Page-number-first headers ('39 Title') are strong only when set smaller than the body text, so that a real
+    chapter heading such as '12 The Wedding' is not mistaken for one. At body size and not bold they are weak:
+    '484 Bibliography' counts only beside strong 'Bibliography 485' headers on facing pages.
     """
     text = " ".join(ln[0] for ln in blk)
     if len(blk) > 3 or len(text) > 100 or _BARE_LABEL.match(text):
         return None
+    size = max(ln[5] for ln in blk)
     trailing = bool(_TRAIL_NUM.search(text)) and bool(re.search(r"[A-Za-z]\s+\d{1,4}$", text))
     leading2 = bool(re.match(r"^\d{1,4}\s+\d{1,2}\s+\S", text))
-    leading = bool(_LEAD_NUM.match(text)) and body and max(ln[5] for ln in blk) < body * 0.95
-    if not (trailing or leading2 or leading):
+    lead = bool(_LEAD_NUM.match(text)) and bool(body)
+    leading = lead and size < body * 0.95
+    weak = lead and size <= body * HEADING_BOLD and not all(ln[6] for ln in blk)
+    if not (trailing or leading2 or leading or weak):
         return None
     core = _TRAIL_NUM.sub("", _LEAD_NUM.sub("", text)).strip()
     if core.lower() in ("chapter", "part", "book", "section", "unit", "page"):
         return None
-    return core.lower() if sum(c.isalpha() for c in core) >= 3 else None
+    return (core.lower(), trailing or leading2 or leading) if sum(c.isalpha() for c in core) >= 3 else None
 
 
 def _drop_running_headers(pages: list[list[list[tuple]]], body: float) -> list[list[list[tuple]]]:
@@ -502,9 +581,9 @@ def _drop_running_headers(pages: list[list[list[tuple]]], body: float) -> list[l
     for blocks in pages:
         seen = set()
         for blk in ((blocks[0], blocks[-1]) if blocks else ()):
-            core = _header_core(blk, body)
-            if core:
-                seen.add(core)
+            hdr = _header_core(blk, body)
+            if hdr and hdr[1]:
+                seen.add(hdr[0])
         edge_cores.update(seen)
     body_cores = set()
     for blocks in pages:
@@ -515,8 +594,11 @@ def _drop_running_headers(pages: list[list[list[tuple]]], body: float) -> list[l
                     body_cores.add(_TRAIL_NUM.sub("", _LEAD_NUM.sub("", text)).strip().lower())
 
     def is_header(blk) -> bool:
-        core = _header_core(blk, body)
-        return bool(core) and (edge_cores[core] >= 2 or core in body_cores)
+        hdr = _header_core(blk, body)
+        if not hdr:
+            return False
+        core, strong = hdr
+        return edge_cores[core] >= 2 or (strong and core in body_cores)
 
     out = []
     for blocks in pages:
@@ -542,14 +624,21 @@ def pdf_to_text(data: bytes) -> str:
         widths: list[float] = []
         total = 0
         sizes: Counter = Counter()  # font size -> characters, to find the body size
+        figures: list[list[tuple]] = []  # page -> labelled figure regions (see _figure_regions)
         for page in doc:
             blocks = []
-            for b in page.get_text("dict")["blocks"]:
+            rects = []  # images and drawing clusters: figure candidates
+            raw_blocks = page.get_text("dict")["blocks"]
+            for b in raw_blocks:
+                if b.get("type") == 1:
+                    rects.append(tuple(b["bbox"]))
                 if b.get("type") != 0:
                     continue
                 lines = []
                 for ln in b["lines"]:
-                    t = "".join(s["text"] for s in ln["spans"]).translate(_LIGATURES).strip()
+                    t = _clean_line_text("".join(s["text"] for s in ln["spans"]))
+                    if t and abs(ln["dir"][1]) > 0.2:
+                        continue  # rotated text: an axis label or a margin stamp, never body text or a heading
                     if t:
                         x0, y0, x1, y1 = ln["bbox"]
                         size, bold = _font_info(ln["spans"])
@@ -562,6 +651,7 @@ def pdf_to_text(data: bytes) -> str:
                     blocks.append(lines)
             pages.append(blocks)
             widths.append(page.rect.width)
+            figures.append(_page_figures(doc, page, blocks, rects))
 
     def key(block):
         return _norm_key(" ".join(ln[0] for ln in block))
@@ -600,7 +690,7 @@ def pdf_to_text(data: bytes) -> str:
         x0s = sorted(ln[1] for ln in flat)
         x1s = sorted(ln[3] for ln in flat)
         left, right = x0s[len(x0s) // 5], x1s[len(x1s) * 9 // 10]
-        for blk in _mark_headings(blocks, body):
+        for blk in _mark_headings(blocks, body, figures[pno]):
             alone = len(blk) == 1 and blk[0][7]
             for t, x0, y0, x1, y1, _size, _bold, _h in blk:
                 all_lines.append(Line(t, x0, x1, y0, y1, left, right, pno, alone))
