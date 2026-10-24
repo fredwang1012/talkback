@@ -71,7 +71,7 @@ export function AddFaceForm({ onDone, onCancel }: { onDone: (face: Face, animate
       )}
       <label className="consent">
         <input type="checkbox" checked={animate} onChange={(e) => setAnimate(e.target.checked)} />
-        Animate after upload (about $0.05, 1 to 2 min)
+        Animate after upload (1 to 2 min)
       </label>
       <div className="lab-row">
         <button type="button" className="primary" disabled={!!missing || busy} onClick={() => void submit()}>{busy ? "Uploading…" : "Upload"}</button>
@@ -86,13 +86,12 @@ export function AddFaceForm({ onDone, onCancel }: { onDone: (face: Face, animate
 export type ClonedVoice = { name: string; voice: string; face: string | null };
 
 /** Add voice dialog body (#111): the line to read, Record or upload, transcript, name, an existing face or none,
- * consent, Create voice. The chosen face is linked by id (#113): no copy, so the face list shows it once. */
+ * Create voice (a one-line permission reminder, no checkbox). The chosen face is linked by id (#113): no copy, so the face list shows it once. */
 export function AddVoiceForm({ faces, audioAvailable, onDone, onCancel }: {
   faces: Face[]; audioAvailable: boolean; onDone: (out: ClonedVoice) => void; onCancel: () => void;
 }) {
   const [transcript, setTranscript] = useState(SCRIPT);
   const [name, setName] = useState("");
-  const [consent, setConsent] = useState(false);
   const [clip, setClip] = useState<{ blob: Blob; filename: string } | null>(null);
   const [faceId, setFaceId] = useState("");
   const [recording, setRecording] = useState(false);
@@ -122,7 +121,7 @@ export function AddVoiceForm({ faces, audioAvailable, onDone, onCancel }: {
     }
   }
 
-  const items = voiceMissing({ clip: !!clip, transcript, name, consent, audioAvailable, busy });
+  const items = voiceMissing({ clip: !!clip, transcript, name, audioAvailable, busy });
   if (recording) items.unshift("the recording stopped");
   const missing = missingLine(items);
   async function submit() {
@@ -132,7 +131,7 @@ export function AddVoiceForm({ faces, audioAvailable, onDone, onCancel }: {
     try {
       const chosen = faces.find((f) => f.id === faceId);
       const audio = await toCloneAudio(clip.blob, clip.filename);
-      onDone(await cloneVoice(audio.blob, audio.filename, transcript, name.trim(), consent, null, chosen?.id ?? null));
+      onDone(await cloneVoice(audio.blob, audio.filename, transcript, name.trim(), true, null, chosen?.id ?? null));
     } catch (e) {
       setMsg({ kind: "error", text: errText(e) });
       setBusy(false);
@@ -167,10 +166,7 @@ export function AddVoiceForm({ faces, audioAvailable, onDone, onCancel }: {
         {faces.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
       </select>
       {faces.length === 0 && <p className="empty-note">No faces yet: add one with Add face, then pick it here.</p>}
-      <label className="consent">
-        <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
-        This is my voice (and face), or I have permission to clone them.
-      </label>
+      <p className="empty-note">Only add a voice you have permission to use.</p>
       <div className="lab-row">
         <button type="button" className="primary" disabled={!!missing || busy} onClick={() => void submit()}>{busy ? "Creating…" : "Create voice"}</button>
         <button type="button" onClick={onCancel}>Cancel</button>

@@ -11,7 +11,7 @@ export interface LogEntry {
 }
 
 /**
- * Every Realtime event, in order, verbatim, plus the running Boson spend estimate.
+ * Every Realtime event, in order, verbatim, plus how much speech, voice and video this session used.
  * The Realtime API is a stream of events you did not write and cannot step through in a debugger; this is how you
  * find out what the server actually said. Toggle with the backtick key.
  */
@@ -30,7 +30,7 @@ export function DebugDrawer({ entries, spend }: { entries: LogEntry[]; spend: Sp
   return (
     <section className={`drawer${open ? " open" : ""}`} aria-label="Debug">
       <button className="drawer-toggle" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        Debug · about ${spend.usd.toFixed(3)} spent this session
+        Debug
       </button>
       {open && (
         <>

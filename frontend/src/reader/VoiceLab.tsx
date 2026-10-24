@@ -124,7 +124,7 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
                   <span className="face-name">{f.name}</span>
                   <button disabled={busy || done} aria-busy={busy} onClick={() => void animate(f.id)}
                           title={done ? "Already animated" : "Renders a talking and an idle loop"}>
-                    {busy ? "Animating… (1 to 2 min)" : done ? "Animated" : "Animate (about $0.05)"}
+                    {busy ? "Animating… (1 to 2 min)" : done ? "Animated" : "Animate"}
                   </button>
                   {confirming === `face:${f.id}` ? (
                     <span role="alertdialog" aria-label={`Delete ${f.name}?`}>

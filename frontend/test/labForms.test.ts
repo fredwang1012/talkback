@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { faceMissing, loadedSize, missingLine, objectUrlEffect, voiceMissing } from "../src/reader/labForms";
 
-const ready = { clip: true, transcript: "Hello there", name: "Me", consent: true, audioAvailable: true, busy: false };
+const ready = { clip: true, transcript: "Hello there", name: "Me", audioAvailable: true, busy: false };
 
 describe("voiceMissing (#111)", () => {
   it("is empty when everything is set", () => {
     expect(voiceMissing(ready)).toEqual([]);
   });
   it("names each missing piece", () => {
-    expect(voiceMissing({ ...ready, clip: false, name: " ", consent: false })).toEqual([
-      "a recording or an audio file", "a name for the voice", "the consent box ticked",
+    expect(voiceMissing({ ...ready, clip: false, name: " " })).toEqual([
+      "a recording or an audio file", "a name for the voice",
     ]);
     expect(voiceMissing({ ...ready, transcript: "  " })).toEqual(["the words you said"]);
   });

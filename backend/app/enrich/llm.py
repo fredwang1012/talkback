@@ -188,9 +188,11 @@ class GeminiProvider:
     """Gemini on Vertex AI (the enrichment model, ENRICH_GEMINI_MODEL or GEMINI_MODEL; project and region from settings),
     JSON output.
 
-    When the enrichment model differs from GEMINI_MODEL, GEMINI_MODEL is the fallback: a call the enrichment model keeps
-    refusing with 429s (Vertex shared capacity is per model) or keeps cutting off for length is sent to the fallback,
-    and for COOL_S after a 429 give-up every call goes straight to the fallback."""
+    When the enrichment model differs from GEMINI_MODEL, GEMINI_MODEL is the fallback for a reply the enrichment model
+    cuts off for length twice (the cast of a long novel; a handful of calls per book). With ENRICH_FALLBACK_ON_429 a
+    call it keeps refusing with 429s also goes to the fallback (Vertex capacity is per model), and for COOL_S after such
+    a give-up every call goes straight there. Off by default: Flash costs several times Flash-Lite, so a busy Flash-Lite
+    would move a whole book onto it; waiting is slower but cheap."""
     name = "gemini"
     RETRIES = pacing.BACKGROUND["attempts"]   # 6 attempts: 429s, 5xx and network errors, backoff to 30 s + jitter
     PRIMARY_ATTEMPTS = 3   # with a fallback, give up on a throttled enrichment model after ~3-6 s of backoff
@@ -216,13 +218,15 @@ class GeminiProvider:
     async def complete(self, system, user, schema, tier, max_tokens, effort) -> Raw:
         if not self.fallback:
             return await self._complete_model(self.model, system, user, schema, max_tokens, self.RETRIES)
-        if self._clock() < self._cool_until:
+        on_429 = settings.enrich_fallback_on_429
+        if on_429 and self._clock() < self._cool_until:
             return await self._complete_model(self.fallback, system, user, schema, max_tokens, self.RETRIES)
         try:
-            return await self._complete_model(self.model, system, user, schema, max_tokens, self.PRIMARY_ATTEMPTS)
+            return await self._complete_model(self.model, system, user, schema, max_tokens,
+                                              self.PRIMARY_ATTEMPTS if on_429 else self.RETRIES)
         except Exception as e:
             cut = isinstance(e, _TooLong)
-            if not cut and not pacing.is_rate_limited(e):
+            if not cut and not (on_429 and pacing.is_rate_limited(e)):
                 raise
             if not cut:
                 self._cool_until = self._clock() + self.COOL_S
