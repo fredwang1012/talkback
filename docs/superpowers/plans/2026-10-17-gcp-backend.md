@@ -38,7 +38,8 @@ local UI; it is ingested into a new book and indexed in the cloud.
    - search: `POST {base}/dataObjects:search`, vector body
      `{"vector_search": {"search_field": "embedding", "vector": {"values": [...]}, "filter": {...}, "top_k": N, "output_fields": {"data_fields": "*"}}}`.
      Response: `{"results": [{"dataObject": {"name": ..., "data": {...}}, "distance": float}]}`.
-   - text search (shape not fully documented): `{"text_search": {"search_text": q, "data_field_name": "text", "top_k": N, "filter": {...}}}`.
+   - text search (verified live 2026-10-17): `{"text_search": {"search_text": q, "data_field_names": ["text"], "top_k": N, "filter": {...}, "output_fields": {"data_fields": "*"}}}`
+     (`data_field_name` and `structured_query` are rejected with 400; without `output_fields` results carry no `data`).
      Treat any error from text search as "no text results" (log at debug, never fail the request).
    - filter for novels: `{"$and": [{"book_id": {"$eq": B}}, {"para_end": {"$lte": P}}]}`; textbooks:
      `{"book_id": {"$eq": B}}`.
