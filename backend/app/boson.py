@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 
 from .config import settings
+from .gcp import usage
 
 TTS_SEMAPHORE = asyncio.Semaphore(4)
 MAX_RETRIES = 4
@@ -75,17 +76,21 @@ class BosonClient:
         if description:
             body["description"] = description
         data = (await self.request("POST", "/v1/audio/voices", json=body)).json()
+        usage.record("boson_voice_clone", "boson-voice-clone", clones=1)  # count only, unpriced
         return data.get("voice") or data["voice_id"]  # schema says `voice`, guide says `voice_id`
 
     # ---- Higgs Avatar (stretch). Request/response shapes follow the docs; verify with scripts/probe_avatar.py. ----
 
     async def create_video(self, ref_image_b64: str, audio_b64: str, *, size: str = "640x640",
-                           image_mime: str = "image/png", audio_mime: str = "audio/mpeg") -> str:
+                           image_mime: str = "image/png", audio_mime: str = "audio/mpeg",
+                           seconds: float | None = None) -> str:
         """Start an async avatar render from a portrait and a speech clip (at most 60 s). Returns the video id."""
         body = {"model": "higgs-avatar", "size": size,
                 "ref_image": f"data:{image_mime};base64,{ref_image_b64}",
                 "input": f"data:{audio_mime};base64,{audio_b64}"}
-        return (await self.request("POST", "/v1/videos", json=body)).json()["id"]
+        vid = (await self.request("POST", "/v1/videos", json=body)).json()["id"]
+        usage.record("boson_avatar", "higgs-avatar", **({"seconds": seconds} if seconds is not None else {}))
+        return vid
 
     async def get_video(self, video_id: str) -> dict[str, Any]:
         return (await self.request("GET", f"/v1/videos/{video_id}")).json()

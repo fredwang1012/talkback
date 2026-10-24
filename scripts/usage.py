@@ -21,11 +21,15 @@ GEMINI_EMBED_PRICES = {"gemini-embedding-001": 0.15}  # $ per 1M input tokens
 CHARS_PER_TOKEN = 4  # the embedder logs characters, so tokens are estimated
 BOSON_TTS_PER_1K_CHARS = 0.015
 
+AVATAR_PER_MINUTE = 0.08
+AVATAR_CHARS_PER_SECOND = 15  # used only when the audio duration was not logged
+
 PROVIDER_OF = {"embed": "gcp", "llm": "gcp", "anthropic": "anthropic",
-               "boson_tts": "boson", "boson_realtime_session": "boson"}
+               "boson_tts": "boson", "boson_realtime_session": "boson",
+               "boson_avatar": "boson", "boson_voice_clone": "boson"}
 TITLES = {"gcp": "GCP (Gemini)", "anthropic": "Anthropic", "boson": "Boson", "other": "Other / unrecognised"}
 ORDER = ["gcp", "anthropic", "boson", "other"]
-COUNT_KEYS = ("prompt_tokens", "input_tokens", "output_tokens", "chars", "sessions")
+COUNT_KEYS = ("prompt_tokens", "input_tokens", "output_tokens", "chars", "seconds", "sessions", "clones")
 
 
 def _anthropic_prices() -> dict:
@@ -82,8 +86,11 @@ def cost_of(row: dict, anthropic_prices: dict | None = None) -> float | None:
             return (row.get("input_tokens", 0) * pin + row.get("output_tokens", 0) * pout) / 1e6
         if kind == "boson_tts":
             return row.get("chars", 0) / 1000 * BOSON_TTS_PER_1K_CHARS
-        if kind == "boson_realtime_session":
-            return 0.0  # pricing unknown: sessions are counted only
+        if kind == "boson_avatar":
+            secs = row["seconds"] if "seconds" in row else row["chars"] / AVATAR_CHARS_PER_SECOND if "chars" in row else None
+            return None if secs is None else secs / 60 * AVATAR_PER_MINUTE
+        if kind in ("boson_realtime_session", "boson_voice_clone"):
+            return 0.0  # pricing unknown: counted only
     except (TypeError, ValueError):
         return None
     return None
@@ -150,8 +157,8 @@ def render(summary: dict, skipped: int, budgets: dict[str, float | None]) -> str
         L.append(f"  {TITLES[prov]:<12} {'$' + format(spent, '.4f'):>14} {budget:>10} {remaining:>12}")
     if skipped:
         L.append(f"\n  skipped {skipped} unreadable line(s)")
-    L.append("\nThese are estimates (embeddings assume 4 chars/token; Boson TTS $0.015 per 1K chars; Realtime sessions are")
-    L.append("counted but not priced). Check each provider's billing console for actual spend.")
+    L.append("\nThese are estimates (embeddings assume 4 chars/token; Boson TTS $0.015 per 1K chars; avatar $0.08/min of audio; Realtime sessions")
+    L.append("and voice clones are counts only, not priced). Check each provider's billing console for actual spend.")
     return "\n".join(L)
 
 

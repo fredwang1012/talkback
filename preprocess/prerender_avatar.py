@@ -56,7 +56,8 @@ def estimate_usd(work: list[dict]) -> float:
 async def render(client: BosonClient, w: dict) -> None:
     ref = base64.b64encode(w["portrait"].read_bytes()).decode()
     audio = base64.b64encode(w["audio"].read_bytes()).decode()
-    vid = await client.create_video(ref, audio, image_mime=MIME[w["portrait"].suffix.lstrip(".").lower()])
+    vid = await client.create_video(ref, audio, image_mime=MIME[w["portrait"].suffix.lstrip(".").lower()],
+                                    seconds=w["seconds"])
     await client.wait_video(vid)
     w["clip"].parent.mkdir(parents=True, exist_ok=True)
     w["clip"].write_bytes(await client.download_video(vid))

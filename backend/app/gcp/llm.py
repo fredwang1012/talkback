@@ -35,21 +35,23 @@ class GeminiAnswerer:
         )
         buf = ""
         meta = None
-        stream = await self.client.aio.models.generate_content_stream(model=self.model, contents=user, config=config)
-        async for chunk in stream:
-            if getattr(chunk, "usage_metadata", None) is not None:
-                meta = chunk.usage_metadata
-            if chunk.text:
-                buf += chunk.text
-                sentences, buf = _split(buf)
-                for s in sentences:
-                    yield s
-        if meta is not None:
-            usage.record(
-                "llm",
-                self.model,
-                prompt_tokens=meta.prompt_token_count or 0,
-                output_tokens=meta.candidates_token_count or 0,
-            )
-        if buf.strip():
-            yield buf.strip()
+        try:
+            stream = await self.client.aio.models.generate_content_stream(model=self.model, contents=user, config=config)
+            async for chunk in stream:
+                if getattr(chunk, "usage_metadata", None) is not None:
+                    meta = chunk.usage_metadata
+                if chunk.text:
+                    buf += chunk.text
+                    sentences, buf = _split(buf)
+                    for s in sentences:
+                        yield s
+            if buf.strip():
+                yield buf.strip()
+        finally:
+            if meta is not None:  # also runs when the consumer abandons the stream
+                usage.record(
+                    "llm",
+                    self.model,
+                    prompt_tokens=meta.prompt_token_count or 0,
+                    output_tokens=meta.candidates_token_count or 0,
+                )
