@@ -65,11 +65,22 @@ app.mount("/media/tts", StaticFiles(directory=settings.data_dir / "cache" / "tts
 
 
 def _lipsync_dir() -> Path:
-    return settings.data_dir / "cache" / "avatar" / "talk"
+    """Lip-sync clips: shared cache/avatar/talk, or the caller's own folder with PER_USER."""
+    return users.lipsync_dir()
+
+
+class LipsyncFiles(StaticFiles):
+    """/media/avatar. With PER_USER a caller is served only their own lip-sync clips (a face is a real person's)."""
+
+    async def get_response(self, path: str, scope):
+        if settings.per_user:
+            ident = await users.identify_async(Headers(scope=scope))
+            return await StaticFiles(directory=users.lipsync_dir(ident), check_dir=False).get_response(path, scope)
+        return await super().get_response(path, scope)
 
 
 _lipsync_dir().mkdir(parents=True, exist_ok=True)
-app.mount("/media/avatar", StaticFiles(directory=_lipsync_dir()), name="lipsync")
+app.mount("/media/avatar", LipsyncFiles(directory=_lipsync_dir()), name="lipsync")
 
 
 class PortraitFiles(StaticFiles):
@@ -78,7 +89,7 @@ class PortraitFiles(StaticFiles):
 
     async def get_response(self, path: str, scope):
         if settings.per_user:
-            ident = users.identify_headers(Headers(scope=scope))
+            ident = await users.identify_async(Headers(scope=scope))
             head, _, rest = path.replace("\\", "/").partition("/")  # StaticFiles hands over OS-style paths
             if head == "voices":
                 raise HTTPException(404)
@@ -693,12 +704,20 @@ def _avatar_dir(book_id: str) -> Path:
     return settings.data_dir / "cache" / "avatar" / book_id
 
 
+def _guard_avatar_book(book_id: str) -> None:
+    """Book clips live in cache/avatar/<book id>, next to the shared lip-sync folder "talk". With PER_USER only real,
+    visible books get that far, so no book id can reach another account's clips through a reserved folder name."""
+    users.guard_book(book_id)
+    if settings.per_user and (book_id in ("talk", "books") or books.load_book(book_id) is None):
+        raise HTTPException(404, "Book not found")
+
+
 @app.get("/api/avatars/{book_id}")
 def list_avatars(book_id: str):
     """Chunk ids that have a pre-rendered avatar clip, so the reader only asks for clips that exist."""
     if not _SAFE_NAME.match(book_id):
         raise HTTPException(404, "Book not found")
-    users.guard_book(book_id)
+    _guard_avatar_book(book_id)
     d = _avatar_dir(book_id)
     return sorted(p.stem for p in d.glob("*.mp4")) if d.is_dir() else []
 
@@ -862,7 +881,7 @@ async def lipsync_stream(req: LipSyncRequest, request: Request):
 def avatar(chunk_id: str, book: str):
     if not (_SAFE_NAME.match(chunk_id) and _SAFE_NAME.match(book)):
         raise HTTPException(404, "No avatar clip")
-    users.guard_book(book)
+    _guard_avatar_book(book)
     path = _avatar_dir(book) / f"{chunk_id}.mp4"
     if not path.is_file():
         raise HTTPException(404, "No avatar clip for this line")

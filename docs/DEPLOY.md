@@ -103,8 +103,10 @@ The deploy script sets `PER_USER=true`, `IAP_AUDIENCE=/projects/272822965835/loc
 `OWNER_EMAILS=fredwang1012@gmail.com` and `OWNER_ONLY_BOOKS=hp*`. Local runs leave `PER_USER` unset and keep one shared
 `data/` namespace exactly as before.
 - The user is the email in the IAP JWT (`x-goog-iap-jwt-assertion`), verified against Google's IAP public keys and the
-  audience above. The plain `x-goog-authenticated-user-email` header is ignored. No valid JWT (for example when the
-  gate is switched off for a demo) means the shared anonymous namespace `public`.
+  audience above. The plain `x-goog-authenticated-user-email` header is ignored. No IAP header at all (for example when the
+  gate is switched off for a demo) means the shared anonymous namespace `public`; a header that fails verification gets 401.
+  The server refuses to start with `PER_USER=true` and no `IAP_AUDIENCE`. Lip-sync clips are per account too
+  (`data/users/<hash>/lipsync/`, served at `/media/avatar/` only to their owner).
 - Per account, under `data/users/<sha256(email)[:16]>/` (anonymous: `data/users/public/`): `voices.json`, `faces.json`,
   `faces/` (served only to their owner at `/portraits/faces/...`), `cast/<book>.json`. Uploaded books stay in
   `data/books/u-*` with an `owner.txt` holding the owner's namespace; other accounts get 404 for them. Built-in books are shared,

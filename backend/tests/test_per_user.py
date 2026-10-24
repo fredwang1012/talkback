@@ -82,10 +82,17 @@ def test_valid_token_gives_email(pu):
     assert client.get("/api/me", headers=h(token())).json() == {"email": ALICE, "per_user": True}
 
 
-@pytest.mark.parametrize("tok", ["", "garbage", "a.b.c"])
-def test_missing_or_garbage_is_anonymous(pu, tok):
+def test_missing_header_is_anonymous(pu):
     client, _ = pu
-    assert client.get("/api/me", headers=h(tok)).json() == {"email": None, "per_user": True}
+    assert client.get("/api/me").json() == {"email": None, "per_user": True}
+    assert client.get("/api/me", headers=h("")).json() == {"email": None, "per_user": True}
+
+
+@pytest.mark.parametrize("tok", ["garbage", "a.b.c"])
+def test_present_but_invalid_header_is_401_not_anonymous(pu, tok):
+    client, _ = pu
+    assert client.get("/api/me", headers=h(tok)).status_code == 401
+    assert client.get("/api/books", headers=h(tok)).status_code == 401
 
 
 def test_expired_wrong_audience_wrong_key_wrong_issuer_rejected(pu):
@@ -96,7 +103,7 @@ def test_expired_wrong_audience_wrong_key_wrong_issuer_rejected(pu):
                                     serialization.NoEncryption()).decode(), "k1")),
            token(iss="https://evil.example")]
     for t in bad:
-        assert client.get("/api/me", headers=h(t)).json()["email"] is None
+        assert client.get("/api/me", headers=h(t)).status_code == 401
 
 
 def test_plain_email_header_is_never_trusted(pu):
@@ -113,10 +120,10 @@ def test_results_and_certs_are_cached(pu):
     assert len(fetched) == 1
 
 
-def test_unset_audience_means_everyone_anonymous(pu, monkeypatch):
+def test_unset_audience_rejects_every_token(pu, monkeypatch):
     client, _ = pu
     monkeypatch.setattr(settings, "iap_audience", "")
-    assert client.get("/api/me", headers=h(token())).json()["email"] is None
+    assert client.get("/api/me", headers=h(token())).status_code == 401
 
 
 def test_namespace_derivation():
