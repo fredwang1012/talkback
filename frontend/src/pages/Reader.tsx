@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getAccessToken, setAccessToken } from "../accessToken";
 import { fetchBook, fetchHealth, fetchTts, type Book, type Health } from "../api";
+import { DEMO_SPEAKER, DEMO_START_PARA, firstChunkAtOrAfter, isDemo } from "../demo";
 import BookText from "../reader/BookText";
 import PlayerBar from "../reader/PlayerBar";
 import { ReaderEngine, type AudioLike } from "../reader/ReaderEngine";
 import Stage from "../reader/Stage";
+import VoiceLab from "../reader/VoiceLab";
 import { spend, type SpendSnapshot } from "../spend";
 import { useTalk } from "../talk/useTalk";
 import { DebugDrawer } from "../ui/DebugDrawer";
@@ -26,6 +29,12 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [word, setWord] = useState<{ charStart: number; charEnd: number } | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const demo = useMemo(() => isDemo(), []);
+  const [code, setCode] = useState(getAccessToken());
+  const [labOpen, setLabOpen] = useState(false);
+  const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const overridesRef = useRef<Record<string, string>>({});
+  overridesRef.current = overrides;
   const [spendNow, setSpendNow] = useState<SpendSnapshot>(spend.snapshot());
   useEffect(() => spend.subscribe(setSpendNow), []);
   const lastManualScroll = useRef(0);
@@ -38,27 +47,31 @@ export default function Reader({ bookId }: { bookId: string }) {
   useEffect(() => {
     fetchBook(bookId).then((b) => {
       setBook(b);
-      setIndex(loadPosition(b.id, b.paragraphs.flatMap((p) => p.tts_chunks).length));
+      const flat = flattenChunks(b);
+      setIndex(demo ? firstChunkAtOrAfter(flat, DEMO_START_PARA) : loadPosition(b.id, flat.length));
+      if (demo && b.characters.some((c) => c.id === DEMO_SPEAKER)) setSpeakerId(DEMO_SPEAKER); // pinned to Holmes
+      try { setOverrides(JSON.parse(localStorage.getItem(`bookson:voices:${b.id}`) ?? "{}")); } catch { /* none saved */ }
     }).catch((e: Error) => setError(e.message));
     fetchHealth().then(setHealth).catch(() => setHealth(null));
-  }, [bookId]);
+  }, [bookId, demo]);
 
   const chunks = useMemo(() => (book ? flattenChunks(book) : []), [book]);
   const para = readerPara(chunks, index);
   const last = chunks.length - 1;
-  const audioAvailable = health?.boson_key_set === true;
+  const needsCode = !!health?.access_required && !code;
+  const audioAvailable = health?.boson_key_set === true && !needsCode;
 
   // Real audio engine, only when the server has a Boson key. Otherwise the silent preview below is used.
   useEffect(() => {
     if (!book || !audioAvailable || chunks.length === 0) return;
     const engine = new ReaderEngine(chunks, {
       fetchTts: async (chunk, voice) => {
-        const r = await fetchTts(book.id, chunk.id, voice);
+        const r = await fetchTts(book.id, chunk.id, voice ?? overridesRef.current[chunk.speaker], demo); // demo: pre-rendered only
         if (!r.cached) spend.addTts(chunk.tts_text.length); // only freshly synthesised speech costs money
         return r;
       },
       createAudio: (url) => new Audio(url) as unknown as AudioLike, // the engine only assigns a plain onended callback
-    }, loadPosition(book.id, chunks.length));
+    }, indexRef.current);
     engineRef.current = engine;
     const off = engine.on((s) => {
       setIndex(s.index);
@@ -74,7 +87,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     };
     raf = requestAnimationFrame(tick);
     return () => { cancelAnimationFrame(raf); off(); engine.dispose(); engineRef.current = null; setWord(null); };
-  }, [book, chunks, audioAvailable]);
+  }, [book, chunks, audioAvailable, demo]);
 
 
   // Talk mode: push-to-talk questions, answered from what has been read so far (needs the Boson key).
@@ -83,7 +96,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     enabled: audioAvailable && !!book,
     speakerId,
     autoResume,
-    voiceFor: (id) => (id === "narrator" ? book?.narrator?.voice : book?.characters.find((c) => c.id === id)?.voice) ?? "marcus",
+    voiceFor: (id) => overrides[id] ?? (id === "narrator" ? book?.narrator?.voice : book?.characters.find((c) => c.id === id)?.voice) ?? "marcus",
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
       currentIndex: () => indexRef.current,
@@ -135,7 +148,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     else setPlaying((p) => !p);
   }, []);
 
-  useEffect(() => { if (book) savePosition(book.id, index); }, [book, index]);
+  useEffect(() => { if (book && !demo) savePosition(book.id, index); }, [book, index, demo]);
 
   // Silent preview: advance at an estimated reading pace until real audio exists.
   useEffect(() => {
@@ -173,6 +186,24 @@ export default function Reader({ bookId }: { bookId: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [step, toggle]);
 
+  const setOverride = (speaker: string, voice: string | null) => {
+    const next = { ...overridesRef.current };
+    if (voice) next[speaker] = voice; else delete next[speaker];
+    setOverrides(next);
+    overridesRef.current = next;
+    try { localStorage.setItem(`bookson:voices:${bookId}`, JSON.stringify(next)); } catch { /* storage blocked */ }
+    engineRef.current?.refreshAhead(); // chunks fetched ahead used the old voice
+  };
+  const preview = async (speaker: string, voice: string) => {
+    const chunk = chunks.find((c) => c.speaker === speaker) ?? chunks[0];
+    if (!chunk) return;
+    try {
+      const r = await fetchTts(bookId, chunk.id, voice);
+      if (!r.cached) spend.addTts(chunk.tts_text.length);
+      void new Audio(r.audio_url).play();
+    } catch (e) { setAudioError(e instanceof Error ? e.message : String(e)); }
+  };
+
   if (error) return <p className="state-line" role="alert">Could not load this book ({error}). <a href="#/">Back to the library</a></p>;
   if (!book) return <p className="state-line">Turning to your page…</p>;
 
@@ -188,8 +219,14 @@ export default function Reader({ bookId }: { bookId: string }) {
                     onPick={(i) => { lastManualScroll.current = Date.now(); seek(i); }} />
         </div>
         <Stage book={book} para={para} speakerId={speakerId} onSpeaker={setSpeakerId} health={health}
-               talk={talk} audioAvailable={audioAvailable} onTalkMode={() => engineRef.current?.pause()} />
+               talk={talk} audioAvailable={audioAvailable} onTalkMode={() => engineRef.current?.pause()}
+               pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
+               needsCode={needsCode} onCode={(c) => { setAccessToken(c); setCode(c); }} onOpenLab={() => setLabOpen(true)} />
       </div>
+      {labOpen && (
+        <VoiceLab book={book} overrides={overrides} onOverride={setOverride} onPreview={preview}
+                  audioAvailable={audioAvailable} onClose={() => setLabOpen(false)} />
+      )}
       <DebugDrawer entries={talk.logs} spend={spendNow} />
       <PlayerBar
         playing={playing} loading={loading} onToggle={toggle}

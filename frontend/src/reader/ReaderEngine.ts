@@ -207,6 +207,14 @@ export class ReaderEngine {
     if (this.state === "playing") this.prefetchFrom(this.index);
   }
 
+  /** Voices changed (cast picker): forget chunks fetched ahead so they are requested again with the new voice. */
+  refreshAhead(): void {
+    for (const [k, e] of this.entries) {
+      if (k > this.index) { e.promise.then((l) => l.audio.pause()).catch(() => {}); this.entries.delete(k); }
+    }
+    if (this.state === "playing") this.prefetchFrom(this.index);
+  }
+
   /** The word being spoken now, as offsets into the chunk's text; null when timestamps are unavailable. */
   activeWord(): { charStart: number; charEnd: number } | null {
     const cur = this.current;

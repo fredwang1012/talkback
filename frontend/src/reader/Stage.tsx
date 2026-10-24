@@ -13,6 +13,10 @@ type Props = {
   talk: TalkUi;
   audioAvailable: boolean;
   onTalkMode: () => void;
+  pinned: string | null; // demo mode: talk only to this character
+  needsCode: boolean;
+  onCode: (code: string) => void;
+  onOpenLab: () => void;
 };
 
 const STATUS: Record<TalkState, string> = {
@@ -25,7 +29,8 @@ const STATUS: Record<TalkState, string> = {
   "talk-idle": "Ask another question, or press play.",
 };
 
-export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, onTalkMode }: Props) {
+export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, onTalkMode, pinned, needsCode, onCode, onOpenLab }: Props) {
+  const [codeDraft, setCodeDraft] = useState("");
   const [mode, setMode] = useState<"read" | "talk">("read");
   const { met, locked } = splitCharacters(book.characters, para);
   const speaker = met.find((c) => c.id === speakerId);
@@ -69,13 +74,13 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
       <section aria-label="Who to talk to">
         <ul className="cast-list">
           <li>
-            <button aria-pressed={speakerId === "narrator"} onClick={() => onSpeaker("narrator")}>
+            <button aria-pressed={speakerId === "narrator"} disabled={!!pinned} onClick={() => onSpeaker("narrator")}>
               Narrator <small>{book.narrator?.voice ?? "voice not set"}</small>
             </button>
           </li>
           {met.map((c) => (
             <li key={c.id}>
-              <button aria-pressed={speakerId === c.id} onClick={() => onSpeaker(c.id)}>
+              <button aria-pressed={speakerId === c.id} disabled={!!pinned && pinned !== c.id} onClick={() => onSpeaker(c.id)}>
                 {c.name} <small>{c.voice}</small>
               </button>
             </li>
@@ -92,6 +97,17 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
           <p className="empty-note">No cast yet. Characters appear here once the casting step has run.</p>
         )}
       </section>
+
+      {needsCode && (
+        <form className="code-form" onSubmit={(e) => { e.preventDefault(); if (codeDraft.trim()) onCode(codeDraft.trim()); }}>
+          <label htmlFor="access-code">This server needs an access code for voices</label>
+          <div>
+            <input id="access-code" type="password" autoComplete="off" value={codeDraft} onChange={(e) => setCodeDraft(e.target.value)} />
+            <button type="submit">Unlock voices</button>
+          </div>
+        </form>
+      )}
+      <button className="link-btn" onClick={onOpenLab}>Voices and cloning</button>
 
       <div className="mic">
         <button

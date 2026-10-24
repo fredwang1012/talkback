@@ -105,3 +105,13 @@ def test_real_book_if_ingested():
         chunks = chunk_paragraph(p, book)
         assert chunks and covers(p, chunks), p.idx
         assert all(len(p.text[c.char_start:c.char_end]) <= MAX_CHARS for c in chunks), p.idx
+
+
+def test_prerender_estimate_matches_the_documented_story_cost():
+    import prerender_tts as pr
+    path = ROOT / "data/books/scandal-in-bohemia/book.json"
+    if not path.exists():
+        pytest.skip("book not ingested")
+    book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+    work = pr.pending_work(book)
+    assert work and 0.5 < pr.estimate_usd(work) < 1.0  # brief: a ~45K-char story is about $0.70

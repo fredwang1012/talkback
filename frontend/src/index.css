@@ -201,8 +201,29 @@ button:disabled { cursor: not-allowed; }
 .entry.dir-send .arrow { color: var(--brass); }
 .entry.dir-recv .arrow { color: var(--ink-soft); }
 .entry-body { margin: 0; padding: 6px 10px; white-space: pre-wrap; word-break: break-all; color: var(--ink-soft); background: var(--ground); }
+.link-btn { align-self: flex-start; background: transparent; border: 0; padding: 0; color: var(--brass); text-decoration: underline; }
+.code-form label { display: block; color: var(--ink-soft); font-size: 0.88rem; margin-bottom: 6px; }
+.code-form div { display: flex; gap: 8px; }
+.code-form input, .lab input[type="text"], .lab input:not([type]), .lab textarea, .lab select { background: var(--ground-raised); color: var(--ink); border: 1px solid var(--brass-soft); border-radius: var(--radius); padding: 6px 8px; font: inherit; }
+.code-form input { flex: 1; min-width: 0; }
+.code-form button, .lab button { background: var(--ground-raised); border: 1px solid var(--brass-soft); border-radius: var(--radius); padding: 6px 12px; }
+.lab { position: fixed; inset: 0 0 0 auto; width: min(460px, 100vw); z-index: 8; overflow-y: auto; padding: 24px; background: var(--ground-sunk); border-left: 1px solid var(--brass); display: flex; flex-direction: column; gap: 20px; }
+.lab-head { display: flex; justify-content: space-between; align-items: center; }
+.lab h2 { font-family: var(--font-title); font-weight: 400; font-size: 1.8rem; margin: 0; }
+.lab h3 { margin: 0 0 8px; font-weight: 600; }
+.lab section { display: flex; flex-direction: column; gap: 8px; }
+.lab label { font-size: 0.9rem; color: var(--ink-soft); }
+.lab-cast { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.lab-cast li { display: grid; grid-template-columns: 1fr 1.2fr auto; gap: 8px; align-items: center; }
+.lab-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.lab .consent { display: flex; gap: 8px; align-items: flex-start; color: var(--ink); }
+.lab button.primary { background: var(--brass); color: var(--ground); border-color: var(--brass); font-weight: 600; }
+.lab button:disabled { opacity: 0.5; }
+.lab-error { color: var(--seal-bright); margin: 0; }
+.lab-ok { color: var(--ink); margin: 0; }
 .state-line { color: var(--ink-faint); padding: 80px 24px; text-align: center; }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; scroll-behavior: auto !important; }
 }
+.lab .file { display: flex; gap: 8px; align-items: center; }

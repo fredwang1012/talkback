@@ -76,7 +76,7 @@ def boson_http_error(e: BosonError | RuntimeError) -> HTTPException:
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "boson_key_set": bool(settings.boson_api_key)}
+    return {"ok": True, "boson_key_set": bool(settings.boson_api_key), "access_required": bool(settings.access_token)}
 
 
 @app.get("/api/books")
@@ -111,6 +111,7 @@ class TtsRequest(BaseModel):
     book_id: str
     chunk_id: str
     voice_override: str | None = None
+    cached_only: bool = False  # demo mode: serve pre-rendered audio only, never call Boson
 
 
 @app.post("/api/tts", dependencies=[Depends(require_access)])
@@ -124,7 +125,10 @@ async def tts(req: TtsRequest, request: Request):
                 voice = req.voice_override or c.voice
                 if not voices.is_known_voice(voice):
                     raise HTTPException(400, f"Unknown voice '{voice}'.")
-                if not tts_cache.is_cached(c.tts_text, voice) and not tts_bucket.allow(client_ip(request)):
+                cached = tts_cache.is_cached(c.tts_text, voice)
+                if req.cached_only and not cached:
+                    raise HTTPException(409, "This line is not pre-rendered yet. Run preprocess/prerender_tts.py before the demo.")
+                if not cached and not tts_bucket.allow(client_ip(request)):
                     raise HTTPException(429, "Too many new audio requests; wait a moment.")
                 try:
                     out = await tts_cache.get_or_create(boson, c.tts_text, voice, p.text[c.char_start:c.char_end])

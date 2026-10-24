@@ -247,3 +247,25 @@ def test_retrieve_query_length_is_capped(env):
     client, _ = env
     r = client.post("/api/retrieve", json={"book_id": "demo", "query": "x" * 501, "reader_para": 1})
     assert r.status_code == 422
+
+
+def test_cached_only_never_calls_boson_and_serves_prerendered(env):
+    client, calls = env
+    body = {"book_id": "demo", "chunk_id": "p0c0", "cached_only": True}
+    r = client.post("/api/tts", json=body)
+    assert r.status_code == 409 and "pre-render" in r.json()["detail"]
+    assert calls["n"] == 0
+    client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0"})  # render once normally
+    n = calls["n"]
+    r = client.post("/api/tts", json=body)
+    assert r.status_code == 200 and r.json()["cached"] is True
+    assert calls["n"] == n
+
+
+def test_health_tells_the_ui_when_an_access_code_is_needed_without_leaking_it(env, monkeypatch):
+    client, _ = env
+    assert client.get("/api/health").json()["access_required"] is False
+    monkeypatch.setattr(settings, "access_token", "letmein")
+    body = client.get("/api/health").json()
+    assert body["access_required"] is True
+    assert "letmein" not in client.get("/api/health").text

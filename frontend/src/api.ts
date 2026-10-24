@@ -1,3 +1,5 @@
+import { getAccessToken } from "./accessToken";
+
 export type Segment = { speaker: string; text: string; emotion: string | null };
 export type TtsChunk = {
   id: string;
@@ -47,11 +49,11 @@ export type BookSummary = {
   sections: number;
   characters: number;
 };
-export type Health = { ok: boolean; boson_key_set: boolean };
+export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean };
 
-/** Only needed when the server sets BOOKSON_ACCESS_TOKEN (public deployments). Read access never needs it. */
+/** Sent when the server requires an access code (BOOKSON_ACCESS_TOKEN). Typed in by the visitor, never built in. */
 export function authHeaders(): Record<string, string> {
-  const token = import.meta.env.VITE_BOOKSON_TOKEN as string | undefined;
+  const token = getAccessToken();
   return token ? { "X-Bookson-Token": token } : {};
 }
 
@@ -69,11 +71,11 @@ export type WordTiming = { start: number; end: number; char_start: number; char_
 export type TtsResponse = { chunk_id: string; voice: string; audio_url: string; timestamps: WordTiming[] | null; cached: boolean };
 
 /** Throws an Error carrying the server's readable message (e.g. a missing key or a billing refusal). */
-export async function fetchTts(bookId: string, chunkId: string, voiceOverride?: string): Promise<TtsResponse> {
+export async function fetchTts(bookId: string, chunkId: string, voiceOverride?: string, cachedOnly = false): Promise<TtsResponse> {
   const res = await fetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ book_id: bookId, chunk_id: chunkId, voice_override: voiceOverride ?? null }),
+    body: JSON.stringify({ book_id: bookId, chunk_id: chunkId, voice_override: voiceOverride ?? null, cached_only: cachedOnly }),
   });
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
@@ -112,3 +114,22 @@ export async function fetchRealtimeKey(): Promise<string> {
   }
   return ((await res.json()) as { value: string }).value;
 }
+
+export type CloneResult = { voice: string; name: string };
+
+/** Registers a custom voice. The server refuses without explicit consent. */
+export async function cloneVoice(audio: Blob, filename: string, transcript: string, name: string, consent: boolean): Promise<CloneResult> {
+  const form = new FormData();
+  form.append("audio", audio, filename);
+  form.append("transcript", transcript);
+  form.append("name", name);
+  form.append("consent", consent ? "true" : "false");
+  const res = await fetch("/api/voices/clone", { method: "POST", headers: authHeaders(), body: form });
+  if (!res.ok) {
+    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    throw new Error(detail ?? `Voice upload failed (${res.status})`);
+  }
+  return res.json() as Promise<CloneResult>;
+}
+
+export const fetchVoices = () => getJson<Record<string, string>>("/api/voices");
