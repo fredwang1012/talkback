@@ -104,8 +104,8 @@ async def segment_paragraph(book: Book, p: Paragraph, call: CallFn, refusal_exc:
     user = build_user(book, p)
     for attempt in range(2):
         try:
-            result = await call(MODEL, SYSTEM, user, SegResult, max_tokens=3000, effort="low")
-        except refusal_exc:
+            result = await call(MODEL, SYSTEM, user, SegResult, max_tokens=max(3000, 2 * len(p.text)), effort="low")
+        except (refusal_exc, RuntimeError):  # refused, or ran out of tokens: the narrator reads this paragraph
             break  # refused: fall back to the narrator for this paragraph
         ok = validate_segments(p.text, result.segments, speakers)
         if ok:
@@ -152,7 +152,7 @@ async def segment_batch(book: Book, paras: list[Paragraph], call: CallFn,
         result = await call(MODEL, BATCH_SYSTEM, build_batch_user(book, paras), BatchResult,
                             max_tokens=4000 + 600 * len(paras), effort="low")
         answers = {bp.para: bp.segments for bp in result.paragraphs}
-    except refusal_exc:
+    except (refusal_exc, RuntimeError):  # refused or out of tokens: each paragraph is retried on its own below
         pass
     out = []
     for p in paras:
