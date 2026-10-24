@@ -812,3 +812,17 @@ def test_attribution_and_rechunk_run_off_the_event_loop_once(data_dir, cpu_calls
     assert ok
     assert ("attribute", False) in cpu_calls and all(not on_loop for _, on_loop in cpu_calls), cpu_calls
     assert [n for n, _ in cpu_calls].count("rechunk") == 1, cpu_calls
+
+
+def test_a_novel_upload_starts_the_early_series_check(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(main, "_start_series_early", lambda book_id: seen.append(book_id))
+    book_id = upload(client).json()["book_id"]
+    assert seen == [book_id]   # wired into the ingest, not only defined
+
+
+def test_a_textbook_upload_skips_the_early_series_check(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(main, "_start_series_early", lambda book_id: seen.append(book_id))
+    upload(client, kind="textbook")
+    assert seen == []
