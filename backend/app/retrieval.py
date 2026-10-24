@@ -124,6 +124,8 @@ def latest_summary(book: Book, reader_para: int) -> str:
 
 def _finish(book: Book, index, found: list[Chunk], reader_para: int, spoiler_safe: bool) -> dict:
     """Shared post-search step: recent passage, char cap, story summary."""
+    if spoiler_safe:  # backstop: enforce the spoiler invariant whatever the index returned
+        found = [c for c in found if c.para_end <= reader_para]
     passages = [{"para_start": c.para_start, "para_end": c.para_end, "text": c.text} for c in found]
     recent = recent_passage(book, reader_para)
     if recent and not any(p["para_start"] <= recent["para_start"] and p["para_end"] >= recent["para_end"] for p in passages):

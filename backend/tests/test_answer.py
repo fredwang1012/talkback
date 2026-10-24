@@ -39,18 +39,52 @@ def test_answer_streams_sentences_then_done(env, monkeypatch):
     out = lines(r)
     assert [o["type"] for o in out] == ["sentence", "sentence", "done"]
     assert out[0]["text"] == "He smiled." and out[1]["text"] == "Then he left."
-    assert out[2]["passages"] >= 0 and isinstance(out[2]["retrieve_ms"], int) and isinstance(out[2]["first_sentence_ms"], int)
+    assert out[2]["passages"] == 1 and isinstance(out[2]["retrieve_ms"], int) and isinstance(out[2]["first_sentence_ms"], int)
     assert fake.prompts[0][1] == "What happened?"
+
+
+class LeakyIndex:
+    mode = "fake"
+
+    async def asearch(self, query, reader_para, k=4, *, spoiler_safe=True):
+        from app.retrieval import Chunk
+        return [Chunk(id="ok", para_start=0, para_end=0, text="ELIGIBLE-TEXT-ALPHA"),
+                Chunk(id="bad", para_start=2, para_end=2, text="FUTURE-TEXT-OMEGA")]
 
 
 def test_answer_prompt_never_contains_future_paragraphs(env, monkeypatch):
     client, _ = env
     fake = FakeAnswerer(["Ok."])
     monkeypatch.setattr(main, "get_answerer", lambda: fake)
-    post(client, query="King arrived", reader_para=1)
+    monkeypatch.setattr(main, "_index_for", lambda book_id: LeakyIndex())
+    out = lines(post(client, query="King arrived", reader_para=1))
     system, _ = fake.prompts[0]
-    assert "Later the King arrived" not in system
-    assert "He smiled and left" in system or "Holmes" in system
+    assert "ELIGIBLE-TEXT-ALPHA" in system
+    assert "FUTURE-TEXT-OMEGA" not in system
+    assert out[-1]["type"] == "done"
+
+
+def test_answer_requires_access_token_and_is_rate_limited(env, monkeypatch):
+    from app.config import settings
+    from app.ratelimit import TokenBucket
+    client, _ = env
+    monkeypatch.setattr(main, "get_answerer", lambda: FakeAnswerer(["x."]))
+    monkeypatch.setattr(settings, "access_token", "letmein")
+    assert post(client).status_code == 401
+    assert client.post("/api/answer", headers={"x-talkback-token": "letmein"},
+                       json={"book_id": "demo", "query": "q", "reader_para": 1}).status_code == 200
+    monkeypatch.setattr(settings, "access_token", "")
+    monkeypatch.setattr(main, "answer_bucket", TokenBucket(1, 60))
+    assert post(client).status_code == 200
+    r = post(client)
+    assert r.status_code == 429 and "Too many questions" in r.json()["detail"]
+
+
+def test_speak_requires_access_token(env, monkeypatch):
+    from app.config import settings
+    client, _ = env
+    monkeypatch.setattr(settings, "access_token", "letmein")
+    assert client.post("/api/speak", json={"text": "Hi.", "voice": "marcus"}).status_code == 401
 
 
 def test_answer_checks_match_retrieve(env, monkeypatch):
@@ -73,7 +107,9 @@ def test_answer_error_mid_stream_is_a_clean_error_line(env, monkeypatch):
 def test_answer_error_before_first_sentence(env, monkeypatch):
     client, _ = env
     monkeypatch.setattr(main, "get_answerer", lambda: FakeAnswerer(["One."], fail_after=0))
-    assert [o["type"] for o in lines(post(client))] == ["error"]
+    out = lines(post(client))
+    assert [o["type"] for o in out] == ["error"]
+    assert out[0]["message"] == "The answer could not be generated; please try again."
 
 
 def test_build_answer_prompt_reuses_template_wording():

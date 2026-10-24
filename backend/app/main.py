@@ -54,6 +54,7 @@ boson = BosonClient()
 token_bucket = TokenBucket(capacity=10, per_seconds=60)
 tts_bucket = TokenBucket(capacity=120, per_seconds=60)   # only cache misses (real Boson calls) consume this
 clone_bucket = TokenBucket(capacity=5, per_seconds=60)
+answer_bucket = TokenBucket(capacity=20, per_seconds=60)  # every /api/answer call spends Gemini credit
 
 
 def client_ip(request: Request) -> str:
@@ -232,12 +233,15 @@ def _line(obj: dict) -> str:
     return json.dumps(obj, ensure_ascii=False) + "\n"
 
 
-@app.post("/api/answer")
-async def answer(req: RetrieveRequest):
+@app.post("/api/answer", dependencies=[Depends(require_access)])
+async def answer(req: RetrieveRequest, request: Request):
+    if not answer_bucket.allow(client_ip(request)):
+        raise HTTPException(429, "Too many questions; wait a moment.")
     book, _, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para)
     t0 = time.monotonic()
     out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k)
-    retrieve_ms = int((time.monotonic() - t0) * 1000)
+    t_retrieved = time.monotonic()
+    retrieve_ms = int((t_retrieved - t0) * 1000)
     system, user = build_answer_prompt(book, req.speaker_id, out["story_so_far"], out["passages"], req.query)
 
     async def stream():
@@ -245,7 +249,7 @@ async def answer(req: RetrieveRequest):
         try:
             async for sentence in get_answerer().stream_sentences(system, user):
                 if first_ms is None:
-                    first_ms = int((time.monotonic() - t0) * 1000) - retrieve_ms
+                    first_ms = int((time.monotonic() - t_retrieved) * 1000)
                 yield _line({"type": "sentence", "text": sentence})
         except Exception as e:  # never leak stack traces or secrets to the client
             logging.getLogger(__name__).warning("answer stream failed: %s", type(e).__name__)
