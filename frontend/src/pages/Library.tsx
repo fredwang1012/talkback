@@ -29,6 +29,7 @@ export default function Library() {
         <section className="shelf" aria-label="Books">
           {books.map((b) => (
             <a key={b.id} className="volume" href={`#/read/${b.id}`}>
+              {b.cover && <img className="cover" src={b.cover} alt="" />}
               <div>
                 <h2>{b.title}</h2>
                 <p className="by">{b.author}</p>

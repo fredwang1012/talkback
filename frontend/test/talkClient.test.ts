@@ -29,7 +29,7 @@ class FakePlayer implements PlayerLike {
   async close() {}
 }
 
-function setup() {
+function setup(extra: Record<string, unknown> = {}) {
   const sockets: FakeSocket[] = [];
   const player = new FakePlayer();
   let micChunk: (b64: string) => void = () => {};
@@ -41,12 +41,54 @@ function setup() {
     createPlayer: (onSpeaking) => { player.onSpeaking = onSpeaking; return player; },
     createMic: (onChunk) => { micChunk = onChunk; return mic; },
     cancelWaitMs: 50, voiceChangeWaitMs: 50,
+    ...extra,
   });
   const events: SessionEvent[] = [];
   client.on((e) => events.push(e));
   return { client, sockets, player, mic, events, chunk: (b: string) => micChunk(b), tokens: () => tokens };
 }
 const flush = () => new Promise((r) => setTimeout(r, 0));
+
+describe("TalkClient concurrency limit (close 1013)", () => {
+  it("backs off and retries with a fresh key, then connects", async () => {
+    const h = setup({ backoffMs: [5, 5, 5] });
+    const p = h.client.ensureOpen("marcus");
+    await flush();
+    h.sockets[0].close(1013, "busy");
+    await new Promise((r) => setTimeout(r, 15));
+    h.sockets[1].close(1013, "busy");
+    await new Promise((r) => setTimeout(r, 15));
+    h.sockets[2].open();
+    await p;
+    expect(h.sockets).toHaveLength(3);
+    expect(h.tokens()).toBe(3); // a new ephemeral key every attempt
+    expect(h.events.filter((e) => e.type === "error")).toHaveLength(0);
+  });
+
+  it("gives up after the last retry and reports a readable error", async () => {
+    const h = setup({ backoffMs: [2] });
+    const p = h.client.ensureOpen("marcus");
+    const settled = p.then(() => "ok", (e: Error) => e.message);
+    await flush();
+    h.sockets[0].close(1013, "busy");
+    await new Promise((r) => setTimeout(r, 10));
+    h.sockets[1].close(1013, "busy");
+    const msg = await settled;
+    expect(msg).not.toBe("ok");
+    expect(h.sockets).toHaveLength(2);
+  });
+
+  it("a 1013 after the session opened is surfaced, not retried", async () => {
+    const h = setup({ backoffMs: [2] });
+    const p = h.client.ensureOpen("marcus");
+    await flush();
+    h.sockets[0].open();
+    await p;
+    h.sockets[0].close(1013, "busy");
+    expect(h.sockets).toHaveLength(1);
+    expect(h.events.some((e) => e.type === "error")).toBe(true);
+  });
+});
 
 describe("TalkClient connection", () => {
   it("opens with a fresh ephemeral key in the subprotocol and configures manual turns", async () => {

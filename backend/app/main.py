@@ -1,12 +1,14 @@
-import base64
-from functools import lru_cache
-
 import asyncio
+import base64
+import re
 import secrets
 from contextlib import asynccontextmanager
+from functools import lru_cache
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -43,6 +45,7 @@ app.add_middleware(
 
 (settings.data_dir / "cache").mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=settings.data_dir / "cache"), name="media")
+app.mount("/portraits", StaticFiles(directory=settings.data_dir / "portraits", check_dir=False), name="portraits")
 
 boson = BosonClient()
 token_bucket = TokenBucket(capacity=10, per_seconds=60)
@@ -183,6 +186,34 @@ def retrieve(req: RetrieveRequest):
     return out
 
 
+# ---------- avatars (stretch) ----------
+
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+
+
+def _avatar_dir(book_id: str) -> Path:
+    return settings.data_dir / "cache" / "avatar" / book_id
+
+
+@app.get("/api/avatars/{book_id}")
+def list_avatars(book_id: str):
+    """Chunk ids that have a pre-rendered avatar clip, so the reader only asks for clips that exist."""
+    if not _SAFE_NAME.match(book_id):
+        raise HTTPException(404, "Book not found")
+    d = _avatar_dir(book_id)
+    return sorted(p.stem for p in d.glob("*.mp4")) if d.is_dir() else []
+
+
+@app.get("/api/avatar/{chunk_id}")
+def avatar(chunk_id: str, book: str):
+    if not (_SAFE_NAME.match(chunk_id) and _SAFE_NAME.match(book)):
+        raise HTTPException(404, "No avatar clip")
+    path = _avatar_dir(book) / f"{chunk_id}.mp4"
+    if not path.is_file():
+        raise HTTPException(404, "No avatar clip for this line")
+    return FileResponse(path, media_type="video/mp4")
+
+
 # ---------- voice cloning ----------
 
 @app.post("/api/voices/clone", dependencies=[Depends(require_access)])
@@ -206,3 +237,9 @@ async def clone_voice(request: Request, audio: UploadFile = File(...), transcrip
 @app.get("/api/voices")
 def list_voices():
     return voices.load_voices()
+
+
+# ---------- single-service deploy: serve the built frontend from the same origin (no CORS, one container) ----------
+_dist = settings.data_dir.parent / "frontend" / "dist"
+if _dist.is_dir():  # registered last so every /api, /media and /portraits route wins
+    app.mount("/", StaticFiles(directory=_dist, html=True), name="frontend")

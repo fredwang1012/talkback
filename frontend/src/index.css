@@ -227,3 +227,37 @@ button:disabled { cursor: not-allowed; }
   * { transition: none !important; scroll-behavior: auto !important; }
 }
 .lab .file { display: flex; gap: 8px; align-items: center; }
+
+/* ---- Stage: portraits, thinking shimmer, speaking waveform, language badge ---- */
+.medallion { overflow: hidden; position: relative; }
+.medallion img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.medallion.thinking::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%;
+  background: linear-gradient(110deg, transparent 30%, color-mix(in srgb, var(--brass) 45%, transparent) 50%, transparent 70%);
+  background-size: 220% 100%; animation: shimmer 1.4s linear infinite;
+}
+.medallion.speaking { border-color: var(--brass); box-shadow: 0 0 0 5px var(--ground-sunk), 0 0 0 7px var(--brass-soft); }
+@keyframes shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+.wave { display: flex; align-items: center; gap: 4px; height: 28px; margin-top: -10px; }
+.wave span { width: 4px; height: 100%; border-radius: 2px; background: var(--brass); transform-origin: center; animation: wave 0.9s ease-in-out infinite; }
+@keyframes wave { 0%, 100% { transform: scaleY(0.25); } 50% { transform: scaleY(1); } }
+.cast-list .who { display: inline-flex; align-items: center; gap: 10px; }
+.face { width: 26px; height: 26px; border-radius: 50%; overflow: hidden; flex: none; display: grid; place-items: center; font-family: var(--font-title); font-size: 0.95rem; color: var(--brass); background: var(--ground-raised); border: 1px solid var(--brass-soft); }
+.face img { width: 100%; height: 100%; object-fit: cover; }
+.lock { color: var(--ink-faint); flex: none; width: 26px; height: 26px; padding: 5px; box-sizing: border-box; }
+.question { margin: 0; font-size: 0.9rem; line-height: 1.45; color: var(--ink-soft); }
+.lang { display: inline-block; margin-right: 8px; padding: 1px 8px; border: 1px solid var(--brass-soft); border-radius: 999px; font-size: 0.78rem; color: var(--brass); }
+.volume .cover { width: 100%; max-height: 180px; object-fit: cover; border-radius: var(--radius); }
+@media (prefers-reduced-motion: reduce) {
+  .medallion.thinking::after { animation: none; opacity: 0.4; }
+  .wave span { animation: none; transform: scaleY(0.6); }
+}
+.medallion video { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* Small screens: the player bar wraps to several rows, so the debug pill is hidden rather than covering it. */
+@media (max-width: 600px) {
+  .player { gap: 10px 14px; padding: 10px 16px; }
+  .player .pos { margin-left: 0; }
+  .drawer { display: none; } /* a debug aid toggled with the backtick key; there is no such key on a phone */
+  .stage { padding-bottom: 200px; }
+}

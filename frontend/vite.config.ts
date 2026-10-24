@@ -9,6 +9,7 @@ export default defineConfig({
     proxy: {
       "/api": { target: "http://localhost:8000", changeOrigin: true },
       "/media": { target: "http://localhost:8000", changeOrigin: true },
+      "/portraits": { target: "http://localhost:8000", changeOrigin: true },
     },
   },
   test: { environment: "node", include: ["test/**/*.test.ts"] },

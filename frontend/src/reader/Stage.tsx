@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Book, Health } from "../api";
 import type { TalkUi } from "../talk/useTalk";
 import type { TalkState } from "../talk/TalkController";
@@ -12,7 +12,10 @@ type Props = {
   health: Health | null;
   talk: TalkUi;
   audioAvailable: boolean;
-  onTalkMode: () => void;
+  avatarSrc: string | null; // pre-rendered clip for the line being read, when there is one
+  avatarPlaying: boolean;
+  mode: "read" | "talk";
+  onMode: (m: "read" | "talk") => void;
   pinned: string | null; // demo mode: talk only to this character
   needsCode: boolean;
   onCode: (code: string) => void;
@@ -29,16 +32,54 @@ const STATUS: Record<TalkState, string> = {
   "talk-idle": "Ask another question, or press play.",
 };
 
-export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, onTalkMode, pinned, needsCode, onCode, onOpenLab }: Props) {
+function Face({ src, name }: { src: string | null; name: string }) {
+  return (
+    <span className="face" aria-hidden="true">
+      {src ? <img src={src} alt="" /> : name.charAt(0)}
+    </span>
+  );
+}
+
+/** Muted on purpose: the page's own audio element stays the single source of sound, so it cannot double up. */
+function AvatarVideo({ src, playing }: { src: string; playing: boolean }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const v = ref.current;
+    if (!v) return;
+    if (playing) void v.play().catch(() => { /* autoplay refused: the portrait frame stays */ });
+    else v.pause();
+  }, [src, playing]);
+  return <video ref={ref} key={src} src={src} muted playsInline preload="auto" />;
+}
+
+function Lock() {
+  return (
+    <svg className="lock" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-label="Locked">
+      <rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" />
+    </svg>
+  );
+}
+
+function Waveform() {
+  return (
+    <div className="wave" role="img" aria-label="Speaking">
+      {Array.from({ length: 9 }, (_, i) => <span key={i} style={{ animationDelay: `${i * 90}ms` }} />)}
+    </div>
+  );
+}
+
+export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, mode, onMode, pinned, needsCode, onCode, onOpenLab }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
-  const [mode, setMode] = useState<"read" | "talk">("read");
   const { met, locked } = splitCharacters(book.characters, para);
   const speaker = met.find((c) => c.id === speakerId);
-  const name = speaker?.name ?? "Narrator";
-  const blurb = speaker ? speaker.persona : book.narrator?.is_character
+  const tutor = book.kind === "textbook";
+  const name = speaker?.name ?? (tutor ? "Tutor" : "Narrator");
+  const blurb = speaker ? speaker.persona : tutor ? "Explains the chapter in plain words. Ask about anything." : book.narrator?.is_character
     ? `Tells the story as ${book.characters.find((c) => c.id === book.narrator?.is_character)?.name ?? "a character"}.`
     : "Reads the text as written.";
   const live = talk.state === "listening";
+  const portrait = speaker ? speaker.portrait : book.narrator?.portrait ?? null;
+  const thinking = ["transcribing", "retrieving", "answering"].includes(talk.state) && !talk.speaking;
   const pressed = useRef(false); // survives re-renders between press and release
 
   const press = () => { if (!pressed.current) { pressed.current = true; talk.pttDown(); } };
@@ -47,24 +88,28 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
   return (
     <aside className="stage" aria-label="Stage">
       <div className="mode" role="group" aria-label="Mode">
-        <button aria-pressed={mode === "read"} onClick={() => setMode("read")}>Read</button>
+        <button aria-pressed={mode === "read"} onClick={() => onMode("read")}>Read</button>
         <button
           aria-pressed={mode === "talk"}
           disabled={!audioAvailable}
-          title={audioAvailable ? "" : "Talk needs the Boson API key on the server"}
-          onClick={() => { setMode("talk"); onTalkMode(); }}
+          title={audioAvailable ? "Press T to switch" : "Talk needs the Boson API key on the server"}
+          onClick={() => onMode("talk")}
         >
           Talk
         </button>
       </div>
 
       <div className="speaker">
-        <div className={`medallion${live ? " live" : ""}`} aria-hidden="true">{name.charAt(0)}</div>
+        <div className={`medallion${live ? " live" : ""}${thinking ? " thinking" : ""}${talk.speaking ? " speaking" : ""}`} aria-hidden="true">
+          {avatarSrc ? <AvatarVideo src={avatarSrc} playing={avatarPlaying} />
+            : portrait ? <img src={portrait} alt="" /> : <span>{name.charAt(0)}</span>}
+        </div>
         <div>
           <h3>{name}</h3>
           <p>{blurb}</p>
         </div>
       </div>
+      {talk.speaking && <Waveform />}
 
       <div className="badge">
         <strong>{speaker ? `${name} knows` : "Story position:"}</strong> up to paragraph {para + 1}.
@@ -75,20 +120,20 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
         <ul className="cast-list">
           <li>
             <button aria-pressed={speakerId === "narrator"} disabled={!!pinned} onClick={() => onSpeaker("narrator")}>
-              Narrator <small>{book.narrator?.voice ?? "voice not set"}</small>
+              <span className="who"><Face src={book.narrator?.portrait ?? null} name={tutor ? "Tutor" : "Narrator"} />{tutor ? "Tutor" : "Narrator"}</span> <small>{book.narrator?.voice ?? "voice not set"}</small>
             </button>
           </li>
           {met.map((c) => (
             <li key={c.id}>
               <button aria-pressed={speakerId === c.id} disabled={!!pinned && pinned !== c.id} onClick={() => onSpeaker(c.id)}>
-                {c.name} <small>{c.voice}</small>
+                <span className="who"><Face src={c.portrait} name={c.name} />{c.name}</span> <small>{c.voice}</small>
               </button>
             </li>
           ))}
           {locked.map((c) => (
             <li key={c.id}>
-              <button disabled title="Not met yet">
-                {c.name} <small>not met yet</small>
+              <button disabled title="Not met yet: they appear later in the story">
+                <span className="who"><Lock />{c.name}</span> <small>appears later</small>
               </button>
             </li>
           ))}
@@ -132,6 +177,12 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
         </div>
       </div>
 
+      {talk.question && (
+        <p className="question">
+          {talk.language && <span className="lang" title="Detected from what you said">{talk.language.name}</span>}
+          “{talk.question}”
+        </p>
+      )}
       <div className="captions" aria-live="polite">
         {talk.caption || (audioAvailable ? "" : "Captions of the answer will appear here.")}
       </div>

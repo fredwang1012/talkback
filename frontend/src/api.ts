@@ -36,7 +36,7 @@ export type Book = {
   sections: { id: string; title: string; start_para: number }[];
   paragraphs: Paragraph[];
   characters: Character[];
-  narrator: { id: string; voice: string; is_character: string | null } | null;
+  narrator: { id: string; voice: string; is_character: string | null; portrait: string | null } | null;
 };
 export type BookSummary = {
   id: string;
@@ -48,6 +48,7 @@ export type BookSummary = {
   paragraphs: number;
   sections: number;
   characters: number;
+  cover: string | null;
 };
 export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean };
 
@@ -57,8 +58,22 @@ export function authHeaders(): Record<string, string> {
   return token ? { "X-Bookson-Token": token } : {};
 }
 
+/** fetch with a deadline, so a stalled server shows an error instead of an endless spinner. */
+export async function timedFetch(url: string, init: RequestInit = {}, timeoutMs = 15000): Promise<Response> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: ctl.signal });
+  } catch (e) {
+    if (ctl.signal.aborted) throw new Error("The server took too long to respond. Check that the backend is running.");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+  const res = await timedFetch(url);
   if (!res.ok) throw new Error(`${url} failed: ${res.status}`);
   return res.json() as Promise<T>;
 }
@@ -72,11 +87,11 @@ export type TtsResponse = { chunk_id: string; voice: string; audio_url: string; 
 
 /** Throws an Error carrying the server's readable message (e.g. a missing key or a billing refusal). */
 export async function fetchTts(bookId: string, chunkId: string, voiceOverride?: string, cachedOnly = false): Promise<TtsResponse> {
-  const res = await fetch("/api/tts", {
+  const res = await timedFetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ book_id: bookId, chunk_id: chunkId, voice_override: voiceOverride ?? null, cached_only: cachedOnly }),
-  });
+  }, 60000); // a cache miss synthesises speech, which can take a while
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
     throw new Error(detail ?? `Audio request failed (${res.status})`);
@@ -93,11 +108,11 @@ export type RetrieveResponse = {
 };
 
 export async function fetchRetrieve(bookId: string, query: string, readerPara: number, speakerId: string): Promise<RetrieveResponse> {
-  const res = await fetch("/api/retrieve", {
+  const res = await timedFetch("/api/retrieve", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId }),
-  });
+  }, 10000);
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
     throw new Error(detail ?? `Lookup failed (${res.status})`);
@@ -107,7 +122,7 @@ export async function fetchRetrieve(bookId: string, query: string, readerPara: n
 
 /** A fresh ephemeral Realtime key for one connection. Never cache the result. */
 export async function fetchRealtimeKey(): Promise<string> {
-  const res = await fetch("/api/realtime/token", { method: "POST", headers: authHeaders() });
+  const res = await timedFetch("/api/realtime/token", { method: "POST", headers: authHeaders() });
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
     throw new Error(detail ?? `Could not start a voice session (${res.status})`);
@@ -124,7 +139,7 @@ export async function cloneVoice(audio: Blob, filename: string, transcript: stri
   form.append("transcript", transcript);
   form.append("name", name);
   form.append("consent", consent ? "true" : "false");
-  const res = await fetch("/api/voices/clone", { method: "POST", headers: authHeaders(), body: form });
+  const res = await timedFetch("/api/voices/clone", { method: "POST", headers: authHeaders(), body: form }, 60000);
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
     throw new Error(detail ?? `Voice upload failed (${res.status})`);
@@ -133,3 +148,9 @@ export async function cloneVoice(audio: Blob, filename: string, transcript: stri
 }
 
 export const fetchVoices = () => getJson<Record<string, string>>("/api/voices");
+
+/** Chunk ids that have a pre-rendered avatar clip (stretch feature). Empty when there are none or the call fails. */
+export async function fetchAvatars(bookId: string): Promise<string[]> {
+  try { return await getJson<string[]>(`/api/avatars/${encodeURIComponent(bookId)}`); } catch { return []; }
+}
+export const avatarUrl = (bookId: string, chunkId: string) => `/api/avatar/${encodeURIComponent(chunkId)}?book=${encodeURIComponent(bookId)}`;

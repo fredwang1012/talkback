@@ -18,7 +18,7 @@ class BosonError(Exception):
 
     @property
     def transient(self) -> bool:
-        return self.type == "rate_limit_error" or self.status >= 500
+        return self.type == "rate_limit_error" or self.status >= 500 or self.code == "all_replicas_busy"
 
 
 def _to_error(resp: httpx.Response) -> BosonError:
@@ -76,6 +76,36 @@ class BosonClient:
             body["description"] = description
         data = (await self.request("POST", "/v1/audio/voices", json=body)).json()
         return data.get("voice") or data["voice_id"]  # schema says `voice`, guide says `voice_id`
+
+    # ---- Higgs Avatar (stretch). Request/response shapes follow the docs; verify with scripts/probe_avatar.py. ----
+
+    async def create_video(self, ref_image_b64: str, audio_b64: str, *, size: str = "640x640",
+                           image_mime: str = "image/png", audio_mime: str = "audio/mpeg") -> str:
+        """Start an async avatar render from a portrait and a speech clip (at most 60 s). Returns the video id."""
+        body = {"model": "higgs-avatar", "size": size,
+                "ref_image": f"data:{image_mime};base64,{ref_image_b64}",
+                "input": f"data:{audio_mime};base64,{audio_b64}"}
+        return (await self.request("POST", "/v1/videos", json=body)).json()["id"]
+
+    async def get_video(self, video_id: str) -> dict[str, Any]:
+        return (await self.request("GET", f"/v1/videos/{video_id}")).json()
+
+    async def wait_video(self, video_id: str, *, timeout: float = 300, interval: float = 3) -> dict[str, Any]:
+        """Poll until the video is completed or failed; raises on failure or timeout."""
+        waited = 0.0
+        while True:
+            info = await self.get_video(video_id)
+            if info.get("status") == "completed":
+                return info
+            if info.get("status") == "failed":
+                raise BosonError(500, "api_error", f"avatar render failed: {info.get('error') or info}")
+            if waited >= timeout:
+                raise BosonError(504, "api_error", f"avatar render {video_id} not finished after {timeout:.0f}s")
+            await asyncio.sleep(interval)
+            waited += interval
+
+    async def download_video(self, video_id: str) -> bytes:
+        return (await self.request("GET", f"/v1/videos/{video_id}/content")).content
 
     async def mint_client_secret(self, ttl: int = 600) -> dict[str, Any]:
         data = (await self.request("POST", "/v1/realtime/client_secrets",

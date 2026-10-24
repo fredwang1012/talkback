@@ -56,6 +56,10 @@ export interface TalkDeps {
   onToast?: (message: string) => void;
   onCaption?: (text: string, done: boolean) => void;
   onLatency?: (l: Latency) => void;
+  /** The question as transcribed, so the UI can show it and a language badge. */
+  onTranscript?: (text: string) => void;
+  /** True while answer audio is coming out of the speakers (drives the waveform). */
+  onSpeaking?: (speaking: boolean) => void;
   now?: () => number;
   autoResumeDelayMs?: number;
   transcriptTimeoutMs?: number;
@@ -84,9 +88,17 @@ export class TalkController {
 
   get state(): TalkState { return this._state; }
 
+  private speaking = false;
+  private setSpeaking(v: boolean): void {
+    if (v === this.speaking) return;
+    this.speaking = v;
+    this.d.onSpeaking?.(v);
+  }
+
   private set(s: TalkState): void {
     if (s === this._state) return;
     this._state = s;
+    if (s !== "answering") this.setSpeaking(false);
     this.d.onState?.(s);
   }
 
@@ -156,6 +168,7 @@ export class TalkController {
     if (turn !== this.turn) return;
     const query = transcript && transcript.type === "transcript" ? transcript.text.trim() : "";
     this.latency = { commitToTranscriptMs: this.d.now() - t0 };
+    if (query) this.d.onTranscript?.(query);
 
     this.set("retrieving");
     const r0 = this.d.now();
@@ -201,6 +214,8 @@ export class TalkController {
       if (w.predicate(e)) { this.waiters = this.waiters.filter((x) => x !== w); w.resolve(e); }
     }
     if (e.type === "caption") this.d.onCaption?.(e.text, e.done);
+    if (e.type === "audio-start" && this._state === "answering") this.setSpeaking(true);
+    if (e.type === "playback-drained") this.setSpeaking(false);
     if (e.type === "error") {
       this.d.onToast?.(e.message);
       if (["listening", "transcribing", "retrieving", "answering"].includes(this._state)) { this.turn++; this.backToReading(); }
