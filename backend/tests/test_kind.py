@@ -189,7 +189,7 @@ def test_textbook_to_novel_respects_caps_and_confirm(client, monkeypatch):
     assert st["enrich"] == {"status": "refused", "message": pipeline.TOO_LONG} and not client.fake.calls
     assert client.get(f"/api/books/{book_id}").json()["kind"] == "novel"  # still moved, narrator only
 
-    other = upload(client, kind="textbook").json()["book_id"]
+    other = upload(client, kind="textbook", raw=story() + "\n\nA different copy.").json()["book_id"]   # not a duplicate (#82)
     monkeypatch.setattr(settings, "upload_book_cap_usd", 4.0)
     monkeypatch.setattr(settings, "upload_confirm", True)
     client.post(f"/api/books/{other}/kind", json={"kind": "novel"})

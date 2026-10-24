@@ -1,5 +1,5 @@
 import { AUDIO_RATE } from "../audio/constants";
-import { describeClose, inputAudioAppend, truncateItem, type ClientEvent, type ServerEvent } from "../realtime/events";
+import { describeClose, historyItem, inputAudioAppend, truncateItem, type ClientEvent, type ServerEvent } from "../realtime/events";
 import type { SessionEvent, TalkSession } from "./TalkController";
 
 const WS_URL = "wss://api.boson.ai/v1/realtime?model=higgs-realtime";
@@ -23,6 +23,9 @@ export interface PlayerLike {
   enqueueBase64(b64: string): void;
   /** Stop playback now; resolves with milliseconds actually handed to the audio output (audio_end_ms). */
   flush(): Promise<number>;
+  /** Hold playback where it is (queued audio is kept) and continue it. Optional. */
+  pausePlayback?(): Promise<void>;
+  resumePlayback?(): Promise<void>;
   reset(): void;
   close(): Promise<void>;
 }
@@ -39,6 +42,10 @@ export interface TalkClientDeps {
   /** Receives base64 PCM16 chunks (~100 ms) and a level for the meter. */
   createMic: (onChunk: (b64: string) => void, onLevel?: (rms: number) => void) => MicLike;
   onLevel?: (rms: number) => void;
+  /** Every base64 PCM chunk of the reply; `first` is true for the first chunk of a response (reply replay keeps them). */
+  onAudioChunk?: (b64: string, first: boolean) => void;
+  /** The finished turns of the chat with the current speaker. A fresh session starts empty, so they are put back as text items. */
+  historyProvider?: () => { role: "user" | "character"; text: string }[];
   onLog?: (dir: "send" | "recv" | "info", type: string, raw: unknown) => void;
   cancelWaitMs?: number;
   voiceChangeWaitMs?: number;
@@ -145,6 +152,7 @@ export class TalkClient implements TalkSession {
       ws.onopen = () => {
         opened = true;
         this.send(sessionConfig(voice)); // the first session.update starts the session; no need to wait for session.created
+        this.seedHistory();
         this.flushPending();
         resolve();
       };
@@ -164,6 +172,21 @@ export class TalkClient implements TalkSession {
         reject(new Error(info.message)); // no-op if already opened
       };
     });
+  }
+
+  /** A new session knows nothing of the earlier chat (reconnect, reload, idle timeout): give it the last few turns as text. */
+  private seedHistory(): void {
+    let turns: { role: "user" | "character"; text: string }[] = [];
+    try { turns = this.d.historyProvider?.() ?? []; } catch { /* no history is fine */ }
+    turns.forEach((t, i) => { if (t.text.trim()) this.send(historyItem(t.role, t.text, `seed-${i}`)); });
+  }
+
+  /** Forget the conversation the server holds (Clear chat): drop the socket; the next press opens a fresh, empty session. */
+  resetConversation(): void {
+    const ws = this.ws;
+    this.ws = null;
+    this.resetResponse();
+    ws?.close(1000, "chat cleared");
   }
 
   close(): void {
@@ -213,6 +236,10 @@ export class TalkClient implements TalkSession {
     this.responseActive = true;
     this.send({ type: "response.create", response: { instructions, max_output_tokens: 600 } });
   }
+
+  /** Pause / resume the reply being played (#90): the rest of the reply keeps arriving and waits in the ring buffer. */
+  async pausePlayback(): Promise<void> { await this.player.pausePlayback?.(); }
+  async resumePlayback(): Promise<void> { await this.player.resumePlayback?.(); }
 
   /** Barge-in: stop playback, truncate the item at what was actually heard, cancel generation, wait for the ack. */
   async interrupt(): Promise<void> {
@@ -283,6 +310,7 @@ export class TalkClient implements TalkSession {
         if (typeof evt.delta === "string" && evt.delta) {
           if (typeof evt.item_id === "string") this.assistantItemId = evt.item_id;
           this.player.enqueueBase64(evt.delta);
+          this.d.onAudioChunk?.(evt.delta, !this.audioStarted);
           if (!this.audioStarted) { this.audioStarted = true; this.emit({ type: "audio-start" }); }
         }
         break;
@@ -302,7 +330,8 @@ export class TalkClient implements TalkSession {
         break;
       }
       case "error": {
-        const err = (evt.error ?? evt) as { type?: string; code?: string | null; message?: string };
+        const err = (evt.error ?? evt) as { type?: string; code?: string | null; message?: string; event_id?: string };
+        if (typeof err.event_id === "string" && err.event_id.startsWith("seed-")) break; // a history item was refused: the chat just starts fresh
         if (err.code === "response_not_active") break; // cancelling an already-finished response is harmless
         this.emit({ type: "error", message: err.message ?? "The voice service reported an error." });
         break;

@@ -272,9 +272,10 @@ async def enrich_book(book_id: str, report: Callable[..., None], *, indexer=None
 
 # ---------- answers ----------
 
-def answer_payload(book: Book, speaker, speaker_id: str, out: dict, query: str, spoilers: bool) -> dict:
+def answer_payload(book: Book, speaker, speaker_id: str, out: dict, query: str, spoilers: bool, history=()) -> dict:
     """The request for /api/public/answer from locally retrieved (already spoiler-filtered) passages."""
-    return {"title": book.title, "kind": book.kind, "speaker_id": speaker_id,
+    extra = {"history": [{"role": t.role, "text": t.text} for t in history]} if history else {}
+    return {**extra, "title": book.title, "kind": book.kind, "speaker_id": speaker_id,
             "speaker_name": speaker.name if speaker else "", "persona": speaker.persona if speaker else "",
             "story_so_far": out["story_so_far"], "query": query, "spoilers": spoilers,
             "passages": [{k: v for k, v in p.items() if k in ("book", "para_start", "para_end", "text")}

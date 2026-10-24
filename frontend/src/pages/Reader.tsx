@@ -2,27 +2,32 @@ import { isAutoplayBlock } from "../audio/mediaErrors";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getAccessToken, setAccessToken } from "../accessToken";
 import {
-  avatarUrl, fetchAvatars, fetchBook, fetchCast, fetchFaces, fetchHealth, fetchTts, fetchVoices,
+  avatarUrl, fetchAvatars, fetchBook, fetchCast, fetchFaces, fetchHealth, fetchTts, fetchVoices, speak, fetchScopedRecap,
   type Book, type Cast, type Face, type Health,
 } from "../api";
 import {
-  PRESETS, castVoice, dropReferences, createCastSaver, emptyCast, isNovel, loadStyle, loadTalkChoice, migrateOldOverrides,
-  oneVoiceOverride, readingFaceId, saveStyle, saveTalkChoice, talkFaceId, talkVoice, type ReadingStyle, type TalkChoice,
+  PRESETS, PREVIEW_LINE, castVoice, dropReferences, createCastSaver, emptyCast, isNovel, loadTalkChoice, migrateOldOverrides,
+  readingFaceId, saveTalkChoice, talkFaceId, talkVoice, type TalkChoice,
 } from "../reader/castLogic";
 import { DEMO_SPEAKER, DEMO_START_PARA, firstChunkAtOrAfter, isDemo } from "../demo";
 import BookText from "../reader/BookText";
 import PlayerBar from "../reader/PlayerBar";
-import RecapPanel from "../reader/RecapPanel";
-import { ReaderEngine, type AudioLike } from "../reader/ReaderEngine";
+import RecapPanel, { nothingYet, recapHeading } from "../reader/RecapPanel";
+import type { RecapChoice } from "../reader/RecapMenu";
+import { ReaderEngine, type AudioLike, type ClipSource } from "../reader/ReaderEngine";
 import type { FollowAudio } from "../reader/clipFollow";
 import { AudioLevelMeter } from "../reader/audioLevel";
 import { SPEECH_IDLE, stepSpeech } from "../reader/speechLevel";
+import { loopsToPreload, showReadingFace } from "../reader/readFace";
+import { lipSyncVoiceFor, readFaceFor, readLipSyncable, speechSeconds, type ReadFaces } from "../reader/readLipSync";
 import Stage from "../reader/Stage";
 import { toggleMode, validSpeaker } from "../reader/talkbackLogic";
 import TalkbackView, { ModeToggle } from "../reader/TalkbackView";
 import { loadSpoilers, saveSpoilers } from "../reader/spoilers";
 import VoiceLab from "../reader/VoiceLab";
 import { spend, type SpendSnapshot } from "../spend";
+import { openClipVideo } from "../talk/clipVideo";
+import { FaceSync } from "../talk/faceSync";
 import { useTalk } from "../talk/useTalk";
 import { DebugDrawer } from "../ui/DebugDrawer";
 import { debugEnabled } from "../ui/debugFlag";
@@ -52,7 +57,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [code, setCode] = useState(getAccessToken());
   const [remember, setRemember] = useState(true);
   const [labOpen, setLabOpen] = useState(false);
-  const [recapOpen, setRecapOpen] = useState(false);
+  const [recapOpen, setRecapOpen] = useState<RecapChoice | null>(null); // text-only recap (no Talkback without a voice)
   const [cast, setCast] = useState<Cast>(emptyCast);
   const [castLoaded, setCastLoaded] = useState(false); // false until the saved cast arrived: then the server picks voices
   const castEdited = useRef(false); // a local edit happened: late server loads must not overwrite it
@@ -61,10 +66,14 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [castError, setCastError] = useState<string | null>(null);
   const [faces, setFaces] = useState<Face[]>([]);
   const [cloned, setCloned] = useState<Record<string, string>>({});
-  const [style, setStyle] = useState<ReadingStyle>(() => loadStyle(bookId));
   const [talkChoice, setTalkChoice] = useState<TalkChoice>(() => loadTalkChoice(bookId));
-  useEffect(() => { setStyle(loadStyle(bookId)); setTalkChoice(loadTalkChoice(bookId)); }, [bookId]);
+  useEffect(() => { setTalkChoice(loadTalkChoice(bookId)); }, [bookId]);
   const [lipSync, setLipSync] = useState(() => { try { return localStorage.getItem("talkback:lipsync") === "1"; } catch { return false; } });
+  // read-mode lip-sync (#80): off by default (it costs Boson credit); the face's clip video is driven by its own sync
+  const [readLipSync, setReadLipSync] = useState(() => { try { return localStorage.getItem("talkback:readlipsync") === "1"; } catch { return false; } });
+  const [readClipShown, setReadClipShown] = useState(false);
+  const readSync = useRef<FaceSync | null>(null);
+  if (!readSync.current) readSync.current = new FaceSync(setReadClipShown);
   const [spoilers, setSpoilers] = useState(() => loadSpoilers(bookId));
   useEffect(() => setSpoilers(loadSpoilers(bookId)), [bookId]);
   const [spendNow, setSpendNow] = useState<SpendSnapshot>(spend.snapshot());
@@ -116,6 +125,7 @@ export default function Reader({ bookId }: { bookId: string }) {
         return r;
       },
       createAudio: (url) => new Audio(url) as unknown as AudioLike, // the engine only assigns a plain onended callback
+      sync: readSync.current as FaceSync,
     }, indexRef.current);
     engineRef.current = engine;
     const off = engine.on((s) => {
@@ -157,21 +167,46 @@ export default function Reader({ bookId }: { bookId: string }) {
   }, [book, chunks, audioAvailable, demo]);
 
 
-  const oneVoice = book ? oneVoiceOverride(book, cast, style) : null;
   const readingVoiceFor = (id: string) => (book ? castVoice(book, cast, id) : "marcus");
   const talkVoiceFor = (id: string) => (book ? talkVoice(book, cast, talkChoice, id) : "marcus");
   const faceById = (id: string | null) => (id ? faces.find((f) => f.id === id) : undefined);
   const talkFaceFor = (id: string) =>
-    book ? faceById(talkFaceId(cast, talkChoice, id, talkVoiceFor(id), faces)) : undefined;
-  const narratorVoice = book ? oneVoice ?? castVoice(book, cast, "narrator") : null;
+    book ? faceById(talkFaceId(book, cast, talkChoice, id, talkVoiceFor(id), faces)) : undefined;
+  const narratorVoice = book ? castVoice(book, cast, "narrator") : null;
   const current = chunks[index];
+  // read mode: who reads a chunk, by the reader's own voice -> face resolution (two voices or full cast); a speaker
+  // without a face is read by the narrator's face (reader/readLipSync)
+  const readFaces: ReadFaces = {
+    faceFor: (s) => (book ? faceById(readingFaceId(book, cast, s)) ?? null : null),
+    voiceFor: (s) => (book ? castVoice(book, cast, isNovel(book) ? s : "narrator") : "marcus"),
+  };
+  const latestFaces = useRef(readFaces);
+  latestFaces.current = readFaces;
   // the face of whoever reads aloud right now (read mode)
-  const readingFace = book && playing && !loading && current
-    ? faceById(readingFaceId(book, cast, style, current.speaker)) ?? null : null;
+  // mounted while the first chunk still loads, so its talking loop is ready on the first word (see reader/readFace)
+  const readingFace = book && current && showReadingFace({ playing, loading }) ? readFaceFor(readFaces, current.speaker) : null;
+  const nextChunk = chunks[index + 1];
+  const nextReadingFace = book && nextChunk && playing ? readFaceFor(readFaces, nextChunk.speaker) : null;
+  const preloadLoops = loopsToPreload(readingFace, nextReadingFace);
+  const readLipSyncAvailable = audioAvailable && !!book && readLipSyncable(readFaces, ["narrator", ...(current ? [current.speaker] : [])]);
+  // the engine's clip source: the chunk's clip on the voice whose bound face is on screen (null: no lip-sync for it)
+  const clipSource = useMemo<ClipSource | null>(() => {
+    if (!readLipSync || !audioAvailable) return null;
+    return (chunk, audioUrl, voice) => {
+      const faceVoice = lipSyncVoiceFor(latestFaces.current, chunk.speaker, voice);
+      if (!faceVoice) return null;
+      return openClipVideo(audioUrl, faceVoice, () => spend.addAvatar(speechSeconds(chunk.tts_text)));
+    };
+  }, [readLipSync, audioAvailable]);
+  useEffect(() => { engineRef.current?.setClipSource(clipSource); }, [clipSource, book, chunks, audioAvailable, demo]);
+  const toggleReadLipSync = useCallback((on: boolean) => {
+    setReadLipSync(on);
+    try { localStorage.setItem("talkback:readlipsync", on ? "1" : "0"); } catch { /* storage blocked */ }
+  }, []);
   const voiceOptions = useMemo(
     () => [...PRESETS.map((v) => ({ value: v, label: v })), ...Object.entries(cloned).map(([n, v]) => ({ value: v, label: `${n} (cloned)` }))],
     [cloned]);
-  const lipSyncFace = faceById(book ? talkFaceId(cast, talkChoice, speakerId, talkVoiceFor(speakerId), faces) : null);
+  const lipSyncFace = faceById(book ? talkFaceId(book, cast, talkChoice, speakerId, talkVoiceFor(speakerId), faces) : null);
   const lipSyncable = !!lipSyncFace && lipSyncFace.voice === talkVoiceFor(speakerId);
 
   // Talk mode: push-to-talk questions, answered from what has been read so far (needs the Boson key).
@@ -186,6 +221,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     spoilers: spoilers && book?.kind === "novel",
     talkback: mode === "talk",
     voiceFor: talkVoiceFor,
+    narratorVoice: audioAvailable ? narratorVoice : null,
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
       currentIndex: () => indexRef.current,
@@ -223,9 +259,6 @@ export default function Reader({ bookId }: { bookId: string }) {
   }, [audioAvailable, pttDown, pttUp]);
 
   useEffect(() => { engineRef.current?.setSpeed(speed); }, [speed, audioAvailable, book]);
-  useEffect(() => {
-    engineRef.current?.setNarratorOnly(oneVoice);
-  }, [oneVoice, audioAvailable]);
   // a changed cast applies at once, from the local copy (the save runs in the background)
   useEffect(() => {
     engineRef.current?.setVoiceResolver(book && castLoaded
@@ -237,6 +270,18 @@ export default function Reader({ bookId }: { bookId: string }) {
     if (m === "talk") { if (engineRef.current) engineRef.current.pause(); else setPlaying(false); }
     else stopTalkRef.current(); // leaving Talkback silences the character; the reading position is untouched
   }, []);
+
+  /** Recap menu: the narrator posts the chosen recap into the Talkback chat and reads it aloud (text panel without a voice). */
+  const recap = (c: RecapChoice) => {
+    if (!book) return;
+    if (!audioAvailable) { setRecapOpen(c); return; }
+    if (mode !== "talk") changeMode("talk");
+    const at = para;
+    void talk.narrate(c.label, async () => {
+      const r = await fetchScopedRecap(book.id, at, c.scope);
+      return { text: r.text, heading: recapHeading(c, r), empty: nothingYet(at) };
+    });
+  };
 
   const seek = useCallback((i: number) => {
     const next = clampIndex(i, chunks.length);
@@ -293,16 +338,14 @@ export default function Reader({ bookId }: { bookId: string }) {
     () => createCastSaver(bookId, () => setCastError(null), setCastError),
     [bookId]);
   const changeCast = (next: Cast) => { castEdited.current = true; setCastLoaded(true); setCast(next); setCastError(null); void saver(next); };
-  const changeStyle = (next: ReadingStyle) => { setStyle(next); saveStyle(bookId, next); };
   const changeTalk = (next: TalkChoice) => { setTalkChoice(next); saveTalkChoice(bookId, next); };
   const reloadCast = () => { void saver.flush().then(() => fetchCast(bookId)).then((c) => { setCast(c); }).catch(() => {}); };
   const reloadFaces = () => { fetchFaces().then(setFaces).catch(() => {}); fetchVoices().then(setCloned).catch(() => {}); };
-  const preview = async (speaker: string, voice: string) => {
-    const chunk = chunks.find((c) => c.speaker === speaker) ?? chunks[0];
-    if (!chunk) return;
+  // one short fixed line per voice through the TTS cache: only the first preview of a voice costs anything
+  const preview = async (voice: string) => {
     try {
-      const r = await fetchTts(bookId, chunk.id, voice);
-      if (!r.cached) spend.addTts(chunk.tts_text.length);
+      const r = await speak(PREVIEW_LINE, voice);
+      if (!r.cached) spend.addTts(PREVIEW_LINE.length);
       await new Audio(r.audio_url).play();
     } catch (e) {
       if (isAutoplayBlock(e)) setAudioNotice("Tap the preview button again to hear the voice. Your browser needs a fresh click.");
@@ -353,7 +396,7 @@ export default function Reader({ bookId }: { bookId: string }) {
                           lipSyncable={lipSyncable} lipSync={lipSync}
                           onLipSync={(on) => { setLipSync(on); try { localStorage.setItem("talkback:lipsync", on ? "1" : "0"); } catch { /* storage blocked */ } }}
                           portrait={book.characters.find((c) => c.id === speakerId)?.portrait ?? book.narrator?.portrait ?? null}
-                          onBack={() => changeMode("read")} onRecap={() => setRecapOpen(true)} onVoices={() => setLabOpen(true)} />
+                          onBack={() => changeMode("read")} onRecap={recap} onVoices={() => setLabOpen(true)} />
           ) : (
             <BookText book={book} chunks={chunks} index={index} word={word}
                       onPick={(i) => { lastManualScroll.current = Date.now(); seek(i); }} />
@@ -367,27 +410,26 @@ export default function Reader({ bookId }: { bookId: string }) {
                  pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
                  needsCode={needsCode} onCode={(c, rem) => { setAccessToken(c, rem); setCode(c); }} onOpenLab={() => setLabOpen(true)}
                  faceFor={talkFaceFor}
-                 readingFace={readingFace} spoilers={spoilers}
-                 readSpeaking={readSpeaking} levelRef={levelRef} />
+                 readingFace={readingFace} preloadLoops={preloadLoops} spoilers={spoilers}
+                 readSpeaking={readSpeaking} levelRef={levelRef}
+                 readLipSync={{ available: readLipSyncAvailable, on: readLipSync, onToggle: toggleReadLipSync, sync: readSync.current as FaceSync, shown: readClipShown }} />
         )}
       </div>
       {labOpen && (
-        <VoiceLab book={book} cast={cast} onCast={changeCast} castError={castError} style={style} onStyle={changeStyle}
+        <VoiceLab book={book} cast={cast} onCast={changeCast} castError={castError}
                   cloned={cloned} onCloned={setCloned} animating={animating} setAnimating={setAnimating} animErrors={animErrors} setAnimErrors={setAnimErrors} faces={faces} onFaces={setFaces}
                   onFacesChanged={() => { reloadFaces(); reloadCast(); }}
                   onRemoved={(gone) => {
-                    const next = dropReferences(style, talkChoice, gone);
-                    changeStyle(next.style); changeTalk(next.talk);
+                    changeTalk(dropReferences(talkChoice, gone));
                   }}
                   onPreview={preview} audioAvailable={audioAvailable} onClose={() => setLabOpen(false)} />
       )}
       {recapOpen && (
-        <RecapPanel bookId={book.id} para={para} voice={audioAvailable ? narratorVoice : null}
-                    onClose={() => setRecapOpen(false)} />
+        <RecapPanel bookId={book.id} para={para} choice={recapOpen} onClose={() => setRecapOpen(null)} />
       )}
       {debugEnabled() && <DebugDrawer entries={talk.logs} spend={spendNow} />}
       {mode === "read" && <PlayerBar
-        playing={playing} loading={loading} onToggle={toggle} onRecap={() => setRecapOpen(true)}
+        playing={playing} loading={loading} onToggle={toggle} onRecap={recap} inSeries={!!book.series}
         onPrev={() => { lastManualScroll.current = 0; step(-1); }} onNext={() => { lastManualScroll.current = 0; step(1); }}
         speed={speed} speeds={SPEEDS} onSpeed={setSpeed}
         onVoices={() => setLabOpen(true)}

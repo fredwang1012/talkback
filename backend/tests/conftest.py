@@ -47,3 +47,9 @@ def _public_api_off_unless_a_test_says_otherwise(monkeypatch):
     monkeypatch.setattr(settings, "public_api_url", "", raising=False)
     monkeypatch.setattr(settings, "public_api", False, raising=False)
     monkeypatch.setattr(public_client, "_probe", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_minor_voices_unless_a_test_says_otherwise(monkeypatch):
+    """Pipeline tests assert exact casts and segments; the generic-voice pass (#70) is tested on its own."""
+    monkeypatch.setattr(settings, "minor_voices", False, raising=False)

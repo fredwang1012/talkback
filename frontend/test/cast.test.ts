@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { animateFace, saveCast, type AnimatedFace, type Book, type Cast, type Face } from "../src/api";
 import {
-  castRows, createCastSaver, effectiveMode, migrateOldOverrides, oneVoiceOverride, readingFaceId, runAnimate,
-  talkFaceId, talkVoice, withAssignment, type ReadingStyle,
+  castRows, castVoice, createCastSaver, genderRows, migrateOldOverrides, narratorGender, radioKeyTarget, readingFaceId,
+  runAnimate, slotVoice, speakerGender, talkFaceId, talkVoice, twoVoices, voiceSummary, withAssignment, withGender, withSlot,
 } from "../src/reader/castLogic";
 import { ReaderEngine, type AudioLike, type TtsResult } from "../src/reader/ReaderEngine";
 import type { FlatChunk } from "../src/reader/position";
@@ -19,10 +19,18 @@ const novel = {
   ],
 } as unknown as Book;
 const textbook = { ...novel, id: "tb", kind: "textbook", series: null, characters: [] } as unknown as Book;
+/** Full cast mode: the per-character tests below. */
 const blank = (): Cast => ({
   main: ["harry", "hermione"],
   narrator: { voice: null, face: null },
   characters: { harry: { voice: null, face: null }, hermione: { voice: null, face: null }, minor: { voice: null, face: null } },
+  mode: "cast",
+});
+/** What the server sends for a novel in the default two-voice mode. */
+const two = (): Cast => ({
+  ...blank(), mode: "two", male: { voice: null, face: null }, female: { voice: null, face: null }, narrator_gender: null,
+  genders: {}, auto_genders: { harry: "male", hermione: "female", minor: null },
+  defaults: { male: "marcus", female: "chloe", narrator_gender: "male" },
 });
 
 // ---------- one voice vs full cast ----------
@@ -50,48 +58,78 @@ async function sentVoices(override: string | null) {
   return sent;
 }
 
-describe("reading style", () => {
-  const one: ReadingStyle = { mode: "one", voice: "oliver", face: null };
-  const full: ReadingStyle = { mode: "cast", voice: "oliver", face: null };
-
-  it("One voice sends voice_override for every chunk", async () => {
-    const override = oneVoiceOverride(novel, blank(), one);
-    expect(override).toBe("oliver");
-    const sent = await sentVoices(override);
-    expect(sent).toHaveLength(4);
-    expect(sent.every((v) => v === "oliver")).toBe(true);
+describe("two voices (novels, the default)", () => {
+  it("every speaker reads in the male or female voice by gender; the narrator in the server default", () => {
+    const c = two();
+    expect(twoVoices(novel, c)).toBe(true);
+    expect(["narrator", "harry", "hermione", "minor"].map((id) => castVoice(novel, c, id))).toEqual(["marcus", "marcus", "chloe", "marcus"]);
+    expect(speakerGender(c, "minor_f")).toBe("female"); // the generic stand-ins keep their gender
   });
 
-  it("One voice without a pick uses the narrator's cast/book voice", () => {
-    expect(oneVoiceOverride(novel, blank(), { ...one, voice: null })).toBe("marcus");
-    const c = withAssignment(blank(), "narrator", { voice: "eleanor" });
-    expect(oneVoiceOverride(novel, c, { ...one, voice: null })).toBe("eleanor");
+  it("the reader picks both voices, who narrates and a character's gender", () => {
+    let c = withSlot(withSlot(two(), "male", { voice: "oliver" }), "female", { voice: "nora", face: "f-f" });
+    c = withGender({ ...c, narrator_gender: "female" }, "harry", "female");
+    expect(narratorGender(c)).toBe("female");
+    expect(["narrator", "harry", "hermione", "minor"].map((id) => castVoice(novel, c, id))).toEqual(["nora", "nora", "nora", "nora"]);
+    expect(readingFaceId(novel, c, "harry")).toBe("f-f");
+    expect(slotVoice(c, "male")).toBe("oliver");
+    expect(withGender(c, "harry", null).genders).toEqual({});
   });
 
-  it("Full cast sends no voice_override, so the server cast decides", async () => {
-    const override = oneVoiceOverride(novel, blank(), full);
-    expect(override).toBeNull();
-    const sent = await sentVoices(override);
-    expect(sent).toHaveLength(4);
-    expect(sent.every((v) => v === undefined)).toBe(true);
+  it("Talkback answers in the character's gendered voice and that voice's face", () => {
+    const c = withSlot(two(), "female", { face: "f-f" });
+    expect(talkVoice(novel, c, { voice: null, face: null }, "hermione")).toBe("chloe");
+    expect(talkFaceId(novel, c, { voice: null, face: null }, "hermione", "chloe", [])).toBe("f-f");
+    expect(talkFaceId(novel, c, { voice: null, face: null }, "harry", "marcus", [])).toBeNull();
   });
 
-  it("shows the one-voice face for everything, and each speaker's cast face in Full cast", () => {
+  it("lists the characters (not the stand-ins) with their inferred and overridden gender", () => {
+    const b = { ...novel, characters: [...novel.characters, { id: "minor_m", name: "Other", voice: "oliver" }] } as unknown as Book;
+    const rows = genderRows(b, withGender(two(), "minor", "female"));
+    expect(rows.map((r) => [r.id, r.auto, r.override])).toEqual([["harry", "male", null], ["hermione", "female", null], ["minor", null, "female"]]);
+  });
+
+  it("Full cast keeps the per-character voices and faces", () => {
     let cast = withAssignment(blank(), "harry", { face: "f-harry" });
     cast = withAssignment(cast, "narrator", { face: "f-nar" });
-    expect(readingFaceId(novel, cast, { ...one, face: "f-one" }, "harry")).toBe("f-one");
-    expect(readingFaceId(novel, cast, full, "harry")).toBe("f-harry");
-    expect(readingFaceId(novel, cast, full, "narrator")).toBe("f-nar");
-    expect(readingFaceId(novel, cast, full, "hermione")).toBeNull();
+    expect(twoVoices(novel, cast)).toBe(false);
+    expect(readingFaceId(novel, cast, "harry")).toBe("f-harry");
+    expect(readingFaceId(novel, cast, "narrator")).toBe("f-nar");
+    expect(readingFaceId(novel, cast, "hermione")).toBeNull();
+  });
+
+  it("the reader engine sends the resolved voice for every chunk", async () => {
+    const c = two();
+    const sent: (string | undefined)[] = [];
+    const engine = new ReaderEngine(chunks, {
+      fetchTts: async (_c, voice): Promise<TtsResult> => { sent.push(voice); return { audio_url: "/a.mp3", timestamps: null }; },
+      createAudio: (u) => new FakeAudio(u),
+    });
+    engine.setVoiceResolver((chunk) => castVoice(novel, c, chunk.speaker));
+    engine.play();
+    await new Promise((r) => setTimeout(r, 0));
+    engine.dispose();
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sent.every((v) => v === "marcus")).toBe(true); // narrator and Harry: both the male voice
+  });
+
+  it("arrow keys move round a radio group; Home / End jump", () => {
+    expect(radioKeyTarget("ArrowRight", 2, 3)).toBe(0);
+    expect(radioKeyTarget("ArrowLeft", 0, 3)).toBe(2);
+    expect(radioKeyTarget("ArrowDown", 0, 3)).toBe(1);
+    expect(radioKeyTarget("End", 0, 3)).toBe(2);
+    expect(radioKeyTarget("Home", 2, 3)).toBe(0);
+    expect(radioKeyTarget("a", 0, 3)).toBeNull();
   });
 });
 
 describe("textbooks", () => {
-  it("show only the narrator row and ignore a stored One voice mode", () => {
-    const cast = { ...blank(), main: ["harry"] };
+  it("have one voice: the narrator's, whatever the mode", () => {
+    const cast = { ...two(), main: ["harry"], narrator: { voice: "eleanor", face: "f-n" } };
     expect(castRows(textbook, cast)).toEqual([{ id: "narrator", name: "Narrator" }]);
-    expect(effectiveMode(textbook, { mode: "one", voice: "oliver", face: null })).toBe("cast");
-    expect(oneVoiceOverride(textbook, cast, { mode: "one", voice: "oliver", face: null })).toBeNull();
+    expect(twoVoices(textbook, cast)).toBe(false);
+    expect(castVoice(textbook, cast, "narrator")).toBe("eleanor");
+    expect(readingFaceId(textbook, cast, "harry")).toBe("f-n");
   });
 
   it("novels list the narrator and all main characters, no spoiler gating", () => {
@@ -172,15 +210,15 @@ describe("talk voice and avatar", () => {
   });
 
   it("Auto avatar is the cast face; an explicit voice or face overrides", () => {
-    expect(talkFaceId(cast, { voice: null, face: null }, "harry", "oliver", faces)).toBe("f-h");
+    expect(talkFaceId(novel, cast, { voice: null, face: null }, "harry", "oliver", faces)).toBe("f-h");
     expect(talkVoice(novel, cast, { voice: "chloe", face: null }, "harry")).toBe("chloe");
-    expect(talkFaceId(cast, { voice: null, face: "f-clone" }, "harry", "oliver", faces)).toBe("f-clone");
-    expect(talkFaceId(cast, { voice: null, face: "none" }, "harry", "oliver", faces)).toBeNull();
+    expect(talkFaceId(novel, cast, { voice: null, face: "f-clone" }, "harry", "oliver", faces)).toBe("f-clone");
+    expect(talkFaceId(novel, cast, { voice: null, face: "none" }, "harry", "oliver", faces)).toBeNull();
   });
 
   it("Auto falls back to the face bound to a cloned voice, and to no face", () => {
-    expect(talkFaceId(blank(), { voice: "vc_me", face: null }, "hermione", "vc_me", faces)).toBe("f-clone");
-    expect(talkFaceId(blank(), { voice: null, face: null }, "hermione", "nora", faces)).toBeNull();
+    expect(talkFaceId(novel, blank(), { voice: "vc_me", face: null }, "hermione", "vc_me", faces)).toBe("f-clone");
+    expect(talkFaceId(novel, blank(), { voice: null, face: null }, "hermione", "nora", faces)).toBeNull();
   });
 });
 
@@ -279,5 +317,23 @@ describe("migration of the old series-wide overrides", () => {
     expect(await migrateOldOverrides(novel, blank(), save, mkStore({ [KEY]: "{not json" }))).toBeNull();
     expect(await migrateOldOverrides(novel, blank(), save, null)).toBeNull();
     expect(save).not.toHaveBeenCalled();
+  });
+});
+
+describe("voice summary (#69)", () => {
+  const b = { ...novel, characters: [
+    { id: "dobby", name: "Dobby", voice: "jake", voice_tags: "<|prosody:pitch_high|>" },
+    { id: "baked", name: "Baked", voice: "voice_x", voice_tags: "", base_voice: "jake", base_voice_tags: "<|prosody:pitch_high|>" },
+  ] } as unknown as Book;
+  const c = (): Cast => ({ main: [], narrator: { voice: null, face: null }, characters: {}, mode: "cast" }); // the summary is shown in Full cast
+
+  it("names the preset and its pitch/speed, the cast override first", () => {
+    expect(voiceSummary(b, c(), "dobby")).toBe("jake, higher pitch");
+    const o = withAssignment(c(), "dobby", { tags: "<|prosody:speed_slow|>", voice: "nora" });
+    expect(voiceSummary(b, o, "dobby")).toBe("nora, slower");
+    expect(voiceSummary(b, c(), "narrator")).toBe("marcus");
+  });
+  it("says when the voice is a baked custom voice", () => {
+    expect(voiceSummary(b, c(), "baked")).toBe("custom voice (baked from jake, higher pitch)");
   });
 });

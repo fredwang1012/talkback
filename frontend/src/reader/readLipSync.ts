@@ -1,0 +1,59 @@
+/**
+ * Read-mode lip-sync (#80): pure decisions for ReaderEngine and the Reader page.
+ *
+ * Each TTS chunk being read gets a Boson avatar clip of its audio (the same stream, start gate and drift control as
+ * Talkback: talk/clipVideo, talk/startGate, talk/faceSync). The server lip-syncs the face BOUND TO THE VOICE it is
+ * given, so a chunk can only be lip-synced on a face that is bound to a voice; the voice sent is the chunk's own when
+ * its reader's face is bound to it, else the narrator's when the narrator's face is bound to the narrator's voice
+ * (the narrator's face then reads that chunk, loop and clip alike).
+ */
+
+import type { Face } from "../api";
+
+/** Clips are opened this many chunks ahead of the one playing: enough to hide Boson's ~2 s start, few enough to keep
+ * at most two renders in flight (the server locks per clip and rate-limits renders). */
+export const READ_CLIP_AHEAD = 1;
+/** The first word after Play waits this long at most for its clip (the toggle promises a short pause). */
+export const READ_START_WAIT_MS = 6000;
+/** Between chunks the voice waits less: the next clip is normally prefetched; if not, the talk loop stands in and
+ * the clip rejoins by rendezvous rather than the reading pausing for seconds. */
+export const READ_CHAIN_WAIT_MS = 1000;
+
+/** Boson Higgs Avatar at the streamed 640x640 (docs.boson.ai/pricing, 2026-10): $0.09 per minute of rendered video. */
+export const AVATAR_USD_PER_MIN = 0.09;
+export const readLipSyncCost = (): string =>
+  `About $${AVATAR_USD_PER_MIN.toFixed(2)} per minute of reading; lines rendered before are free.`;
+
+/** Seconds of speech in a chunk's text (the clip is as long as the audio), for the spend estimate before metadata. */
+export const speechSeconds = (ttsText: string): number => Math.max(1, ttsText.length / 15);
+
+/** Chunks whose clips are held while chunk `i` plays: [i, i + ahead], clamped to the book. */
+export function clipWindow(i: number, ahead: number, last: number): [number, number] {
+  const a = Math.max(0, Math.min(i, last));
+  return [a, Math.max(a, Math.min(a + ahead, last))];
+}
+
+export type ReadFaces = {
+  faceFor: (speaker: string) => Face | null | undefined; // the reader's own voice -> face resolution (what the Stage shows)
+  voiceFor: (speaker: string) => string;                 // the reading voice of a speaker
+};
+
+/** The face shown while a chunk by `speaker` is read: the speaker's own face if they have one, else the narrator's. */
+export const readFaceFor = (faces: ReadFaces, speaker: string): Face | null =>
+  faces.faceFor(speaker) ?? faces.faceFor("narrator") ?? null;
+
+/**
+ * The voice whose bound face lip-syncs a chunk by `speaker` read in `chunkVoice`, or null when no lip-sync is possible
+ * (the face shown is not bound to the voice that speaks). The clip must match the face on screen (readFaceFor).
+ */
+export function lipSyncVoiceFor(faces: ReadFaces, speaker: string, chunkVoice: string | undefined): string | null {
+  const own = faces.faceFor(speaker);
+  if (own) return chunkVoice && own.voice === chunkVoice ? chunkVoice : null;
+  const narrator = faces.faceFor("narrator");
+  const narratorVoice = faces.voiceFor("narrator");
+  return narrator && narrator.voice === narratorVoice ? narratorVoice : null;
+}
+
+/** Whether the "Lip-sync while reading" toggle makes sense: some face on screen can be lip-synced. */
+export const readLipSyncable = (faces: ReadFaces, speakers: string[]): boolean =>
+  speakers.some((s) => lipSyncVoiceFor(faces, s, faces.voiceFor(s)) !== null);

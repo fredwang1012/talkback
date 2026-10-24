@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchRealtimeKey, fetchRetrieve, lipSync, lipSyncStream, speak, streamAnswer, type Health } from "../api";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
+import { fetchRealtimeKey, fetchRetrieve, speak, streamAnswer, type Health } from "../api";
 import { MicCapture } from "../audio/capture";
 import { RingPlayer } from "../audio/playback";
 import { spend } from "../spend";
 import type { LogEntry } from "../ui/DebugDrawer";
-import { addQuestion, appendSentence, finishAnswer, loadChat, saveChat, setPendingText, type ChatMessage } from "./chatLog";
+import { addNarration, addQuestion, appendSentence, fillNarration, finishAnswer, loadChat, priorTurns, saveChat, setPendingText, type ChatMessage } from "./chatLog";
+import { createReadAloud, speechParts } from "../reader/readAloud";
 import { detectLanguage, type Detected } from "./language";
 import { FaceSync } from "./faceSync";
 import { createPlayingGate, type TimingEvent } from "./speechGate";
-import { chooseLipSyncMode, openAvatarStream } from "./avatarStream";
-import { createSentenceSpeaker } from "./sentencePlayer";
+import { openClipVideo } from "./clipVideo";
+import { createSentenceSpeaker, type Clip, type VideoClip } from "./sentencePlayer";
+import { createReplayPlayer, createReplayStore, runPcm, runSentences, type ReplayItem } from "./replay";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
 import { TalkController, type Latency, type ReaderControl, type TalkState } from "./TalkController";
 
@@ -35,8 +37,19 @@ export type TalkUi = {
   ask: (text: string) => void; // a typed question
   stop: () => void; // stop speaking
   clearMessages: () => void;
+  replayable: ReadonlySet<number>; // reply (message) ids that can be played: voice still in memory, or a narrator recap
+  replayingId: number | null; // the reply (or recap) whose voice is playing now, live answer included
+  liveId: number | null; // the answer being spoken right now: its button pauses / resumes it in place (#90)
+  replay: (id: number) => void; // play / pause one reply again (voice, and its avatar clip if there was one); costs nothing
+  isPaused: (id: number) => boolean; // a reply paused part-way (Play resumes it)
+  /** Post a narrator recap into the chat (shown at once, filled when `load` resolves) and read it aloud in the
+   * narrator voice. Never sent to the model as a question, and left out of the chat memory (see priorTurns). */
+  narrate: (heading: string, load: () => Promise<Narration>) => Promise<void>;
   dismissToast: () => void;
 };
+
+/** A loaded recap: its text, a better heading (e.g. with the chapter name), and what to say when the text is empty. */
+export type Narration = { text: string; heading?: string; empty?: string };
 
 type Args = {
   bookId: string;
@@ -50,10 +63,11 @@ type Args = {
   spoilers?: boolean; // full-book mode: the reader allows spoilers (novels only)
   talkback?: boolean; // the dedicated conversation view is open: a mic tap never toggles reading
   lipSync?: boolean; // render each answer sentence as a lip-synced clip of the voice's face (~10 s per sentence)
+  narratorVoice?: string | null; // reads recaps aloud in the chat
 };
 
 /** Owns the Talk session for the reader screen. The real mic, speaker and socket are created once per book. */
-export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, canLipSync = () => false, lipSync: wantLipSync = false, spoilers = false, talkback = false }: Args): TalkUi {
+export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, canLipSync = () => false, lipSync: wantLipSync = false, spoilers = false, talkback = false, narratorVoice = null }: Args): TalkUi {
   const [state, setState] = useState<TalkState>("reading");
   const [caption, setCaption] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -78,8 +92,35 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     setMessagesState(next);
   }, []);
   const bookIdRef = useRef(bookId);
-  useEffect(() => { bookIdRef.current = bookId; msgs.current = loadChat(bookId); setMessagesState(msgs.current); }, [bookId]);
+  useEffect(() => { replayer.current?.stop(); narration.current?.reset(); replayStore.current.clear(); bookIdRef.current = bookId; msgs.current = loadChat(bookId); setMessagesState(msgs.current); }, [bookId]);
   const controller = useRef<TalkController | null>(null);
+  const [replayable, setReplayable] = useState<ReadonlySet<number>>(new Set());
+  const [replayingId, setReplayingId] = useState<number | null>(null);
+  const replayStore = useRef(createReplayStore(undefined, () => setReplayable(new Set(replayStore.current.ids()))));
+  const replayIdRef = useRef(0);
+  const replayer = useRef<ReturnType<typeof createReplayPlayer> | null>(null);
+  const pendingId = () => msgs.current.findLast((x) => x.pending)?.id;
+  // narrator recaps: one read-aloud for all of them, keyed by message id, in the narrator voice
+  const narratorVoiceRef = useRef(narratorVoice);
+  narratorVoiceRef.current = narratorVoice;
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+  const [narratingKey, setNarratingKey] = useState<string | null>(null);
+  const [livePaused, setLivePaused] = useState(false);
+  /** The message of the answer being given now (retrieving or speaking), if any. */
+  const liveMsgId = () => {
+    const c = controller.current;
+    return c && ["retrieving", "answering"].includes(c.state) ? pendingId() : undefined;
+  };
+  const narration = useRef<ReturnType<typeof createReadAloud> | null>(null);
+  if (!narration.current) {
+    narration.current = createReadAloud(() => createSentenceSpeaker(async (text) => {
+      const r = await speak(text, narratorVoiceRef.current ?? "");
+      spend.addTts(text.length);
+      return r;
+    }), setNarratingKey, (e) => setToast(e instanceof Error ? e.message : String(e)));
+  }
+  const clientRef = useRef<TalkClient | null>(null);
   const viaGemini = answersViaGemini(health);
   const latest = useRef({ reader, voiceFor, speakerId, canLipSync, wantLipSync, spoilers });
   latest.current = { reader, voiceFor, speakerId, canLipSync, wantLipSync, spoilers };
@@ -91,6 +132,8 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       createPlayer: (onSpeaking) => new RingPlayer(onSpeaking) as unknown as PlayerLike,
       createMic: (onChunk, onLevel) => new MicCapture(onChunk, onLevel) as unknown as MicLike,
       onLevel: setLevel,
+      onAudioChunk: (b64, first) => { if (first) rtMsgId = pendingId(); if (rtMsgId !== undefined) replayStore.current.addPcm(rtMsgId, b64); },
+      historyProvider: () => priorTurns(msgs.current, latest.current.speakerId),
       onLog: (dir, type, raw) => {
         const r = raw as { audio?: string; delta?: string };
         if (dir === "send" && type === "input_audio_buffer.append" && r.audio) spend.addAudioIn(r.audio.length);
@@ -99,6 +142,8 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       },
     });
     let answerVoice = "";
+    let answerMsgId: number | undefined;
+    let rtMsgId: number | undefined;
     let talk: TalkController | null = null;
     const gate = createPlayingGate((on) => talk?.notePlaying(on));
     const logTiming = (e: TimingEvent) => {
@@ -120,30 +165,26 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         // the voice is fixed when the answer starts, so a mid-answer speaker switch cannot change it
         answer: (query, para, speaker, onSentence, signal) => {
           answerVoice = latest.current.voiceFor(speaker);
-          return streamAnswer(bookId, query, para, speaker, (t) => { setMessages((m) => appendSentence(m, t)); onSentence(t); }, signal, latest.current.spoilers);
+          answerMsgId = pendingId();
+          return streamAnswer(bookId, query, para, speaker, (t) => { setMessages((m) => appendSentence(m, t)); onSentence(t); }, signal, latest.current.spoilers, priorTurns(msgs.current, speaker));
         },
         speaker: createSentenceSpeaker(async (text) => {
           const voice = answerVoice;
           const r = await speak(text, voice);
           if (latest.current.wantLipSync && latest.current.canLipSync(voice)) {
-            // the voice does not wait for this: the video joins when its first fragment is in (see faceSync)
-            const openVideo = async () => {
-              if (chooseLipSyncMode() === "stream") {
-                const c = await openAvatarStream({
-                  post: (signal) => lipSyncStream(r.audio_url, voice, signal),
-                  MediaSourceCtor: MediaSource, createObjectURL: (o) => URL.createObjectURL(o), revokeObjectURL: (u) => URL.revokeObjectURL(u),
-                });
-                return { url: c.url, release: c.release };
-              }
-              return { url: await lipSync(r.audio_url, voice), release: () => {} };
-            };
-            return { audio_url: r.audio_url, openVideo };
+            // the first word waits (bounded) until this clip can start with it from 0 (start gate: sentencePlayer, faceSync)
+            const openVideo = (): Promise<VideoClip> => openClipVideo(r.audio_url, voice);
+            const clip = { audio_url: r.audio_url, openVideo };
+            if (answerMsgId !== undefined) replayStore.current.addSentence(answerMsgId, text, clip);
+            return clip;
           }
-          return { audio_url: r.audio_url };
+          const clip = { audio_url: r.audio_url };
+          if (answerMsgId !== undefined) replayStore.current.addSentence(answerMsgId, text, clip);
+          return clip;
         }, undefined, { sync: faceSync.current as FaceSync, onPlaying: gate.playing, onTiming: logTiming }),
       } : {}),
       voiceFor: (id) => latest.current.voiceFor(id),
-      onState: (st) => { setState(st); if (["reading", "talk-idle", "resuming"].includes(st)) setMessages(finishAnswer); },
+      onState: (st) => { setState(st); if (st !== "answering") setLivePaused(false); if (["listening", "retrieving", "answering"].includes(st)) { replayer.current?.stop(); narration.current?.stop(); } if (["reading", "talk-idle", "resuming"].includes(st)) setMessages(finishAnswer); },
       onToast: setToast,
       onCaption: (text) => { setCaption(text); if (!viaGemini && text) setMessages((m) => setPendingText(m, text)); },
       onSpeaking: setSpeaking,
@@ -156,8 +197,19 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       onLatency: (l) => { setLatency(l); console.info("[talk] latency", l); },
     });
     controller.current = talk;
+    clientRef.current = client;
     const sync = faceSync.current;
-    return () => { gate.reset(); sync?.leave(); talk?.dispose(); client.close(); controller.current = null; setState("reading"); setSpeaking(false); };
+    const replaySpeaker = createSentenceSpeaker(async (text) => {
+      const part = (replayStore.current.get(replayIdRef.current) as Extract<ReplayItem, { kind: "sentences" }> | undefined)?.parts.find((p) => p.text === text);
+      if (!part) throw new Error("That reply is no longer available.");
+      return part.clip as Clip;
+    }, undefined, { sync: sync as FaceSync, onPlaying: setSpeaking });
+    replayer.current = createReplayPlayer(replayStore.current, (item) => {
+      if (item.kind === "pcm") return runPcm(item.chunks);
+      return runSentences(item.parts, replaySpeaker);
+    }, setReplayingId, (e) => setToast(e instanceof Error ? e.message : String(e)));
+    return () => {
+      replayer.current?.stop(); replayer.current = null; narration.current?.reset(); gate.reset(); sync?.leave(); talk?.dispose(); client.close(); controller.current = null; clientRef.current = null; setState("reading"); setSpeaking(false); };
   }, [bookId, enabled, viaGemini]);
 
   useEffect(() => { controller.current?.setAutoResume(autoResume); }, [autoResume, enabled]);
@@ -166,6 +218,13 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   // the same speaker with a different resolved voice must reach an open realtime session too
   const voiceKey = voiceFor(speakerId);
   useEffect(() => { void controller.current?.refreshVoice(); }, [voiceKey, enabled]);
+
+  const liveId = ["retrieving", "answering"].includes(state) ? messages.findLast((m) => m.pending)?.id ?? null : null;
+  const playable = useMemo(() => {
+    const ids = new Set(replayable);
+    if (narratorVoice && enabled) for (const m of messages) if (m.role === "narrator" && m.text && !m.loading && !m.quiet) ids.add(m.id);
+    return ids;
+  }, [replayable, messages, narratorVoice, enabled]);
 
   return {
     state, caption, toast, level, latency, speaking, question, language, faceSync: faceSync.current, clipShown, logs,
@@ -177,8 +236,61 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       void controller.current?.ask(text); // onTranscript fires synchronously inside ask, before its first await
       via.current = "voice"; // an ignored (empty) ask must not label the next spoken question as typed
     }, []),
-    stop: useCallback(() => { void controller.current?.stop(); }, []),
-    clearMessages: useCallback(() => { void controller.current?.stop(); setMessages(() => []); }, [setMessages]),
+    stop: useCallback(() => { void controller.current?.stop(); narration.current?.stop(); }, []),
+    clearMessages: useCallback(() => { void controller.current?.stop(); replayer.current?.stop(); narration.current?.reset(); replayStore.current.clear(); clientRef.current?.resetConversation(); setMessages(() => []); }, [setMessages]),
+    replayable: playable, liveId,
+    replayingId: narratingKey !== null ? Number(narratingKey) : replayingId ?? (liveId !== null && !livePaused ? liveId : null),
+    isPaused: (id: number) => {
+      if (id === liveId) return livePaused;
+      if (replayer.current?.paused() === id) return true;
+      const m = msgs.current.find((x) => x.id === id);
+      return m?.role === "narrator" && narratingKey !== String(id) && !!narration.current?.paused(String(id), speechParts(m.text));
+    },
+    narrate: useCallback(async (heading: string, load: () => Promise<Narration>) => {
+      const live = controller.current && !["reading", "talk-idle"].includes(controller.current.state);
+      if (live) void controller.current?.stop(); // a recap is not a question: the live answer stops, nothing is sent to the model
+      replayer.current?.stop();
+      narration.current?.stop();
+      const book = bookIdRef.current;
+      let id = 0;
+      setMessages((m) => { const next = addNarration(m, heading); id = next[next.length - 1].id; return next; });
+      let r: Narration;
+      try { r = await load(); } catch (e) {
+        if (bookIdRef.current === book) setMessages((m) => fillNarration(m, id, null));
+        setToast(`Could not load the recap: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+      if (bookIdRef.current !== book) return; // another book is open now: this chat is not on screen
+      const text = r.text.trim();
+      setMessages((m) => fillNarration(m, id, text || (r.empty ?? "Nothing to recap yet — keep reading."), r.heading, !text));
+      if (text && narratorVoiceRef.current && enabledRef.current) narration.current?.restart(String(id), speechParts(text));
+    }, [setMessages]),
+    replay: useCallback((id: number) => {
+      const msg = msgs.current.find((x) => x.id === id);
+      const c = controller.current;
+      if (c && id === liveMsgId()) { // the answer being spoken: pause / resume it in place
+        if (c.answerPaused) {
+          narration.current?.stop(); replayer.current?.stop();
+          if (c.resumeAnswer()) setLivePaused(false);
+        } else if (c.pauseAnswer()) setLivePaused(true);
+        else if (c.state === "answering") void c.stop(); // cannot be held (no playback control): Stop, replay later
+        return;
+      }
+      const live = c && !["reading", "talk-idle"].includes(c.state);
+      if (msg?.role === "narrator") {
+        if (!msg.text || msg.loading || msg.quiet) return;
+        replayer.current?.stop();
+        if (live) void controller.current?.stop();
+        narration.current?.toggle(String(id), speechParts(msg.text));
+        return;
+      }
+      narration.current?.stop(); // pauses the recap: one voice at a time
+      const item = replayStore.current.get(id);
+      if (!item) return;
+      if (live && replayer.current?.playing() !== id) void controller.current?.stop(); // live answer stops cleanly first
+      replayIdRef.current = id;
+      replayer.current?.toggle(id);
+    }, []),
     setSpeaker: useCallback((id: string) => { void controller.current?.setSpeaker(id); }, []),
     dismissToast: useCallback(() => setToast(null), []),
   };

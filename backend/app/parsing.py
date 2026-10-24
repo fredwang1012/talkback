@@ -1,5 +1,6 @@
 """Split raw book text into sections and paragraphs. Shared by preprocess/ingest.py and uploads."""
 import re
+import unicodedata
 
 from .schema import Paragraph, Section
 
@@ -14,6 +15,25 @@ def normalize(text: str) -> str:
     text = text.translate(CURLY).replace("﻿", "")
     text = re.sub(r"_([^_\n]+)_", r"\1", text)  # Gutenberg italics markers
     return re.sub(r"\s+", " ", text).strip()
+
+
+_JUNK_CHARS = "•‣◦·∙⁃�"  # bullets and the replacement char
+_JUNK_CATEGORIES = {"So", "Sm", "Sk", "Co", "Cf", "Cc", "Cs", "Cn"}  # symbols, private-use, format, control
+# a numbered / "Chapter N" title followed by words and then a page number (and maybe a stray "$")
+_TRAILING_PAGE = re.compile(r"^((?:(?i:chapter|part|book|section|unit)\s+\w+[:.]?|\d+(?:\.\d+)*\.?)\s+.*?[^\W\d_]\S*)"
+                            r"\s+\d{1,4}(?:\s+\W+)?$")
+
+
+def clean_title(title: str) -> str:
+    """A chapter title without stray glyphs (bullets, private-use / math symbols) or a trailing page number.
+
+    "6.4 Variant tf-idf functions 129 $" -> "6.4 Variant tf-idf functions"; "Chapter 12: The Patronus 1989" ->
+    "Chapter 12: The Patronus". A page number is only stripped after a numbered / "Chapter N" title with words.
+    """
+    t = "".join(c for c in title if unicodedata.category(c) not in _JUNK_CATEGORIES and c not in _JUNK_CHARS)
+    t = re.sub(r"\s+", " ", t).strip()
+    m = _TRAILING_PAGE.match(t)
+    return m.group(1) if m else t
 
 
 def parse(raw: str, start_marker: str | None, end_marker: str | None,
@@ -61,7 +81,7 @@ def parse(raw: str, start_marker: str | None, end_marker: str | None,
             block = block.replace("\n", " ")  # "CHAPTER 8" on one line, its title on the next
         is_heading = bool(heading.match(block)) if heading else bool(ROMAN.match(block))
         if is_heading:
-            title = normalize(block.lstrip(HEADING_MARK))
+            title = clean_title(normalize(block.lstrip(HEADING_MARK)))
             current = Section(id=f"s{len(sections) + 1}", title=title, start_para=len(paragraphs))
             sections.append(current)
             continue

@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Book } from "../src/api";
 import Stage from "../src/reader/Stage";
+import type { FaceSync } from "../src/talk/faceSync";
 import type { TalkUi } from "../src/talk/useTalk";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -30,5 +31,33 @@ describe("Stage cast list", () => {
     act(() => { [...host.querySelectorAll<HTMLButtonElement>(".talk-to")][1].click(); });
     expect(onSpeaker).toHaveBeenCalledWith("ron");
     expect(onMode).toHaveBeenCalledWith("talk");
+  });
+});
+
+describe("Stage read-mode lip-sync toggle (#80)", () => {
+  const render = (available: boolean, on = false) => {
+    const onToggle = vi.fn();
+    const sync = { setVideo: vi.fn() } as unknown as FaceSync;
+    act(() => root.render(createElement(Stage, {
+      book, para: 3, speakerId: "narrator", onSpeaker: () => {}, health: null, talk, audioAvailable: true, avatarSrc: null, avatarPlaying: false,
+      onMode: () => {}, pinned: null, needsCode: false, onCode: () => {}, onOpenLab: () => {}, faceFor: () => undefined,
+      readingFace: null, spoilers: false, readSpeaking: false, levelRef: { current: 0 },
+      readLipSync: { available, on, onToggle, sync, shown: false },
+    })));
+    return { onToggle, sync };
+  };
+
+  it("is offered with its cost only when a face on screen can lip-sync, and keeps one persistent clip video", () => {
+    const { sync } = render(false);
+    expect(host.querySelector(".stage .lipsync")).toBeNull();
+    expect(sync.setVideo).toHaveBeenCalledWith(host.querySelector("video.rf-clip")); // the sync owns the clip video
+    const { onToggle } = render(true);
+    const label = host.querySelector(".stage .lipsync")!;
+    expect(label.textContent).toContain("Lip-sync while reading");
+    expect(label.textContent).toContain("$0.09 per minute");
+    const box = label.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    expect(box.checked).toBe(false); // off by default
+    act(() => { box.click(); });
+    expect(onToggle).toHaveBeenCalledWith(true);
   });
 });

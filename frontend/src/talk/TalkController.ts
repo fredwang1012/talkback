@@ -38,6 +38,9 @@ export interface TalkSession {
   respond(instructions: string): void;
   /** Flush local playback, truncate the interrupted item at the played position and cancel the response. */
   interrupt(): Promise<void>;
+  /** Hold local playback where it is (the reply keeps arriving and waits), and continue it. Optional. */
+  pausePlayback?(): Promise<void>;
+  resumePlayback?(): Promise<void>;
   on(fn: (e: SessionEvent) => void): () => void;
 }
 
@@ -108,6 +111,35 @@ export class TalkController {
 
   get state(): TalkState { return this._state; }
 
+  private held = false;
+  /** True while the live answer is paused (pauseAnswer). */
+  get answerPaused(): boolean { return this.held; }
+
+  /**
+   * Pause the answer being spoken, keeping its place (#90): the sentence speaker holds its clip (Gemini path) or the
+   * session holds its playback (Realtime). The answer stays the current turn; a question or Stop still cancels it.
+   * False when nothing is being spoken or it cannot be held.
+   */
+  pauseAnswer(): boolean {
+    if (this._state !== "answering" || this.held) return false;
+    if (this.run && this.d.speaker?.pause) this.d.speaker.pause();
+    else if (!this.run && this.d.session.pausePlayback) void this.d.session.pausePlayback().catch(() => {});
+    else return false;
+    this.held = true;
+    this.setSpeaking(false);
+    return true;
+  }
+
+  /** Continue a paused answer from where it was. False when there is none. */
+  resumeAnswer(): boolean {
+    if (!this.held) return false;
+    this.held = false;
+    if (this._state !== "answering") return false;
+    if (this.run && this.d.speaker?.resume) this.d.speaker.resume(); // the speaker reports playing again (notePlaying)
+    else if (!this.run && this.d.session.resumePlayback) { void this.d.session.resumePlayback().catch(() => {}); this.setSpeaking(true); }
+    return true;
+  }
+
   private speaking = false;
   private setSpeaking(v: boolean): void {
     if (v === this.speaking) return;
@@ -121,6 +153,7 @@ export class TalkController {
   private set(s: TalkState): void {
     if (s === this._state) return;
     this._state = s;
+    if (s !== "answering") this.held = false;
     if (s !== "answering") this.setSpeaking(false);
     this.d.onState?.(s);
   }
@@ -355,6 +388,7 @@ export class TalkController {
 
   /** Stop speaking, drop queued sentences and abort the stream. Safe to call when nothing is running. */
   private cancelAnswer(): void {
+    this.held = false;
     const run = this.run;
     if (!run) return;
     this.run = null;

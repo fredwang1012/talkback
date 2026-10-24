@@ -23,7 +23,7 @@ def make(pages):
                 page.insert_textbox(fitz.Rect(72, y, 500, y + 100), text, fontsize=11)
                 y += 110
             else:
-                size, font = {"h": (20, "hebo"), "h2": (15, "hebo"), "line": (11, "helv"), "big": (20, "helv")}[kind]
+                size, font = {"h": (20, "hebo"), "h2": (15, "hebo"), "line": (11, "helv"), "big": (20, "helv"), "num": (48, "hebo"), "ch": (17, "hebo")}[kind]
                 page.insert_text((72, y + size), text, fontsize=size, fontname=font)
                 y += size + 22
     return doc.tobytes()
@@ -108,3 +108,27 @@ def test_dot_leader_check_is_linear_on_hostile_lines():
     assert time.perf_counter() - t < 0.5
     assert _has_dot_leader("Chapter 1 Cells ........ 12") and _has_dot_leader("Intro . . . . 3")
     assert not _has_dot_leader("Plain sentence 12")
+
+
+def test_big_chapter_number_beside_title_is_kept():
+    """Textbooks set the chapter number alone in a huge font above the title ("1" / "Boolean retrieval")."""
+    data = make([[("p", BODY), ("p", BODY2)], [("num", "1"), ("ch", "Boolean retrieval"), ("p", BODY), ("p", BODY2)],
+                 [("p", BODY), ("p", BODY2)]])
+    t, _ = titles(data)
+    assert [x for x in t if x] == ["1 Boolean retrieval"]
+
+
+def test_formula_lines_are_not_headings():
+    data = make([[("p", BODY), ("p", BODY2)], [("h2", "RSVd = ∑"), ("p", BODY)]])
+    t, _ = titles(data)
+    assert not any("∑" in x for x in t)
+
+
+def test_clean_title():
+    from app.parsing import clean_title
+    assert clean_title("6.4 Variant tf-idf functions 129 $") == "6.4 Variant tf-idf functions"
+    assert clean_title("Chapter 12: The Patronus 1989") == "Chapter 12: The Patronus"
+    assert clean_title("▮ 1.2 A first take •") == "1.2 A first take"
+    assert clean_title("Chapter 1: 1984") == "Chapter 1: 1984"
+    assert clean_title("Chapter 3: Aunt Marge's Big Mistake") == "Chapter 3: Aunt Marge's Big Mistake"
+    assert clean_title("Intro​") == "Intro"

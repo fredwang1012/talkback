@@ -164,15 +164,16 @@ def test_huge_paragraph_chunks_fast():
 def test_upload_rate_limit(client, monkeypatch):
     monkeypatch.setattr(main, "upload_bucket", TokenBucket(2, 60))
     assert post(client, "a.txt", b"hello there").status_code == 202
-    assert post(client, "a.txt", b"hello there").status_code == 202
-    assert post(client, "a.txt", b"hello there").status_code == 429
+    assert post(client, "a.txt", b"hello again").status_code == 202
+    assert post(client, "a.txt", b"hello once more").status_code == 429
 
 
-def test_one_ingest_at_a_time(client):
-    token = main._ingest_guard.acquire()
+def test_upload_queue_is_bounded(client):
+    tokens = [main._ingest_guard.acquire() for _ in range(main.UPLOAD_QUEUE_MAX)]
     r = post(client, "a.txt", b"hello there")
-    assert r.status_code == 429 and "still being processed" in r.json()["detail"]
-    main._ingest_guard.release(token)
+    assert r.status_code == 429 and "already being processed" in r.json()["detail"]
+    for token in tokens:
+        main._ingest_guard.release(token)
     assert post(client, "a.txt", b"hello there").status_code == 202
     assert not main._ingest_guard.busy  # released after the background task
 
@@ -184,7 +185,7 @@ def test_validation_failure_releases_guard(client):
 
 def test_stale_guard_is_taken_over():
     now = [0.0]
-    g = main.IngestGuard(clock=lambda: now[0])
+    g = main.IngestGuard(clock=lambda: now[0], capacity=1)
     t1 = g.acquire()
     assert t1 is not None and g.acquire() is None
     now[0] = main.IngestGuard.STALE_SECONDS - 1
@@ -310,7 +311,7 @@ def test_non_ascii_digit_content_length_is_not_a_500(client, monkeypatch):
 
 def test_live_holder_is_not_taken_over():
     now = [0.0]
-    g = main.IngestGuard(clock=lambda: now[0])
+    g = main.IngestGuard(clock=lambda: now[0], capacity=1)
     t1 = g.acquire()
     g.mark_started(t1)  # the ingest is running (possibly slow or hung)
     now[0] = main.IngestGuard.STALE_SECONDS * 3

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { changeKind, deleteBook, type BookSummary } from "../src/api";
-import { canDelete, canMove, groupShelves, kindLabel, moveLabel, moveTarget, seriesTitle } from "../src/shelves";
+import { changeKind, deleteBook, fetchHiddenBooks, hideBook, restoreBook, waitForDeletion, type BookSummary } from "../src/api";
+import { canDelete, canMove, groupShelves, hiddenLabel, kindLabel, moveLabel, moveTarget, removeKind, removeLabel, seriesTitle } from "../src/shelves";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -72,10 +72,43 @@ describe("changeKind", () => {
 });
 
 describe("delete", () => {
-  it("is offered only for uploaded books", () => {
+  it("is a real delete only for uploaded books", () => {
     expect(canDelete(book("u-mine-1a2b3c4d"))).toBe(true);
     expect(canDelete(book("hp1"))).toBe(false);
     expect(canDelete(book("alice-in-wonderland"))).toBe(false);
+  });
+
+  it("built-in books are hidden instead (every book can be removed)", () => {
+    expect(removeKind(book("u-mine-1a2b3c4d"))).toBe("delete");
+    expect(removeKind(book("hp1"))).toBe("hide");
+    expect(removeKind(book("alice-in-wonderland"))).toBe("hide");
+    expect(removeLabel(book("u-x-1"))).toBe("Delete");
+    expect(removeLabel(book("hp1"))).toBe("Hide");
+  });
+
+  it("labels the hidden-books control", () => {
+    expect(hiddenLabel(0)).toBe("");
+    expect(hiddenLabel(1)).toBe("Hidden books (1)");
+    expect(hiddenLabel(7)).toBe("Hidden books (7)");
+  });
+
+  it("hides, restores and lists hidden books", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ hidden: "hp1" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ restored: "hp1" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "hp1", title: "Stone", author: "J" }]), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await hideBook("hp1");
+    await restoreBook("hp1");
+    expect(await fetchHiddenBooks()).toEqual([{ id: "hp1", title: "Stone", author: "J" }]);
+    expect(fetchMock.mock.calls.map((c) => [c[0], c[1]?.method])).toEqual([
+      ["/api/books/hp1/hide", "POST"], ["/api/books/hp1/restore", "POST"], ["/api/hidden-books", undefined],
+    ]);
+  });
+
+  it("surfaces a refused hide (anonymous visitor)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "Sign in to delete things." }), { status: 403 })));
+    await expect(hideBook("hp1")).rejects.toThrow(/Sign in/);
   });
 
   it("sends DELETE to the book and resolves on success", async () => {
@@ -86,9 +119,39 @@ describe("delete", () => {
     expect(fetchMock.mock.calls[0][1].method).toBe("DELETE");
   });
 
+  it("treats 404 as already deleted (a retry after the first request timed out but finished)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "Book not found" }), { status: 404 })));
+    await expect(deleteBook("u-x")).resolves.toBeUndefined();
+  });
+
   it("surfaces the server's reason (409 while processing)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "still being processed" }), { status: 409 })));
     await expect(deleteBook("u-x")).rejects.toThrow(/still being processed/);
+  });
+
+  const status = (body: unknown, code = 200) => new Response(JSON.stringify(body), { status: code });
+
+  it("waits in the background until the book is gone (404 = done)", async () => {
+    const f = vi.fn()
+      .mockResolvedValueOnce(status({ status: "deleting" }))
+      .mockResolvedValueOnce(status({ status: "deleting" }))
+      .mockResolvedValueOnce(status({ detail: "Book not found" }, 404));
+    vi.stubGlobal("fetch", f);
+    expect(await waitForDeletion("u-x", undefined, 1)).toEqual({ ok: true });
+    expect(f).toHaveBeenCalledTimes(3);
+    expect(f.mock.calls[0][0]).toBe("/api/books/u-x/status");
+  });
+
+  it("reports a delete that failed part-way, with the server's message", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(status({ status: "delete_error", message: "Could not remove the book from search" })));
+    expect(await waitForDeletion("u-x", undefined, 1)).toEqual({ ok: false, message: "Could not remove the book from search" });
+  });
+
+  it("a status that is no longer deleting counts as done; abort stops quietly", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(status({ status: "ready" })));
+    expect(await waitForDeletion("u-x", undefined, 1)).toEqual({ ok: true });
+    const ctl = new AbortController(); ctl.abort();
+    expect(await waitForDeletion("u-x", ctl.signal, 1)).toBeNull();
   });
 });
 
@@ -105,10 +168,36 @@ describe("deleting voices and faces", () => {
   });
 
   it("drops browser-side choices that pointed at the deleted voice or face", () => {
-    const r = dropReferences({ mode: "one", voice: "v1", face: "f1" }, { voice: "v1", face: "none" }, { voice: "v1" });
-    expect(r.style).toEqual({ mode: "one", voice: null, face: "f1" });
-    expect(r.talk).toEqual({ voice: null, face: "none" });
-    const g = dropReferences({ mode: "cast", voice: "v2", face: "f1" }, { voice: "v2", face: "f1" }, { face: "f1" });
-    expect(g.style.face).toBeNull(); expect(g.talk.face).toBeNull(); expect(g.style.voice).toBe("v2");
+    expect(dropReferences({ voice: "v1", face: "none" }, { voice: "v1" })).toEqual({ voice: null, face: "none" });
+    expect(dropReferences({ voice: "v2", face: "f1" }, { face: "f1" })).toEqual({ voice: "v2", face: null });
+  });
+});
+
+import { cardActions, seriesBlurb, wrapIndex } from "../src/shelves";
+
+describe("library cards (#63)", () => {
+  it("lists each card's actions: move + delete for uploads, hide for built-in books", () => {
+    expect(cardActions(book("u-x-1", { kind: "textbook" })).map((a) => [a.id, a.label]))
+      .toEqual([["move", "Move to Novels"], ["remove", "Delete"]]);
+    expect(cardActions(book("u-x-1")).map((a) => a.label)).toEqual(["Move to Textbooks", "Delete"]);
+    expect(cardActions(book("hp1")).map((a) => [a.id, a.label])).toEqual([["remove", "Hide"]]);
+  });
+
+  it("describes a stacked series in one line", () => {
+    const g = groupShelves([
+      book("hp2", { title: "Chamber", author: "J. K. Rowling", series: "harry-potter", series_index: 2 }),
+      book("hp1", { title: "Stone", author: "J. K. Rowling", series: "harry-potter", series_index: 1 }),
+      book("hp7", { title: "Hallows", author: "J. K. Rowling", series: "harry-potter", series_index: 7 }),
+    ]).series[0];
+    expect(seriesBlurb(g)).toBe("3 books by J. K. Rowling, from Stone to Hallows");
+    const solo = groupShelves([book("a", { title: "Only", author: "", series: "s", series_index: 1 })]).series[0];
+    expect(seriesBlurb(solo)).toBe("1 book: Only");
+  });
+
+  it("wraps menu focus around both ends", () => {
+    expect(wrapIndex(0, 1, 3)).toBe(1);
+    expect(wrapIndex(2, 1, 3)).toBe(0);
+    expect(wrapIndex(0, -1, 3)).toBe(2);
+    expect(wrapIndex(-1, 1, 0)).toBe(-1);
   });
 });

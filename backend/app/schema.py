@@ -1,7 +1,7 @@
 """Pydantic schema for data/books/<book_id>/book.json (brief section 4)."""
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 Emotion = Literal[
     "elation", "amusement", "enthusiasm", "determination", "pride", "contentment",
@@ -11,11 +11,23 @@ Emotion = Literal[
 EMOTIONS: tuple[str, ...] = Emotion.__args__  # type: ignore[attr-defined]
 
 
+class ChatTurn(BaseModel):
+    """One earlier turn of the Talkback chat, sent back so the character remembers it (history, never new facts)."""
+    role: Literal["user", "character"]
+    text: str = Field(max_length=600)
+
+
 class Section(BaseModel):
     id: str
     title: str
     start_para: int
     level: int = 1  # nesting depth in the chapter list: 1 = chapter, 2 = 2.1, 3 = 2.1.1 (old book.json files: 1)
+
+    @field_validator("title")
+    @classmethod
+    def _clean_title(cls, v: str) -> str:  # old books keep stray glyphs / page numbers in book.json; never show them
+        from .parsing import clean_title
+        return clean_title(v)
 
 
 class Segment(BaseModel):
@@ -50,6 +62,8 @@ class Character(BaseModel):
     first_para: int
     voice: str
     voice_tags: str = ""
+    base_voice: str | None = None  # preset this character was cast with, kept when `voice` becomes a baked custom voice
+    base_voice_tags: str | None = None  # the prosody tags that were baked into that custom voice (see voice_bake.py)
     persona: str
     portrait: str | None = None
     main: bool | None = None  # None = main character; uploaded novels mark minor speakers False

@@ -15,6 +15,7 @@ export type Paragraph = {
   text: string;
   segments: Segment[];
   tts_chunks: TtsChunk[];
+  kind?: "code" | null; // textbook code listing: shown in a code font, not read aloud
 };
 export type Character = {
   id: string;
@@ -23,6 +24,8 @@ export type Character = {
   first_para: number;
   voice: string;
   voice_tags: string;
+  base_voice?: string | null; // preset the character was cast with, when `voice` is a baked custom voice (scripts/bake_voices.py)
+  base_voice_tags?: string | null;
   persona: string;
   portrait: string | null;
   main?: boolean | null; // false = a minor speaker: read aloud, but not someone to talk to
@@ -109,6 +112,13 @@ export type Recap = { upto_para: number | null; chapter: string; text: string; e
 export const fetchRecap = (bookId: string, para: number) =>
   getJson<Recap>(`/api/books/${encodeURIComponent(bookId)}/recap?para=${Math.max(0, Math.floor(para))}`);
 
+/** Recap menu scopes: the last chapter, this book so far, the series so far (earlier books + this one so far). */
+export type RecapScope = "chapter" | "book" | "series";
+/** One scope's recap; `chapter` is the chapter it covers (scope "chapter") or the one the reader is in. Spoiler-safe. */
+export type ScopedRecap = { scope: RecapScope; upto_para: number | null; chapter: string; text: string };
+export const fetchScopedRecap = (bookId: string, para: number, scope: RecapScope) =>
+  getJson<ScopedRecap>(`/api/books/${encodeURIComponent(bookId)}/recap?para=${Math.max(0, Math.floor(para))}&scope=${scope}`);
+
 export type WordTiming = { start: number; end: number; char_start: number; char_end: number };
 export type TtsResponse = { chunk_id: string; voice: string; audio_url: string; timestamps: WordTiming[] | null; cached: boolean };
 
@@ -154,11 +164,12 @@ export async function fetchRetrieve(bookId: string, query: string, readerPara: n
 export async function streamAnswer(
   bookId: string, query: string, readerPara: number, speakerId: string,
   onSentence: (text: string) => void, signal?: AbortSignal, spoilers = false,
+  history: { role: "user" | "character"; text: string }[] = [],
 ): Promise<void> {
   const res = await timedFetch("/api/answer", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId, ...(spoilers ? { spoilers: true } : {}) }),
+    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId, ...(spoilers ? { spoilers: true } : {}), ...(history.length ? { history } : {}) }),
     signal,
   }, 20000);
   if (!res.ok) {
@@ -243,11 +254,60 @@ export async function cloneVoice(audio: Blob, filename: string, transcript: stri
   return res.json() as Promise<CloneResult>;
 }
 
-/** Permanently deletes an uploaded book (files, search entries, caches). 409 while it is still being processed. */
+/**
+ * Permanently deletes an uploaded book (files, search entries, caches). 409 while it is still being processed.
+ * Resolves as soon as the book has left the library (202); the server finishes in the background (waitForDeletion).
+ */
 export async function deleteBook(id: string): Promise<void> {
-  const res = await timedFetch(`/api/books/${encodeURIComponent(id)}`, { method: "DELETE", headers: authHeaders() }, 60000);
+  const res = await timedFetch(`/api/books/${encodeURIComponent(id)}`, { method: "DELETE", headers: authHeaders() }, 30000);
+  if (res.status === 404) return; // already gone (e.g. a retry after a timed-out request that still finished)
   if (!res.ok) throw await readError(res, "Could not delete the book");
 }
+
+/** Polls a deleted book's status until its background removal ends: {ok:true} when gone, the message on failure,
+ * null when aborted. A 404 means the book is fully removed. */
+export async function waitForDeletion(
+  id: string, signal?: AbortSignal, intervalMs = 2000, maxMs = 10 * 60 * 1000,
+): Promise<{ ok: true } | { ok: false; message: string } | null> {
+  const deadline = Date.now() + maxMs;
+  let failures = 0;
+  while (!signal?.aborted) {
+    try {
+      const res = await timedFetch(`/api/books/${encodeURIComponent(id)}/status`, { headers: authHeaders(), signal });
+      if (res.status === 404) return { ok: true };
+      if (res.ok) {
+        failures = 0;
+        const s = (await res.json()) as { status: string; message?: string };
+        if (s.status === "delete_error") return { ok: false, message: s.message ?? "The delete did not finish." };
+        if (s.status !== "deleting") return { ok: true };
+      } else if (++failures > 3) return { ok: false, message: `Could not check the delete (${res.status}).` };
+    } catch (e) {
+      if (signal?.aborted) return null;
+      if (++failures > 3) return { ok: false, message: (e as Error).message };
+    }
+    if (Date.now() + intervalMs > deadline) return { ok: false, message: "The delete is taking too long; try again." };
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(done, intervalMs);
+      function done() { clearTimeout(t); signal?.removeEventListener("abort", done); resolve(); }
+      signal?.addEventListener("abort", done);
+    });
+  }
+  return null;
+}
+
+/** Built-in books (classics, Harry Potter) are hidden for this account instead of deleted; restorable. */
+export async function hideBook(id: string): Promise<void> {
+  const res = await timedFetch(`/api/books/${encodeURIComponent(id)}/hide`, { method: "POST", headers: authHeaders() });
+  if (!res.ok) throw await readError(res, "Could not hide the book");
+}
+
+export async function restoreBook(id: string): Promise<void> {
+  const res = await timedFetch(`/api/books/${encodeURIComponent(id)}/restore`, { method: "POST", headers: authHeaders() });
+  if (!res.ok) throw await readError(res, "Could not restore the book");
+}
+
+export type HiddenBook = { id: string; title: string; author: string };
+export const fetchHiddenBooks = () => getJson<HiddenBook[]>("/api/hidden-books");
 
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 export type BookKind = "novel" | "textbook";
@@ -267,12 +327,28 @@ export function enrichDoneNote(e: EnrichStatus): string {
   return e.degraded && e.message ? e.message : "characters, voices and recap are ready";
 }
 /** Cloud search indexing after the book is readable (it uses basic search until state is "done"). */
-export type IndexStatus = { state: "running" | "done" | "error"; done: number; total: number; message?: string };
-export const indexingLabel = (i: IndexStatus): string => `Indexing ${i.done} / ${i.total}`;
+export type IndexStatus = { state: "queued" | "running" | "done" | "error"; done: number; total: number; message?: string };
+export const indexingLabel = (i: IndexStatus): string =>
+  i.state === "queued" ? "Queued for indexing" : `Indexing ${i.done} / ${i.total}`;
 export type BookStatus = {
-  status: "processing" | "ready" | "error"; message?: string; enrich?: EnrichStatus; index?: IndexStatus;
+  status: "processing" | "ready" | "error" | "deleting" | "delete_error"; message?: string; enrich?: EnrichStatus; index?: IndexStatus;
   kind?: BookKind; kind_detected?: KindDetected;
 };
+
+/** A 409 from the upload: this account already has the file ("duplicate"), is adding it right now ("processing"), or
+ * is still deleting its earlier copy ("deleting"). `bookId` is that existing book. */
+export class UploadConflict extends Error {
+  readonly reason: "duplicate" | "processing" | "deleting";
+  readonly bookId: string;
+  readonly title?: string;
+  constructor(message: string, reason: UploadConflict["reason"], bookId: string, title?: string) {
+    super(message);
+    this.name = "UploadConflict";
+    this.reason = reason;
+    this.bookId = bookId;
+    this.title = title;
+  }
+}
 
 /** Sends a PDF or .txt for ingest. Resolves with the new book id; ingest continues server-side (poll fetchBookStatus). */
 export async function uploadBook(file: File, title: string, author: string, kind: UploadKind): Promise<{ book_id: string }> {
@@ -284,10 +360,33 @@ export async function uploadBook(file: File, title: string, author: string, kind
   // no Content-Type: the browser adds the multipart boundary
   const res = await timedFetch("/api/books/upload", { method: "POST", headers: authHeaders(), body: form }, 120000);
   if (!res.ok) {
-    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    const body = await res.json().catch(() => ({})) as { detail?: string; reason?: string; book_id?: string; title?: string };
+    const detail = typeof body.detail === "string" ? body.detail : undefined;
+    if (res.status === 409 && body.book_id && (body.reason === "duplicate" || body.reason === "processing" || body.reason === "deleting"))
+      throw new UploadConflict(detail ?? "This file is already in your library.", body.reason, body.book_id, body.title);
     throw new Error(detail ?? `Upload failed (${res.status})`);
   }
   return res.json() as Promise<{ book_id: string }>;
+}
+
+export const DESCRIBE_TEXT_BYTES = 24_000; // backend describe.TEXT_PREFIX_BYTES
+export type BookGuess = { title: string; author: string; source: "metadata" | "llm" | "none" };
+
+/** The title and author the server reads from a chosen file (PDF metadata, else its first pages); null on any failure
+ * (the form keeps the file-name title). Nothing is stored server-side. */
+export async function describeBook(file: File, signal?: AbortSignal): Promise<BookGuess | null> {
+  const form = new FormData();
+  // a text file's title is in its opening lines: send only those (the server reads no more); a PDF needs all of it
+  const body = /\.txt$/i.test(file.name) ? new File([file.slice(0, DESCRIBE_TEXT_BYTES)], file.name, { type: file.type }) : file;
+  form.append("file", body, file.name);
+  try {
+    const res = await timedFetch("/api/books/describe", { method: "POST", headers: authHeaders(), body: form, signal }, 30000);
+    if (!res.ok) return null;
+    const j = (await res.json()) as Partial<BookGuess>;
+    return { title: j.title ?? "", author: j.author ?? "", source: j.source ?? "none" };
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchBookStatus(id: string): Promise<BookStatus> {
@@ -345,7 +444,16 @@ export function pollBookStatus(
 export function pollIndexing(
   id: string, onUpdate?: (s: BookStatus) => void, signal?: AbortSignal, intervalMs = 2000, maxMs = 30 * 60 * 1000,
 ): Promise<BookStatus | null> {
-  return pollStatus(id, (s) => s.status !== "ready" || s.index?.state !== "running", signal, intervalMs, maxMs, onUpdate);
+  return pollStatus(id, (s) => s.status !== "ready" || (s.index?.state !== "running" && s.index?.state !== "queued"),
+    signal, intervalMs, maxMs, onUpdate);
+}
+
+/** One poll for a whole upload: until `settled` (see uploads.uploadSettled); `onUpdate` sees every other status. */
+export function pollUpload(
+  id: string, settled: (s: BookStatus) => boolean, onUpdate?: (s: BookStatus) => void, signal?: AbortSignal,
+  intervalMs = 2000, maxMs = 60 * 60 * 1000,
+): Promise<BookStatus | null> {
+  return pollStatus(id, settled, signal, intervalMs, maxMs, onUpdate);
 }
 
 /**
@@ -413,8 +521,20 @@ export const avatarUrl = (bookId: string, chunkId: string) => `/api/avatar/${enc
 
 /** A saved face. `talk` / `idle` are muted loops that exist only after "Animate"; `voice` binds it to a cloned voice. */
 export type Face = { id: string; name: string; image: string; voice: string | null; talk: string | null; idle: string | null };
-export type Assignment = { voice: string | null; face: string | null };
-export type Cast = { main: string[]; narrator: Assignment; characters: Record<string, Assignment> };
+export type Assignment = { voice: string | null; face: string | null; tags?: string | null }; // tags: pitch/speed override, "" = none
+export type Gender = "male" | "female";
+/**
+ * Per-book cast. Novels default to mode "two": every speaker reads in the male or the female voice by gender
+ * (`genders` overrides the read-only `auto_genders`), the narrator in the one `narrator_gender` picks. "cast" uses
+ * the per-character `narrator` / `characters` assignments. Textbooks use `narrator` only. `auto_genders` and
+ * `defaults` come from the server and are ignored when sent back.
+ */
+export type Cast = {
+  main: string[]; narrator: Assignment; characters: Record<string, Assignment>;
+  mode?: "two" | "cast"; male?: Assignment; female?: Assignment; narrator_gender?: Gender | null;
+  genders?: Record<string, Gender>; auto_genders?: Record<string, Gender | null>;
+  defaults?: { male: string; female: string; narrator_gender: Gender };
+};
 
 async function readError(res: Response, fallback: string): Promise<Error> {
   const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);

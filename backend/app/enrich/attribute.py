@@ -251,8 +251,13 @@ def _decide(names: _Names, cast: set[str], pieces: list[_Piece], i: int,
     return speaker, rule, conf
 
 
-def attribute_book(book: Book, apply: bool = True) -> list[Decision]:
-    """Run the heuristics over the whole book; with apply=True the book's segments are updated in place."""
+def attribute_book(book: Book, apply: bool = True,
+                   uncast_speaker: Callable[[str, str, str], str | None] | None = None) -> list[Decision]:
+    """Run the heuristics over the whole book; with apply=True the book's segments are updated in place.
+
+    `uncast_speaker(before, quote, after)` (optional) names a stand-in speaker id for a line whose tag points outside
+    the cast ("said Mrs. Dursley"); see enrich/minor.py. Such lines get rule "minor" instead of staying "uncast".
+    """
     names = _Names(book)
     if not names.pattern:
         return []
@@ -275,6 +280,12 @@ def attribute_book(book: Book, apply: bool = True) -> list[Decision]:
                 history.append((p.idx, x.speaker))
             elif x.kind == "cand":
                 speaker, rule, conf = _decide(names, cast, pieces, i, history[-MAX_BACK:], starts_exchange, genders)
+                if rule == "uncast" and uncast_speaker:
+                    before = pieces[i - 1].text if i > 0 and pieces[i - 1].kind == "narr" else ""
+                    after = pieces[i + 1].text if i + 1 < len(pieces) and pieces[i + 1].kind == "narr" else ""
+                    speaker = uncast_speaker(before, x.text, after)
+                    if speaker:
+                        rule, conf = "minor", "high"
                 x.decision = Decision(p.idx, x.text, speaker, rule, conf, p.text)
                 decisions.append(x.decision)
                 if speaker:

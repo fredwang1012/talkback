@@ -7,8 +7,16 @@ import { resetChatMemory } from "../src/talk/chatLog";
 
 vi.mock("../src/audio/playback", () => ({ RingPlayer: class { async close() {} } }));
 vi.mock("../src/audio/capture", () => ({ MicCapture: class { async stop() {} } }));
+const spoken = vi.hoisted(() => [] as string[]);
+const ctl = vi.hoisted(() => ({ hold: false, release: [] as (() => void)[], log: [] as string[] }));
 vi.mock("../src/talk/sentencePlayer", () => ({
-  createSentenceSpeaker: () => ({ prefetch() {}, play: async () => {}, stop() {} }),
+  createSentenceSpeaker: () => ({
+    prefetch() {},
+    play: (t: string) => { spoken.push(t); return ctl.hold ? new Promise<void>((r) => ctl.release.push(r)) : Promise.resolve(); },
+    stop() { ctl.log.push("stop"); ctl.release.splice(0).forEach((r) => r()); },
+    pause() { ctl.log.push("pause"); },
+    resume() { ctl.log.push("resume"); return true; },
+  }),
 }));
 vi.mock("../src/api", async (orig) => ({
   ...(await orig<typeof import("../src/api")>()),
@@ -89,8 +97,68 @@ describe("TalkbackView", () => {
     act(() => { host.querySelector<HTMLFormElement>(".tb-text")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     expect(talk.ask).toHaveBeenCalledWith("Who is Hagrid?");
     expect(host.querySelector<HTMLInputElement>("#tb-q")!.value).toBe("");
-    act(() => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Clear")!.click(); });
+    act(() => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Clear chat")!.click(); });
     expect(talk.clearMessages).toHaveBeenCalled();
+  });
+
+  it("shows a labelled replay button only on finished replies that can be replayed", () => {
+    const replay = vi.fn();
+    const messages = [
+      { id: 1, role: "user", speakerId: "narrator", text: "hi" },
+      { id: 2, role: "character", speakerId: "narrator", text: "Hello." },
+      { id: 3, role: "character", speakerId: "narrator", text: "Old.", },
+    ] as TalkUi["messages"];
+    view(novel, fakeTalk({ messages, replayable: new Set([2]), replayingId: null, replay }));
+    const btns = host.querySelectorAll<HTMLButtonElement>(".replay-btn");
+    expect(btns).toHaveLength(1);
+    expect(btns[0].getAttribute("aria-label")).toBe("Play Narrator's reply again");
+    act(() => btns[0].click());
+    expect(replay).toHaveBeenCalledWith(2);
+    view(novel, fakeTalk({ messages, replayable: new Set([2]), replayingId: 2, replay }));
+    expect(host.querySelector(".replay-btn")!.getAttribute("aria-label")).toBe("Pause Narrator's reply again");
+  });
+
+  it("posts narrator recaps with a heading and play/pause, and promises a ~2 s lip-sync delay", () => {
+    const replay = vi.fn();
+    const messages = [
+      { id: 1, role: "narrator", speakerId: "narrator", text: "Alice fell.", recap: "Last chapter: I" },
+      { id: 2, role: "narrator", speakerId: "narrator", text: "", recap: "This book so far", loading: true },
+    ] as TalkUi["messages"];
+    view(novel, fakeTalk({ messages, replayable: new Set([1]), replayingId: null, isPaused: (id) => id === 1, replay }));
+    const b = host.querySelectorAll(".bubble.narrator");
+    expect(b).toHaveLength(2);
+    expect(b[0].querySelector(".who-line")!.textContent).toBe("Narrator · Recap: Last chapter: I");
+    expect(b[1].querySelector("p")!.textContent).toBe("…");
+    const btn = host.querySelector<HTMLButtonElement>(".replay-btn")!;
+    expect(btn.getAttribute("aria-label")).toBe("Resume the narrator's recap");
+    act(() => btn.click());
+    expect(replay).toHaveBeenCalledWith(1);
+    expect(host.querySelector("button[aria-haspopup='menu']")!.textContent).toBe("Recap");
+    act(() => root.render(createElement(TalkbackView, {
+      book: novel, para: 7, speakerId: "narrator", onSpeaker: () => {}, pinned: null, talk: fakeTalk(), faces: [], faceFor: () => ({ id: "f" }) as never,
+      autoVoiceFor: () => "marcus", choice: { voice: null, face: null }, onChoice: () => {}, voices: [], spoilers: false,
+      onSpoilers: () => {}, lipSyncable: true, lipSync: false, onLipSync: () => {}, portrait: null, onBack: () => {}, onRecap: () => {}, onVoices: () => {},
+    })));
+    expect(host.querySelector(".lipsync")!.textContent).toBe("Lip-synced face (answers start about 2 seconds later)");
+  });
+
+  it("the answer being spoken has play/pause from its first sentence", () => {
+    const replay = vi.fn();
+    const messages = [
+      { id: 1, role: "user", speakerId: "narrator", text: "hi" },
+      { id: 2, role: "character", speakerId: "narrator", text: "Hello.", pending: true },
+    ] as TalkUi["messages"];
+    view(novel, fakeTalk({ messages, liveId: 2, replayable: new Set([2]), replayingId: 2, isPaused: () => false, replay }));
+    const btn = host.querySelector<HTMLButtonElement>(".replay-btn")!;
+    expect(btn.getAttribute("aria-label")).toBe("Pause Narrator's reply");
+    expect(btn.getAttribute("aria-pressed")).toBe("true");
+    act(() => btn.click());
+    expect(replay).toHaveBeenCalledWith(2);
+    view(novel, fakeTalk({ messages, liveId: 2, replayable: new Set(), replayingId: null, isPaused: (id) => id === 2, replay }));
+    expect(host.querySelector(".replay-btn")!.getAttribute("aria-label")).toBe("Resume Narrator's reply");
+    const waiting = [messages[0], { ...messages[1], text: "" }] as TalkUi["messages"];
+    view(novel, fakeTalk({ messages: waiting, liveId: 2, replayable: new Set(), replayingId: 2, replay }));
+    expect(host.querySelector(".replay-btn")).toBeNull(); // nothing to pause before the first sentence
   });
 
   it("hold-to-talk with the keyboard presses and releases", () => {
@@ -124,6 +192,60 @@ describe("useTalk transcript", () => {
     latest = useTalk({ bookId, enabled: true, reader, speakerId: "hagrid", voiceFor: () => "marcus", autoResume: true, health: { ok: true, boson_key_set: true, access_required: false, answer_backend: "gemini" }, talkback: true });
     return null;
   }
+
+  it("a recap is posted by the narrator and read aloud, never asked of the model or remembered", async () => {
+    const { streamAnswer } = await import("../src/api");
+    (streamAnswer as ReturnType<typeof vi.fn>).mockClear();
+    spoken.length = 0;
+    function NarratorHarness() {
+      latest = useTalk({ bookId: "hp9", enabled: true, reader, speakerId: "hagrid", voiceFor: () => "marcus", autoResume: true, narratorVoice: "belinda",
+        health: { ok: true, boson_key_set: true, access_required: false, answer_backend: "gemini" }, talkback: true });
+      return null;
+    }
+    await act(async () => { root.render(createElement(NarratorHarness)); });
+    let release: (v: { text: string; heading: string }) => void = () => {};
+    let done: Promise<void> = Promise.resolve();
+    act(() => { done = latest.narrate("Last chapter", () => new Promise((r) => { release = r; })); });
+    expect(latest.messages.map((m) => [m.role, m.text, m.loading])).toEqual([["narrator", "", true]]); // shown at once
+    await act(async () => { release({ text: "Harry met Hagrid. They went to London.", heading: "Last chapter: The Keeper of the Keys" }); await done; });
+    expect(latest.messages[0]).toMatchObject({ role: "narrator", text: "Harry met Hagrid. They went to London.", recap: "Last chapter: The Keeper of the Keys", loading: false });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(spoken).toEqual(["Harry met Hagrid. They went to London."]);
+    expect(streamAnswer).not.toHaveBeenCalled();
+    expect(latest.replayable.has(latest.messages[0].id)).toBe(true);
+    // a failed recap is dropped with a toast
+    await act(async () => { await latest.narrate("This book so far", async () => { throw new Error("offline"); }); });
+    expect(latest.messages).toHaveLength(1);
+    expect(latest.toast).toBe("Could not load the recap: offline");
+    // nothing to recap: a quiet note, not read aloud
+    await act(async () => { await latest.narrate("Last chapter", async () => ({ text: "", empty: "You're at the start of this book." })); });
+    expect(latest.messages[1]).toMatchObject({ text: "You're at the start of this book.", quiet: true });
+    expect(latest.replayable.has(latest.messages[1].id)).toBe(false);
+  });
+
+  it("the live answer pauses and resumes in place from its button, then becomes a replay", async () => {
+    ctl.hold = true; ctl.log.length = 0; ctl.release.length = 0;
+    try {
+      await act(async () => { root.render(createElement(Harness, { bookId: "live" })); });
+      await act(async () => { latest.ask("Who is Hagrid?"); await new Promise((r) => setTimeout(r, 0)); });
+      const id = latest.messages[1].id;
+      expect(latest.state).toBe("answering");
+      expect(latest.liveId).toBe(id);
+      expect(latest.replayingId).toBe(id);
+      await act(async () => { latest.replay(id); });
+      expect(ctl.log).toEqual(["pause"]);
+      expect(latest.isPaused(id)).toBe(true);
+      expect(latest.replayingId).toBeNull();
+      await act(async () => { latest.replay(id); });
+      expect(ctl.log).toEqual(["pause", "resume"]);
+      expect(latest.isPaused(id)).toBe(false);
+      expect(latest.replayingId).toBe(id);
+      await act(async () => { ctl.release.shift()?.(); await new Promise((r) => setTimeout(r, 0)); });
+      await act(async () => { ctl.release.shift()?.(); await new Promise((r) => setTimeout(r, 0)); });
+      expect(latest.liveId).toBeNull();
+      expect(latest.state).not.toBe("answering");
+    } finally { ctl.hold = false; ctl.release.splice(0).forEach((r) => r()); }
+  });
 
   it("a typed question appends You and the character, pauses the reader, and survives remounting; Clear empties it", async () => {
     await act(async () => { root.render(createElement(Harness, { bookId: "hp1" })); });

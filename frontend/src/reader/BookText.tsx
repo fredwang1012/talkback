@@ -3,6 +3,7 @@ import type { Book } from "../api";
 import type { FlatChunk } from "./position";
 import ChapterList from "./ChapterList";
 import { isNested } from "./chapterTree";
+import { cleanTitle } from "./cleanTitle";
 
 type Props = {
   book: Book; chunks: FlatChunk[]; index: number; onPick: (i: number) => void;
@@ -43,7 +44,7 @@ function BookText({ book, chunks, index, onPick, word }: Props) {
       {isNested(book.sections)
         ? <ChapterList book={book} current={current} onGo={goTo} />
         : <select aria-label="Go to chapter" value={current} onChange={(e) => goTo(Number(e.target.value))}>
-            {book.sections.map((s, i) => <option key={s.id} value={i}>{s.title || `Part ${i + 1}`}</option>)}
+            {book.sections.map((s, i) => <option key={s.id} value={i}>{cleanTitle(s.title) || `Part ${i + 1}`}</option>)}
           </select>}
       <button disabled={current >= book.sections.length - 1} onClick={() => goTo(current + 1)}>Next chapter</button>
     </nav>
@@ -81,8 +82,8 @@ function BookText({ book, chunks, index, onPick, word }: Props) {
         const section = sectionAt.get(p.idx);
         return (
           <Fragment key={p.idx}>
-            {section && section.title && <h2 className="section-mark">{section.title}</h2>}
-            <p className="para" data-para={p.idx}>{parts}</p>
+            {section && section.title && <h2 className="section-mark">{cleanTitle(section.title)}</h2>}
+            <p className={p.kind === "code" ? "para para-code" : "para"} data-para={p.idx}>{parts}</p>
           </Fragment>
         );
       })}

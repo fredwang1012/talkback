@@ -206,3 +206,20 @@ def test_owned_client_is_reused_within_a_loop_and_replaced_across_loops(monkeypa
     assert len(made) == 1, "keep-alive: one client per loop"
     asyncio.run(two_searches())
     assert len(made) == 2, "a closed loop's client is never reused"
+
+
+def test_delete_runs_requests_concurrently_but_bounded():
+    from app.gcp import vectorstore
+    state = {"now": 0, "max": 0, "seen": []}
+
+    async def handler(req):
+        state["now"] += 1
+        state["max"] = max(state["max"], state["now"])
+        await asyncio.sleep(0.005)
+        state["now"] -= 1
+        state["seen"].append(str(req.url).rsplit("/", 1)[1])
+        return httpx.Response(404 if len(state["seen"]) % 3 == 0 else 200, json={})
+    ids = [f"b__{i}" for i in range(200)]
+    run(make(handler).delete(ids))
+    assert sorted(state["seen"]) == sorted(ids)
+    assert 1 < state["max"] <= vectorstore.DELETE_CONCURRENCY

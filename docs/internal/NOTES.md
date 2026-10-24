@@ -532,3 +532,78 @@ True leaks before: (1) para 1988 harry, "Did Crookshanks really eat Scabbers?": 
 Fix: both spoiler-safe templates in `backend/app/personas.py` now say never to state or deny an outcome the notes do not establish (survived, escaped, eaten, guilty, lying), to say the story has not revealed it yet, and not to attribute a detail to a scene unless a passage shows it. Full-book templates are unchanged.
 True leaks after (different questions, so sampling noise in Gemini answers): (1) para 756 dumbledore, why Harry reacted to the dementor: said the screams were his mother's before Voldemort's attack (outside knowledge, text does not explain it yet); (2) para 756 dobby, Harry's Grim omen: described Trelawney's tea-leaf reading and said Harry does not die; (3) para 1868 hagrid, what is wrong with Lupin: said Snape's potion is the only thing that helps him (later fact). The outcome rule fixed the survival-denial pattern but Gemini still volunteers outside knowledge or later facts when the passages are thin. One more prompt iteration was not run (Claude budget).
 Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results in data/eval/ (before in data/eval/before-fix/).
+
+## 2026-10-23 — why deleting the IR textbook was slow (#64)
+- The repo `.env` sets `RETRIEVAL_BACKEND=vertex`, so a *local* run also deletes from Vertex Vector Search.
+- `u-irbookprint-7f5d57c8` has 1257 chunks -> 1257 single-object DELETEs (32 in flight, retries with backoff on 429/5xx).
+  Loading the book + computing the ids takes ~0.1 s; removing its 5 MB folder takes a few ms. All the time is Vertex.
+- Fix: the request only saves the ids to `books/<id>/deleting.json` and removes `book.json` (the card goes at once);
+  the Vertex deletes and file removal run as a background task with state on `/status` (`deleting` / `delete_error`).
+  A retry joins a running delete or resumes a failed one from `deleting.json`. Not done: a startup sweep for
+  tombstones left by a restart mid-delete (they are invisible; a DELETE of that id resumes them).
+## Avatar stream timing (offline, from 20 cached lip-sync clips, 2026-10-23, #66)
+- Streamed fMP4: H.264 24 fps (timescale 12288) + AAC 24 kHz, no B-frames, tfdt starts at 0. Fragments: first 0.7927 s
+  (first frame lasts ~2 frames), then 0.75 s (18 frames). Init segment `mvhd` duration 0, no `mehd`: MSE duration is
+  +Infinity, so `seekable` = [0, buffered end] and a seek past the rendered part is clamped to it (Chromium
+  MediaSource::SeekableInternal + HTMLMediaElement::Seek `Nearest`). This clamp caused the ~0.5 s voice rewind.
+- Clips are padded at the end to whole fragments (8.40 s mp3 -> 9.04 s clip). No lead-in: the clip's own AAC track equals
+  our TTS mp3 delayed by a constant +40 ms (= 1024-sample AAC priming not trimmed, no edit list). Lip motion vs voice
+  envelope (rough mouth-region motion): median lag ~0 s. So no constant start offset to apply.
+- Pace: ~1.5-3 s from request to first fragment (up to ~6 s with several streams in flight), then about real time
+  (TTS-ready -> stream-end of 10.7 s for a 9.04 s clip). The first sentence's clip therefore cannot catch up with a voice
+  that starts immediately; the voice now waits (bounded) for ~2 fragments before the first word.
+- TTS mp3s are 32 kbit/s 24 kHz, so `len(data)/16000` in main.py under-counts avatar seconds 4x in usage logging.
+## Read-mode lip-sync (#80, 2026-10-23, designed offline: no Boson calls)
+- Read mode used to play only the generic talk loop, so the mouth never matched the words. Now, behind "Lip-sync while
+  reading" (Stage, off by default, shown only when a face on screen is bound to a voice), ReaderEngine streams a Boson
+  avatar clip per TTS chunk through the same path as Talkback: `/api/avatar/stream` (talk/clipVideo -> avatarStream),
+  the start gate (talk/startGate, now shared with sentencePlayer) and FaceSync's drift control. Voice and clip start
+  together from 0; the voice is never paused or rewound; a stalled clip drops to the talk loop and rejoins by rendezvous.
+- Prefetch: the next chunk's clip opens the moment the current voice starts (READ_CLIP_AHEAD = 1, so at most two
+  renders in flight, inside the server's per-clip lock and 12/min bucket). With Boson's ~2 s start + real-time pace a
+  10 s chunk gives the next clip ~8 s of head start, so chained chunks pass the gate at once (fake-clock test: gap < 150
+  ms). Between chunks the gate waits at most 1 s (READ_CHAIN_WAIT_MS); after Play/seek, 6 s. A seek, skip or voice change
+  releases every clip outside [index, index+1]; a pause keeps the in-flight prefetch (aborting it would discard a paid,
+  nearly finished render: the server only caches streams that complete).
+- Faces: the server lip-syncs the face BOUND TO THE VOICE it is sent (`faces.voice_face_path`), and it does not check
+  that the audio was made with that voice. So a chunk is lip-synced on its own voice when the face shown for its speaker
+  is bound to it; a speaker with no face is read by the narrator's face (loop and clip), sent with the narrator's voice.
+  Resolution goes through the reader's existing speaker -> face / voice functions (reader/readLipSync.ReadFaces), so the
+  planned two-voice model only changes those.
+- Cost: Higgs Avatar 640x640 (the streamed size) is $0.09/min of video (docs.boson.ai/pricing), i.e. about $0.09 per
+  minute of reading; cached clips (any line read with lip-sync before, same voice) are free. The session estimate in the
+  debug drawer counts fresh renders (spend.addAvatar) from the chunk's text length.
+- Not measured live: the real gap between chunks and Boson's behaviour with two streams in flight for minutes at a time.
+
+## Two voices per novel (#85, #86), 2026-10-23
+- Novels now default to cast mode "two": every speaker (main cast and the minor_m/minor_f stand-ins) reads in a male or a female voice by gender; the narrator uses the one the reader picks. Resolved at TTS time (backend/app/cast.py voice_for/tags_for, frontend castLogic.castVoice), stored per user in the cast settings; book.json is untouched, "Full cast" mode restores the per-character voices.
+- Gender (backend/app/genders.py, free, offline): title/noun in the name, first-name list, tag pronouns (attribute.infer_genders, >=3 and 85%), then the cast preset's gender. All 40 characters of the five classics and the 47 of HP1 + HP5 come out right (it also fixes Fred in A Christmas Carol and Mole, both cast with a female preset). Unknown -> narrator's voice.
+- Character pitch/speed tags are dropped in two-voice mode, so character lines are new TTS cache keys: the first read of a book in two-voice mode re-synthesises its dialogue (narration keeps its cache because the narrator's slot defaults to the book's narrator voice). Demo mode (cached_only) needs a prerender in two-voice mode or Full cast.
+- Minor pass on the classics, dry run only (not applied): Alice 205, Carol 119, Peter Pan 140, Willows 45, Oz 101 uncast lines would get a stand-in (610 total: 561 male, 49 female).
+
+## Recap menu (#89, 2026-10-23)
+- `GET /api/books/{id}/recap?para=&scope=chapter|book|series` (backend/app/recap.py). No model call: built from stored
+  "story so far" summaries, all with `upto_para <= para`. "Last chapter" = the last chapter the reader finished (in the
+  first chapter: that chapter so far). Its part is the text after "The current chapter so far:" when the note has that
+  mark (uploads, Alice, Oz, Peter Pan, Carol, Willows); for rolling notes without it (HP) the sentences the note before
+  the chapter did not already say (>= 60% content-word overlap = old), else the whole note.
+- The recap is posted into the Talkback chat as a `narrator` message and read aloud in the narrator voice. It is NOT
+  sent to the model and is left out of the chat memory (`priorTurns`): it is not a turn of the conversation, and the
+  answer prompt already carries the spoiler-safe story so far, so including it would only spend prompt budget.
+
+## Play/pause on every reply (#90, 2026-10-23)
+- The answer being spoken shows its play/pause button from its first sentence. Pause holds it in place and the turn
+  stays open (a question or Stop still cancels it): Gemini path = `SentenceSpeaker.pause()` (the clip's audio element is
+  paused; faceSync freezes the face on the voice's `pause` event and resumes it on `playing`); Realtime path =
+  `RingPlayer.pausePlayback()` suspends the AudioContext, so the worklet stops mid-buffer and the rest of the reply
+  queues in the ring (180 s cap); a flush (barge-in/Stop) wakes it first so truncation still gets the played ms.
+  A session without playback control falls back to Stop (the reply can be replayed afterwards).
+- Finished replies replay; a playing replay now pauses/resumes too. One voice at a time: starting any reply pauses or
+  stops the others (a paused live answer is stopped when another reply is played).
+- Not changed (other agents own it): while the live answer is paused the status line may read "Thinking…".
+
+## Resume mid-sentence (#88, 2026-10-23)
+- Read-aloud (narrator recaps) pauses through `SentenceSpeaker.pause()`: the clip's audio element is paused and kept,
+  and Resume plays it on from that moment. Up to 3 paused texts keep their clip; past that, or when the clip is gone
+  (stopped), Resume restarts the part it was on. The lip-sync video, when there is one, pauses and resumes with the
+  voice (faceSync follows the voice's pause/playing events). Chat replies (live and replays) use the same speaker pause.

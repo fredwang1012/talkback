@@ -2,10 +2,22 @@ import { createClipFollower, type FollowAudio } from "./clipFollow";
 import { tryPlayQuietly } from "../audio/mediaErrors";
 import { useEffect, useRef, useState } from "react";
 import type { Book, Face as FaceT, Health } from "../api";
+import type { FaceSync } from "../talk/faceSync";
 import type { TalkUi } from "../talk/useTalk";
 import type { TalkState } from "../talk/TalkController";
 import { splitCharacters } from "./position";
 import { FaceView, ReadFace } from "./FaceView";
+import { readLipSyncCost } from "./readLipSync";
+
+/** Read-mode lip-sync (#80): the toggle (offered only when a face on screen can be lip-synced) and the persistent
+ * clip video the sync drives; `shown` once a clip has a frame and is in step with the voice. */
+export type ReadLipSyncUi = {
+  available: boolean;
+  on: boolean;
+  onToggle: (on: boolean) => void;
+  sync: FaceSync;
+  shown: boolean;
+};
 
 type Props = {
   book: Book;
@@ -25,9 +37,11 @@ type Props = {
   onOpenLab: () => void;
   faceFor: (speakerId: string) => FaceT | undefined; // the face shown in Talk mode
   readingFace: FaceT | null; // face of whoever is reading aloud right now in read mode
+  preloadLoops?: string[]; // read mode: the next reader's loop videos, warmed up so a speaker change starts on time
   spoilers: boolean; // full-book mode (novels): answers may use the whole book
   readSpeaking: boolean; // read mode: the audio is audibly speaking right now (not in a pause)
   levelRef: { current: number }; // read mode: live loudness of the audio, for the still-image pulse
+  readLipSync?: ReadLipSyncUi;
 };
 
 const STATUS: Record<TalkState, string> = {
@@ -85,9 +99,22 @@ function Waveform() {
   );
 }
 
-export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, getAudio, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, spoilers, readSpeaking, levelRef }: Props) {
+/** The one persistent read-mode lip-sync <video>, owned by the sync (see talk/faceSync): never swapped, so nothing
+ * flashes; it sits over the loop face (or the portrait) and fades in only while a clip plays in step. It stays
+ * mounted whatever face is shown, so a chunk's clip is never lost to a face change between chunks. */
+function ReadClipVideo({ sync, shown }: { sync: FaceSync; shown: boolean }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    sync.setVideo(ref.current);
+    return () => sync.setVideo(null);
+  }, [sync]);
+  return <video ref={ref} className={`rf-clip${shown ? " on" : ""}`} muted playsInline />;
+}
+
+export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, getAudio, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, preloadLoops = [], spoilers, readSpeaking, levelRef, readLipSync }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
   const [remember, setRemember] = useState(true);
+  const clipShown = !!readLipSync?.shown;
   const tutor = book.kind === "textbook";
   const fullBook = !tutor && spoilers;
   const { met, locked } = splitCharacters(book.characters, para, fullBook);
@@ -101,7 +128,7 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
   // In read mode the reading cast's face is shown while it reads; otherwise the Talk avatar choice decides.
   const face = readingFace ?? faceFor(speakerId);
   const faceSpeaking = readingFace ? true : talk.speaking;
-  const big = !!face || !!avatarSrc; // a real face grows the circle (animated); no face keeps the small monogram
+  const big = !!face || !!avatarSrc || clipShown; // a real face grows the circle (animated); no face keeps the small monogram
   const thinking = ["transcribing", "retrieving", "answering"].includes(talk.state) && !talk.speaking;
   const talkTo = (id: string) => { onSpeaker(id); onMode("talk"); };
   const pressed = useRef(false); // survives re-renders between press and release
@@ -114,15 +141,23 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
       <div className={`speaker${big ? " big" : ""}`}>
         <div className={`medallion${big ? " big" : ""}${live ? " live" : ""}${thinking ? " thinking" : ""}${talk.speaking ? " speaking" : ""}`} aria-hidden="true">
           {avatarSrc ? <AvatarVideo src={avatarSrc} playing={avatarPlaying} getAudio={getAudio} />
-            : face && readingFace ? <ReadFace face={face} speaking={readSpeaking} levelRef={levelRef} />
+            : face && readingFace ? <ReadFace face={face} speaking={readSpeaking} levelRef={levelRef} clipShown={clipShown} />
             : face ? <FaceView face={face} speaking={faceSpeaking} sync={talk.faceSync} clipShown={talk.clipShown} />
             : portrait ? <img src={portrait} alt="" /> : <span>{name.charAt(0)}</span>}
+          {readLipSync && <ReadClipVideo sync={readLipSync.sync} shown={clipShown} />}
+          {preloadLoops.map((src) => <video key={src} className="preload" src={src} muted playsInline preload="auto" />)}
         </div>
         <div>
           <h3>{name}</h3>
           <p>{blurb}</p>
         </div>
       </div>
+      {readLipSync?.available && (
+        <label className="lipsync">
+          <input type="checkbox" checked={readLipSync.on} onChange={(e) => readLipSync.onToggle(e.target.checked)} />
+          <span>Lip-sync while reading <small>{readLipSyncCost()} Each line starts a moment later.</small></span>
+        </label>
+      )}
       {talk.speaking && <Waveform />}
 
       <div className={`badge${fullBook ? " spoilers-on" : ""}`}>

@@ -16,6 +16,7 @@ from ..config import settings
 from ..schema import Book
 from ..ttschunks import chunk_paragraph
 from . import cast as cast_mod
+from . import minor as minor_mod
 from . import segment as seg_mod
 from . import spend
 from . import summaries as sum_mod
@@ -155,6 +156,8 @@ async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save:
     stage = state["stage"] = "segment"
     report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
     counts = await seg_mod.segment_book(book, llm, LLMRefusal, seg_mod.FAST, _Throttle(report, stage))
+    if settings.minor_voices:  # free, offline: generic voices for uncast speakers
+        counts["minor"] = len(minor_mod.assign_minor_voices(book))
     rebuild_chunks(book)
     await checkpoint()
     log.info("segmented book: %s", counts)

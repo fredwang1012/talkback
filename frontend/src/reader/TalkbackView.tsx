@@ -3,7 +3,9 @@ import type { Book, Face as FaceT } from "../api";
 import type { TalkUi } from "../talk/useTalk";
 import { PRESETS, type TalkChoice } from "./castLogic";
 import { FaceView } from "./FaceView";
-import { chapterAt, showSpoilerToggle, speakerChoices, speakerName, talkbackStatus, type TalkbackStatus } from "./talkbackLogic";
+import RecapMenu, { type RecapChoice } from "./RecapMenu";
+import { priorTurns } from "../talk/chatLog";
+import { chapterAt, createStatusGate, showSpoilerToggle, speakerChoices, speakerName, talkbackStatus, type TalkbackStatus } from "./talkbackLogic";
 
 type Props = {
   book: Book;
@@ -25,9 +27,19 @@ type Props = {
   onLipSync: (on: boolean) => void;
   portrait: string | null;
   onBack: () => void;
-  onRecap: () => void;
+  onRecap: (c: RecapChoice) => void; // a recap is posted into this chat by the narrator
   onVoices: () => void;
 };
+
+/** The status line, held still between the sentences of an answer (createStatusGate, #81). */
+function useStableStatus(raw: TalkbackStatus, answering: boolean): TalkbackStatus {
+  const [shown, setShown] = useState(raw);
+  const gate = useRef<ReturnType<typeof createStatusGate> | null>(null);
+  if (!gate.current) gate.current = createStatusGate(setShown);
+  useEffect(() => { gate.current?.update(raw, answering); }, [raw, answering]);
+  useEffect(() => () => gate.current?.dispose(), []);
+  return shown;
+}
 
 const STATUS_TEXT: Record<TalkbackStatus, string> = {
   idle: "Ready. Hold the microphone (or Space) to ask, or type below.",
@@ -57,7 +69,8 @@ export default function TalkbackView({
   const fullBook = novel && spoilers;
   const choices = speakerChoices(book, para, fullBook);
   const name = speakerName(book, speakerId);
-  const status = talkbackStatus(talk.state, talk.speaking);
+  const status = talkbackStatus(talk.state, talk.speaking); // follows the audio: the face uses it
+  const line = useStableStatus(status, talk.state === "answering"); // the status text and the busy state
   const face = faceFor(speakerId);
   const chapter = chapterAt(book, para);
   const voiceLabel = (v: string) => (PRESETS.includes(v) ? v : "your cloned voice");
@@ -72,7 +85,8 @@ export default function TalkbackView({
 
   const press = () => { if (!held.current) { held.current = true; talk.pttDown(); } };
   const release = () => { if (held.current) { held.current = false; talk.pttUp(); } };
-  const busy = status === "thinking" || status === "speaking";
+  const remembered = priorTurns(talk.messages, speakerId, 99).length;
+  const busy = line === "thinking" || line === "speaking";
 
   const send = () => {
     const t = draft.trim();
@@ -85,7 +99,7 @@ export default function TalkbackView({
     <section className="talkback" aria-label="Talkback conversation">
       <div className="tb-top">
         <button className="link-btn" onClick={onBack}>Back to reading</button>
-        <button className="link-btn" onClick={onRecap}>Recap</button>
+        <RecapMenu inSeries={!!book.series} onPick={onRecap} />
         <button className="link-btn" onClick={onVoices}>Voices</button>
         <div className={`badge${fullBook ? " spoilers-on" : ""}`}>
           <strong>You're at {chapter ?? `paragraph ${para + 1}`}.</strong>
@@ -134,7 +148,7 @@ export default function TalkbackView({
           {face && lipSyncable && (
             <label className="lipsync">
               <input type="checkbox" checked={lipSync} onChange={(e) => onLipSync(e.target.checked)} />
-              Lip-synced face (answers start about 10 seconds later)
+              Lip-synced face (answers start about 2 seconds later)
             </label>
           )}
         </div>
@@ -145,15 +159,34 @@ export default function TalkbackView({
             {talk.messages.map((m) => (
               <div key={m.id} className={`bubble ${m.role}`}>
                 <span className="who-line">
-                  {m.role === "user" ? "You" : speakerName(book, m.speakerId)}
+                  {m.role === "user" ? "You" : m.role === "narrator" ? "Narrator" : speakerName(book, m.speakerId)}
                   {m.via === "typed" && m.role === "user" && <small> typed</small>}
+                  {m.role === "narrator" && m.recap && <small> · Recap: {m.recap}</small>}
                 </span>
-                <p>{m.text || (m.pending ? "…" : "")}</p>
+                <p>{m.text || (m.pending || m.loading ? "…" : "")}</p>
+                {m.role !== "user" && (m.id === talk.liveId ? !!m.text : !m.pending && talk.replayable?.has(m.id)) && (() => {
+                  const on = talk.replayingId === m.id;
+                  const verb = on ? "Pause" : talk.isPaused?.(m.id) ? "Resume" : "Play";
+                  const what = m.role === "narrator" ? "the narrator's recap"
+                    : `${speakerName(book, m.speakerId)}'s reply${m.id === talk.liveId ? "" : " again"}`;
+                  return (
+                    <button type="button" className="replay-btn" aria-pressed={on} aria-label={`${verb} ${what}`}
+                            onClick={() => talk.replay(m.id)}>
+                      {on ? "❚❚" : "▶"}
+                    </button>
+                  );
+                })()}
               </div>
             ))}
           </div>
           <div className="tb-actions">
-            <button className="link-btn" disabled={talk.messages.length === 0} onClick={talk.clearMessages}>Clear</button>
+            {remembered > 0 && (
+              <span className="remembers" title="This chat is kept for this browser tab and given back to the character, so follow-up questions work">
+                {name} remembers this chat ({remembered} {remembered === 1 ? "line" : "lines"})
+              </span>
+            )}
+            <button className="link-btn" disabled={talk.messages.length === 0} onClick={talk.clearMessages}
+                    title="Delete this chat; the character forgets it too">Clear chat</button>
           </div>
           {talk.toast && (
             <div className="toast" role="alert">
@@ -187,7 +220,7 @@ export default function TalkbackView({
           <button type="submit" disabled={!draft.trim()}>Send</button>
           <button type="button" onClick={talk.stop} disabled={!busy}>Stop</button>
         </form>
-        <p className={`tb-status ${status}`} data-status={status}>{STATUS_TEXT[status]}</p>
+        <p className={`tb-status ${line}`} data-status={line}>{STATUS_TEXT[line]}</p>
         {status === "listening" && <div className="meter" aria-hidden="true"><span style={{ width: `${Math.min(100, talk.level * 600)}%` }} /></div>}
       </div>
     </section>

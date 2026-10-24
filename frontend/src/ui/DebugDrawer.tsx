@@ -35,7 +35,7 @@ export function DebugDrawer({ entries, spend }: { entries: LogEntry[]; spend: Sp
       {open && (
         <>
           <p className="drawer-spend">
-            Speech: {spend.ttsChars} characters · Voice in: {spend.inSeconds.toFixed(0)} s · Voice out: {spend.outSeconds.toFixed(0)} s.
+            Speech: {spend.ttsChars} characters · Voice in: {spend.inSeconds.toFixed(0)} s · Voice out: {spend.outSeconds.toFixed(0)} s · Lip-sync video: {spend.avatarSeconds.toFixed(0)} s.
             Estimate from published rates; set a monthly cap in the Boson workspace.
           </p>
           <ol className="drawer-list">
