@@ -55,6 +55,7 @@ class Narrator(BaseModel):
     id: str = "narrator"
     voice: str
     is_character: str | None = None
+    portrait: str | None = None
 
 
 class Summary(BaseModel):

@@ -220,10 +220,10 @@ def test_access_token_gates_endpoints_that_spend_credit(env, monkeypatch):
     assert client.post("/api/realtime/token").status_code == 401
     assert clone(client).status_code == 401
     assert calls["n"] == 0
-    h = {"X-Bookson-Token": "letmein"}
+    h = {"X-Talkback-Token": "letmein"}
     assert client.post("/api/tts", json=body, headers=h).status_code == 200
     assert client.post("/api/realtime/token", headers=h).status_code == 200
-    assert client.post("/api/tts", json=body, headers={"X-Bookson-Token": "wrong"}).status_code == 401
+    assert client.post("/api/tts", json=body, headers={"X-Talkback-Token": "wrong"}).status_code == 401
     assert client.get("/api/books").status_code == 200  # reading stays open
 
 
@@ -269,3 +269,12 @@ def test_health_tells_the_ui_when_an_access_code_is_needed_without_leaking_it(en
     body = client.get("/api/health").json()
     assert body["access_required"] is True
     assert "letmein" not in client.get("/api/health").text
+
+
+def test_align_tag_residue_merged_into_first_word():
+    # Real Boson output (probe 2026-10-17): delivery tags arrive glued onto the first spoken word.
+    plain = "To Sherlock Holmes she is always the woman."
+    words = [{"word": w, "start": i * 0.3, "end": i * 0.3 + 0.25} for i, w in enumerate(
+        ["emotioncontemplationprosodypitchlowTo", "Sherlock", "Holmes", "she", "is", "always", "the", "woman"])]
+    out = align_timestamps(words, plain)
+    assert [plain[o["char_start"]:o["char_end"]] for o in out] == plain.rstrip(".").split() [:-1] + ["woman."]

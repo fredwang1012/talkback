@@ -1,4 +1,4 @@
-// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Bookson.
+// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Talkback.
 import playbackWorkletSource from "./worklets/playback-processor.js?raw";
 import { addWorkletModule } from "./loadWorklet";
 import { AUDIO_RATE } from "./constants";

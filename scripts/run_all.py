@@ -1,6 +1,6 @@
-"""run_all: run every key-dependent step in the right order, once the keys are in bookson/.env.
+"""run_all: run every key-dependent step in the right order, once the keys are in talkback/.env.
 
-Usage (from bookson/):
+Usage (from talkback/):
   python scripts/run_all.py --plan                 # show what would run and what is blocked, run nothing
   python scripts/run_all.py                        # Boson stages only (probes, prerender); Anthropic stages are skipped
   python scripts/run_all.py --anthropic            # also cast, segment, summaries, blurbs, spoiler eval

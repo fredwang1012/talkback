@@ -14,7 +14,7 @@ export default function Library() {
   return (
     <main className="library">
       <header className="masthead">
-        <h1>Bookson</h1>
+        <h1>Talkback</h1>
         <p>Books read aloud in full cast. Stop anywhere, ask a question out loud, and the story picks up from the same sentence.</p>
       </header>
 
@@ -29,6 +29,7 @@ export default function Library() {
         <section className="shelf" aria-label="Books">
           {books.map((b) => (
             <a key={b.id} className="volume" href={`#/read/${b.id}`}>
+              {b.cover && <img className="cover" src={b.cover} alt="" />}
               <div>
                 <h2>{b.title}</h2>
                 <p className="by">{b.author}</p>

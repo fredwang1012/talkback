@@ -3,6 +3,7 @@
 HARD INVARIANT (novels): a passage is eligible only if para_end <= reader_para, and the story-so-far summary used
 has upto_para <= reader_para. This is enforced here, on the server, and never delegated to the client or the model.
 """
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -121,11 +122,10 @@ def latest_summary(book: Book, reader_para: int) -> str:
     return max(ok, key=lambda s: s.upto_para).text if ok else ""
 
 
-def retrieve(book: Book, index: Index, query: str, reader_para: int, k: int = 4) -> dict:
-    """Passages (cap MAX_PASSAGE_CHARS) + story_so_far for the Talk prompt."""
-    spoiler_safe = book.kind == "novel"
-    reader_para = max(0, min(reader_para, len(book.paragraphs) - 1))
-    found = index.search(query, reader_para, k, spoiler_safe=spoiler_safe)
+def _finish(book: Book, index, found: list[Chunk], reader_para: int, spoiler_safe: bool) -> dict:
+    """Shared post-search step: recent passage, char cap, story summary."""
+    if spoiler_safe:  # backstop: enforce the spoiler invariant whatever the index returned
+        found = [c for c in found if c.para_end <= reader_para]
     passages = [{"para_start": c.para_start, "para_end": c.para_end, "text": c.text} for c in found]
     recent = recent_passage(book, reader_para)
     if recent and not any(p["para_start"] <= recent["para_start"] and p["para_end"] >= recent["para_end"] for p in passages):
@@ -143,3 +143,24 @@ def retrieve(book: Book, index: Index, query: str, reader_para: int, k: int = 4)
         total += len(p["text"])
     story = latest_summary(book, reader_para) if spoiler_safe else ""
     return {"passages": passages, "story_so_far": story, "mode": index.mode, "reader_para": reader_para}
+
+
+def _clamp(book: Book, reader_para: int) -> tuple[bool, int]:
+    return book.kind == "novel", max(0, min(reader_para, len(book.paragraphs) - 1))
+
+
+def retrieve(book: Book, index: Index, query: str, reader_para: int, k: int = 4) -> dict:
+    """Passages (cap MAX_PASSAGE_CHARS) + story_so_far for the Talk prompt."""
+    spoiler_safe, reader_para = _clamp(book, reader_para)
+    found = index.search(query, reader_para, k, spoiler_safe=spoiler_safe)
+    return _finish(book, index, found, reader_para, spoiler_safe)
+
+
+async def aretrieve(book: Book, index, query: str, reader_para: int, k: int = 4) -> dict:
+    """Async `retrieve`: same output; awaits index.asearch when present, else runs the sync search in a thread."""
+    spoiler_safe, reader_para = _clamp(book, reader_para)
+    if hasattr(index, "asearch"):
+        found = await index.asearch(query, reader_para, k, spoiler_safe=spoiler_safe)
+    else:
+        found = await asyncio.to_thread(index.search, query, reader_para, k, spoiler_safe=spoiler_safe)
+    return _finish(book, index, found, reader_para, spoiler_safe)

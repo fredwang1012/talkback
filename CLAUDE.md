@@ -1,11 +1,11 @@
-# Bookson — project conventions
+# Talkback — project conventions
 
 Read `docs/BRIEF.md` for the full spec; work milestone by milestone (M0–M10), commit after each, log findings in `NOTES.md`.
 
 ## Commands
 - Backend (Python 3.12, uv): `cd backend && uv sync && uv run uvicorn app.main:app --port 8000`; tests `uv run pytest`
 - Frontend: `cd frontend && npm install && npm run dev` (proxies /api and /media to :8000); tests `npm test`; types `npx tsc -p tsconfig.app.json --noEmit`
-- Keys live in `bookson/.env` (gitignored). Never put BOSON_API_KEY / ANTHROPIC_API_KEY in frontend code, logs, or git.
+- Keys live in `.env` at the repo root (gitignored). Never put BOSON_API_KEY / ANTHROPIC_API_KEY in frontend code, logs, or git.
 
 ## Invariants
 - Spoiler rule: retrieval chunk eligible only if `para_end <= reader_para`; summaries `upto_para <= reader_para`. Enforced in the backend and unit-tested.

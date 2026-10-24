@@ -4,6 +4,7 @@ import { MicCapture } from "../audio/capture";
 import { RingPlayer } from "../audio/playback";
 import { spend } from "../spend";
 import type { LogEntry } from "../ui/DebugDrawer";
+import { detectLanguage, type Detected } from "./language";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
 import { TalkController, type Latency, type ReaderControl, type TalkState } from "./TalkController";
 
@@ -13,6 +14,9 @@ export type TalkUi = {
   toast: string | null;
   level: number;
   latency: Latency | null;
+  speaking: boolean;
+  question: string;
+  language: Detected | null;
   logs: LogEntry[];
   pttDown: () => void;
   pttUp: () => void;
@@ -36,6 +40,9 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   const [toast, setToast] = useState<string | null>(null);
   const [level, setLevel] = useState(0);
   const [latency, setLatency] = useState<Latency | null>(null);
+  const [speaking, setSpeaking] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [language, setLanguage] = useState<Detected | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const logSeq = useRef(0);
   const controller = useRef<TalkController | null>(null);
@@ -71,17 +78,19 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       onState: setState,
       onToast: setToast,
       onCaption: (text) => setCaption(text),
+      onSpeaking: setSpeaking,
+      onTranscript: (text) => { setQuestion(text); setLanguage(detectLanguage(text)); },
       onLatency: (l) => { setLatency(l); console.info("[talk] latency", l); },
     });
     controller.current = talk;
-    return () => { talk.dispose(); client.close(); controller.current = null; setState("reading"); };
+    return () => { talk.dispose(); client.close(); controller.current = null; setState("reading"); setSpeaking(false); };
   }, [bookId, enabled]);
 
   useEffect(() => { controller.current?.setAutoResume(autoResume); }, [autoResume, enabled]);
   useEffect(() => { void controller.current?.setSpeaker(speakerId); }, [speakerId, enabled]);
 
   return {
-    state, caption, toast, level, latency, logs,
+    state, caption, toast, level, latency, speaking, question, language, logs,
     pttDown: useCallback(() => { void controller.current?.pttDown(); }, []),
     pttUp: useCallback(() => { void controller.current?.pttUp(); }, []),
     setSpeaker: useCallback((id: string) => { void controller.current?.setSpeaker(id); }, []),

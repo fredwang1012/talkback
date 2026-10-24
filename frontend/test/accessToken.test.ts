@@ -13,11 +13,11 @@ beforeEach(() => {
 });
 
 describe("access code", () => {
-  it("is empty until the visitor enters it, then sent as X-Bookson-Token", () => {
+  it("is empty until the visitor enters it, then sent as X-Talkback-Token", () => {
     expect(authHeaders()).toEqual({});
     setAccessToken("letmein");
     expect(getAccessToken()).toBe("letmein");
-    expect(authHeaders()).toEqual({ "X-Bookson-Token": "letmein" });
+    expect(authHeaders()).toEqual({ "X-Talkback-Token": "letmein" });
     setAccessToken("");
     expect(authHeaders()).toEqual({});
   });

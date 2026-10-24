@@ -65,7 +65,7 @@ describe("saved position", () => {
   });
 
   it("falls back to the start when storage is blocked or corrupt", () => {
-    store.set("bookson:pos:b", "nonsense");
+    store.set("talkback:pos:b", "nonsense");
     expect(loadPosition("b", 10)).toBe(0);
     (globalThis as { localStorage?: unknown }).localStorage = {
       getItem: () => { throw new Error("blocked"); },

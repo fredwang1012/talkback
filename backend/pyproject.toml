@@ -1,7 +1,7 @@
 [project]
-name = "bookson-backend"
+name = "talkback-backend"
 version = "0.1.0"
-description = "Bookson backend: Boson TTS/Realtime proxy, spoiler-safe retrieval"
+description = "Talkback backend: Boson TTS/Realtime proxy, spoiler-safe retrieval"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.115",
@@ -14,6 +14,8 @@ dependencies = [
     "pyyaml>=6",
     "anthropic>=1.14.0",
     "rank-bm25>=0.2.2",
+    "google-genai>=2.31.0",
+    "google-auth>=2.62.0",
 ]
 
 [project.optional-dependencies]

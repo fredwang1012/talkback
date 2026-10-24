@@ -30,7 +30,7 @@ export function silentDurationMs(chunk: FlatChunk, speed: number): number {
   return Math.max(900, (spoken / 15 / speed) * 1000);
 }
 
-const key = (bookId: string) => `bookson:pos:${bookId}`;
+const key = (bookId: string) => `talkback:pos:${bookId}`;
 
 export function loadPosition(bookId: string, length: number): number {
   try {

@@ -1,0 +1,26 @@
+# IDE
+.idea/
+.vscode/
+
+# Secrets
+.env
+**/.env
+!**/.env.example
+
+# Python
+__pycache__/
+*.pyc
+**/.venv/
+.pytest_cache/
+
+# Node
+**/node_modules/
+**/dist/
+
+# Generated data
+data/cache/
+scripts/captures/*.wav
+scripts/captures/*.log
+.playwright-mcp/
+*.png.tmp
+.superpowers/

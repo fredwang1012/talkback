@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getAccessToken, setAccessToken } from "../accessToken";
-import { fetchBook, fetchHealth, fetchTts, type Book, type Health } from "../api";
+import { avatarUrl, fetchAvatars, fetchBook, fetchHealth, fetchTts, type Book, type Health } from "../api";
 import { DEMO_SPEAKER, DEMO_START_PARA, firstChunkAtOrAfter, isDemo } from "../demo";
 import BookText from "../reader/BookText";
 import PlayerBar from "../reader/PlayerBar";
@@ -26,6 +26,8 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [fullCast, setFullCast] = useState(true);
   const [autoResume, setAutoResume] = useState(true);
   const [speakerId, setSpeakerId] = useState("narrator");
+  const [avatars, setAvatars] = useState<Set<string>>(new Set());
+  const [mode, setMode] = useState<"read" | "talk">("read");
   const [word, setWord] = useState<{ charStart: number; charEnd: number } | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -50,9 +52,10 @@ export default function Reader({ bookId }: { bookId: string }) {
       const flat = flattenChunks(b);
       setIndex(demo ? firstChunkAtOrAfter(flat, DEMO_START_PARA) : loadPosition(b.id, flat.length));
       if (demo && b.characters.some((c) => c.id === DEMO_SPEAKER)) setSpeakerId(DEMO_SPEAKER); // pinned to Holmes
-      try { setOverrides(JSON.parse(localStorage.getItem(`bookson:voices:${b.id}`) ?? "{}")); } catch { /* none saved */ }
+      try { setOverrides(JSON.parse(localStorage.getItem(`talkback:voices:${b.id}`) ?? "{}")); } catch { /* none saved */ }
     }).catch((e: Error) => setError(e.message));
     fetchHealth().then(setHealth).catch(() => setHealth(null));
+    fetchAvatars(bookId).then((ids) => setAvatars(new Set(ids)));
   }, [bookId, demo]);
 
   const chunks = useMemo(() => (book ? flattenChunks(book) : []), [book]);
@@ -137,6 +140,11 @@ export default function Reader({ bookId }: { bookId: string }) {
     engineRef.current?.setNarratorOnly(fullCast ? null : (book?.narrator?.voice ?? null));
   }, [fullCast, book, audioAvailable]);
 
+  const changeMode = useCallback((m: "read" | "talk") => {
+    setMode(m);
+    if (m === "talk") { if (engineRef.current) engineRef.current.pause(); else setPlaying(false); }
+  }, []);
+
   const seek = useCallback((i: number) => {
     const next = clampIndex(i, chunks.length);
     if (engineRef.current) engineRef.current.seek(next);
@@ -179,19 +187,20 @@ export default function Reader({ bookId }: { bookId: string }) {
       if (e.key === "ArrowRight") { lastManualScroll.current = 0; step(1); }
       else if (e.key === "ArrowLeft") { lastManualScroll.current = 0; step(-1); }
       else if (e.key === "k") toggle();
+      else if (e.key === "t" && audioAvailable) changeMode(mode === "read" ? "talk" : "read");
       else if (e.key === "]") setSpeed((s) => SPEEDS[Math.min(SPEEDS.indexOf(s) + 1, SPEEDS.length - 1)]);
       else if (e.key === "[") setSpeed((s) => SPEEDS[Math.max(SPEEDS.indexOf(s) - 1, 0)]);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [step, toggle]);
+  }, [step, toggle, audioAvailable, mode, changeMode]);
 
   const setOverride = (speaker: string, voice: string | null) => {
     const next = { ...overridesRef.current };
     if (voice) next[speaker] = voice; else delete next[speaker];
     setOverrides(next);
     overridesRef.current = next;
-    try { localStorage.setItem(`bookson:voices:${bookId}`, JSON.stringify(next)); } catch { /* storage blocked */ }
+    try { localStorage.setItem(`talkback:voices:${bookId}`, JSON.stringify(next)); } catch { /* storage blocked */ }
     engineRef.current?.refreshAhead(); // chunks fetched ahead used the old voice
   };
   const preview = async (speaker: string, voice: string) => {
@@ -219,7 +228,9 @@ export default function Reader({ bookId }: { bookId: string }) {
                     onPick={(i) => { lastManualScroll.current = Date.now(); seek(i); }} />
         </div>
         <Stage book={book} para={para} speakerId={speakerId} onSpeaker={setSpeakerId} health={health}
-               talk={talk} audioAvailable={audioAvailable} onTalkMode={() => engineRef.current?.pause()}
+               talk={talk} audioAvailable={audioAvailable}
+               avatarSrc={chunks[index] && avatars.has(chunks[index].id) ? avatarUrl(book.id, chunks[index].id) : null}
+               avatarPlaying={playing && !loading} mode={mode} onMode={changeMode}
                pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
                needsCode={needsCode} onCode={(c) => { setAccessToken(c); setCode(c); }} onOpenLab={() => setLabOpen(true)} />
       </div>

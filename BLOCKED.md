@@ -1,47 +1,63 @@
-# Blocked items (updated as work proceeds)
+# What is left (updated 2026-10-15)
 
-Rule for now: do **not** use the Anthropic key (user instruction, 2026-10-15). Boson key not provided yet.
+Everything that can be built without a key is built and tested (105 backend tests, 97 frontend tests, types clean, build OK).
+What remains needs a key or a file from you. When they arrive: `python scripts/run_all.py --plan`, then run it.
 
-## Needs BOSON_API_KEY in bookson/.env
-- [ ] Run live probes `scripts/probe_{tts,secret,realtime,voice}.py` (M0 acceptance). Settles: timestamps null vs [], tag tokens in timestamps, preset `berlinda`, mid-session voice change, commit-during-response, voice-clone response field.
-- [ ] Pre-render all TTS for Sherlock (`prerender_tts.py`, ~365 chunks, ~$0.69).
-- [ ] Hear it: real audio in Read mode (M3 acceptance: no gaps > 150 ms, highlight tracks words).
-- [ ] Talk loop against the live Realtime API (M4 acceptance, latency numbers).
-- [ ] Multilingual Q&A check (M7), voice clone (M8), avatars (M9).
+Standing rule: do **not** use the Anthropic key until told (user instruction, 2026-10-15).
 
-## Needs ANTHROPIC key (paused by user instruction)
-- [ ] Run `cast.py` (written, never run) -> user reviews casting. First real Anthropic call; est. ~$0.05.
-- [ ] **Run** `segment.py` (written + tested with a fake LLM; verbatim validation, retry, narrator fallback). Needs cast first. Then rerun `chunk_tts.py`.
-- [ ] **Run** `summaries.py` (written + tested: model only ever sees paragraphs 0..upto). Est. well under $1.
-- [ ] Retrieval `context_blurb` per chunk (Haiku) — index works without blurbs meanwhile.
-- [ ] `eval_spoilers.py` (M5 acceptance, 0 leaks).
-- [ ] Textbook tutor emotion picks (optional).
-
-## Needs the user
-- [ ] Review cast after `cast.py`.
-- [ ] Portraits (original art): Holmes, Watson, King, Irene Adler, Biology tutor.
-- [ ] OpenStax Biology 2e ch. 8 text in `data/raw/biology2e_ch8.txt` if fetch is blocked.
-- [ ] Voice sample + transcript for voice lab test (M8).
+## 1. You provide
+- [x] `BOSON_API_KEY` in `talkback/.env` (2026-10-17).
+- [ ] OK to spend Anthropic credit (unblocks section 2; estimated a few dollars of the $100).
 - [ ] Set a monthly spend cap in the Boson workspace.
+- [ ] Review the cast after `cast.py` runs (voices, personas, `first_para`). `run_all.py --anthropic` pauses for this.
+- [ ] OpenStax Biology 2e ch. 8 text pasted into `data/raw/biology2e_ch8.txt` (the fetch tool refused to return it verbatim). The meta file and pipeline are ready.
+- [ ] Original-art portraits (Holmes, Watson/narrator, the King, Irene Adler, a tutor): drop into `data/portraits/scandal-in-bohemia/<character-id>.png` (also `narrator`, `cover`). Without them the UI shows initials.
+- [ ] A 5-30 s recording of your voice plus its exact transcript, for the voice-clone test.
 
-## Done without any key (tested with fakes/mocks)
-- [x] Talk prompt templates (`personas.py`), spoiler-safe hybrid retrieval + invariant tests (property-based), `/api/retrieve` with server-side character gate.
-- [x] Retrieval index built for Sherlock: 129 chunks + multilingual-e5-small embeddings (no blurbs yet). Mandarin/Spanish/French queries retrieve relevant earlier passages.
-- [x] `/api/tts` with disk cache + timestamp->character alignment (mocked Boson), `/api/realtime/token` (fresh key, rate limited), `/api/voices/clone` consent gate.
-- [x] `ReaderEngine` (prefetch 3, seek cancellation, pitch-preserving speed, word lookup) wired into the Reader; used when the server has a Boson key, silent preview otherwise.
-- [x] `TalkController` state machine (15 tests incl. 10 consecutive cycles). Not yet attached to a real socket.
+## 1b. GCP backend (see docs/GCP_PLAN.md)
+- ~~G1~~ done 2026-10-17.
+- ~~G2~~ done 2026-10-17 (talkback-api: aiplatform.user, vectorsearch.admin, secretmanager.secretAccessor, logging.logWriter, bucket objectAdmin, self tokenCreator).
+- G3 hard $50 stop (billing-disable function) needs your approval; alerts exist now.
+- G4 Boson key into Secret Manager.
 
-## Still to build without a key
-- [x] `TalkClient` (WebSocket adapter, manual turns, 17 tests with fake socket) + Talk/PTT wired into the Stage (hold Space or the mic button) + debug drawer with spend estimate. **Unverified against the live API**: mid-session voice change (has a reconnect fallback), commit-during-response, real audio latency. Needs BOSON_API_KEY.
-- [x] Security hardening after review: voice allowlist, cache-miss rate limit, bounded upload read, query length cap, optional `BOOKSON_ACCESS_TOKEN`.
-- [x] Voice lab UI + per-speaker voice picker (consent checkbox, record/upload, transcript). Live cloning untested (needs Boson key).
-- [ ] Textbook ingest (OpenStax Biology 2e ch. 8): fetch tool refused to return the text verbatim -> **needs you to paste it** into `data/raw/biology2e_ch8.txt` (plus a `.meta.yaml`; I'll write that).
-- [x] README with setup + 90-second demo script; demo mode (`?demo=1`, pre-rendered audio only, Holmes pinned once cast exists).
-- [x] `prerender_tts.py` written (dry run verified: 365 chunks, ~$0.69); run needs the Boson key.
-- [x] Access code is visitor-entered (sessionStorage), never baked into the bundle (security review follow-up).
-- [x] Debug drawer + cost guard in the UI (backtick).
+## 2. Needs the Anthropic key (all written and tested with a fake LLM; none has made a real call)
+`python scripts/run_all.py --anthropic` runs these in order:
+- [ ] `cast.py` (Sonnet 5.5, ~$0.05) then your review.
+- [ ] `segment.py` (Haiku 5.5), then `chunk_tts.py` again.
+- [ ] `summaries.py` (Sonnet 5.5, under $1).
+- [ ] `index.py --blurbs` (optional).
+- [ ] `eval_spoilers.py` (dry run says about $2.3 for 100 questions; target 0 leaks; appends to NOTES.md).
+- [ ] Textbook emphasis picks: `segment.py --book biology-2e-ch8 --emphasis` (optional).
 
-## Brief audit (2026-10-15, checked against docs/BRIEF.md and the code)
-Not built, no key needed: textbook mode in cast.py + textbook headings in ingest.py; language indicator (M7); `T` key; portrait rendering in Stage and Cast panel; Stage "thinking shimmer" and speaking waveform; lock icon on unmet characters; frontend request timeouts (only the retrieve call has one); retry/backoff on close code 1013 (currently a toast); `eval_spoilers.py`; `prerender_avatar.py`, `/api/avatar/{chunk_id}`, boson.py video calls; hands-free mode (stretch); mobile/dark-mode/browser-mic checks; `cover` in /api/books; clone duration check only works for WAV (browser recordings rely on Boson's own 400).
-Deviations kept on purpose: server starts without BOSON_API_KEY (error surfaces at call time); BM25 rebuilt at load instead of a pickle.
-Fixed during audit: after an answer, Talk mode with a paused reader stays idle instead of starting playback.
+## 3. Needs the Boson key (probes and prerender written; nothing has hit the live API)
+`python scripts/run_all.py` runs these in order:
+- [x] The four probes ran 2026-10-17 (results in NOTES.md): STT 0.66-0.89 s, first answer audio 0.66-0.72 s; `berlinda` does not exist (other 7 voices OK); tags arrive glued to the first timestamp word (alignment handles it, test added); timestamps `null` for one word and French; voice clone id field is `voice_id`, idempotent; mid-session voice change acked; `response.cancel` after a commit error gave no `response.done` within 10 s. Listen to `scripts/captures/realtime_answer_{oliver,nora}.wav` to confirm the voice changed.
+- [ ] `prerender_tts.py` for Sherlock (~365 chunks, ~$0.69; **waiting on your OK**, interrupted by a PC crash before it started) and, once the text exists, Biology.
+- [ ] Listen: M3 acceptance (no gaps over 150 ms, highlight tracks words).
+- [ ] M4 acceptance: 10 live Talk cycles, latency under 2 s first audio, logged to NOTES.md.
+- [ ] M7: five multilingual questions (zh/es/fr) answered in kind. Retrieval already verified offline.
+- [ ] M8: clone a voice live, assign it to the narrator.
+- [ ] M9 (stretch): `probe_avatar.py --portrait ...` then `prerender_avatar.py` (needs portraits).
+- [ ] M10: the 90-second demo three times from a cold start.
+
+## 4. Built without a key (do not redo)
+- [x] M1 ingest (Sherlock 259 paragraphs), chunker (365 chunks), retrieval index (129 chunks + e5 embeddings).
+- [x] M2 backend: books, TTS cache + timestamp alignment, token mint, retrieve with spoiler gating + property tests, voice allowlist, rate limits, optional access code, clone consent gate, startup warm-up.
+- [x] M3 ReaderEngine, M4 TalkController (state machine, tap vs hold, barge-in, auto-resume, 10 cycles) + TalkClient (manual turns, close-code handling, **1013 backoff with a fresh key per retry**).
+- [x] M5 server-side character gating; **`eval_spoilers.py`** (fake-tested; real run needs the Anthropic key).
+- [x] M6 textbook pipeline: ingest headings/skip rules, no-LLM tutor cast, optional emphasis picks, tutor labels in the Stage. Only the chapter text is missing.
+- [x] M7 **language badge** from the transcript (script and stopword detection) and the heard question shown in the Stage.
+- [x] M8 voice lab UI (consent gate). Live cloning untested.
+- [x] M9 scaffolding: `boson.py` video calls, `/api/avatar/{chunk_id}`, `/api/avatars/{book}`, `prerender_avatar.py`, `probe_avatar.py`, muted avatar video in the Stage. Request shape and audio-track question unverified.
+- [x] M10 demo mode, README with the 90-second script, `scripts/run_all.py`, `Dockerfile` + `docs/DEPLOY.md` (image not built yet).
+- [x] UI: portraits (auto-detected files), lock icon on unmet characters, thinking shimmer, speaking waveform, `T` key, frontend request timeouts, dark mode and phone layout checked in a browser.
+- [x] Security: voice allowlist, rate limits, bounded uploads, query cap, keys never in the bundle or logs.
+
+## 5. Known limits (kept on purpose)
+- Spoiler rule is paragraph-granular: the rest of the paragraph the reader is in can be used.
+- Until `segment.py` runs, chunks are narrator-only (no multi-voice reading).
+- Server starts without BOSON_API_KEY; the error surfaces when audio is requested.
+- Clone duration check only works for WAV; browser recordings rely on Boson's own 400.
+- Hands-free mode (semantic_vad + `search_story` tool) is not built: stretch, and its API behaviour is unverified.
+- Real-microphone behaviour in the browser has not been tested (needs the Boson key to be meaningful).
+- Dockerfile and avatar request shape are unverified.

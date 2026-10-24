@@ -287,3 +287,51 @@ describe("TalkController core loop", () => {
     expect(h.states.filter((s) => s === "answering")).toHaveLength(10);
   });
 });
+
+describe("TalkController transcript hook", () => {
+  it("reports the trimmed question once it is heard, and nothing when no transcript arrives", async () => {
+    const heard: string[] = [];
+    const h = setup();
+    (h.talk as any).d.onTranscript = (t: string) => heard.push(t);
+    await ask(h, "  你觉得这封信是谁写的？ ");
+    expect(heard).toEqual(["你觉得这封信是谁写的？"]);
+
+    const h2 = setup();
+    const heard2: string[] = [];
+    (h2.talk as any).d.onTranscript = (t: string) => heard2.push(t);
+    await h2.talk.pttDown();
+    await tick(600);
+    const up = h2.talk.pttUp();
+    await tick(2600);
+    await up;
+    expect(heard2).toEqual([]);
+  });
+});
+
+describe("TalkController speaking flag", () => {
+  it("is true from the first answer audio until playback drains", async () => {
+    const flags: boolean[] = [];
+    const h = setup();
+    (h.talk as any).d.onSpeaking = (v: boolean) => flags.push(v);
+    await ask(h);
+    expect(flags).toEqual([]);
+    h.session.emit({ type: "audio-start" });
+    await tick(0);
+    expect(flags).toEqual([true]);
+    h.session.emit({ type: "response-done", status: "completed" });
+    h.session.emit({ type: "playback-drained" });
+    await tick(0);
+    expect(flags).toEqual([true, false]);
+  });
+
+  it("goes false when the user barges in", async () => {
+    const flags: boolean[] = [];
+    const h = setup();
+    (h.talk as any).d.onSpeaking = (v: boolean) => flags.push(v);
+    await ask(h);
+    h.session.emit({ type: "audio-start" });
+    await tick(0);
+    await h.talk.pttDown();
+    expect(flags).toEqual([true, false]);
+  });
+});

@@ -69,3 +69,46 @@ async def test_missing_key_is_readable(monkeypatch):
     monkeypatch.setattr(settings, "boson_api_key", "")
     with pytest.raises(RuntimeError, match="BOSON_API_KEY"):
         await client(lambda r: httpx.Response(200)).mint_client_secret()
+
+
+async def test_avatar_flow_create_poll_download():
+    seen = []
+
+    def handler(req):
+        seen.append((req.method, req.url.path))
+        if req.method == "POST":
+            import json
+            body = json.loads(req.content)
+            assert body["model"] == "higgs-avatar" and body["size"] == "640x640"
+            assert body["ref_image"].startswith("data:image/png;base64,") and body["input"].startswith("data:audio/mpeg;base64,")
+            return httpx.Response(200, json={"id": "vid_1", "status": "queued"})
+        if req.url.path.endswith("/content"):
+            return httpx.Response(200, content=b"MP4DATA")
+        polls = [p for p in seen if p == ("GET", "/v1/videos/vid_1")]
+        return httpx.Response(200, json={"id": "vid_1", "status": "completed" if len(polls) >= 2 else "in_progress"})
+
+    c = client(handler)
+    vid = await c.create_video("aW1n", "YXVkaW8=")
+    info = await c.wait_video(vid, interval=0)
+    assert info["status"] == "completed"
+    assert await c.download_video(vid) == b"MP4DATA"
+
+
+async def test_avatar_failure_and_busy_replicas():
+    def failing(req):
+        return httpx.Response(200, json={"id": "v", "status": "failed", "error": "bad image"})
+
+    with pytest.raises(BosonError, match="bad image"):
+        await client(failing).wait_video("v", interval=0)
+
+    calls = []
+
+    def busy_then_ok(req):
+        calls.append(1)
+        if len(calls) < 2:
+            return httpx.Response(429, json={"error": {"type": "api_error", "code": "all_replicas_busy", "message": "busy"}},
+                                  headers={"Retry-After": "0"})
+        return httpx.Response(200, json={"id": "v2"})
+
+    assert await client(busy_then_ok).create_video("a", "b") == "v2"
+    assert len(calls) == 2

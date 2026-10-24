@@ -1,4 +1,4 @@
-# Bookson
+# Talkback
 
 Books read aloud in full cast, with a way to talk back. Hold a key, ask a question out loud, get a spoken answer
 grounded in what you have read so far (never a spoiler), and the story resumes from the same sentence.
@@ -31,24 +31,44 @@ Copy `.env.example` to `.env` (gitignored) and fill it in:
 | `BOSON_API_KEY` | Audio, Talk mode, voice cloning. Never reaches the browser; the server mints short-lived keys. |
 | `ANTHROPIC_API_KEY` | Offline preprocessing only (cast, segments, summaries). Not used at runtime. |
 | `BOSON_BASE_URL` | Defaults to `https://api.boson.ai`. |
-| `BOOKSON_ACCESS_TOKEN` | Optional. For public deployments: voices then need an access code typed into the page. |
+| `TALKBACK_ACCESS_TOKEN` | Optional. For public deployments: voices then need an access code typed into the page. |
 
 **Set a monthly spend cap in the Boson workspace** (Billing, then Usage) before running anything that calls the API.
 The debug drawer (backtick key) shows a running estimate of this session's spend.
 
-## Preprocessing, in order
+## When the keys arrive: one command
 
-Each script takes `--book <id>`, is safe to rerun, and prints a cost estimate first.
+```bash
+python scripts/run_all.py --plan                 # what would run, what is blocked and why (runs nothing)
+python scripts/run_all.py                        # with BOSON_API_KEY: probes, then pre-render all audio (~$0.7)
+python scripts/run_all.py --anthropic            # also cast (pauses for your review), segment, summaries, spoiler eval
+```
+
+It stops at the first failure, skips stages whose key is missing, and never spends Anthropic credit without `--anthropic`.
+Every stage is safe to rerun.
+
+## Preprocessing, one step at a time
+
+Each script takes `--book <id>`, prints a cost estimate first, and asks before spending more than $5.
 
 ```bash
 cd backend
 uv run python ../preprocess/ingest.py     --book scandal-in-bohemia   # text -> paragraphs
 uv run python ../preprocess/cast.py       --book scandal-in-bohemia   # Anthropic: characters, personas, voices (review the result!)
-# segment.py and summaries.py (Anthropic) are still to be written
+uv run python ../preprocess/segment.py    --book scandal-in-bohemia   # Anthropic Haiku: who speaks each part, with emotions
 uv run python ../preprocess/chunk_tts.py  --book scandal-in-bohemia   # TTS chunks of at most 280 characters
+uv run python ../preprocess/summaries.py  --book scandal-in-bohemia   # Anthropic: "story so far" notes (prefix-only)
 uv run python ../preprocess/index.py      --book scandal-in-bohemia   # retrieval index; add --blurbs to use Anthropic
 uv run python ../preprocess/prerender_tts.py --book scandal-in-bohemia # Boson: ~$0.70 for the whole story
+uv run python ../preprocess/eval_spoilers.py --book scandal-in-bohemia --dry-run   # M5 leak test (Anthropic); drop --dry-run to run
 ```
+
+Textbook (Biology 2e chapter 8): paste the chapter text into `data/raw/biology2e_ch8.txt` (blank line between
+paragraphs, `8.1 Title` lines for sections), then run `ingest.py`, `cast.py` (no LLM: one tutor voice), `chunk_tts.py`,
+`index.py` and `prerender_tts.py` with `--book biology-2e-ch8`.
+
+Optional extras: portraits go in `data/portraits/<book>/<character-id>.png` (also `narrator` and `cover`); the Stage and
+cast list pick them up automatically. Avatars: `scripts/probe_avatar.py`, then `preprocess/prerender_avatar.py`.
 
 ## Run
 
@@ -79,10 +99,13 @@ character to Holmes.
 ```
 backend/    FastAPI: books, TTS cache + word-timestamp alignment, spoiler-safe retrieval, token minting, voice cloning
 frontend/   React + Vite: library, reader, Stage (Talk), voice lab, debug drawer
-preprocess/ offline scripts (ingest, cast, chunk_tts, index, prerender_tts)
-scripts/    live API probes (probe_*.py) that record findings in NOTES.md
+preprocess/ offline scripts (ingest, cast, segment, chunk_tts, summaries, index, prerender_tts, eval_spoilers, prerender_avatar)
+scripts/    live API probes (probe_*.py) that record findings in NOTES.md, and run_all.py
 data/       raw texts, generated books and indexes, caches (cache/ is gitignored)
 ```
+
+Keys: Space (hold) talk, K play/pause, left/right sentence, [ and ] speed, T switch Read/Talk, backtick debug drawer.
+Deployment notes: `docs/DEPLOY.md`.
 
 ## Credits and licences
 

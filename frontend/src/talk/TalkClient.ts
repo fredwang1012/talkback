@@ -42,7 +42,12 @@ export interface TalkClientDeps {
   onLog?: (dir: "send" | "recv" | "info", type: string, raw: unknown) => void;
   cancelWaitMs?: number;
   voiceChangeWaitMs?: number;
+  /** Waits between retries when Boson refuses a connection with close code 1013 (concurrency limit). */
+  backoffMs?: number[];
 }
+
+/** Close code 1013 before the session opened: too many concurrent connections. Safe to retry after a pause. */
+export class ConnectionLimitError extends Error {}
 
 export function sessionConfig(voice: string): ClientEvent {
   return {
@@ -67,7 +72,7 @@ export function sessionConfig(voice: string): ClientEvent {
 }
 
 export class TalkClient implements TalkSession {
-  private d: TalkClientDeps & { cancelWaitMs: number; voiceChangeWaitMs: number };
+  private d: TalkClientDeps & { cancelWaitMs: number; voiceChangeWaitMs: number; backoffMs: number[] };
   private ws: SocketLike | null = null;
   private opening: Promise<void> | null = null; // the idempotency guard (React StrictMode opens two sockets otherwise)
   private voice = "default";
@@ -86,7 +91,7 @@ export class TalkClient implements TalkSession {
   private caption = "";
 
   constructor(deps: TalkClientDeps) {
-    this.d = { cancelWaitMs: 2000, voiceChangeWaitMs: 3000, ...deps };
+    this.d = { cancelWaitMs: 2000, voiceChangeWaitMs: 3000, backoffMs: [1000, 2000, 4000], ...deps };
     this.player = deps.createPlayer((speaking) => this.onSpeaking(speaking));
     this.mic = deps.createMic((b64) => this.onMicChunk(b64), deps.onLevel);
   }
@@ -112,18 +117,33 @@ export class TalkClient implements TalkSession {
     if (this.isOpen) return voice === this.voice ? Promise.resolve() : this.setVoice(voice);
     if (this.opening) return this.opening;
     this.voice = voice;
-    this.opening = this.open(voice).finally(() => { this.opening = null; });
+    this.opening = this.openWithBackoff(voice).finally(() => { this.opening = null; });
     return this.opening;
+  }
+
+  private async openWithBackoff(voice: string): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.open(voice);
+      } catch (e) {
+        const wait = this.d.backoffMs[attempt];
+        if (!(e instanceof ConnectionLimitError) || wait === undefined) throw e;
+        this.d.onLog?.("info", "backoff", `Boson is at its connection limit; retrying in ${wait} ms`);
+        await new Promise((r) => setTimeout(r, wait));
+      }
+    }
   }
 
   private async open(voice: string): Promise<void> {
     await this.player.resume(); // must run inside the user gesture or the AudioContext stays suspended
     const key = await this.d.tokenProvider(); // a fresh ephemeral key for every connection, never cached
     await new Promise<void>((resolve, reject) => {
+      let opened = false;
       const make = this.d.createSocket ?? ((url, protocols) => new WebSocket(url, protocols) as unknown as SocketLike);
       const ws = make(WS_URL, ["realtime", `bai-client-secret.${key}`]);
       this.ws = ws;
       ws.onopen = () => {
+        opened = true;
         this.send(sessionConfig(voice)); // the first session.update starts the session; no need to wait for session.created
         this.flushPending();
         resolve();
@@ -137,6 +157,7 @@ export class TalkClient implements TalkSession {
         this.d.onLog?.("info", `close:${ev.code}`, info);
         if (!wasThis) return;
         this.resetResponse();
+        if (ev.code === 1013 && !opened) { reject(new ConnectionLimitError(info.message)); return; }
         if (ev.code === 3000 || ev.code === 4429) this.emit({ type: "error", message: info.message });
         else if (ev.code === 1013) this.emit({ type: "error", message: "Boson is at its connection limit. Try again in a moment." });
         else this.emit({ type: "closed", message: info.message }); // idle timeout / max duration: reconnect on next press
