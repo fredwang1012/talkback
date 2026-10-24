@@ -1,5 +1,11 @@
-"""DELETE /api/books/{id}: uploaded books only, owner only, never mid-processing, gone from disk, caches and Vertex."""
+"""DELETE /api/books/{id}: uploaded books only, owner only, never mid-processing, gone from disk, caches and Vertex.
+
+The card leaves the library at once (book.json goes in the request); the slow part (one Vertex DELETE per chunk, then
+the folder) runs as a background task with its status on /status, and a retry resumes it."""
+import asyncio
+
 import pytest
+from fastapi import BackgroundTasks
 
 from app import main, users
 from app.config import settings
@@ -37,7 +43,7 @@ def test_delete_removes_everything(client, tmp_path):
     client.get(f"/api/books/{bid}")   # warm the body cache
     assert bid in {b["id"] for b in client.get("/api/books").json()}
     r = client.delete(f"/api/books/{bid}")
-    assert r.status_code == 200 and r.json()["incomplete"] == []
+    assert r.status_code == 202 and r.json() == {"deleted": bid, "status": "deleting"}
     assert bid not in {b["id"] for b in client.get("/api/books").json()}
     assert client.get(f"/api/books/{bid}").status_code == 404
     assert client.get(f"/api/books/{bid}/status").status_code == 404
@@ -84,27 +90,43 @@ def test_vertex_datapoints_deleted_by_id(client, tmp_path, monkeypatch):
     from app.gcp.indexing import datapoint_ids
     expected = datapoint_ids(main.books.load_book(bid))
     assert expected and all(i.startswith(f"{bid}__") for i in expected)
-    assert client.delete(f"/api/books/{bid}").status_code == 200
+    assert client.delete(f"/api/books/{bid}").status_code == 202
     assert store.deleted == [expected]
     assert not (tmp_path / "books" / bid).exists()
 
 
-def test_vertex_failure_keeps_the_book(client, tmp_path, monkeypatch):
+def test_vertex_failure_is_reported_and_a_retry_resumes(client, tmp_path, monkeypatch):
     bid = upload(client)
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
+    from app.gcp.indexing import datapoint_ids
+    expected = datapoint_ids(main.books.load_book(bid))
     monkeypatch.setattr(main, "_vertex_deps", lambda: (object(), FakeStore(fail=True)))
-    assert client.delete(f"/api/books/{bid}").status_code == 502
-    assert (tmp_path / "books" / bid / "book.json").exists()
+    assert client.delete(f"/api/books/{bid}").status_code == 202
+    assert bid not in {b["id"] for b in client.get("/api/books").json()}   # gone from the library anyway
+    st = client.get(f"/api/books/{bid}/status").json()
+    assert st["status"] == "delete_error" and "search" in st["message"]
+    assert (tmp_path / "books" / bid / "deleting.json").exists()   # the datapoint ids are kept for the retry
     assert main._kind_claims == set()   # the claim is released so a retry works
+    store = FakeStore()
+    monkeypatch.setattr(main, "_vertex_deps", lambda: (object(), store))
+    assert client.delete(f"/api/books/{bid}").status_code == 202
+    assert store.deleted == [expected]   # the same ids, though book.json is gone
+    assert not (tmp_path / "books" / bid).exists()
+    assert client.get(f"/api/books/{bid}/status").status_code == 404
 
 
 def test_partial_disk_failure_still_hides_the_book(client, tmp_path, monkeypatch):
     bid = upload(client)
     import shutil
+    real = shutil.rmtree
     monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)   # a FUSE tree removal that does nothing
     r = client.delete(f"/api/books/{bid}")
-    assert r.status_code == 200 and f"books/{bid}" in r.json()["incomplete"]
+    assert r.status_code == 202
     assert bid not in {b["id"] for b in client.get("/api/books").json()}   # book.json went first
+    assert (tmp_path / "books" / bid).is_dir()
+    monkeypatch.setattr(shutil, "rmtree", real)
+    assert client.delete(f"/api/books/{bid}").status_code == 202   # a retry finishes the job
+    assert not (tmp_path / "books" / bid).exists()
 
 
 def test_only_the_owner_deletes(pu, tmp_path):
@@ -115,7 +137,7 @@ def test_only_the_owner_deletes(pu, tmp_path):
     cast = users.cast_json("u-alice-1", users.Identity(ALICE, users.ns_for(ALICE)))
     cast.parent.mkdir(parents=True, exist_ok=True)
     cast.write_text("{}")
-    assert client.delete("/api/books/u-alice-1", headers=h(token(ALICE))).status_code == 200
+    assert client.delete("/api/books/u-alice-1", headers=h(token(ALICE))).status_code == 202
     assert not (settings.data_dir / "books" / "u-alice-1").exists() and not cast.exists()
     assert (settings.data_dir / "books" / "u-bob-1" / "book.json").exists()   # Bob's book untouched
     assert client.delete("/api/books/demo", headers=h(token(ALICE))).status_code == 403
@@ -149,9 +171,8 @@ def test_refused_while_vertex_indexing(client, tmp_path):
         main._upload_status.pop(bid, None)
 
 
-def test_a_retry_during_a_slow_delete_joins_it(client, tmp_path, monkeypatch):
-    """The browser gives up after 60 s; the retry must wait for the same delete, not get 409."""
-    import asyncio
+def test_the_card_goes_before_the_slow_part_and_a_retry_joins_it(client, tmp_path, monkeypatch):
+    """The response comes before the Vertex deletes; a second DELETE meanwhile neither 409s nor deletes twice."""
     bid = upload(client)
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
     calls = []
@@ -163,13 +184,40 @@ def test_a_retry_during_a_slow_delete_joins_it(client, tmp_path, monkeypatch):
 
     monkeypatch.setattr(main, "_vertex_deps", lambda: (object(), SlowStore()))
 
-    async def both():
-        return await asyncio.gather(main.delete_book(bid), main.delete_book(bid))
+    async def run():
+        first = BackgroundTasks()
+        r = await main.delete_book(bid, first)
+        assert r.status_code == 202 and calls == []   # answered before any Vertex call
+        assert bid not in {b["id"] for b in main.books.list_books()}
+        assert main.book_status(bid)["status"] == "deleting"
+        job = asyncio.ensure_future(first())
+        await asyncio.sleep(0.01)   # the job is now inside the slow Vertex delete
+        second = BackgroundTasks()
+        r2 = await main.delete_book(bid, second)
+        assert r2.status_code == 202
+        await second()
+        await job
 
-    a, b = asyncio.run(both())
-    assert a == b == {"deleted": bid, "incomplete": []}
-    assert len(calls) == 1 and not (tmp_path / "books" / bid).exists()
-    assert main._deleting == {}
+    asyncio.run(run())
+    assert calls != [] and len(calls) == 1 and not (tmp_path / "books" / bid).exists()
+    assert main._deleting == {} and main._kind_claims == set()
+
+
+def test_a_reupload_during_a_delete_is_a_new_book(client, tmp_path, monkeypatch):
+    bid = upload(client, title="Same Title")
+
+    async def run():
+        bg = BackgroundTasks()
+        await main.delete_book(bid, bg)
+        return bg
+
+    bg = asyncio.run(run())
+    new = upload(client, title="Same Title")   # while the old one is still being removed
+    assert new != bid
+    asyncio.run(bg())
+    assert not (tmp_path / "books" / bid).exists()
+    assert (tmp_path / "books" / new / "book.json").exists()
+    assert new in {b["id"] for b in client.get("/api/books").json()}
 
 
 def test_start_enrichment_refused_during_a_delete(client):

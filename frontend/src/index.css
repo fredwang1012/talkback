@@ -89,6 +89,9 @@ button:disabled { cursor: not-allowed; }
 .volume-delete:hover:not(:disabled) { border-color: #b3402f; color: #b3402f; }
 .volume-confirm { display: flex; flex-direction: column; gap: 8px; font-size: 0.9rem; color: var(--ink); padding: 10px 12px; border: 1px solid #b3402f; border-radius: var(--radius); }
 .volume-confirm-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.removals { list-style: none; margin: 28px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; color: var(--ink-faint); font-size: 0.9rem; }
+.removals li { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.removals .removal-error { color: var(--ink-soft); }
 .hidden-books { margin-top: 32px; color: var(--ink-soft); font-size: 0.92rem; }
 .hidden-books ul { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-width: 520px; }
 .hidden-books li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

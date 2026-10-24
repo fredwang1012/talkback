@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
-  accountLabel, changeKind, deleteBook, fetchBooks, fetchHiddenBooks, hideBook, restoreBook, type HiddenBook, fetchMe, SIGN_OUT_URL, type Me, MAX_UPLOAD_BYTES, pollBookStatus, pollEnrichment, pollIndexing, indexingLabel, startEnrichment, uploadBook,
+  accountLabel, changeKind, deleteBook, fetchBooks, fetchHiddenBooks, hideBook, restoreBook, waitForDeletion, type HiddenBook, fetchMe, SIGN_OUT_URL, type Me, MAX_UPLOAD_BYTES, pollBookStatus, pollEnrichment, pollIndexing, indexingLabel, startEnrichment, uploadBook,
   type BookStatus, type BookSummary, type UploadKind,
   enrichDoneNote,
 } from "../api";
@@ -164,6 +164,9 @@ function AddBook({ onReady }: { onReady: () => void }) {
   );
 }
 
+/** An uploaded book whose card is already gone while the server finishes removing it (search entries, files). */
+type Removal = { book: BookSummary; state: "running" | "error"; message?: string };
+
 type MoveNote = { id: string; text: string; progress?: number; confirm?: number };
 
 function Volume({ b, busy, note, onMove, onConfirm, onDelete, onHide }: {
@@ -244,12 +247,15 @@ export default function Library() {
   const [me, setMe] = useState<Me | null>(null);
   const [hidden, setHidden] = useState<HiddenBook[]>([]);
   const [showHidden, setShowHidden] = useState(false);
+  const [removals, setRemovals] = useState<Record<string, Removal>>({});
+  const alive = useRef<AbortController>(new AbortController());
   const abortRef = useRef<AbortController | null>(null);
 
   const load = () => fetchBooks().then(setBooks).catch((e: Error) => setError(e.message));
   const loadHidden = () => fetchHiddenBooks().then(setHidden).catch(() => setHidden([]));
   useEffect(() => { load(); loadHidden(); fetchMe().then(setMe); }, []);
   useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => { const c = new AbortController(); alive.current = c; return () => c.abort(); }, []);
 
   const setNote = (id: string, note: MoveNote | null) =>
     setNotes((n) => { const { [id]: _drop, ...rest } = n; return note ? { ...rest, [id]: note } : rest; });
@@ -288,14 +294,26 @@ export default function Library() {
     }
   }
 
+  const setRemoval = (id: string, r: Removal | null) =>
+    setRemovals((m) => { const { [id]: _drop, ...rest } = m; return r ? { ...rest, [id]: r } : rest; });
+
+  /** Uploads: the card goes at once; the server removes the search entries and files in the background. */
   async function remove(b: BookSummary) {
+    setBooks((list) => (list ? list.filter((x) => x.id !== b.id) : list));
+    setNote(b.id, null);
+    setRemoval(b.id, { book: b, state: "running" });
     try {
       await deleteBook(b.id);
-      setBooks((list) => (list ? list.filter((x) => x.id !== b.id) : list));
-      setNote(b.id, null);
-    } catch (err) {
+    } catch (err) {  // refused (still processing, not signed in): nothing was removed, put the card back
+      setRemoval(b.id, null);
+      await load();
       setNote(b.id, { id: b.id, text: (err as Error).message });
+      return;
     }
+    const done = await waitForDeletion(b.id, alive.current.signal);
+    if (done === null) return;
+    if (done.ok) setRemoval(b.id, null);
+    else setRemoval(b.id, { book: b, state: "error", message: done.message });
   }
 
   /** Built-in books: gone from the shelf at once (optimistic), restorable from "Hidden books". */
@@ -380,6 +398,21 @@ export default function Library() {
               : <div className="shelf">{shelves.textbooks.map(volume)}</div>}
           </section>
         </>
+      )}
+
+      {Object.values(removals).length > 0 && (
+        <ul className="removals" aria-label="Books being removed">
+          {Object.values(removals).map((r) => (
+            <li key={r.book.id} className={r.state === "error" ? "removal-error" : undefined} role="status">
+              {r.state === "running"
+                ? <span>Removing “{r.book.title}”…</span>
+                : <>
+                    <span>“{r.book.title}” is off your shelf, but the delete did not finish: {r.message}</span>
+                    <button type="button" className="volume-move" onClick={() => remove(r.book)}>Try again</button>
+                  </>}
+            </li>
+          ))}
+        </ul>
       )}
 
       {hidden.length > 0 && (

@@ -14,7 +14,7 @@ from typing import Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from pydantic import BaseModel, Field
@@ -772,6 +772,8 @@ async def upload_book(request: Request, background: BackgroundTasks, file: Uploa
 @app.get("/api/books/{book_id}/status")
 def book_status(book_id: str):
     users.guard_book(book_id)
+    if book_id in _delete_status:   # a delete's background part is running or failed
+        return _delete_status[book_id]
     st = _upload_status.get(book_id)
     if st is None and books._ID.match(book_id):
         st = ingest_upload.read_status(book_id)
@@ -866,9 +868,15 @@ def _forget_book(book_id: str) -> None:
     _index_for.cache_clear()
 
 
-@app.delete("/api/books/{book_id}", dependencies=[Depends(require_access)])
-async def delete_book(book_id: str):
-    """Really remove an uploaded book: its Vertex datapoints, folder, original file and caches. Owner only."""
+@app.delete("/api/books/{book_id}", status_code=202, dependencies=[Depends(require_access)])
+async def delete_book(book_id: str, background: BackgroundTasks):
+    """Really remove an uploaded book: its Vertex datapoints, folder, original file and caches. Owner only.
+
+    Fast path in the request: book.json goes (the book leaves the library at once) and the Vertex datapoint ids are
+    saved to deleting.json. The slow part (one Vertex DELETE per chunk, ~1-2 min for a 1300-chunk textbook) runs in
+    the background with its state on /status. Idempotent: a retry joins a running delete or resumes a failed one.
+    Book ids are never reused, so a re-upload of the same file is a new book and cannot be touched by this.
+    """
     if not books._ID.match(book_id):
         raise HTTPException(404, "Book not found")
     users.guard_book(book_id)   # 404 for another account's book
@@ -877,45 +885,84 @@ async def delete_book(book_id: str):
         raise HTTPException(403, "Only books you uploaded can be deleted.")
     if ident.ns and users.book_owner_ns(book_id) != ident.ns:   # explicit owner check, whatever can_see_book allows
         raise HTTPException(404, "Book not found")
-    running = _deleting.get(book_id)
-    if running is not None:   # a retry (the browser gave up waiting): join the delete in progress, do not 409
-        return await asyncio.shield(running)
+    accepted = JSONResponse({"deleted": book_id, "status": "deleting"}, status_code=202)
+    if book_id in _deleting:   # a retry while the background part runs: join it, do not 409 or delete twice
+        return accepted
     book_dir = settings.data_dir / "books" / book_id
     if not book_dir.is_dir():
         raise HTTPException(404, "Book not found")
-    if _book_busy(book_id):
+    resuming = not (book_dir / "book.json").is_file()   # an earlier delete failed part-way: finish it
+    if not resuming and _book_busy(book_id):
         raise HTTPException(409, "This book is still being processed; try again when it finishes.")
-    _kind_claims.add(book_id)   # blocks a concurrent kind change / enrichment start while we delete
-    # A task of its own, so the delete finishes even if the client disconnects, and a retry can wait for it.
-    task = _deleting[book_id] = asyncio.ensure_future(_delete_claimed_book(book_id))
-    task.add_done_callback(lambda _t: _deleting.pop(book_id, None))
-    return await asyncio.shield(task)
-
-
-_deleting: dict[str, asyncio.Future] = {}   # deletes in progress, so a retry joins one instead of getting 409
-
-
-async def _delete_claimed_book(book_id: str) -> dict:
-    """The delete itself (the caller checked access and claimed the book in _kind_claims; released here)."""
+    # Claim synchronously (no await since the checks): blocks a concurrent kind change / enrichment / second delete.
+    _kind_claims.add(book_id)
+    _deleting[book_id] = time.monotonic()
     try:
-        if settings.retrieval_backend == "vertex":
-            from .gcp.indexing import datapoint_ids
-            book = books.load_book(book_id)
+        ids = await asyncio.to_thread(_tombstone_book, book_id)
+    except BaseException:
+        _kind_claims.discard(book_id)
+        _deleting.pop(book_id, None)
+        raise
+    _deleted.add(book_id)   # from now on no background job writes this book back
+    _forget_book(book_id)
+    _delete_status[book_id] = {"status": "deleting", "message": "Removing the book"}
+    background.add_task(_finish_delete, book_id, ids)
+    return accepted
+
+
+_deleting: dict[str, float] = {}       # book id -> start time, while a delete's background part runs
+_delete_status: dict[str, dict] = {}   # "deleting" | "delete_error" while the folder still exists
+
+
+def _tombstone_book(book_id: str) -> list[str]:
+    """Worker thread: save the Vertex datapoint ids next to the book (deleting.json), then remove book.json so the
+    book leaves the library. On a resume the ids come from deleting.json (book.json is already gone)."""
+    d = settings.data_dir / "books" / book_id
+    tomb = d / "deleting.json"
+    ids: list[str] = []
+    if tomb.is_file():
+        try:
+            ids = [i for i in json.loads(tomb.read_text(encoding="utf-8")) if isinstance(i, str)]
+        except (OSError, ValueError):
+            ids = []
+    elif settings.retrieval_backend == "vertex":
+        from .gcp.indexing import datapoint_ids
+        book = books.load_book(book_id)
+        ids = datapoint_ids(book) if book else []
+        tmp = tomb.with_name(tomb.name + ".tmp")
+        tmp.write_text(json.dumps(ids), encoding="utf-8")
+        tmp.replace(tomb)
+    for name in ("book.json", "book.json.tmp"):
+        (d / name).unlink(missing_ok=True)
+    return ids
+
+
+async def _finish_delete(book_id: str, ids: list[str]) -> None:
+    """Background: the Vertex datapoints first (on failure the folder and deleting.json stay, so a retry resumes),
+    then every file. Never raises; releases the claim taken by delete_book."""
+    log = logging.getLogger(__name__)
+    try:
+        if ids:
             try:
-                ids = await asyncio.to_thread(datapoint_ids, book) if book else []
-                if ids:   # first: if Vertex fails the book stays intact and the delete can be retried
-                    await _vertex_deps()[1].delete(ids)
+                await _vertex_deps()[1].delete(ids)
             except Exception as e:
-                logging.getLogger(__name__).warning("vertex delete failed: %s", type(e).__name__)
-                raise HTTPException(502, "Could not remove the book from search; nothing was deleted, try again.")
-        _deleted.add(book_id)   # from now on no background job writes this book back
+                log.warning("vertex delete failed: %s", type(e).__name__)
+                _delete_status[book_id] = {"status": "delete_error",
+                                           "message": "Could not remove the book from search; try deleting again."}
+                return
         left = await asyncio.to_thread(ingest_upload.delete_book_files, book_id)
         _forget_book(book_id)
+        if left:
+            log.warning("book %s: could not remove %s", book_id, left)
+            _delete_status[book_id] = {"status": "delete_error", "message": "Some files could not be removed; try deleting again."}
+        else:
+            _delete_status.pop(book_id, None)
+    except Exception as e:  # never leave the claim behind
+        log.warning("book delete failed: %s", type(e).__name__)
+        _delete_status[book_id] = {"status": "delete_error", "message": "The delete did not finish; try again."}
     finally:
         _kind_claims.discard(book_id)
-    if left:
-        logging.getLogger(__name__).warning("book %s: could not remove %s", book_id, left)
-    return {"deleted": book_id, "incomplete": left}
+        _deleting.pop(book_id, None)
 
 
 # ---------- avatars (stretch) ----------

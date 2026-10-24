@@ -244,11 +244,45 @@ export async function cloneVoice(audio: Blob, filename: string, transcript: stri
   return res.json() as Promise<CloneResult>;
 }
 
-/** Permanently deletes an uploaded book (files, search entries, caches). 409 while it is still being processed. */
+/**
+ * Permanently deletes an uploaded book (files, search entries, caches). 409 while it is still being processed.
+ * Resolves as soon as the book has left the library (202); the server finishes in the background (waitForDeletion).
+ */
 export async function deleteBook(id: string): Promise<void> {
-  const res = await timedFetch(`/api/books/${encodeURIComponent(id)}`, { method: "DELETE", headers: authHeaders() }, 60000);
+  const res = await timedFetch(`/api/books/${encodeURIComponent(id)}`, { method: "DELETE", headers: authHeaders() }, 30000);
   if (res.status === 404) return; // already gone (e.g. a retry after a timed-out request that still finished)
   if (!res.ok) throw await readError(res, "Could not delete the book");
+}
+
+/** Polls a deleted book's status until its background removal ends: {ok:true} when gone, the message on failure,
+ * null when aborted. A 404 means the book is fully removed. */
+export async function waitForDeletion(
+  id: string, signal?: AbortSignal, intervalMs = 2000, maxMs = 10 * 60 * 1000,
+): Promise<{ ok: true } | { ok: false; message: string } | null> {
+  const deadline = Date.now() + maxMs;
+  let failures = 0;
+  while (!signal?.aborted) {
+    try {
+      const res = await timedFetch(`/api/books/${encodeURIComponent(id)}/status`, { headers: authHeaders(), signal });
+      if (res.status === 404) return { ok: true };
+      if (res.ok) {
+        failures = 0;
+        const s = (await res.json()) as { status: string; message?: string };
+        if (s.status === "delete_error") return { ok: false, message: s.message ?? "The delete did not finish." };
+        if (s.status !== "deleting") return { ok: true };
+      } else if (++failures > 3) return { ok: false, message: `Could not check the delete (${res.status}).` };
+    } catch (e) {
+      if (signal?.aborted) return null;
+      if (++failures > 3) return { ok: false, message: (e as Error).message };
+    }
+    if (Date.now() + intervalMs > deadline) return { ok: false, message: "The delete is taking too long; try again." };
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(done, intervalMs);
+      function done() { clearTimeout(t); signal?.removeEventListener("abort", done); resolve(); }
+      signal?.addEventListener("abort", done);
+    });
+  }
+  return null;
 }
 
 /** Built-in books (classics, Harry Potter) are hidden for this account instead of deleted; restorable. */
@@ -286,7 +320,7 @@ export function enrichDoneNote(e: EnrichStatus): string {
 export type IndexStatus = { state: "running" | "done" | "error"; done: number; total: number; message?: string };
 export const indexingLabel = (i: IndexStatus): string => `Indexing ${i.done} / ${i.total}`;
 export type BookStatus = {
-  status: "processing" | "ready" | "error"; message?: string; enrich?: EnrichStatus; index?: IndexStatus;
+  status: "processing" | "ready" | "error" | "deleting" | "delete_error"; message?: string; enrich?: EnrichStatus; index?: IndexStatus;
   kind?: BookKind; kind_detected?: KindDetected;
 };
 

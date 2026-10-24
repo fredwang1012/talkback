@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { changeKind, deleteBook, fetchHiddenBooks, hideBook, restoreBook, type BookSummary } from "../src/api";
+import { changeKind, deleteBook, fetchHiddenBooks, hideBook, restoreBook, waitForDeletion, type BookSummary } from "../src/api";
 import { canDelete, canMove, groupShelves, hiddenLabel, kindLabel, moveLabel, moveTarget, removeKind, removeLabel, seriesTitle } from "../src/shelves";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -127,6 +127,31 @@ describe("delete", () => {
   it("surfaces the server's reason (409 while processing)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "still being processed" }), { status: 409 })));
     await expect(deleteBook("u-x")).rejects.toThrow(/still being processed/);
+  });
+
+  const status = (body: unknown, code = 200) => new Response(JSON.stringify(body), { status: code });
+
+  it("waits in the background until the book is gone (404 = done)", async () => {
+    const f = vi.fn()
+      .mockResolvedValueOnce(status({ status: "deleting" }))
+      .mockResolvedValueOnce(status({ status: "deleting" }))
+      .mockResolvedValueOnce(status({ detail: "Book not found" }, 404));
+    vi.stubGlobal("fetch", f);
+    expect(await waitForDeletion("u-x", undefined, 1)).toEqual({ ok: true });
+    expect(f).toHaveBeenCalledTimes(3);
+    expect(f.mock.calls[0][0]).toBe("/api/books/u-x/status");
+  });
+
+  it("reports a delete that failed part-way, with the server's message", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(status({ status: "delete_error", message: "Could not remove the book from search" })));
+    expect(await waitForDeletion("u-x", undefined, 1)).toEqual({ ok: false, message: "Could not remove the book from search" });
+  });
+
+  it("a status that is no longer deleting counts as done; abort stops quietly", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(status({ status: "ready" })));
+    expect(await waitForDeletion("u-x", undefined, 1)).toEqual({ ok: true });
+    const ctl = new AbortController(); ctl.abort();
+    expect(await waitForDeletion("u-x", ctl.signal, 1)).toBeNull();
   });
 });
 

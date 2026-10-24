@@ -532,3 +532,12 @@ True leaks before: (1) para 1988 harry, "Did Crookshanks really eat Scabbers?": 
 Fix: both spoiler-safe templates in `backend/app/personas.py` now say never to state or deny an outcome the notes do not establish (survived, escaped, eaten, guilty, lying), to say the story has not revealed it yet, and not to attribute a detail to a scene unless a passage shows it. Full-book templates are unchanged.
 True leaks after (different questions, so sampling noise in Gemini answers): (1) para 756 dumbledore, why Harry reacted to the dementor: said the screams were his mother's before Voldemort's attack (outside knowledge, text does not explain it yet); (2) para 756 dobby, Harry's Grim omen: described Trelawney's tea-leaf reading and said Harry does not die; (3) para 1868 hagrid, what is wrong with Lupin: said Snape's potion is the only thing that helps him (later fact). The outcome rule fixed the survival-denial pattern but Gemini still volunteers outside knowledge or later facts when the passages are thin. One more prompt iteration was not run (Claude budget).
 Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results in data/eval/ (before in data/eval/before-fix/).
+
+## 2026-10-23 — why deleting the IR textbook was slow (#64)
+- The repo `.env` sets `RETRIEVAL_BACKEND=vertex`, so a *local* run also deletes from Vertex Vector Search.
+- `u-irbookprint-7f5d57c8` has 1257 chunks -> 1257 single-object DELETEs (32 in flight, retries with backoff on 429/5xx).
+  Loading the book + computing the ids takes ~0.1 s; removing its 5 MB folder takes a few ms. All the time is Vertex.
+- Fix: the request only saves the ids to `books/<id>/deleting.json` and removes `book.json` (the card goes at once);
+  the Vertex deletes and file removal run as a background task with state on `/status` (`deleting` / `delete_error`).
+  A retry joins a running delete or resumes a failed one from `deleting.json`. Not done: a startup sweep for
+  tombstones left by a restart mid-delete (they are invisible; a DELETE of that id resumes them).
