@@ -21,14 +21,16 @@ def pdf(pages: list[str], title: str = "", author: str = "") -> bytes:
 
 
 class FakeLLM:
-    def __init__(self, title="", author="", fail=False):
-        self.calls, self.answer, self.fail = [], (title, author), fail
+    """Stands in for Gemini: answers the describe schema with a title and a JSON list of authors."""
+    def __init__(self, title="", author: str | list[str] = "", fail=False):
+        authors = author if isinstance(author, list) else [author] if author else []
+        self.calls, self.answer, self.fail = [], (title, authors), fail
 
     async def complete_json(self, system, user, schema_model, tier="fast", **kw):
         self.calls.append(user)
         if self.fail:
             raise RuntimeError("boom")
-        return schema_model(title=self.answer[0], author=self.answer[1])
+        return schema_model(title=self.answer[0], authors=self.answer[1])
 
 
 @pytest.mark.parametrize("title, junk", [
@@ -43,6 +45,65 @@ def test_junk_titles(title, junk):
                                           ("user", True), ("Owner", True), ("Adobe Acrobat", True)])
 def test_junk_authors(author, junk):
     assert describe.junk_author(author) is junk
+
+
+@pytest.mark.parametrize("raw, joined", [
+    ("Jane Austen", "Jane Austen"),
+    ("Christopher D. Manning; Prabhakar Raghavan; Hinrich Schütze", "Christopher D. Manning, Prabhakar Raghavan, Hinrich Schütze"),
+    ("Christopher D. Manning and Prabhakar Raghavan and Hinrich Schütze", "Christopher D. Manning, Prabhakar Raghavan, Hinrich Schütze"),
+    ("Christopher D. Manning, Prabhakar Raghavan, and Hinrich Schütze", "Christopher D. Manning, Prabhakar Raghavan, Hinrich Schütze"),
+    ("Brian W. Kernighan & Dennis M. Ritchie", "Brian W. Kernighan, Dennis M. Ritchie"),
+    ("Abelson, Harold; Sussman, Gerald Jay", "Harold Abelson, Gerald Jay Sussman"),   # "Last, First" is turned round
+    ("Austen, Jane", "Jane Austen"),
+    ("Smith, J., Jones, K.", "J. Smith, K. Jones"),
+    ("Martin Luther King, Jr.", "Martin Luther King, Jr."),   # not two names: kept as written
+    ("Jane Austen;  ;Jane Austen", "Jane Austen"),   # empties and repeats dropped
+    ("  Lewis   Carroll ", "Lewis Carroll"),
+])
+def test_metadata_authors_are_split_on_separators_and_joined_with_commas(raw, joined):
+    assert describe.join_authors(describe.split_authors(raw)) == joined
+
+
+def test_join_authors_drops_junk_and_caps_the_length():
+    assert describe.join_authors(["Ada Lovelace", "", "  ", "Administrator", "ada lovelace", "Charles Babbage"]) == \
+        "Ada Lovelace, Charles Babbage"
+    assert len(describe.join_authors(["x" * 80, "y" * 80])) == describe.MAX_FIELD
+
+
+def test_names_run_together_in_metadata_are_split_by_asking_the_llm_for_a_list():
+    # the IR book's PDF metadata: three authors with only spaces between them (#95)
+    llm = FakeLLM("Introduction to Information Retrieval", ["Christopher D. Manning", "Prabhakar Raghavan", "Hinrich Schütze"])
+    data = pdf(["Introduction to Information Retrieval\nChristopher D. Manning\nPrabhakar Raghavan\nHinrich Schütze"],
+               "Introduction to Information Retrieval", "Christopher D. Manning Prabhakar Raghavan Hinrich Schütze")
+    out = asyncio.run(describe.describe(data, ".pdf", llm=llm))
+    assert out == {"title": "Introduction to Information Retrieval",
+                   "author": "Christopher D. Manning, Prabhakar Raghavan, Hinrich Schütze", "source": "llm"}
+    assert len(llm.calls) == 1
+
+
+def test_run_together_names_stay_as_they_were_when_the_llm_cannot_help():
+    data = pdf(["x"], "Introduction to Information Retrieval", "Christopher D. Manning Prabhakar Raghavan Hinrich Schütze")
+    out = asyncio.run(describe.describe(data, ".pdf", llm=FakeLLM(fail=True)))
+    assert out["author"] == "Christopher D. Manning Prabhakar Raghavan Hinrich Schütze" and out["source"] == "metadata"
+
+
+def test_separated_metadata_authors_need_no_llm():
+    llm = FakeLLM("Wrong", "Wrong")
+    data = pdf(["x"], "Introduction to Information Retrieval", "Christopher D. Manning; Prabhakar Raghavan; Hinrich Schütze")
+    out = asyncio.run(describe.describe(data, ".pdf", llm=llm))
+    assert out["author"] == "Christopher D. Manning, Prabhakar Raghavan, Hinrich Schütze" and llm.calls == []
+
+
+def test_the_llm_list_of_authors_is_joined_with_commas():
+    llm = FakeLLM("Structure and Interpretation of Computer Programs", ["Harold Abelson", "Gerald Jay Sussman", "Julie Sussman"])
+    out = asyncio.run(describe.describe(pdf(["SICP"]), ".pdf", llm=llm))
+    assert out["author"] == "Harold Abelson, Gerald Jay Sussman, Julie Sussman"
+
+
+def test_a_gutenberg_author_line_with_and_is_joined_with_commas():
+    txt = b"Title: Good Omens\n\nAuthor: Terry Pratchett and Neil Gaiman\n\n..."
+    out = asyncio.run(describe.describe(txt, ".txt", llm=FakeLLM("x", "y")))
+    assert out["author"] == "Terry Pratchett, Neil Gaiman"
 
 
 def test_good_metadata_needs_no_llm():

@@ -73,6 +73,34 @@ def build_tts_text(spoken: str, voice_tags: str, emotion: str | None, style: str
 
 
 CODE_SPOKEN = "Code listing skipped."
+EQUATION_SPOKEN = "Equation."
+
+
+def _fit(text: str, limit: int = MAX_CHARS) -> str:
+    """`text` cut at the last clause / word boundary so that it fits in one TTS chunk."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit - 1]
+    cut = max(head.rfind(", "), head.rfind("; "))
+    cut = cut if cut > limit // 2 else head.rfind(" ")
+    return (head[:cut] if cut > 0 else head).rstrip(" ,;") + "."
+
+
+def equation_tts_text(p: Paragraph) -> str:
+    """What is said for a display equation: the model's reading, else the extracted text when it reads faithfully,
+    else just "Equation 3.4." One chunk (<= MAX_CHARS after normalization)."""
+    from .parsing import split_equation_number
+    m = p.math
+    number = m.number if m else None
+    head, *rest = number.split(".") if number else [""]
+    label = " point ".join(["Equation " + head] + [" ".join(r) for r in rest]) if number else "Equation"
+    if m is not None and m.spoken:
+        spoken = f"{label}: {m.spoken.strip().rstrip('.')}."
+    elif m is not None and not m.garbled:
+        spoken = split_equation_number(p.text)[0] or EQUATION_SPOKEN
+    else:
+        spoken = f"{label}."
+    return _fit(build_tts_text(spoken, "", None))
 
 
 def chunk_paragraph(p: Paragraph, book: Book) -> list[TtsChunk]:
@@ -80,6 +108,9 @@ def chunk_paragraph(p: Paragraph, book: Book) -> list[TtsChunk]:
     if p.kind == "code":  # a listing is displayed whole but spoken as one short note
         return [TtsChunk(id=f"p{p.idx}c0", speaker="narrator", voice=narrator_voice,
                          tts_text=build_tts_text(CODE_SPOKEN, "", None), char_start=0, char_end=len(p.text))]
+    if p.kind == "math":
+        return [TtsChunk(id=f"p{p.idx}c0", speaker="narrator", voice=narrator_voice,
+                         tts_text=equation_tts_text(p), char_start=0, char_end=len(p.text))]
     chars = {c.id: c for c in book.characters}
     segments = p.segments or [Segment(speaker="narrator", text=p.text)]
     apply_styles(segments)  # rule-based whispering/shouting; keeps a style the enrich LLM already set

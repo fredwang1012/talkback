@@ -24,21 +24,29 @@ def _split(buf: str) -> tuple[list[str], str]:
 
 class GeminiAnswerer:
     def __init__(self, client=None, model: str | None = None):
-        self.client = client or genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gcp_region)
+        self.client = client or genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
         self.model = model or settings.gemini_model
 
     async def stream_sentences(self, system: str, user: str,
                                on_usage: Callable[[int, int], None] | None = None) -> AsyncIterator[str]:
         """Yield the answer sentence by sentence. `on_usage(prompt_tokens, output_tokens)` is called once at the end."""
-        config = types.GenerateContentConfig(
-            system_instruction=system,
-            max_output_tokens=700,
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
-        )
+        def config(thinking: bool):
+            return types.GenerateContentConfig(
+                system_instruction=system, max_output_tokens=700,
+                **({"thinking_config": types.ThinkingConfig(thinking_budget=0)} if thinking else {}),
+            )
+
         buf = ""
         meta = None
         try:
-            stream = await self.client.aio.models.generate_content_stream(model=self.model, contents=user, config=config)
+            try:
+                stream = await self.client.aio.models.generate_content_stream(
+                    model=self.model, contents=user, config=config(True))
+            except Exception as e:
+                if "Thinking budget is not supported" not in str(e):
+                    raise
+                stream = await self.client.aio.models.generate_content_stream(
+                    model=self.model, contents=user, config=config(False))
             async for chunk in stream:
                 if getattr(chunk, "usage_metadata", None) is not None:
                     meta = chunk.usage_metadata

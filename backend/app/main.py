@@ -19,15 +19,17 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from pydantic import BaseModel, Field
 
-from . import books, cast, faces, ingest_upload, public_client, recap, retrieval, tts_cache, users, voices
+from . import books, cast, face_detect, faces, ingest_upload, public_client, recap, retrieval, tts_cache, users, voices
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
 from .enrich import describe as describe_book
+from .enrich import equations as enrich_equations
 from .enrich import pipeline as enrich_pipeline
 from .enrich.detect import detect_kind
 from .gcp import usage
 from .personas import build_answer_prompt, build_instructions
+from .mp3dur import mp3_seconds
 from .ratelimit import TokenBucket, client_ip
 from .schema import Book, ChatTurn
 from .uploadlimit import UploadSizeLimit
@@ -759,6 +761,8 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
         _ingest_guard.release(token)
         if hash_key is not None:   # book.json is written by now (or the ingest failed): the disk check takes over
             _hash_claims.pop(hash_key, None)
+    if ready is not None and kind == "textbook" and ext == ".pdf" and any(p.kind == "math" for p in ready.paragraphs):
+        _start_equations(book_id, data)
     if ready is not None and settings.retrieval_backend == "vertex":
         await _index_in_background(ready, chunks)
     if ready is not None and kind == "novel" and settings.upload_enrich and book_id not in _deleted:
@@ -780,7 +784,7 @@ async def _ingest_work(book_id: str, title: str, author: str, kind: str, data: b
     raw, detected = None, None
     if kind == "auto":  # decide novel or textbook from the extracted text
         raw = await asyncio.to_thread(ingest_upload.extract_text, data, ext)
-        kind, confidence, method = await detect_kind(raw, book_id=book_id)
+        kind, confidence, method = await detect_kind(ingest_upload.plain_text(raw), book_id=book_id)
         detected = {"kind": kind, "confidence": confidence, "method": method}
     book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext,
                                            raw, detected)
@@ -790,6 +794,51 @@ async def _ingest_work(book_id: str, title: str, author: str, kind: str, data: b
     if settings.retrieval_backend == "vertex":
         _set_index(book_id, state="queued", done=0, total=len(chunks))
     return book, chunks, kind
+
+
+_equation_jobs: set[str] = set()   # textbooks whose equation pictures / LaTeX are being made
+_equation_tasks: set[asyncio.Task] = set()
+
+
+def _start_equations(book_id: str, data: bytes) -> None:
+    """Crop the published textbook's equations, then (Gemini configured) read them as LaTeX, in the background."""
+    if book_id in _equation_jobs:
+        return
+    _equation_jobs.add(book_id)
+    task = asyncio.create_task(_equations_job(book_id, data))
+    _equation_tasks.add(task)
+    task.add_done_callback(_equation_tasks.discard)
+
+
+async def _equations_job(book_id: str, data: bytes) -> None:
+    """Pictures first (the reader shows them at once), then LaTeX and spoken readings. Never raises; the book stays
+    readable with whatever was saved."""
+    try:
+        crops = await asyncio.to_thread(ingest_upload.render_equations, book_id, data, lambda: book_id in _deleted)
+        if crops and enrich_equations.available() and book_id not in _deleted:
+            readings = await enrich_equations.transcribe(book_id, crops)
+            if readings and book_id not in _deleted:
+                await asyncio.to_thread(ingest_upload.update_equations, book_id, readings)
+    except Exception as e:
+        logging.getLogger(__name__).warning("equations of %s failed: %s", book_id, type(e).__name__)
+    finally:
+        _equation_jobs.discard(book_id)
+
+
+_EQ_ID = re.compile(r"^e\d{1,5}$")
+
+
+@app.get("/api/books/{book_id}/equations/{eq_id}.png")
+def equation_picture(book_id: str, eq_id: str):
+    """A cropped equation picture. Not behind the access code (an <img> cannot send it), like /portraits: a few
+    formulas, never the text; PER_USER still serves only the books the caller may see."""
+    if not books._ID.match(book_id) or not _EQ_ID.match(eq_id):
+        raise HTTPException(404, "Not found")
+    users.guard_book(book_id)
+    path = ingest_upload.equation_path(book_id, eq_id)
+    if not path.is_file():
+        raise HTTPException(404, "Not found")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @app.post("/api/books/upload", status_code=202, dependencies=[Depends(require_access)])
@@ -970,7 +1019,8 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
     except HTTPException:  # an upload from before status files
         st = {"status": "ready"}
     # Check and claim in one synchronous block (no await before the claim): concurrent requests cannot both pass.
-    if (st.get("enrich") or {}).get("status") == "running" or book_id in _enrich_jobs or book_id in _kind_claims:
+    if (st.get("enrich") or {}).get("status") == "running" or book_id in _enrich_jobs or book_id in _kind_claims \
+            or book_id in _equation_jobs:
         raise HTTPException(409, "This book is still being processed; try again when it finishes.")
     if book.kind == body.kind:
         return st
@@ -1165,14 +1215,30 @@ def _drop_avatar_ref(key: str, entry: list) -> None:
 class LipSyncRequest(BaseModel):
     audio_url: str = Field(max_length=120)
     voice: str = Field(max_length=120)
+    face_id: str | None = Field(None, max_length=200)  # the face shown (#113); omitted: the voice's own linked face
+
+
+def _lipsync_face(req: LipSyncRequest) -> Path:
+    """The portrait to animate. With `face_id`: that face from the caller's own library (the same visibility as
+    /api/faces: per-account under PER_USER, the shared library otherwise), 404 when it is not theirs or unknown.
+    Without: the face bound to the voice, as before (400 when the voice has none)."""
+    if req.face_id is not None:
+        face = faces.image_path(req.face_id) if faces.FACE_ID.match(req.face_id) else None
+        if face is None or not face.is_file():
+            raise HTTPException(404, "Face not found")
+        return face
+    face = faces.voice_face_path(req.voice) if voices.is_known_voice(req.voice) else None
+    if face is None:
+        raise HTTPException(400, "Lip-sync needs audio from /api/speak and a voice that has a face.")
+    return face
 
 
 def _lipsync_inputs(req: LipSyncRequest) -> tuple[Path, Path, str]:
     """Validate a lip-sync request: (cached TTS file, face image, cache key). Raises 400/404."""
     m = _TTS_URL.match(req.audio_url)
-    face = faces.voice_face_path(req.voice) if voices.is_known_voice(req.voice) else None
-    if not m or face is None:
+    if not m:
         raise HTTPException(400, "Lip-sync needs audio from /api/speak and a voice that has a face.")
+    face = _lipsync_face(req)
     audio = settings.data_dir / "cache" / "tts" / f"{m.group(1)}.mp3"
     if not audio.is_file():
         raise HTTPException(404, "That audio is not cached.")
@@ -1197,7 +1263,7 @@ async def lipsync(req: LipSyncRequest, request: Request):
             try:
                 vid = await boson.create_video(base64.b64encode(face.read_bytes()).decode(), base64.b64encode(data).decode(),
                                                image_mime=faces.FACE_EXTS[face.suffix.lstrip(".").lower()],
-                                               seconds=len(data) / 16000)  # 128 kbit/s mp3
+                                               seconds=mp3_seconds(data))
                 await boson.wait_video(vid, interval=1, timeout=120)
                 video = await boson.download_video(vid)
             except (BosonError, RuntimeError) as e:
@@ -1240,7 +1306,7 @@ async def lipsync_stream(req: LipSyncRequest, request: Request):
             async with asyncio.timeout(STREAM_MAX_SECONDS):
                 _vid, chunks = await stack.enter_async_context(boson.stream_video(
                     base64.b64encode(face.read_bytes()).decode(), base64.b64encode(data).decode(),
-                    image_mime=faces.FACE_EXTS[face.suffix.lstrip(".").lower()], seconds=len(data) / 16000))
+                    image_mime=faces.FACE_EXTS[face.suffix.lstrip(".").lower()], seconds=mp3_seconds(data)))
         except (BosonError, RuntimeError) as e:
             raise boson_http_error(e)
         except TimeoutError:
@@ -1305,11 +1371,15 @@ def avatar(chunk_id: str, book: str):
 @app.post("/api/voices/clone", dependencies=[Depends(require_access)])
 async def clone_voice(request: Request, audio: UploadFile = File(...), transcript: str = Form(..., max_length=2000),
                       name: str = Form(..., max_length=60), consent: str = Form("false"),
-                      face: UploadFile | None = File(None)):
+                      face: UploadFile | None = File(None), face_id: str | None = Form(None, max_length=80)):
+    """Clone a voice. `face` (an image) stores a new face bound to it; `face_id` (#113) links an existing face of the
+    caller's library instead, with no copy: deleting the voice later only drops that link."""
     if not clone_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many voice uploads; wait a moment.")
     data = await audio.read(voices.MAX_BYTES + 1)  # bounded read: never buffer an unbounded upload
     image = await face.read(faces.MAX_FACE_BYTES + 1) if face is not None else None
+    if face_id is not None and (not faces.FACE_ID.match(face_id) or not faces.face_exists(face_id)):
+        raise HTTPException(404, "Face not found")  # before the paid clone call
     try:
         voices.validate_clone_request(data, transcript, name, consent)
         if image is not None:
@@ -1321,7 +1391,14 @@ async def clone_voice(request: Request, audio: UploadFile = File(...), transcrip
     except (BosonError, RuntimeError) as e:
         raise boson_http_error(e)
     voices.save_voice(name, voice_id)
-    face_url = faces.create_face(image, name, voice=voice_id)["image"] if image is not None else None
+    face_url = None
+    if image is not None:
+        face_url = faces.create_face(image, name, voice=voice_id)["image"]
+    elif face_id is not None:
+        try:
+            face_url = faces.link_voice(face_id, voice_id)["image"]
+        except faces.FaceInputError:   # deleted between the check and the clone: the voice stays, without a face
+            face_url = None
     return {"voice": voice_id, "name": name, "face": face_url}
 
 
@@ -1330,8 +1407,9 @@ _VOICE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
 
 @app.delete("/api/voices/{voice_id}", dependencies=[Depends(require_access)])
 async def delete_voice(voice_id: str):
-    """Delete a voice the caller cloned: at Boson, from the saved list, and the face linked to it. Casts that used it
-    fall back to Auto. Built-in presets are refused."""
+    """Delete a voice the caller cloned: at Boson and from the saved list. Its face stays in the library, only the link
+    goes (deleting a face likewise keeps the voice). Casts that used the voice fall back to Auto. Built-in presets are
+    refused."""
     users.require_account()
     if voice_id in voices.PRESET_VOICES:
         raise HTTPException(403, "Built-in voices cannot be deleted.")
@@ -1341,9 +1419,7 @@ async def delete_voice(voice_id: str):
         await boson.delete_voice(voice_id)   # False (404) = already gone at Boson: carry on
     except (BosonError, RuntimeError) as e:
         raise boson_http_error(e)            # local data stays, so the delete can be retried
-    face_ids = faces.face_ids_for_voice(voice_id)
-    for fid in face_ids:   # the face made with this clone goes with it
-        await _delete_face_locked(fid)
+    face_ids = await asyncio.to_thread(faces.unlink_voice, voice_id)   # faces stay; they only lose the voice link
     await asyncio.to_thread(faces.delete_legacy_voice_files, voice_id)
     voices.remove_voice(voice_id)
     return {"deleted": voice_id, "faces": face_ids}
@@ -1382,6 +1458,25 @@ async def upload_face(request: Request, image: UploadFile = File(...), name: str
         return faces.create_face(data, name)
     except faces.FaceInputError as e:
         raise HTTPException(400, str(e))
+
+
+face_detect_bucket = TokenBucket(capacity=12, per_seconds=60)  # per IP / account: each may cost one Gemini Flash call
+
+
+@app.post("/api/faces/detect", dependencies=[Depends(require_access)])
+async def detect_face(request: Request, image: UploadFile = File(...)):
+    """The main face's box ({x, y, w, h} as fractions, or null) for the head-and-shoulders crop (#109). Nothing is
+    stored. Guarded like /api/books/describe: accounts only under PER_USER, a per-caller bucket here, and a global
+    bucket, daily cap and budget reservation in face_detect."""
+    users.require_account("Sign in to add faces.")
+    if not face_detect_bucket.allow(rate_key(request)):
+        raise HTTPException(429, "Too many photos at once; place the square yourself.")
+    data = await image.read(faces.MAX_FACE_BYTES + 1)  # bounded read
+    try:
+        ext = faces.validate_image(data)
+    except faces.FaceInputError as e:
+        raise HTTPException(400, str(e))
+    return {"face": await face_detect.detect(data, ext)}
 
 
 @app.get("/api/faces", dependencies=[Depends(require_access)])

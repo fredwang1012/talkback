@@ -7,6 +7,10 @@ runs only when uploads may use one (UPLOAD_ENRICH); its estimated cost is reserv
 (no call when the budget cannot cover it), and a global token bucket plus a daily cap bound the calls across every
 account. Parsing is bounded too: at most PARSE_CONCURRENCY files at once (Busy when full), PARSE_TIMEOUT_S each.
 Nothing is stored: the form shows the answer and the reader can edit it.
+
+Several authors are joined with ", " (#95). Metadata names separated by ";", "and", "&" or commas are split on those
+("Last, First" is turned round); names run together with only spaces between them ("Christopher D. Manning Prabhakar
+Raghavan Hinrich Schütze") cannot be split by rule, so the model, which sees the title page, is asked for the list.
 """
 import asyncio
 import logging
@@ -38,14 +42,14 @@ _parsing = 0
 class Busy(Exception):
     """PARSE_CONCURRENCY files are already being read: try again in a moment."""
 SYSTEM = """You read the opening pages of a book (title page, copyright page, contents) and give its title and author as printed there.
-Title: the book's own title (keep a short subtitle only when it is part of how the book is known). Author: the author's name(s) as printed, without "by".
-Use an empty string for anything you cannot find. Never guess from the text's style."""
+Title: the book's own title (keep a short subtitle only when it is part of how the book is known). Authors: a list with one entry per author, each name as printed, without "by", in the order printed.
+Use an empty string (or an empty list) for anything you cannot find. Never guess from the text's style."""
 
 
 class Guess(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: str = Field(description="the book's title, or empty")
-    author: str = Field(description="the author's name(s), or empty")
+    authors: list[str] = Field(description="one entry per author, as printed; empty when not found")
 
 
 _JUNK_TITLE = re.compile(
@@ -70,6 +74,58 @@ def junk_title(title: str) -> bool:
 def junk_author(author: str) -> bool:
     a = clean(author)
     return len(a) < 2 or bool(_JUNK_AUTHOR.match(a))
+
+
+_AND = re.compile(r"\s+(?:and|&)\s+|\s*&\s*", re.I)
+_LEADING_AND = re.compile(r"^(?:and|&)\s+", re.I)
+RUN_TOGETHER_WORDS = 4   # an author field this long with no separator may be several names run together
+
+
+def _turn_round(last: str, first: str) -> str:
+    return clean(f"{first} {last}")
+
+
+def _split_commas(part: str) -> list[str]:
+    """"A B, C D, and E F" -> three names; "Austen, Jane" -> "Jane Austen"; "Smith, J., Jones, K." -> two names
+    turned round; anything else (e.g. "Martin Luther King, Jr.") is kept as written."""
+    bits = [clean(_LEADING_AND.sub("", b.strip())) for b in part.split(",")]
+    bits = [b for b in bits if b]
+    if len(bits) < 2:
+        return bits
+    one_word = lambda b: " " not in b  # noqa: E731
+    if len(bits) % 2 == 0 and all(one_word(b) for b in bits[0::2]):   # Last, First[, Last, First]
+        return [_turn_round(bits[i], bits[i + 1]) for i in range(0, len(bits), 2)]
+    if all(not one_word(b) for b in bits):
+        return bits
+    return [clean(part)]
+
+
+def split_authors(raw: str) -> list[str]:
+    """The names in a metadata / header author field: split on ";", "/", "|", newlines, "and", "&" and commas."""
+    out: list[str] = []
+    for chunk in re.split(r"[;|/\n]+", raw or ""):
+        for part in _AND.split(chunk):
+            out.extend(_split_commas(part))
+    return out
+
+
+def join_authors(names: list[str]) -> str:
+    """One author field: names cleaned, junk, empties and repeats dropped, joined with ", ", capped at MAX_FIELD."""
+    seen: set[str] = set()
+    kept: list[str] = []
+    for n in names:
+        c = clean(n)
+        if not c or junk_author(c) or c.lower() in seen:
+            continue
+        seen.add(c.lower())
+        kept.append(c)
+    return clean(", ".join(kept))
+
+
+def run_together(raw: str) -> bool:
+    """One long name with no separator: possibly several authors with only spaces between them."""
+    names = split_authors(raw)
+    return len(names) == 1 and len(names[0].split()) >= RUN_TOGETHER_WORDS
 
 
 def _pdf_parts(data: bytes) -> tuple[str, str, str]:
@@ -140,8 +196,9 @@ async def describe(data: bytes, ext: str, *, llm: LLM | None = None) -> dict:
     Raises Busy when PARSE_CONCURRENCY files are already being read."""
     meta_title, meta_author, text = await _parse(data, ext)
     title = "" if junk_title(meta_title) else clean(meta_title)
-    author = "" if junk_author(meta_author) else clean(meta_author)
-    if title and author:
+    author = "" if junk_author(meta_author) else join_authors(split_authors(meta_author))
+    unsure = bool(author) and run_together(meta_author)   # the model splits the names from the title page
+    if title and author and not unsure:
         return {"title": title, "author": author, "source": "metadata"}
     source = "metadata" if title or author else "none"
     if text and (llm is not None or settings.upload_enrich):
@@ -155,10 +212,10 @@ async def describe(data: bytes, ext: str, *, llm: LLM | None = None) -> dict:
                 llm = make_llm()
                 llm.on_usage = lambda prov, model, n_in, n_out, usd: spend.add("describe", prov, max(0.0, usd - est))
             guess = await llm.complete_json(SYSTEM, text, Guess, "fast", max_tokens=OUT_TOKENS)
-            g_title, g_author = clean(guess.title), clean(guess.author)
+            g_title, g_author = clean(guess.title), join_authors(guess.authors)
             if not title and g_title and not junk_title(g_title):
                 title, source = g_title, "llm"
-            if not author and g_author and not junk_author(g_author):
+            if (not author or unsure) and g_author:
                 author, source = g_author, "llm"
         except Exception as e:   # the form keeps the file name as the title
             log.warning("describe by LLM failed (%s)", type(e).__name__)

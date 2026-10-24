@@ -3,21 +3,23 @@
 Stored per user (users.cast_json). A null voice means "the book's own voice" (character.voice / narrator.voice);
 a null face means no face.
 
-Novels read in one of two modes:
+Novels read in one of two modes, both built on the same male and female voice (each with a face):
 - "two" (the default, issues #85/#86): the whole book uses exactly two voices, a male and a female one, each with
   a face. Every speaker, main cast and stand-ins alike, gets the voice of its inferred gender (genders.py, or the
   user's override in `genders`); the narrator uses whichever of the two the user picks (`narrator_gender`, by
   default the gender of the book's own narrator voice). A speaker of unknown gender reads in the narrator's voice.
   Pitch/speed tags baked into the book are dropped, so the two voices stay two voices. Nothing in book.json changes:
   the mapping is applied when a chunk's voice is resolved, so it works for every book and is reversible.
-- "cast": the older per-character voices (`narrator` / `characters` assignments, else the book's own).
+- "one" (#93): every line, dialogue included, reads in the narrator's voice (the one `narrator_gender` picks).
+The old "cast" mode (per-character voices) is gone: a stored or sent "cast" is read as "two". The `characters`
+assignments stay in the file (and are validated) so an old cast loses nothing, but novels no longer read from them.
 Textbooks have one voice: the `narrator` assignment.
 """
 import json
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from . import faces, genders, voices
 from . import users
@@ -43,11 +45,17 @@ class CastSettings(BaseModel):
     main: list[str] | None = None
     narrator: Assignment = Assignment()
     characters: dict[str, Assignment] = {}
-    mode: Literal["two", "cast"] = "two"
+    mode: Literal["two", "one"] = "two"
     male: Assignment = Assignment()      # the male voice + face of two-voice mode (tags are ignored)
     female: Assignment = Assignment()
     narrator_gender: Gender | None = None  # None = the gender of the book's narrator voice
     genders: dict[str, Gender] = {}        # the user's per-character overrides of the inferred gender
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _no_full_cast(cls, v):
+        """Full cast was removed (#93): settings saved with it, or sent by an old client, read in two voices."""
+        return "two" if v == "cast" else v
 
 
 def _path(book_id: str):
@@ -93,13 +101,14 @@ def default_slot_voice(book: Book, gender: str) -> str:
 
 
 def two_voices(book: Book, stored: CastSettings) -> bool:
-    return book.kind == "novel" and stored.mode == "two"
+    """Novels read from the male / female voices (in "two" or "one" mode); textbooks from the narrator assignment."""
+    return book.kind == "novel"
 
 
 def gender_of(book: Book, stored: CastSettings, speaker: str) -> str:
-    """The gender whose voice reads `speaker` in two-voice mode (unknown: the narrator's)."""
+    """The gender whose voice reads `speaker` (unknown: the narrator's; in one-voice mode everyone's the narrator's)."""
     narrator = stored.narrator_gender or default_narrator_gender(book)
-    if speaker == "narrator":
+    if speaker == "narrator" or stored.mode == "one":
         return narrator
     return stored.genders.get(speaker) or genders.character_genders(book).get(speaker) or narrator
 

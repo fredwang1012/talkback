@@ -36,6 +36,7 @@ export interface AudioLike {
   pause(): void;
   currentTime?: number;
   duration?: number;
+  playbackRate?: number; // the voice's speed (read mode); the lip-sync clip plays at the same rate
   addEventListener?(type: string, fn: () => void): void;
   removeEventListener?(type: string, fn: () => void): void;
 }
@@ -57,7 +58,7 @@ export interface ClipSync {
   readonly canShow?: boolean;
 }
 
-/** The longest the first word waits for its lip-synced face (the UI promises answers start later with lip-sync on). */
+/** The longest the first word waits for its lip-synced face; past that the talk loop starts with the voice. */
 export const START_WAIT_MS = 6000;
 
 export interface SpeakerHooks {

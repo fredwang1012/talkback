@@ -73,3 +73,15 @@ describe("AudioClock", () => {
     expect(k.position(5500)).toBeCloseTo(5.5, 5);
   });
 });
+
+describe("AudioClock at other speeds (#105)", () => {
+  it("advances by the wall clock times the voice's rate, keeping the position on a rate change", () => {
+    const c = new AudioClock();
+    c.anchor(0, 0);
+    c.setRate(1.5, 0);
+    expect(c.position(1000)).toBeCloseTo(1.5);
+    c.setRate(0.75, 1000);
+    expect(c.position(2000)).toBeCloseTo(2.25);
+    expect(c.sample(2.25, 2000)).toBeCloseTo(2.25);
+  });
+});

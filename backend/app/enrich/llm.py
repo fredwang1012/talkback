@@ -161,22 +161,28 @@ class GeminiProvider:
     def __init__(self, client=None, model: str | None = None):
         if client is None:
             from google import genai
-            client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gcp_region)
+            client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
         self.client = client
         self.model = model or settings.gemini_model
 
     async def complete(self, system, user, schema, tier, max_tokens, effort) -> Raw:
         from google.genai import types
-        config = types.GenerateContentConfig(
-            system_instruction=system, max_output_tokens=max(max_tokens, 1024),
-            response_mime_type="application/json", response_json_schema=schema,
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
-        )
+        # Gemini 3 rejects thinking_budget; drop it and retry once when the model says so.
+        thinking = True
         for attempt in range(self.RETRIES):
+            # Gemini 3 ignores thinking_budget and spends the output cap on hidden thoughts, so leave room for them.
+            config = types.GenerateContentConfig(
+                system_instruction=system, max_output_tokens=max(max_tokens, 1024) + (0 if thinking else 8192),
+                response_mime_type="application/json", response_json_schema=schema,
+                **({"thinking_config": types.ThinkingConfig(thinking_budget=0)} if thinking else {}),
+            )
             try:
                 resp = await self.client.aio.models.generate_content(model=self.model, contents=user, config=config)
                 break
             except Exception as e:
+                if thinking and "Thinking budget is not supported" in str(e):
+                    thinking = False
+                    continue
                 code = getattr(e, "code", None)
                 retryable = code == 429 or (isinstance(code, int) and code >= 500)
                 if not retryable or attempt == self.RETRIES - 1:

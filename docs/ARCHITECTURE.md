@@ -1,6 +1,6 @@
 # Talkback architecture
 
-Talkback reads the Harry Potter series aloud (word-highlighted, optionally full cast) and lets you stop and ask a
+Talkback reads the Harry Potter series aloud (word-highlighted, in one or two voices) and lets you stop and ask a
 question out loud. The answer is grounded only in what you have read so far, spoken in the voice of whoever you are
 talking to, and the reading picks up where it stopped.
 
@@ -22,7 +22,7 @@ talking to, and the reading picks up where it stopped.
 | **Boson Higgs TTS 3** (`/v1/audio/speech`) | read-mode audio per chunk, and each answer sentence (`/api/speak`) | live, cached |
 | **Boson Realtime** (STT `higgs-stt-3.1`) | push-to-talk speech -> text, via a short-lived browser key from `/api/realtime/token` | live |
 | **Boson voices** (`/v1/audio/voices`) | the cloned narrator voice | once |
-| **Boson Higgs Avatar** (`/v1/videos`) | the face's speaking/idle loops (once), and optional lip-synced answer clips (~10 s render per sentence) | once / opt-in |
+| **Boson Higgs Avatar** (`/v1/videos`) | the face's speaking/idle loops (once), and lip-synced clips of every sentence spoken by a face (read mode, answers, recaps; cached) | once / per new line |
 | **Vertex AI `gemini-embedding-001`** (768-d) | embeds retrieval chunks (indexing) and each question | indexing / live |
 | **Vertex AI Vector Search 2.0**, collection `chunks` | hybrid search: vector + full-text, fused with RRF | live |
 | **Vertex AI `gemini-2.5-flash`** | writes the spoken answer in character, streamed sentence by sentence | live |
@@ -45,8 +45,10 @@ talking to, and the reading picks up where it stopped.
    summary per earlier book of the series.
 5. **Gemini 2.5 Flash** writes 2-4 spoken sentences in character; they stream back as NDJSON lines.
 6. For each sentence the browser calls `/api/speak` (**Boson TTS**, in the speaker's voice, cached) and plays it while
-   the next one is synthesised. If the voice has a face, the face's speaking loop plays; with lip-sync on, each
-   sentence is also rendered as a lip-synced clip (`/api/avatar/talk`) and played in step with its audio.
+   the next one is synthesised. If a face is shown for the speaker (any face with any voice, #113: the request names
+   the face id, which the server resolves in the caller's own library), each sentence is also rendered as a lip-synced
+   clip (`/api/avatar/talk`) and played in step with its audio (always on, #92); the face's speaking loop stands in
+   when no face is shown or a render fails. Recaps read aloud work the same way on the narrator's face.
 7. Pressing again interrupts (barge-in); reading resumes from the same sentence.
 
 ## Read mode
@@ -64,10 +66,12 @@ browser, so one choice covers all seven books. Audio is made on demand; nothing 
   one render per face at a time, rate-limited with the lip-sync bucket). Faces made with a voice clone carry that
   voice id, so lip-sync and `/api/voices/faces` read from the same list; the old `data/voice_faces.json` is migrated
   into the library on first access.
-- **Cast settings** (`app/cast.py`): `GET/PUT /api/books/{id}/cast` stores `main` (character ids), the narrator's and
-  each character's `{voice, face}` in `data/books/<id>/cast_settings.json` (atomic write). `null` means the book's own
-  voice / no face. `/api/tts` resolves a chunk's voice as request override, then the cast voice for its speaker, then
-  the book's voice. Every endpoint above is gated by the access code.
+- **Cast settings** (`app/cast.py`): `GET/PUT /api/books/{id}/cast` stores `main` (character ids), the male and the
+  female voice `{voice, face}`, the mode (`"two"`: each speaker in the voice of their gender; `"one"`: everything in
+  the narrator's voice), `narrator_gender` and per-character gender overrides in `data/books/<id>/cast_settings.json`
+  (atomic write). Textbooks use the narrator's `{voice, face}`. The old Full cast mode (`"cast"`) is read as `"two"`
+  (#93). `/api/tts` resolves a chunk's voice as request override, then the cast voice for its speaker, then the
+  book's voice. Every endpoint above is gated by the access code.
 
 ## Uploaded novels: characters after upload (`app/enrich/`)
 

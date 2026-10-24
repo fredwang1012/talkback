@@ -9,13 +9,25 @@ export type TtsChunk = {
   char_start: number;
   char_end: number;
 };
+/** A display equation of an uploaded textbook: its cropped picture and, once Gemini has read it, LaTeX and a spoken form. */
+export type MathBlock = {
+  id: string;
+  page: number;
+  bbox: number[];
+  number?: string | null; // "3.4"
+  garbled?: boolean;      // the paragraph text is not a faithful reading of the equation
+  image?: string | null;
+  latex?: string | null;
+  spoken?: string | null;
+};
 export type Paragraph = {
   idx: number;
   section_id: string;
   text: string;
   segments: Segment[];
   tts_chunks: TtsChunk[];
-  kind?: "code" | null; // textbook code listing: shown in a code font, not read aloud
+  kind?: "code" | "math" | null; // code: a textbook listing, shown in a code font, not read aloud; math: an equation
+  math?: MathBlock | null;
 };
 export type Character = {
   id: string;
@@ -237,12 +249,14 @@ export async function fetchRealtimeKey(): Promise<string> {
 
 export type CloneResult = { voice: string; name: string; face: string | null };
 
-/** Registers a custom voice. The server refuses without explicit consent. */
+/** Registers a custom voice. The server refuses without explicit consent. `face`: an image file stored as a new face
+ * bound to the voice; `faceId`: an existing library face linked to it instead (#113, no copy). */
 export async function cloneVoice(audio: Blob, filename: string, transcript: string, name: string, consent: boolean,
-  face?: File | null): Promise<CloneResult> {
+  face?: File | null, faceId?: string | null): Promise<CloneResult> {
   const form = new FormData();
   form.append("audio", audio, filename);
   if (face) form.append("face", face, face.name);
+  else if (faceId) form.append("face_id", faceId);
   form.append("transcript", transcript);
   form.append("name", name);
   form.append("consent", consent ? "true" : "false");
@@ -488,12 +502,17 @@ export const fetchVoices = () => getJson<Record<string, string>>("/api/voices");
 export type VoiceFace = { image: string; talk: string | null; idle: string | null };
 export const fetchVoiceFaces = () => getJson<Record<string, VoiceFace>>("/api/voices/faces");
 
-/** Lip-synced clip of one answer sentence (the face speaking that exact audio). Takes ~10 s to render. */
-export async function lipSync(audioUrl: string, voice: string): Promise<string> {
+/** The body of a lip-sync request: the cached audio, the voice that spoke it and the face shown (#113). Without a
+ * face id the server falls back to the face bound to the voice. */
+export const lipSyncBody = (audioUrl: string, voice: string, faceId: string | null) =>
+  JSON.stringify({ audio_url: audioUrl, voice, ...(faceId ? { face_id: faceId } : {}) });
+
+/** Lip-synced clip of one answer sentence (the face shown speaking that exact audio). Takes ~10 s to render. */
+export async function lipSync(audioUrl: string, voice: string, faceId: string | null = null): Promise<string> {
   const res = await timedFetch("/api/avatar/talk", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ audio_url: audioUrl, voice }),
+    body: lipSyncBody(audioUrl, voice, faceId),
   }, 120000);
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
@@ -503,11 +522,11 @@ export async function lipSync(audioUrl: string, voice: string): Promise<string> 
 }
 
 /** Streaming lip-sync: the response is fragmented MP4 as it renders, or JSON {video_url} when the clip is cached. */
-export const lipSyncStream = (audioUrl: string, voice: string, signal: AbortSignal): Promise<Response> =>
+export const lipSyncStream = (audioUrl: string, voice: string, faceId: string | null, signal: AbortSignal): Promise<Response> =>
   fetch("/api/avatar/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ audio_url: audioUrl, voice }),
+    body: lipSyncBody(audioUrl, voice, faceId),
     signal,
   });
 
@@ -524,14 +543,15 @@ export type Face = { id: string; name: string; image: string; voice: string | nu
 export type Assignment = { voice: string | null; face: string | null; tags?: string | null }; // tags: pitch/speed override, "" = none
 export type Gender = "male" | "female";
 /**
- * Per-book cast. Novels default to mode "two": every speaker reads in the male or the female voice by gender
- * (`genders` overrides the read-only `auto_genders`), the narrator in the one `narrator_gender` picks. "cast" uses
- * the per-character `narrator` / `characters` assignments. Textbooks use `narrator` only. `auto_genders` and
- * `defaults` come from the server and are ignored when sent back.
+ * Per-book cast. Novels read in the male and the female voice (each with a face). Mode "two" (the default): every
+ * speaker reads in the voice of their gender (`genders` overrides the read-only `auto_genders`), the narrator in the
+ * one `narrator_gender` picks. Mode "one": every line reads in the narrator's voice. "cast" is the removed Full cast
+ * (#93), read as "two" (castLogic.voiceMode); `characters` is kept but no longer read. Textbooks use `narrator` only.
+ * `auto_genders` and `defaults` come from the server and are ignored when sent back.
  */
 export type Cast = {
   main: string[]; narrator: Assignment; characters: Record<string, Assignment>;
-  mode?: "two" | "cast"; male?: Assignment; female?: Assignment; narrator_gender?: Gender | null;
+  mode?: "two" | "one" | "cast"; male?: Assignment; female?: Assignment; narrator_gender?: Gender | null;
   genders?: Record<string, Gender>; auto_genders?: Record<string, Gender | null>;
   defaults?: { male: string; female: string; narrator_gender: Gender };
 };
@@ -550,6 +570,24 @@ export async function uploadFace(image: File, name: string): Promise<Face> {
   const res = await timedFetch("/api/faces", { method: "POST", headers: authHeaders(), body: form }, 60000);
   if (!res.ok) throw await readError(res, "Face upload failed");
   return res.json() as Promise<Face>;
+}
+
+/** The main face's box as fractions of the image (x, y of the top-left corner). */
+export type FaceBox = { x: number; y: number; w: number; h: number };
+
+/** The main face's box (fractions of the image) for the head-and-shoulders crop; null on no face or any failure. */
+export async function detectFace(image: File, signal?: AbortSignal): Promise<FaceBox | null> {
+  const form = new FormData();
+  form.append("image", image, image.name);
+  try {
+    const res = await timedFetch("/api/faces/detect", { method: "POST", headers: authHeaders(), body: form, signal }, 30000);
+    if (!res.ok) return null;
+    const f = ((await res.json()) as { face?: Partial<FaceBox> | null }).face;
+    if (!f || ![f.x, f.y, f.w, f.h].every((v) => typeof v === "number" && Number.isFinite(v))) return null;
+    return { x: f.x!, y: f.y!, w: f.w!, h: f.h! };
+  } catch {
+    return null;
+  }
 }
 
 export async function deleteFace(id: string): Promise<void> {

@@ -24,11 +24,16 @@ class Settings(BaseSettings):
     # Google Cloud (Vertex AI). retrieval_backend="local" keeps today's BM25 + e5 behaviour.
     gcp_project: str = ""  # set GCP_PROJECT when RETRIEVAL_BACKEND=vertex or UPLOAD_LLM=gemini
     gcp_region: str = "us-central1"
+    # Gemini 3 on a new project is served from "global", not us-central1. Empty uses gcp_region.
+    gemini_location: str = ""
     gcp_bucket: str = ""
     retrieval_backend: Literal["local", "vertex"] = "local"
     # Who writes talk-mode answers. None = follow retrieval_backend (vertex -> gemini, local -> realtime).
     answer_backend: Literal["gemini", "realtime"] | None = None
     gemini_model: str = "gemini-2.5-flash"
+
+    def gemini_region(self) -> str:
+        return self.gemini_location or self.gcp_region
     vs_collection: str = "chunks"
 
     # Uploaded novels: cast, dialogue split and summaries by an LLM after the text ingest (app/enrich).

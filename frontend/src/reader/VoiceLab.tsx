@@ -1,15 +1,11 @@
-import { micErrorMessage } from "../audio/mediaErrors";
 import { useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { animateFace, cloneVoice, deleteFace, deleteVoice, uploadFace, type Book, type Cast, type Face } from "../api";
-import {
-  PRESETS, bookVoice, castRows, castFace, castVoice, PITCH_SPEED, BOOK_TAGS, voiceSummary, tagLabel, isNovel, runAnimate, twoVoices, withAssignment,
-} from "./castLogic";
-import { TwoVoices, VoiceCard } from "./VoicePicker";
+import { animateFace, deleteFace, deleteVoice, type Book, type Cast, type Face } from "../api";
+import Modal from "../ui/Modal";
+import { PRESETS, castFace, castVoice, isNovel, runAnimate, withAssignment } from "./castLogic";
+import { AddFaceForm, AddVoiceForm, type ClonedVoice } from "./LabDialogs";
+import { NovelVoices, VoiceCard } from "./VoicePicker";
 
 export { PRESETS };
-const SCRIPT =
-  "Well, it is a rather long story, but I have to tell you that I was walking home late one evening " +
-  "when I noticed a light burning in the window of the old house.";
 
 type Props = {
   book: Book;
@@ -31,21 +27,30 @@ type Props = {
   onClose: () => void;
 };
 
-/** Voices panel (two voices for a novel, one for a textbook, or a full cast) and Voice lab (clone your own voice). */
+/** Voices panel (one or two voices for a novel, one for a textbook) and Voice lab (clone your own voice). */
 export default function VoiceLab({ book, cast, onCast, castError, cloned, onCloned, animating, setAnimating, animErrors, setAnimErrors, faces, onFaces, onFacesChanged, onRemoved, onPreview, audioAvailable, onClose }: Props) {
-  const [transcript, setTranscript] = useState(SCRIPT);
-  const [name, setName] = useState("");
-  const [consent, setConsent] = useState(false);
-  const [clip, setClip] = useState<{ blob: Blob; filename: string } | null>(null);
-  const [face, setFace] = useState<File | null>(null);
-  const [recording, setRecording] = useState(false);
-  const [status, setStatus] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const recorder = useRef<MediaRecorder | null>(null);
-  const [faceName, setFaceName] = useState("");
-  const [faceFile, setFaceFile] = useState<File | null>(null);
-  const [faceBusy, setFaceBusy] = useState(false);
-  const [faceMsg, setFaceMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [adding, setAdding] = useState<"voice" | "face" | null>(null); // which Add dialog is open (#111)
+  const addVoiceBtn = useRef<HTMLButtonElement>(null);
+  const addFaceBtn = useRef<HTMLButtonElement>(null);
+  const [labMsg, setLabMsg] = useState<string | null>(null);
+  function closeAdd() {
+    const which = adding;
+    if (!which) return; // the dialog's own close event after we closed it
+    setAdding(null);
+    (which === "voice" ? addVoiceBtn : addFaceBtn).current?.focus();
+  }
+  function voiceAdded(out: ClonedVoice) {
+    onCloned((c) => ({ ...c, [out.name]: out.voice }));
+    onFacesChanged(); // reloads voices and faces (the linked face now carries this voice)
+    setLabMsg(`Created "${out.name}". Pick it for any speaker in the voice lists above.`);
+    closeAdd();
+  }
+  function faceAdded(f: Face, animateNow: boolean) {
+    onFaces((list) => [...list, f]);
+    setLabMsg(`Saved "${f.name}". Pick it from any face list.`);
+    closeAdd();
+    if (animateNow) void animate(f.id);
+  }
 
   const [confirming, setConfirming] = useState<string | null>(null); // "face:<id>" or "voice:<id>"
   const [voiceMsg, setVoiceMsg] = useState<string | null>(null);
@@ -57,68 +62,12 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
       await deleteVoice(id);
       onCloned(({ [name]: _x, ...rest }) => { void _x; return rest; });
       onRemoved({ voice: id });
-      onFacesChanged(); // its linked face is gone too, and casts using either fall back to Auto
+      onFacesChanged(); // its face stays (unlinked); casts using the voice fall back to Auto
     } catch (e) {
       setVoiceMsg(e instanceof Error ? e.message : String(e));
     }
   }
 
-  async function startRecording() {
-    setStatus(null);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const rec = new MediaRecorder(stream);
-      const parts: Blob[] = [];
-      rec.ondataavailable = (e) => parts.push(e.data);
-      rec.onstop = () => {
-        stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(parts, { type: rec.mimeType || "audio/webm" });
-        setClip({ blob, filename: `recording.${(rec.mimeType || "audio/webm").includes("ogg") ? "ogg" : "webm"}` });
-        setRecording(false);
-      };
-      recorder.current = rec;
-      rec.start();
-      setRecording(true);
-    } catch (e) {
-      setStatus({ kind: "error", text: `${micErrorMessage(e)} Or upload a file instead.` });
-    }
-  }
-
-  async function submit() {
-    if (!clip) return;
-    setBusy(true);
-    setStatus(null);
-    try {
-      const out = await cloneVoice(clip.blob, clip.filename, transcript, name.trim(), consent, face);
-      onCloned((c) => ({ ...c, [out.name]: out.voice }));
-      if (out.face) onFacesChanged();
-      setStatus({ kind: "ok", text: `Created "${out.name}". Pick it for any speaker in the voice lists above.` });
-    } catch (e) {
-      setStatus({ kind: "error", text: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const two = twoVoices(book, cast);
-  const rows = castRows(book, cast);
-
-  async function submitFace() {
-    if (!faceFile) return;
-    setFaceBusy(true);
-    setFaceMsg(null);
-    try {
-      const f = await uploadFace(faceFile, faceName.trim());
-      onFaces((list) => [...list, f]);
-      setFaceName("");
-      setFaceFile(null);
-      setFaceMsg({ kind: "ok", text: `Saved "${f.name}". Pick it from any face list.` });
-    } catch (e) {
-      setFaceMsg({ kind: "error", text: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setFaceBusy(false);
-    }
-  }
   async function animate(id: string) {
     const out = await runAnimate(id, animating, {
       onStart: (i) => { setAnimating((s) => new Set(s).add(i)); setAnimErrors(({ [i]: _x, ...rest }) => { void _x; return rest; }); },
@@ -138,21 +87,6 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
       setAnimErrors((m) => ({ ...m, [f.id]: e instanceof Error ? e.message : String(e) }));
     }
   }
-  const faceOptions = (value: string | null) => (
-    <>
-      <option value="">None</option>
-      {value && !faces.some((f) => f.id === value) && <option value={value}>(removed face)</option>}
-      {faces.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-    </>
-  );
-  const voiceOptions = (value: string, withValue = true) => (
-    <>
-      {withValue && !options.some((o) => o.value === value) && <option value={value}>{value}</option>}
-      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </>
-  );
-  const options = [...PRESETS.map((v) => ({ value: v, label: v })), ...Object.entries(cloned).map(([n, v]) => ({ value: v, label: `${n} (cloned)` }))];
-  const canSubmit = !!clip && consent && name.trim().length > 0 && transcript.trim().length > 0 && !busy && audioAvailable;
 
   return (
     <div className="lab" role="dialog" aria-label="Voices">
@@ -162,55 +96,15 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
       </div>
 
       <section aria-label="Voices and faces for reading">
-        {isNovel(book) && (
-          <div className="mode" role="group" aria-label="How many voices">
-            <button aria-pressed={two} onClick={() => onCast({ ...cast, mode: "two" })}>Two voices</button>
-            <button aria-pressed={!two} onClick={() => onCast({ ...cast, mode: "cast" })}>Full cast</button>
-          </div>
-        )}
-        <h3>{!isNovel(book) ? "Voice" : two ? "Voices for this book" : "Cast"}</h3>
-        {!isNovel(book) ? (
+        <h3>{isNovel(book) ? "Voices for this book" : "Voice"}</h3>
+        {isNovel(book) ? (
+          <NovelVoices book={book} cast={cast} onCast={onCast} cloned={cloned} faces={faces}
+                       onPreview={onPreview} audioAvailable={audioAvailable} />
+        ) : (
           <VoiceCard heading="Narrator" gender={null} voice={castVoice(book, cast, "narrator")} face={castFace(book, cast, "narrator")}
                      cloned={cloned} faces={faces} onPreview={onPreview} audioAvailable={audioAvailable}
                      onVoice={(v) => onCast(withAssignment(cast, "narrator", { voice: v }))}
                      onFace={(f) => onCast(withAssignment(cast, "narrator", { face: f }))} />
-        ) : two ? (
-          <TwoVoices book={book} cast={cast} onCast={onCast} cloned={cloned} faces={faces}
-                     onPreview={onPreview} audioAvailable={audioAvailable} />
-        ) : (
-          <ul className="lab-cast">
-            {rows.map((r) => {
-              const value = (r.id === "narrator" ? cast.narrator : cast.characters[r.id])?.voice ?? "";
-              return (
-                <li key={r.id} className="cast-row">
-                  <span className="cast-name">{r.name}<small className="cast-uses"> uses {voiceSummary(book, cast, r.id)}</small></span>
-                  <label className="sr-only" htmlFor={`voice-${r.id}`}>{r.name} voice</label>
-                  <select id={`voice-${r.id}`} value={value} onChange={(e) => onCast(withAssignment(cast, r.id, { voice: e.target.value || null }))}>
-                    <option value="">Book default ({bookVoice(book, r.id)})</option>
-                    {voiceOptions(value, false)}
-                  </select>
-                  {r.id === "narrator" ? <span /> : (
-                    <>
-                      <label className="sr-only" htmlFor={`tags-${r.id}`}>{r.name} pitch and speed</label>
-                      <select id={`tags-${r.id}`} value={cast.characters[r.id]?.tags ?? BOOK_TAGS}
-                        onChange={(e) => onCast(withAssignment(cast, r.id, { tags: e.target.value === BOOK_TAGS ? null : e.target.value }))}>
-                        <option value={BOOK_TAGS}>Book default ({tagLabel(book.characters.find((c) => c.id === r.id)?.voice_tags)})</option>
-                        {PITCH_SPEED.map((t) => <option key={t.value || "none"} value={t.value}>{t.label}</option>)}
-                      </select>
-                    </>
-                  )}
-                  <label className="sr-only" htmlFor={`face-${r.id}`}>{r.name} face</label>
-                  <select id={`face-${r.id}`} value={castFace(book, cast, r.id) ?? ""} onChange={(e) => onCast(withAssignment(cast, r.id, { face: e.target.value || null }))}>
-                    {faceOptions(castFace(book, cast, r.id))}
-                  </select>
-                  <button disabled={!audioAvailable} onClick={() => onPreview(castVoice(book, cast, r.id))} aria-label={`Preview ${r.name}`}>Preview</button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        {!two && isNovel(book) && rows.length === 1 && (
-          <p className="empty-note">No main characters yet. They appear here once the casting step has run.</p>
         )}
         {castError && <p role="alert" className="lab-error">{castError}</p>}
         {!audioAvailable && <p className="empty-note">Previews and cloning need the Boson API key on the server.</p>}
@@ -218,7 +112,7 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
 
       <section aria-label="Faces">
         <h3>Faces</h3>
-        <p className="empty-note">Upload any portrait. Animating gives it a talking and an idle loop; otherwise it shows as a still picture.</p>
+        {faces.length === 0 && <p className="empty-note">No faces yet.</p>}
         {faces.length > 0 && (
           <ul className="face-list">
             {faces.map((f) => {
@@ -247,26 +141,18 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
             })}
           </ul>
         )}
-        <label htmlFor="face-name">Face name</label>
-        <input id="face-name" value={faceName} maxLength={60} onChange={(e) => setFaceName(e.target.value)} />
-        <label className="file" htmlFor="face-file">
-          Image (PNG, JPEG or WebP, up to 5 MB)
-          <input id="face-file" type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setFaceFile(e.target.files?.[0] ?? null)} />
-        </label>
-        <button className="primary" disabled={!faceFile || !faceName.trim() || faceBusy} onClick={() => void submitFace()}>{faceBusy ? "Uploading…" : "Upload a face"}</button>
-        {faceMsg && <p role={faceMsg.kind === "error" ? "alert" : "status"} className={`lab-${faceMsg.kind}`}>{faceMsg.text}</p>}
       </section>
 
       <section aria-label="Your cloned voices">
         <h3>Your cloned voices</h3>
         {Object.keys(cloned).length === 0 && <p className="empty-note">No cloned voices yet.</p>}
-        <ul className="face-list">
+        <ul className="face-list voice-list">
           {Object.entries(cloned).map(([n, id]) => (
             <li key={id}>
               <span className="face-name">{n}</span>
               {confirming === `voice:${id}` ? (
                 <span role="alertdialog" aria-label={`Delete ${n}?`}>
-                  Delete this voice (and its face) for good? Casts using it go back to Auto.{" "}
+                  Delete this voice for good? Its face stays. Casts using the voice go back to Auto.{" "}
                   <button onClick={() => void removeVoice(n, id)}>Delete forever</button>{" "}
                   <button autoFocus onClick={() => setConfirming(null)}>Cancel</button>
                 </span>
@@ -279,33 +165,20 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
         {voiceMsg && <p role="alert" className="lab-error">{voiceMsg}</p>}
       </section>
 
-      <section>
-        <h3>Your voice</h3>
-        <p className="empty-note">Read the line below aloud for 5 to 30 seconds in a quiet room, then check that the text matches what you said.</p>
-        <label htmlFor="lab-transcript">What you will say</label>
-        <textarea id="lab-transcript" rows={3} value={transcript} onChange={(e) => setTranscript(e.target.value)} />
-        <div className="lab-row">
-          <button onClick={recording ? () => recorder.current?.stop() : startRecording}>{recording ? "Stop recording" : "Record"}</button>
-          <label className="file">
-            Or upload a file
-            <input type="file" accept="audio/*" onChange={(e) => { const f = e.target.files?.[0]; if (f) setClip({ blob: f, filename: f.name }); }} />
-          </label>
+      <section aria-label="Add">
+        <div className="lab-add">
+          <button ref={addVoiceBtn} className="primary" aria-haspopup="dialog" onClick={() => { setLabMsg(null); setAdding("voice"); }}>Add voice</button>
+          <button ref={addFaceBtn} className="primary" aria-haspopup="dialog" onClick={() => { setLabMsg(null); setAdding("face"); }}>Add face</button>
         </div>
-        {clip && <p className="empty-note">Ready: {clip.filename} ({Math.round(clip.blob.size / 1024)} KB)</p>}
-        <label className="file">
-          Add a face (optional): a portrait shown whenever this voice speaks
-          <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setFace(e.target.files?.[0] ?? null)} />
-        </label>
-        {face && <p className="empty-note">Face: {face.name}</p>}
-        <label htmlFor="lab-name">Name this voice</label>
-        <input id="lab-name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} />
-        <label className="consent">
-          <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
-          This is my voice (and face), or I have permission to clone them.
-        </label>
-        <button className="primary" disabled={!canSubmit} onClick={submit}>{busy ? "Creating…" : "Create voice"}</button>
-        {status && <p role={status.kind === "error" ? "alert" : "status"} className={`lab-${status.kind}`}>{status.text}</p>}
+        {labMsg && <p role="status" className="lab-ok">{labMsg}</p>}
       </section>
+
+      <Modal open={adding === "voice"} onClose={closeAdd} labelledBy="add-voice-h">
+        <AddVoiceForm faces={faces} audioAvailable={audioAvailable} onDone={voiceAdded} onCancel={closeAdd} />
+      </Modal>
+      <Modal open={adding === "face"} onClose={closeAdd} labelledBy="add-face-h">
+        <AddFaceForm onDone={faceAdded} onCancel={closeAdd} />
+      </Modal>
     </div>
   );
 }

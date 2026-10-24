@@ -17,14 +17,11 @@ type Props = {
   faces: FaceT[];
   faceFor: (speakerId: string) => FaceT | undefined;
   autoVoiceFor: (speakerId: string) => string;
-  choice: TalkChoice;
+  choice: TalkChoice; // the Voice / Avatar pick of the character talked to (speakerId), #106
   onChoice: (c: TalkChoice) => void;
   voices: { value: string; label: string }[];
   spoilers: boolean;
   onSpoilers: (on: boolean) => void;
-  lipSyncable: boolean;
-  lipSync: boolean;
-  onLipSync: (on: boolean) => void;
   portrait: string | null;
   onBack: () => void;
   onRecap: (c: RecapChoice) => void; // a recap is posted into this chat by the narrator
@@ -42,7 +39,7 @@ function useStableStatus(raw: TalkbackStatus, answering: boolean): TalkbackStatu
 }
 
 const STATUS_TEXT: Record<TalkbackStatus, string> = {
-  idle: "Ready. Hold the microphone (or Space) to ask, or type below.",
+  idle: "Ready. Hold the microphone (or Space) to ask, or type below. Press it while the character talks to interrupt.",
   listening: "Listening…",
   thinking: "Thinking…",
   speaking: "Speaking…",
@@ -63,15 +60,19 @@ export function ModeToggle({ mode, onMode, talkAvailable }: { mode: "read" | "ta
 
 export default function TalkbackView({
   book, para, speakerId, onSpeaker, pinned, talk, faces, faceFor, autoVoiceFor, choice, onChoice, voices,
-  spoilers, onSpoilers, lipSyncable, lipSync, onLipSync, portrait, onBack, onRecap, onVoices,
+  spoilers, onSpoilers, portrait, onBack, onRecap, onVoices,
 }: Props) {
   const novel = showSpoilerToggle(book);
   const fullBook = novel && spoilers;
   const choices = speakerChoices(book, para, fullBook);
   const name = speakerName(book, speakerId);
+  // a recap is read by the narrator: their face (lip-synced like an answer) and name show while it plays
+  const shownId = talk.narrating ? "narrator" : speakerId;
+  const shownName = speakerName(book, shownId);
+  const shownPortrait = talk.narrating ? book.narrator?.portrait ?? null : portrait;
   const status = talkbackStatus(talk.state, talk.speaking); // follows the audio: the face uses it
   const line = useStableStatus(status, talk.state === "answering"); // the status text and the busy state
-  const face = faceFor(speakerId);
+  const face = faceFor(shownId);
   const chapter = chapterAt(book, para);
   const voiceLabel = (v: string) => (PRESETS.includes(v) ? v : "your cloned voice");
   const [draft, setDraft] = useState("");
@@ -111,10 +112,10 @@ export default function TalkbackView({
         <div className="tb-face-col">
           <div className={`tb-face${status === "listening" ? " live" : ""}${status === "thinking" ? " thinking" : ""}${status === "speaking" ? " speaking" : ""}`} aria-hidden="true">
             {face ? <FaceView face={face} speaking={talk.speaking} sync={talk.faceSync} clipShown={talk.clipShown} />
-              : portrait ? <img src={portrait} alt="" />
-              : <span className="mono">{name.charAt(0)}</span>}
+              : shownPortrait ? <img src={shownPortrait} alt="" />
+              : <span className="mono">{shownName.charAt(0)}</span>}
           </div>
-          <h2 className="tb-name">{name}</h2>
+          <h2 className="tb-name">{shownName}</h2>
 
           <div className="tb-controls">
             {choices.length > 0 && (
@@ -126,13 +127,13 @@ export default function TalkbackView({
               </>
             )}
             <label htmlFor="tb-voice">Voice</label>
-            <select id="tb-voice" value={choice.voice ?? ""} onChange={(e) => onChoice({ ...choice, voice: e.target.value || null })}>
+            <select id="tb-voice" value={choice.voice ?? ""} title={`${name}'s voice here (each character keeps their own)`} onChange={(e) => onChoice({ ...choice, voice: e.target.value || null })}>
               <option value="">Auto ({voiceLabel(autoVoiceFor(speakerId))})</option>
               {choice.voice && !voices.some((v) => v.value === choice.voice) && <option value={choice.voice}>{choice.voice}</option>}
               {voices.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
             </select>
             <label htmlFor="tb-avatar">Avatar</label>
-            <select id="tb-avatar" value={choice.face ?? ""} onChange={(e) => onChoice({ ...choice, face: e.target.value || null })}>
+            <select id="tb-avatar" value={choice.face ?? ""} title={`${name}'s face here (each character keeps their own)`} onChange={(e) => onChoice({ ...choice, face: e.target.value || null })}>
               <option value="">Auto</option>
               <option value="none">None</option>
               {choice.face && choice.face !== "none" && !faces.some((f) => f.id === choice.face) && <option value={choice.face}>(removed face)</option>}
@@ -145,23 +146,26 @@ export default function TalkbackView({
               Spoilers: {spoilers ? "on" : "off"}
             </button>
           )}
-          {face && lipSyncable && (
-            <label className="lipsync">
-              <input type="checkbox" checked={lipSync} onChange={(e) => onLipSync(e.target.checked)} />
-              Lip-synced face (answers start about 2 seconds later)
-            </label>
+          {talk.setHandsFree && (
+            <button className="spoiler-toggle hands-free" aria-pressed={!!talk.handsFree} onClick={() => talk.setHandsFree?.(!talk.handsFree)}
+                    title="Recommended with headphones. Keeps the microphone open: speak to ask or to interrupt, a pause ends your question. Through speakers a little of the character's own voice comes back, so interrupting them takes clear, sustained speech.">
+              Hands-free (use headphones): {talk.handsFree ? "on" : "off"}
+            </button>
           )}
         </div>
 
         <div className="tb-chat">
           <div className="tb-log" ref={log} role="log" aria-live="polite" aria-label="Conversation" tabIndex={0}>
             {talk.messages.length === 0 && <p className="empty-note">Nothing said yet. Ask {name} about the story so far.</p>}
-            {talk.messages.map((m) => (
-              <div key={m.id} className={`bubble ${m.role}`}>
+            {talk.messages.map((m) => m.role === "tool" ? (
+              <div key={m.id} className="tool-chip" role="status">{m.text}</div>
+            ) : (
+              <div key={m.id} className={`bubble ${m.role}${m.interrupted ? " interrupted" : ""}`}>
                 <span className="who-line">
                   {m.role === "user" ? "You" : m.role === "narrator" ? "Narrator" : speakerName(book, m.speakerId)}
                   {m.via === "typed" && m.role === "user" && <small> typed</small>}
                   {m.role === "narrator" && m.recap && <small> · Recap: {m.recap}</small>}
+                  {m.interrupted && <small> · interrupted</small>}
                 </span>
                 <p>{m.text || (m.pending || m.loading ? "…" : "")}</p>
                 {m.role !== "user" && (m.id === talk.liveId ? !!m.text : !m.pending && talk.replayable?.has(m.id)) && (() => {
