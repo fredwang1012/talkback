@@ -21,17 +21,18 @@ from app.ttschunks import (  # noqa: E402,F401
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--book", required=True)
+    ap.add_argument("--book", required=True, action="append")
     args = ap.parse_args()
-    path = ROOT / "data/books" / args.book / "book.json"
-    book = Book.model_validate_json(path.read_text(encoding="utf-8"))
-    total = 0
-    for p in book.paragraphs:
-        p.tts_chunks = chunk_paragraph(p, book)
-        total += sum(len(c.tts_text) for c in p.tts_chunks)
-    path.write_text(book.model_dump_json(indent=1), encoding="utf-8")
-    n = sum(len(p.tts_chunks) for p in book.paragraphs)
-    print(f"{args.book}: {n} chunks, {total} TTS chars (~${total / 1000 * 0.015:.2f} at $0.015/1K)")
+    for book_id in args.book:
+        path = ROOT / "data/books" / book_id / "book.json"
+        book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+        total = 0
+        for p in book.paragraphs:
+            p.tts_chunks = chunk_paragraph(p, book)
+            total += sum(len(c.tts_text) for c in p.tts_chunks)
+        path.write_text(book.model_dump_json(indent=1), encoding="utf-8")
+        n = sum(len(p.tts_chunks) for p in book.paragraphs)
+        print(f"{book_id}: {n} chunks, {total} TTS chars (~${total / 1000 * 0.015:.2f} at $0.015/1K)")
 
 
 if __name__ == "__main__":

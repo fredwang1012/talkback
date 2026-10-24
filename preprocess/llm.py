@@ -8,6 +8,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import TypeVar
@@ -32,7 +33,7 @@ PRICES = {
 
 T = TypeVar("T", bound=BaseModel)
 _client: AsyncAnthropic | None = None
-_sem = asyncio.Semaphore(8)
+_sem = asyncio.Semaphore(int(os.environ.get("LLM_CONCURRENCY", "8")))
 usage = {"calls": 0, "cached": 0, "in": 0, "out": 0, "usd": 0.0}
 
 
