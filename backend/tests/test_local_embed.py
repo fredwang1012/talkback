@@ -207,3 +207,66 @@ def test_vertex_mode_does_not_embed_locally(client, on, monkeypatch):
     b = _book()
     asyncio.run(main._embed_locally(b, _publish(b)))
     assert on.calls == 0
+
+
+# ---------- startup backfill: built-in books and older uploads without embeddings ----------
+
+def _builtin(bid="alice-test"):
+    b = ingest_upload.build_book(bid, "Alice", "Carroll", "novel", TEXT.decode())
+    _publish(b)
+    return b
+
+
+def test_startup_embeds_older_uploads_first_then_builtin_books(client, on, monkeypatch):
+    builtin, upload = _builtin(), _book("u-old-00000001")
+    _publish(upload)
+    order = []
+    real = local_index.embed_chunks
+
+    async def tracked(chunks, embedder, **kw):
+        order.append(len(order))
+        return await real(chunks, embedder, **kw)
+
+    seen = []
+    monkeypatch.setattr(local_index, "embed_chunks", tracked)
+    real_job = main._embed_book_locally
+
+    async def job(book_id, chunks):
+        seen.append(book_id)
+        await real_job(book_id, chunks)
+
+    monkeypatch.setattr(main, "_embed_book_locally", job)
+    asyncio.run(main._backfill_local_embeddings())
+    assert seen == [upload.id, builtin.id]   # uploads waiting go first
+    for b in (builtin, upload):
+        assert main._index_for(b.id).mode == "hybrid"
+    # a built-in book gets no status.json (it would dirty a clone's tree); the upload card shows its indexing line
+    assert not (settings.data_dir / "books" / builtin.id / "status.json").exists()
+    assert main._upload_status[upload.id]["index"]["state"] == "done"
+
+
+def test_startup_skips_books_that_already_have_embeddings(client, on):
+    b = _builtin()
+    asyncio.run(main._backfill_local_embeddings())
+    calls = on.calls
+    asyncio.run(main._backfill_local_embeddings())
+    assert on.calls == calls   # nothing left to embed
+
+
+def test_startup_backfill_off_in_vertex_mode_or_without_the_package(client, on, monkeypatch):
+    _builtin()
+    monkeypatch.setattr(settings, "retrieval_backend", "vertex")
+    asyncio.run(main._backfill_local_embeddings())
+    monkeypatch.setattr(settings, "retrieval_backend", "local")
+    monkeypatch.setattr(main, "_local_embed_available", lambda: False)
+    asyncio.run(main._backfill_local_embeddings())
+    assert on.calls == 0
+
+
+def test_embeddings_files_are_gitignored():
+    import subprocess
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    for name in ("embeddings.npy", "embeddings.npy.tmp"):
+        r = subprocess.run(["git", "check-ignore", "-q", f"data/books/alice-in-wonderland/index/{name}"], cwd=root)
+        assert r.returncode == 0, name

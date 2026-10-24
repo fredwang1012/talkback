@@ -19,6 +19,9 @@ __pycache__/
 
 # Generated data
 data/cache/
+# local e5 vectors, built at startup / after an upload (backend/app/local_index.py): never shipped
+data/books/*/index/embeddings.npy
+data/books/*/index/embeddings.npy.tmp
 data/usage/
 scripts/captures/*.wav
 scripts/captures/*.log

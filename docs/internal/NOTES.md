@@ -1290,3 +1290,11 @@ was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-
   `HANDS_FREE` is unchanged (0.04 for 150 ms).
 - Trade-off, covered by frontend/test/handsFreeEcho.test.ts: a quiet echo never interrupts, but an echo over 0.04
   sustained for 250 ms (loud laptop speakers, no headphones) can barge in. Not re-checked live with speakers here.
+
+## Local embeddings: startup backfill for built-in books and older uploads (chore/cleanup-findings, 2026-10-24)
+- In local mode `_backfill_local_embeddings` embeds every published
+  book whose index has no matching embeddings.npy, uploads made before this change first, then the five built-in
+  books (no embeddings ship in the repo), awaited one at a time so a new upload takes the next slot. Built-in books get
+  no status.json (only log lines), so a clone's tree stays clean; `data/books/*/index/embeddings.npy` (+ `.tmp`) is
+  now gitignored (chunks.json stays committed). `_embedder()` loads the model once under a lock (warm-up and the job
+  may ask together). Never with the real model in tests; e5-small on ~11k built-in chunks is unmeasured here.
