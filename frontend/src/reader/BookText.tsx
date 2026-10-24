@@ -82,7 +82,7 @@ function BookText({ book, chunks, index, onPick, word }: Props) {
         return (
           <Fragment key={p.idx}>
             {section && section.title && <h2 className="section-mark">{section.title}</h2>}
-            <p className="para" data-para={p.idx}>{parts}</p>
+            <p className={p.kind === "code" ? "para para-code" : "para"} data-para={p.idx}>{parts}</p>
           </Fragment>
         );
       })}

@@ -171,6 +171,10 @@ button:disabled { cursor: not-allowed; }
 }
 .para .sentence .word { background: var(--brass); color: var(--ground); border-radius: 2px; padding: 0 1px; }
 .para .gap { white-space: pre-wrap; }
+.para.para-code {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 0.95rem; line-height: 1.5;
+  white-space: pre-wrap; overflow-x: auto; background: var(--ground-sunk); padding: 0.75em 1em; border-radius: 6px;
+}
 
 .stage {
   position: sticky; top: 0; height: 100vh; overflow-y: auto;

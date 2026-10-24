@@ -15,6 +15,7 @@ export type Paragraph = {
   text: string;
   segments: Segment[];
   tts_chunks: TtsChunk[];
+  kind?: "code" | null; // textbook code listing: shown in a code font, not read aloud
 };
 export type Character = {
   id: string;
