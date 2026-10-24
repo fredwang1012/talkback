@@ -52,8 +52,8 @@ export const TOOL_DEFS = [
   },
   {
     type: "function", name: "open_recap",
-    description: "Have the narrator recap the story so far: the last chapter, this book so far, or the series so far.",
-    parameters: { type: "object", properties: { scope: { type: "string", enum: ["chapter", "book", "series"] } } },
+    description: "Have the narrator recap the story so far: the last chapter, this book so far, or the series so far; or summarise one chapter or section the reader names (chapter, e.g. '4' or '4.2').",
+    parameters: { type: "object", properties: { scope: { type: "string", enum: ["chapter", "book", "series"] }, chapter: { type: "string", description: "a chapter or section to summarise, e.g. '4', 'four', '4.2' or words from its title" } } },
   },
   { type: "function", name: "bookmark", description: "Bookmark the reader's current place in the book.", parameters: { type: "object", properties: {} } },
   { type: "function", name: "show_cast", description: "Show the cast: the characters the reader has met so far, and open the voices panel.", parameters: { type: "object", properties: {} } },
@@ -78,6 +78,7 @@ export type ToolContext = {
   voiceMode: VoiceMode;
   narrator: Gender;
   inSeries: boolean;
+  textbook?: boolean; // no spoilers: any chapter can be recapped
 };
 
 /** What the tools may do to the reader. */
@@ -87,7 +88,7 @@ export type ToolActions = {
   setVoiceMode: (mode: VoiceMode) => void;
   setNarrator: (g: Gender) => void;
   setSpeed: (speed: number) => void;
-  openRecap: (scope: RecapScope) => void;
+  openRecap: (scope: RecapScope, section?: { id: string; title: string }) => void; // section: a chapter asked for by name
   showCast: () => void;
 };
 
@@ -265,9 +266,17 @@ export function runTool(name: string, args: Record<string, unknown>, ctx: ToolCo
       return { ok: true, output: s === ctx.speed ? `The speed is already ${s}x.` : `Reading speed set to ${s}x.`, chip: `Speed ${s}x` };
     }
     case "open_recap": {
+      const asked = typeof args.chapter === "string" ? args.chapter : typeof args.chapter === "number" ? String(args.chapter) : "";
+      if (asked.trim()) {
+        const s = findChapter(ctx.sections, asked);
+        if (!s) return refuse(`No chapter matches "${asked}". Chapters are numbered 1 to ${topSections(ctx.sections).length}.`);
+        if (!ctx.textbook && !ctx.spoilers && s.start_para > ctx.readerPara) return refuse(`${s.title} is past where the reader has read, and spoilers are off. Say so briefly.`);
+        act.openRecap("chapter", { id: s.id, title: s.title });
+        return { ok: true, output: `The narrator is summarising ${s.title} in the chat; do not summarise it yourself. Say so in a few words.`, chip: `Recap: ${s.title}` };
+      }
       const scope: RecapScope = args.scope === "book" ? "book" : args.scope === "series" && ctx.inSeries ? "series" : "chapter";
       act.openRecap(scope);
-      const label = scope === "chapter" ? "the last chapter" : scope === "book" ? "this book so far" : "the series so far";
+      const label = scope === "chapter" ? (ctx.textbook ? "this chapter" : "the last chapter") : scope === "book" ? "this book so far" : "the series so far";
       return { ok: true, output: `The narrator is recapping ${label} in the chat; do not recap it yourself. Say so in a few words.`, chip: `Recap: ${label}` };
     }
     case "bookmark": {
@@ -314,6 +323,9 @@ export function parseIntent(text: string): Intent | null {
   if ((m = /^(?:please )?(?:use|switch to|make it|i want)(?: the| a)? (male|female|man's|woman's) (?:voice|narrator)(?: for the narrator| to narrate)?$/.exec(t))) return { name: "set_narrator", args: { gender: m[1].startsWith("m") ? "male" : "female" } };
   if ((m = /^(?:please )?(?:read |go |speak |talk )?(?:a (?:bit|little) )?(faster|slower|quicker|speed up|slow down)(?: please)?$/.exec(t))) return { name: "set_speed", args: { speed: /fast|quick|up/.test(m[1]) ? "faster" : "slower" } };
   if ((m = /^(?:please )?(?:set |change )?(?:the )?(?:reading )?speed (?:to )?(\d+(?:\.\d+)?)x?$/.exec(t)) || (m = /^(?:read at |go at |)(\d+(?:\.\d+)?)x(?: speed)?$/.exec(t))) return { name: "set_speed", args: { speed: m[1] } };
+  if ((m = /^(?:please )?(?:recap|summarize|summarise|sum up|catch me up on|remind me (?:of|about)) (?:chapter|section|part) (\S+)$/.exec(t))) {
+    return { name: "open_recap", args: { scope: "chapter", chapter: m[1] } };
+  }
   if ((m = /^(?:please )?(?:recap|summarize|summarise|catch me up(?: on)?|remind me(?: of| about)?)(?: the| this)? ?(last chapter|chapter|book|series|story|everything)?(?: so far)?(?: please)?$/.exec(t))) {
     const w = m[1] ?? "";
     return { name: "open_recap", args: { scope: /series|everything/.test(w) ? "series" : /book|story/.test(w) ? "book" : "chapter" } };

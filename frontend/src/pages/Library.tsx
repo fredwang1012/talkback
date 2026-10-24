@@ -133,7 +133,7 @@ function JobCard({ j, onConfirm, onDismiss }: { j: UploadJob; onConfirm: (j: Upl
       {progress !== undefined && <progress max={100} value={pct(progress)} aria-label={`${j.title}: ${jobLine(j)}`} />}
       {j.phase === "confirm" && (
         <button type="button" className="volume-move" onClick={() => onConfirm(j)}>
-          Process with characters (~${(j.estimate ?? 0).toFixed(2)})
+          {j.status?.enrich?.summaries_only ? "Write recap notes" : "Process with characters"} (~${(j.estimate ?? 0).toFixed(2)})
         </button>
       )}
       {j.bookId && j.phase !== "error" && j.status?.status === "ready" && <a className="job-open" href={`#/read/${j.bookId}`}>Open</a>}
@@ -340,7 +340,7 @@ export default function Library() {
       if (!st || ctl.signal.aborted) return;
     }
     const e = st.enrich;
-    if (e?.status === "awaiting_confirmation") setNote(b.id, { id: b.id, text: "Characters, voices and recap need processing.", confirm: e.estimate_usd ?? 0 });
+    if (e?.status === "awaiting_confirmation") setNote(b.id, { id: b.id, text: e.message ?? "Characters, voices and recap need processing.", confirm: e.estimate_usd ?? 0 });
     else if (e?.status === "refused" || e?.status === "error") setNote(b.id, { id: b.id, text: e.message ?? "Character processing did not run." });
     else setNote(b.id, null);
     await load();

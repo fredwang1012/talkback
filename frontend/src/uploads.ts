@@ -37,7 +37,9 @@ export function jobLine(j: UploadJob): string {
   if (j.phase === "uploading") return "Uploading…";
   if (j.phase === "error") return j.message ?? "The book could not be processed.";
   if (j.phase === "exists") return j.message ?? "This file is already in your library.";
-  if (j.phase === "confirm") return "Readable now. Characters, voices and recap need processing.";
+  if (j.phase === "confirm") return j.status?.enrich?.summaries_only
+    ? "Readable now. Study notes for the recap need processing."
+    : "Readable now. Characters, voices and recap need processing.";
   const s = j.status;
   if (!s || s.status === "processing") return s?.message === "Queued" ? "Queued" : (s?.message ? `${s.message}…` : "Reading…");
   if (s.index?.state === "queued") return "Readable now · Queued for indexing";

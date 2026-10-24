@@ -216,6 +216,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       index: indexRef.current, readerPara: readerPara(chunks, indexRef.current), spoilers: spoilers && book.kind === "novel",
       playing: engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current,
       speed, speeds: SPEEDS, voiceMode: voiceMode(cast), narrator: narratorGender(cast), inSeries: !!book.series,
+      textbook: book.kind === "textbook",
     }),
     act: {
       seek: (i) => { lastManualScroll.current = 0; const next = clampIndex(i, chunks.length); if (engineRef.current) engineRef.current.seek(next); else setIndex(next); },
@@ -223,7 +224,8 @@ export default function Reader({ bookId }: { bookId: string }) {
       setVoiceMode: (m) => changeCast(withVoiceMode(cast, m)),
       setNarrator: (g) => changeCast({ ...cast, narrator_gender: g }),
       setSpeed,
-      openRecap: (scope) => recap({ scope, label: scope === "chapter" ? "Last chapter" : scope === "book" ? "This book so far" : "The series so far" }),
+      openRecap: (scope, section) => recap(section ? { scope: "chapter", label: "Chapter recap", section: section.id }
+        : { scope, label: scope === "chapter" ? (book.kind === "textbook" ? "This chapter" : "Last chapter") : scope === "book" ? "This book so far" : "The series so far" }),
       showCast: () => setLabOpen(true),
     },
   } : null;
@@ -304,7 +306,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     if (mode !== "talk") changeMode("talk");
     const at = para;
     void talk.narrate(c.label, async () => {
-      const r = await fetchScopedRecap(book.id, at, c.scope);
+      const r = await fetchScopedRecap(book.id, at, c.scope, c.section);
       return { text: r.text, heading: recapHeading(c, r), empty: nothingYet(at) };
     });
   };
@@ -455,7 +457,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       )}
       {debugEnabled() && <DebugDrawer entries={talk.logs} spend={spendNow} />}
       {mode === "read" && <PlayerBar
-        playing={playing} loading={loading} onToggle={toggle} onRecap={recap} inSeries={!!book.series}
+        playing={playing} loading={loading} onToggle={toggle} onRecap={recap} inSeries={!!book.series} textbook={book.kind === "textbook"}
         onPrev={() => { lastManualScroll.current = 0; step(-1); }} onNext={() => { lastManualScroll.current = 0; step(1); }}
         speed={speed} speeds={SPEEDS} onSpeed={setSpeed}
         onVoices={() => setLabOpen(true)}

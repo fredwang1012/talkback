@@ -100,7 +100,7 @@ export default function TalkbackView({
     <section className="talkback" aria-label="Talkback conversation">
       <div className="tb-top">
         <button className="link-btn" onClick={onBack}>Back to reading</button>
-        <RecapMenu inSeries={!!book.series} onPick={onRecap} />
+        <RecapMenu inSeries={!!book.series} textbook={book.kind === "textbook"} onPick={onRecap} />
         <button className="link-btn" onClick={onVoices}>Voices</button>
         <div className={`badge${fullBook ? " spoilers-on" : ""}`}>
           <strong>You're at {chapter ?? `paragraph ${para + 1}`}.</strong>
