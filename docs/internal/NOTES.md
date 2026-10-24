@@ -690,6 +690,11 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   (`TypeError` on the CQL paper; short excerpts never hit a second glyph on the same line).
 - A paper the heuristic calls a novel is stored with formulas flattened to text (only textbooks keep them). Moving
   that PDF to Textbooks reads the file again and crops the pictures; the kind flag alone left the flat text in place.
+  Merged onto the locked kind change: the PDF is read outside the write lock, then sections/paragraphs are put into a
+  fresh read under `books.update_book` (other writers' fields survive), summaries are dropped (old paragraph numbers)
+  so the textbook notes run under the caps, chunks are rebuilt with `rechunk_book`, and the retrieval index is rebuilt
+  like an upload's (local chunks; Vertex: stale datapoints deleted, new chunks indexed in the background). Kept
+  characters keep their old `first_para`, and paragraph numbers change, so a saved reading position may shift.
 - An inline crop's height is the picture. The padding that keeps a KaTeX limit off the next line was also on the
   image, and with border-box it shrank the picture to about two thirds. A tall delimiter is placed by the middle
   of its real box: a band around its reported baseline (the top of the glyph) glued the brackets of the equation

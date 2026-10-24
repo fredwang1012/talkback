@@ -1186,15 +1186,57 @@ class KindBody(BaseModel):
     kind: Literal["novel", "textbook"]
 
 
+async def _reread_as_textbook(book: Book) -> tuple[Book | None, bytes | None]:
+    """(re-read text, PDF bytes) for an uploaded PDF moving to Textbooks, else (None, None). The expensive read runs
+    in a thread and outside the book's write lock; a failure only logs its type."""
+    pdf = ingest_upload.upload_path(book.id, ".pdf")
+    if not pdf.is_file():
+        return None, None
+    try:
+        data = await asyncio.to_thread(pdf.read_bytes)
+        return await asyncio.to_thread(ingest_upload.rebuild_textbook_text, book, data), data
+    except Exception as e:
+        logging.getLogger(__name__).warning("textbook restore failed: %s", type(e).__name__)
+        return None, None
+
+
+async def _reindex_moved_book(book: Book, background: BackgroundTasks) -> None:
+    """Retrieval index for a book whose text was re-read, as an upload builds it: the local chunks always, then (vertex)
+    the old text's leftover datapoints removed and the new chunks embedded in the background."""
+    def local():
+        stale: list[str] = []
+        if settings.retrieval_backend == "vertex":
+            from .gcp.indexing import datapoint_ids
+            stale = datapoint_ids(book)   # still the old chunks.json
+        chunks = retrieval.make_chunks(book)
+        retrieval.save_index(settings.data_dir / "books" / book.id / "index", chunks, None)
+        keep = {f"{book.id}__{c.id}" for c in chunks}
+        return chunks, [i for i in stale if i not in keep]
+    chunks, stale = await asyncio.to_thread(local)
+    _index_for.cache_clear()
+    if settings.retrieval_backend == "vertex":
+        background.add_task(_reindex_vertex, book, chunks, stale)
+
+
+async def _reindex_vertex(book: Book, chunks, stale: list[str]) -> None:
+    """Drop the old text's datapoints that the new chunks do not overwrite, then index the new chunks. Never raises."""
+    if stale:
+        try:
+            await _vertex_deps()[1].delete(stale)
+        except Exception as e:   # a leftover datapoint is still bound by its own para_end (spoiler rule holds)
+            logging.getLogger(__name__).warning("vertex delete failed: %s", type(e).__name__)
+    await _index_in_background(book, chunks)
+
+
 @app.post("/api/books/{book_id}/kind", status_code=202, dependencies=[Depends(require_access)])
 async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks):
     """Move an uploaded book between the Novels and Textbooks shelves.
 
     textbook -> novel starts enrichment (same caps and UPLOAD_CONFIRM behaviour as an upload) unless the book already
     has its characters; novel -> textbook keeps the characters in the file (the UI ignores them) and writes the
-    textbook recap notes (same caps) only when the book has no summaries at all.
-    A PDF is read again so display equations and inline formulas that were dropped while it was a novel come back, and
-    their pictures are cropped.
+    textbook recap notes (same caps) only when the book has no summaries at all. A PDF moved to Textbooks is read
+    again so the display equations and inline formulas dropped while it was a novel come back (with their pictures);
+    its old summaries go (their paragraph numbers belong to the old text), so the textbook notes are written.
     """
     users.guard_book(book_id)
     if not book_id.startswith("u-"):
@@ -1217,25 +1259,23 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
         def set_kind(b) -> None:
             b.kind = body.kind
         path = settings.data_dir / "books" / book_id / "book.json"
-        pdf_bytes = restored = None
-        pdf = ingest_upload.upload_path(book_id, ".pdf")
-        if body.kind == "textbook" and pdf.is_file():
-            try:
-                pdf_bytes = pdf.read_bytes()
-                restored = await asyncio.to_thread(ingest_upload.restore_as_textbook, book.model_copy(deep=True), pdf_bytes)
+        rebuilt, pdf_bytes = await _reread_as_textbook(book) if body.kind == "textbook" else (None, None)
+        if rebuilt is not None:
+            try:  # applied to a fresh read under the lock: a write made during the re-read is kept
+                book = await asyncio.to_thread(books.update_book, path,
+                                               lambda b: ingest_upload.apply_textbook_text(b, rebuilt))
             except Exception as e:  # still move the shelf; the text they already have stays
                 logging.getLogger(__name__).warning("textbook restore failed: %s", type(e).__name__)
-                pdf_bytes = restored = None
-        if restored is not None:
-            def set_kind(b) -> None:  # the re-read text replaces the book's, written under its lock
-                for name in restored.model_fields:
-                    setattr(b, name, getattr(restored, name))
-        # a fresh read under the book's write lock (never the cached object, never a stale copy of it)
-        book = await asyncio.to_thread(books.update_book, path, set_kind)
+                rebuilt = pdf_bytes = None
+        if rebuilt is None:
+            # a fresh read under the book's write lock (never the cached object, never a stale copy of it)
+            book = await asyncio.to_thread(books.update_book, path, set_kind)
         _index_for.cache_clear()
         _set_status(book_id, "ready", kind=body.kind)
-        if pdf_bytes is not None and any(p.kind == "math" or p.inline_math for p in book.paragraphs):
-            _start_equations(book_id, pdf_bytes)
+        if rebuilt is not None:
+            await _reindex_moved_book(book, background)
+            if any(p.kind == "math" or p.inline_math for p in book.paragraphs):
+                _start_equations(book_id, pdf_bytes)
         # a novel's own summaries are kept when it moves to Textbooks (recap then uses them as before)
         needs = not book.characters if body.kind == "novel" else not book.summaries
         if settings.upload_enrich and needs:

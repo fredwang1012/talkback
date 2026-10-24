@@ -49,6 +49,10 @@ class KindProvider(FakeProvider):
         self.tier = None
 
     async def complete(self, system, user, schema, tier, max_tokens, effort):
+        if schema["title"] == "SectionSummary":   # a textbook note
+            self.calls.append("SectionSummary")
+            return Raw(text=json.dumps({"summary": "This section explains sugars."}), in_tokens=len(user) // 4,
+                       out_tokens=10, model="fake")
         if schema["title"] != "KindGuess":
             return await super().complete(system, user, schema, tier, max_tokens, effort)
         self.calls.append("KindGuess")
@@ -304,3 +308,138 @@ def test_hesitant_llm_loses_to_confident_heuristic():
     # a hesitant LLM that agrees is kept
     fake = KindProvider("textbook", 0.55)
     assert asyncio.run(detect_mod.detect_kind(TEXTBOOK_PLAIN, llm=llm_for(fake))) == ("textbook", 0.55, "llm")
+
+
+# ---------- novel -> textbook re-extraction (PR #132 merged onto the locked kind change) ----------
+
+def paper_pdf() -> bytes:
+    import pymupdf as fitz
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_textbox(fitz.Rect(72, 60, 500, 150),
+                        "Plants convert light into sugars and store them for later use by the cell.", fontsize=11)
+    page.insert_text((200, 200), "y = b + a x + e", fontsize=11, fontname="symb")
+    page.insert_text((470, 200), "(3.4)", fontsize=11)
+    page.insert_textbox(fitz.Rect(72, 240, 500, 330),
+                        "A second paragraph explains how those sugars are broken down again.", fontsize=11)
+    return doc.tobytes()
+
+
+def upload_paper(client, kind="novel") -> str:
+    r = client.post("/api/books/upload", files={"file": ("paper.pdf", paper_pdf())},
+                    data={"title": "Paper", "author": "Me", "kind": kind})
+    return r.json()["book_id"]
+
+
+def book_path(book_id):
+    return settings.data_dir / "books" / book_id / "book.json"
+
+
+def has_math(book: dict) -> bool:
+    return any(p["kind"] == "math" for p in book["paragraphs"])
+
+
+@pytest.fixture
+def no_equations(monkeypatch):
+    started = []
+    monkeypatch.setattr(main, "_start_equations", lambda book_id, data: started.append(book_id))
+    return started
+
+
+def test_a_write_during_the_re_extraction_is_kept(client, monkeypatch, no_equations):
+    book_id = upload_paper(client)
+    real = ingest_upload.rebuild_textbook_text
+
+    def slow(book, data):
+        out = real(book, data)
+        # another writer (series reconciliation, a rename) saves while the PDF is being read again
+        books.update_book(book_path(book_id), lambda b: setattr(b, "series_checked", ["other-series"]))
+        return out
+
+    monkeypatch.setattr(ingest_upload, "rebuild_textbook_text", slow)
+    assert client.post(f"/api/books/{book_id}/kind", json={"kind": "textbook"}).status_code == 202
+    after = client.get(f"/api/books/{book_id}").json()
+    assert after["series_checked"] == ["other-series"]
+    assert after["kind"] == "textbook" and has_math(after) and after["characters"]
+
+
+def test_moved_paper_drops_old_summaries_and_gets_textbook_notes(client, no_equations):
+    from app.ttschunks import CHUNK_RULES_VERSION
+    book_id = upload_paper(client)
+    before = client.get(f"/api/books/{book_id}").json()
+    assert before["summaries"] and all(s.get("section_id") is None for s in before["summaries"])
+    books.update_book(book_path(book_id), lambda b: setattr(b, "chunk_rules", 0))
+    calls = len(client.fake.calls)
+    assert client.post(f"/api/books/{book_id}/kind", json={"kind": "textbook"}).status_code == 202
+    after = client.get(f"/api/books/{book_id}").json()
+    assert after["chunk_rules"] == CHUNK_RULES_VERSION
+    assert all(c["tts_text"] for p in after["paragraphs"] for c in p["tts_chunks"])
+    assert "SectionSummary" in client.fake.calls[calls:]
+    st = client.get(f"/api/books/{book_id}/status").json()
+    assert st["enrich"]["summaries_only"] is True and st["enrich"]["status"] == "done"
+    assert all(s["section_id"] for s in after["summaries"])   # the novel's story-so-far notes are gone
+
+
+def test_moved_paper_rebuilds_the_local_index(client, no_equations):
+    from app import retrieval
+    book_id = upload_paper(client)
+    assert client.post(f"/api/books/{book_id}/kind", json={"kind": "textbook"}).status_code == 202
+    saved = json.loads((settings.data_dir / "books" / book_id / "index" / "chunks.json").read_text(encoding="utf-8"))
+    fresh = [c.model_dump() if hasattr(c, "model_dump") else c.__dict__ for c in
+             retrieval.make_chunks(books.load_book(book_id))]
+    assert [c["text"] for c in saved] == [c["text"] for c in fresh]
+    assert no_equations == [book_id]
+
+
+def test_moved_paper_schedules_vertex_indexing(client, monkeypatch, no_equations):
+    book_id = upload_paper(client)
+    monkeypatch.setattr(settings, "retrieval_backend", "vertex")
+    monkeypatch.setattr(settings, "upload_enrich", False)
+    indexed, deleted = [], []
+
+    async def fake_index(book, chunks):
+        indexed.append((book.id, book.kind, len(chunks)))
+
+    class Store:
+        async def delete(self, ids):
+            deleted.append(list(ids))
+
+    monkeypatch.setattr(main, "_index_in_background", fake_index)
+    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, Store()))
+    from app.gcp import indexing
+    old_ids = set(indexing.datapoint_ids(books.load_book(book_id)))
+    assert client.post(f"/api/books/{book_id}/kind", json={"kind": "textbook"}).status_code == 202
+    book = books.load_book(book_id)
+    new_ids = set(indexing.datapoint_ids(book))
+    assert indexed == [(book_id, "textbook", len(new_ids))]
+    assert set(sum(deleted, [])) == old_ids - new_ids   # stale datapoints of the old text only
+
+
+def test_re_extraction_failure_falls_back_to_a_plain_move(client, monkeypatch, no_equations):
+    book_id = upload_paper(client)
+    before = client.get(f"/api/books/{book_id}").json()
+
+    def boom(book, data):
+        raise RuntimeError("bad pdf")
+
+    monkeypatch.setattr(ingest_upload, "rebuild_textbook_text", boom)
+    assert client.post(f"/api/books/{book_id}/kind", json={"kind": "textbook"}).status_code == 202
+    after = client.get(f"/api/books/{book_id}").json()
+    assert after["kind"] == "textbook" and after["paragraphs"] == before["paragraphs"]
+    assert after["summaries"] == before["summaries"] and no_equations == []
+
+
+def test_txt_novel_and_textbook_to_novel_skip_the_re_extraction(client, monkeypatch, no_equations):
+    called = []
+    monkeypatch.setattr(ingest_upload, "rebuild_textbook_text", lambda *a: called.append(a))
+    txt = upload(client, kind="novel").json()["book_id"]
+    before = client.get(f"/api/books/{txt}").json()
+    assert client.post(f"/api/books/{txt}/kind", json={"kind": "textbook"}).status_code == 202
+    after = client.get(f"/api/books/{txt}").json()
+    assert after["paragraphs"] == before["paragraphs"] and after["summaries"] == before["summaries"]
+    pdf = upload_paper(client, kind="textbook")
+    before = client.get(f"/api/books/{pdf}").json()
+    assert client.post(f"/api/books/{pdf}/kind", json={"kind": "novel"}).status_code == 202
+    after = client.get(f"/api/books/{pdf}").json()   # enriched as a novel: same paragraphs, now with speakers
+    assert after["kind"] == "novel" and [p["text"] for p in after["paragraphs"]] == [p["text"] for p in before["paragraphs"]]
+    assert called == []
