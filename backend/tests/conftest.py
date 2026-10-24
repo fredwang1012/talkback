@@ -66,6 +66,7 @@ def _fresh_gemini_pacer(monkeypatch):
     """The shared Gemini limiter is process state (a 429 in one test would slow the next): each test gets its own."""
     from app import pacer
     monkeypatch.setattr(pacer, "shared", pacer.Pacer())
+    monkeypatch.setattr(pacer, "_by_model", {})
 
 
 @pytest.fixture(autouse=True)
