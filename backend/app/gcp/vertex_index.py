@@ -32,11 +32,15 @@ class VertexIndex:
             return []
         flt = spoiler_filter(self.book.id, reader_para if spoiler_safe else None,
                              list(self.earlier) if spoiler_safe else None)
-        vec = await asyncio.to_thread(self.embedder.embed_query, query)
-        vec = [float(x) for x in vec]
         n = 4 * k
-        vec_hits, text_hits = await asyncio.gather(
-            self.store.vector_search(vec, flt, n), self.store.text_search(query, flt, n))
+        text_task = asyncio.ensure_future(self.store.text_search(query, flt, n))  # needs no embedding: start now
+        try:
+            vec = await asyncio.to_thread(self.embedder.embed_query, query)
+            vec_hits = await self.store.vector_search([float(x) for x in vec], flt, n)
+        except BaseException:
+            text_task.cancel()
+            raise
+        text_hits = await text_task
         fused = rrf([_uid(vec_hits), _uid(text_hits)], key="_uid")
         chunks = []
         for r in fused:

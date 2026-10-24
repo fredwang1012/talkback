@@ -66,11 +66,9 @@ class VectorStore:
         for attempt in range(MAX_RETRIES + 1):
             headers = {"Authorization": f"Bearer {self._token_fn()}",
                        "x-goog-user-project": settings.gcp_project}
-            if self._client is not None:
-                resp = await self._client.request(method, url, json=json, headers=headers)
-            else:
-                async with httpx.AsyncClient(timeout=60) as c:
-                    resp = await c.request(method, url, json=json, headers=headers)
+            if self._client is None:  # one keep-alive client: a fresh TLS handshake per search cost ~0.3 s
+                self._client = httpx.AsyncClient(timeout=60)
+            resp = await self._client.request(method, url, json=json, headers=headers)
             if (resp.status_code == 429 or resp.status_code >= 500) and attempt < MAX_RETRIES:
                 await self._sleep(0.5 * 2**attempt)
                 continue

@@ -227,6 +227,21 @@ export default function Reader({ bookId }: { bookId: string }) {
     } catch (e) { setAudioError(e instanceof Error ? e.message : String(e)); }
   };
 
+  if (error && error.includes(": 401")) {
+    return (
+      <form className="code-form state-line" onSubmit={(e) => {
+        e.preventDefault();
+        const v = new FormData(e.currentTarget).get("code");
+        if (typeof v === "string" && v.trim()) { setAccessToken(v.trim()); setCode(v.trim()); window.location.reload(); }
+      }}>
+        <label htmlFor="book-code">This server needs an access code to open books</label>
+        <div>
+          <input id="book-code" name="code" type="password" autoComplete="off" />
+          <button type="submit">Open the book</button>
+        </div>
+      </form>
+    );
+  }
   if (error) return <p className="state-line" role="alert">Could not load this book ({error}). <a href="#/">Back to the library</a></p>;
   if (!book) return <p className="state-line">Turning to your page…</p>;
 

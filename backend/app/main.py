@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import gzip
 import hashlib
 import json
 import logging
@@ -13,7 +14,7 @@ from typing import Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -115,12 +116,23 @@ def get_books():
     return books.list_books()
 
 
-@app.get("/api/books/{book_id}", response_model=Book)
-def get_book(book_id: str):
+_book_bodies: dict[str, tuple[Book, bytes, bytes]] = {}  # book id -> (book object, json, gzipped json)
+
+
+@app.get("/api/books/{book_id}", response_model=Book, dependencies=[Depends(require_access)])
+def get_book(book_id: str, accept_encoding: str = Header(default="")):
+    """The full book. Gated like the paid endpoints: a public deployment must not hand out a copyrighted text.
+    Serialised and gzipped once per book version (a novel is several MB of JSON)."""
     book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
-    return book
+    cached = _book_bodies.get(book_id)
+    if cached is None or cached[0] is not book:  # load_book returns a new object when book.json changes
+        body = book.model_dump_json().encode()
+        cached = _book_bodies[book_id] = (book, body, gzip.compress(body, compresslevel=6))
+    if "gzip" in accept_encoding.lower():
+        return Response(cached[2], media_type="application/json", headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+    return Response(cached[1], media_type="application/json")
 
 
 # ---------- realtime key ----------

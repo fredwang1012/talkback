@@ -67,3 +67,20 @@ def test_avatar_endpoints_list_and_serve_only_existing_clips(client, tmp_path):
     for bad in ("..", "a%2F..%2Fb", "x" * 200):
         assert client.get(f"/api/avatar/{bad}", params={"book": "demo"}).status_code == 404
     assert client.get("/api/avatar/p3c0", params={"book": "../demo"}).status_code == 404
+
+
+def test_get_book_is_gzipped_when_accepted_and_follows_file_changes(client, tmp_path):
+    r = client.get("/api/books/demo", headers={"Accept-Encoding": "gzip"})
+    assert r.headers["content-encoding"] == "gzip" and r.json()["title"] == "Demo"  # httpx decodes it
+    raw = client.get("/api/books/demo", headers={"Accept-Encoding": "identity"})
+    assert "content-encoding" not in raw.headers and raw.json()["title"] == "Demo"
+    book = Book.model_validate_json((tmp_path / "books/demo/book.json").read_text(encoding="utf-8"))
+    book.title = "Changed title"
+    (tmp_path / "books/demo/book.json").write_text(book.model_dump_json(), encoding="utf-8")
+    assert client.get("/api/books/demo").json()["title"] == "Changed title"
+
+
+def test_get_book_needs_the_access_code_when_one_is_set(client, monkeypatch):
+    monkeypatch.setattr(settings, "access_token", "s3cret")
+    assert client.get("/api/books/demo").status_code == 401
+    assert client.get("/api/books/demo", headers={"X-Talkback-Token": "s3cret"}).status_code == 200
