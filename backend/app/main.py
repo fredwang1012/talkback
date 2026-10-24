@@ -96,7 +96,8 @@ def boson_http_error(e: BosonError | RuntimeError) -> HTTPException:
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "boson_key_set": bool(settings.boson_api_key), "access_required": bool(settings.access_token)}
+    return {"ok": True, "boson_key_set": bool(settings.boson_api_key), "access_required": bool(settings.access_token),
+            "answer_backend": settings.effective_answer_backend}
 
 
 @app.get("/api/books")

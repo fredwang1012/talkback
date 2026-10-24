@@ -166,3 +166,14 @@ def test_rrf_ordering_and_dedup():
     assert [o["data"]["chunk_id"] for o in out] == ["y", "x", "w", "z"]
     assert rrf([]) == []
     assert [o["data"]["chunk_id"] for o in rrf([[it("p"), it("q")], [it("q"), it("p")]])] == ["p", "q"]
+
+
+def test_text_search_4xx_is_warned_other_failures_are_not(caplog):
+    f = spoiler_filter("b", None)
+    with caplog.at_level("DEBUG", logger="talkback.gcp.vectorstore"):
+        assert run(make(lambda r: httpx.Response(400, text="bad")).text_search("hi", f, 3)) == []
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+    caplog.clear()
+    with caplog.at_level("DEBUG", logger="talkback.gcp.vectorstore"):
+        assert run(make(lambda r: httpx.Response(200, text="not json")).text_search("hi", f, 3)) == []
+    assert not any(r.levelname == "WARNING" for r in caplog.records)

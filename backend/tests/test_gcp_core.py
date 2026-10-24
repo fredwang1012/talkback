@@ -103,3 +103,13 @@ def test_usage_never_raises(monkeypatch, tmp_path):
     f.write_text("x")
     monkeypatch.setattr(settings, "data_dir", f)  # cache dir cannot be created under a file
     usage.record("embed", "m", chars=1)
+
+
+def test_usage_also_emits_a_log_line_even_if_the_file_fails(monkeypatch, tmp_path, caplog):
+    f = tmp_path / "file"
+    f.write_text("x")
+    monkeypatch.setattr(settings, "data_dir", f)
+    with caplog.at_level("INFO", logger="talkback.usage"):
+        usage.record("embed", "m", chars=7)
+    rec = [json.loads(r.getMessage()) for r in caplog.records if r.name == "talkback.usage"]
+    assert rec and rec[0]["kind"] == "embed" and rec[0]["chars"] == 7

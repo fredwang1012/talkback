@@ -26,12 +26,18 @@ class Settings(BaseSettings):
     gcp_region: str = "us-central1"
     gcp_bucket: str = "frederick-talkback-data"
     retrieval_backend: Literal["local", "vertex"] = "local"
+    # Who writes talk-mode answers. None = follow retrieval_backend (vertex -> gemini, local -> realtime).
+    answer_backend: Literal["gemini", "realtime"] | None = None
     gemini_model: str = "gemini-2.5-flash"
     vs_collection: str = "chunks"
 
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def effective_answer_backend(self) -> str:
+        return self.answer_backend or ("gemini" if self.retrieval_backend == "vertex" else "realtime")
 
     @property
     def vs_collection_path(self) -> str:

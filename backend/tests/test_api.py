@@ -290,3 +290,14 @@ def test_retrieve_is_gated_and_rate_limited(env, monkeypatch):
     monkeypatch.setattr(main, "retrieve_bucket", TokenBucket(1, 60))
     assert client.post("/api/retrieve", json=body, headers=h).status_code == 200
     assert client.post("/api/retrieve", json=body, headers=h).status_code == 429
+
+
+@pytest.mark.parametrize("retrieval,answer,expected", [
+    ("local", None, "realtime"), ("vertex", None, "gemini"),
+    ("vertex", "realtime", "realtime"), ("local", "gemini", "gemini"),
+])
+def test_health_reports_answer_backend(env, monkeypatch, retrieval, answer, expected):
+    client, _ = env
+    monkeypatch.setattr(settings, "retrieval_backend", retrieval)
+    monkeypatch.setattr(settings, "answer_backend", answer)
+    assert client.get("/api/health").json()["answer_backend"] == expected

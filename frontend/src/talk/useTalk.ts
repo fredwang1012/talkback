@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchRealtimeKey, fetchRetrieve, speak, streamAnswer } from "../api";
+import { fetchRealtimeKey, fetchRetrieve, speak, streamAnswer, type Health } from "../api";
 import { MicCapture } from "../audio/capture";
 import { RingPlayer } from "../audio/playback";
 import { spend } from "../spend";
@@ -9,8 +9,8 @@ import { createSentenceSpeaker } from "./sentencePlayer";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
 import { TalkController, type Latency, type ReaderControl, type TalkState } from "./TalkController";
 
-/** true: Gemini (via /api/answer) writes the answer and Boson TTS speaks it; false: Realtime answers itself. */
-export const ANSWER_VIA_GEMINI = true;
+/** Gemini (via /api/answer) writes the answer and Boson TTS speaks it only when the server says so; else Realtime answers itself. */
+export const answersViaGemini = (health: Health | null): boolean => health?.answer_backend === "gemini";
 
 export type TalkUi = {
   state: TalkState;
@@ -35,10 +35,11 @@ type Args = {
   speakerId: string;
   voiceFor: (speakerId: string) => string;
   autoResume: boolean;
+  health: Health | null;
 };
 
 /** Owns the Talk session for the reader screen. The real mic, speaker and socket are created once per book. */
-export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume }: Args): TalkUi {
+export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health }: Args): TalkUi {
   const [state, setState] = useState<TalkState>("reading");
   const [caption, setCaption] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -50,6 +51,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const logSeq = useRef(0);
   const controller = useRef<TalkController | null>(null);
+  const viaGemini = answersViaGemini(health);
   const latest = useRef({ reader, voiceFor, speakerId });
   latest.current = { reader, voiceFor, speakerId };
 
@@ -79,7 +81,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         resumeAt: (i) => latest.current.reader.resumeAt(i),
       },
       retrieve: (query, para, speaker) => fetchRetrieve(bookId, query, para, speaker),
-      ...(ANSWER_VIA_GEMINI ? {
+      ...(viaGemini ? {
         // the voice is fixed when the answer starts, so a mid-answer speaker switch cannot change it
         answer: (query, para, speaker, onSentence, signal) => {
           answerVoice = latest.current.voiceFor(speaker);
@@ -97,7 +99,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     });
     controller.current = talk;
     return () => { talk.dispose(); client.close(); controller.current = null; setState("reading"); setSpeaking(false); };
-  }, [bookId, enabled]);
+  }, [bookId, enabled, viaGemini]);
 
   useEffect(() => { controller.current?.setAutoResume(autoResume); }, [autoResume, enabled]);
   useEffect(() => { void controller.current?.setSpeaker(speakerId); }, [speakerId, enabled]);

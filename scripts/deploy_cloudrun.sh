@@ -34,7 +34,7 @@ This script deploys Talkback to Cloud Run. Nothing has been done yet. It will:
      Portraits, data/uploads and data/samples are never synced. Nothing is deleted from the bucket.
   4. gcloud builds submit --tag ${IMAGE}
   5. gcloud run deploy ${SERVICE} in ${REGION} as ${SA}
-       RETRIEVAL_BACKEND=vertex, TRUST_PROXY=true, bucket mounted at /app/data, min 0 / max 2 instances, 1Gi, 1 CPU,
+       RETRIEVAL_BACKEND=vertex, TRUST_PROXY=true, bucket mounted at /app/data, min 0 / max 1 instance, no CPU throttling, 1Gi, 1 CPU,
        300 s timeout, --allow-unauthenticated (paid endpoints are gated by the TALKBACK_ACCESS_TOKEN secret)
 Re-run with --yes to proceed.
 EOF
@@ -87,6 +87,6 @@ gcloud run deploy "${SERVICE}" \
   --execution-environment gen2 \
   --add-volume "name=data,type=cloud-storage,bucket=${BUCKET}" \
   --add-volume-mount "volume=data,mount-path=/app/data" \
-  --min-instances 0 --max-instances 2 \
+  --min-instances 0 --max-instances 1 --no-cpu-throttling \
   --memory 1Gi --cpu 1 --timeout 300 \
   --allow-unauthenticated

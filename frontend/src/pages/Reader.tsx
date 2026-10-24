@@ -99,6 +99,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     enabled: audioAvailable && !!book,
     speakerId,
     autoResume,
+    health,
     voiceFor: (id) => overrides[id] ?? (id === "narrator" ? book?.narrator?.voice : book?.characters.find((c) => c.id === id)?.voice) ?? "marcus",
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),

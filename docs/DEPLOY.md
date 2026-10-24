@@ -52,9 +52,21 @@ Only set `TRUST_PROXY` when a trusted proxy is the sole ingress. Buckets keep at
 `CORS_ORIGINS` (comma-separated, default `http://localhost:5173`) lists browser origins allowed to call the API. The
 deployed UI is same-origin, so the script leaves it at the default; add origins only for a separately hosted frontend.
 
+### Public deployments
+
+- `TALKBACK_ACCESS_TOKEN` must be set for any public deployment. Without it the paid endpoints (speech, answers, upload)
+  are open to anyone.
+- `GET /api/books/{id}` returns the full text of any book, including uploaded ones, to anyone who can reach the service
+  (it is not behind the access code). Do not upload copyrighted books to a public deployment.
+
 ### Cost guardrails
 
-- `--min-instances 0`: no cost when idle (cold start applies); `--max-instances 2`: caps concurrent scale-out.
+- `--min-instances 0`: no cost when idle (cold start applies).
+- `--max-instances 1`: upload status, the one-ingest-at-a-time guard and the rate-limit buckets live in process memory, so
+  a second instance would split them (a status poll could hit an instance that does not know the upload). Keep it at 1.
+- `--no-cpu-throttling`: PDF ingest runs in a background task after the `202` response; with the default request-only CPU
+  the instance would be starved once the response is sent. The cost: an instance is billed for CPU while it is warm,
+  not just while serving requests. With min-instances 0 it still idles out and stops billing.
 - `--memory 1Gi --cpu 1 --timeout 300`.
 - Set a monthly spend cap in the Boson workspace and a budget alert on the GCP project.
 - Keep the access token set. Rate limits (token mint 10/min, TTS cache misses 120/min, clone 5/min, answer 20/min) are

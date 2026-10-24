@@ -124,5 +124,9 @@ class VectorStore:
             resp = await self._call("POST", f"{self._base}/dataObjects:search", body)
             return self._parse(resp.json())
         except (VectorStoreError, httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as e:
-            log.debug("text search failed, returning no results: %s", e)
+            status = getattr(e, "status", None)
+            if isinstance(status, int) and 400 <= status < 500:
+                log.warning("text search rejected (HTTP %s), returning no results: %s", status, e)
+            else:
+                log.debug("text search failed, returning no results: %s", e)
             return []

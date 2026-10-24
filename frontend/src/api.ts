@@ -50,7 +50,7 @@ export type BookSummary = {
   characters: number;
   cover: string | null;
 };
-export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean };
+export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean; answer_backend: "gemini" | "realtime" };
 
 /** Sent when the server requires an access code (TALKBACK_ACCESS_TOKEN). Typed in by the visitor, never built in. */
 export function authHeaders(): Record<string, string> {

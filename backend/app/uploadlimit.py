@@ -25,7 +25,7 @@ class UploadSizeLimit:
         declared = headers.get(b"content-length")
         if declared is None:
             return await _reply(send, 411, "Content-Length is required.")
-        if not (declared.isascii() and declared.isdigit()):
+        if not (declared.isascii() and declared.isdigit()) or len(declared) > 12:
             return await _reply(send, 400, "Invalid Content-Length.")
         if int(declared) > limit:
             return await _reply(send, 413, "File is too large (20 MB maximum).")
