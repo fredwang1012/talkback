@@ -12,6 +12,7 @@ dependencies = [
     "websockets>=13",
     "numpy>=2.0",
     "pyyaml>=6",
+    "anthropic>=1.14.0",
 ]
 
 [dependency-groups]

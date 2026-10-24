@@ -76,7 +76,10 @@ def main() -> None:
                 license=meta["license"], attribution=meta.get("attribution"),
                 sections=sections, paragraphs=paragraphs)
     if old and [p.text for p in old.paragraphs] == [p.text for p in paragraphs]:
-        book = old.model_copy(update={"sections": sections})  # text unchanged: keep downstream work
+        # text unchanged: keep downstream work (cast, segments, summaries) but always refresh metadata
+        book = old.model_copy(update={
+            "sections": sections, "title": book.title, "author": book.author, "kind": book.kind,
+            "license": book.license, "attribution": book.attribution})
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(book.model_dump_json(indent=1), encoding="utf-8")
     chars = sum(len(p.text) for p in paragraphs)
