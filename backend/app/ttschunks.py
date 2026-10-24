@@ -9,7 +9,8 @@ MAX_CHARS = 280
 # Bump whenever chunk_paragraph's output can change (tags, pauses, sfx, splitting, normalisation): every book built
 # with a lower Book.chunk_rules is re-chunked once by the server (books.load_book). History:
 #   1: expressive delivery (#73: lead pauses, sfx, expressive_*) and singing (#74). Books without the field are 0.
-CHUNK_RULES_VERSION = 1
+#   2: sneeze and humming sound effects (#135).
+CHUNK_RULES_VERSION = 2
 DEFAULT_VOICE = "default"
 ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "st", "messrs", "capt", "col", "prof", "no", "vs", "etc", "sr", "jr", "gen", "lt"}
 

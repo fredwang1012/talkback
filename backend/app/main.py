@@ -17,9 +17,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from . import books, cast, emotion, face_detect, faces, ingest_upload, multilingual, public_client, recap, retrieval, tts_cache, users, voices
+from . import books, cast, emotion, face_detect, faces, ingest_upload, multilingual, public_client, recap, retrieval, tts_cache, tts_lang, users, voices
 from .delivery import apply_speed
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
@@ -494,6 +494,14 @@ class SpeakRequest(BaseModel):
     text: str = Field(min_length=1, max_length=400)
     voice: str
     emotion: str | None = Field(default=None, max_length=40)  # an answer sentence's feeling (#14); unknown is ignored
+    language: str | None = Field(default=None, max_length=3)  # ISO 639-3 of the sentence (#135); None / 'eng' = English
+
+    @field_validator("language")
+    @classmethod
+    def _documented_language(cls, v):
+        if v is not None and not tts_lang.valid(v):
+            raise ValueError("language must be an ISO 639-3 code of a language Higgs TTS supports")
+        return v
 
 
 @app.post("/api/speak", dependencies=[Depends(require_access)])
@@ -504,10 +512,11 @@ async def speak(req: SpeakRequest, request: Request):
     if not text:
         raise HTTPException(400, "Nothing to say.")
     tts_text = emotion.tts_input(text, emotion.valid(req.emotion))
-    if not tts_cache.is_cached(tts_text, req.voice) and not tts_bucket.allow(rate_key(request)):
+    lang = None if tts_lang.is_english(req.language) else req.language
+    if not tts_cache.is_cached(tts_text, req.voice, *([lang] if lang else [])) and not tts_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many new audio requests; wait a moment.")
     try:
-        out = await tts_cache.get_or_create(boson, tts_text, req.voice, text)
+        out = await tts_cache.get_or_create(boson, tts_text, req.voice, text, **({"language": lang} if lang else {}))
     except (BosonError, RuntimeError) as e:
         raise boson_http_error(e)
     return {"voice": req.voice, **out}

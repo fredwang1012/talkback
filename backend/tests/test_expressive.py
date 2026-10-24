@@ -209,3 +209,46 @@ def test_scene_break_check_is_linear_and_length_capped():
     assert not is_scene_break("* " * 50000 + "x")
     assert time.perf_counter() - t < 0.5
     assert not is_scene_break("*" * 41)
+
+
+# ---------- sneeze and humming (#135) ----------
+
+@pytest.mark.parametrize("line,tag,expected", [
+    ('"Achoo!"', "", "sneeze"), ('"Ah-choo! Bless me."', "", "sneeze"), ('"A-tchoo!"', "he sneezed.", "sneeze"),
+    ('"Atishoo, atishoo."', "", "sneeze"),
+    ('"Achoo" is a sound.', "", "sneeze"),  # starts with the sound: the same rule as every other sfx
+    ('"Choose one."', "", None), ('"Ah, choo-choo train!"', "", None),
+    ('"Hmm-hmm-hmm."', "she hummed.", "humming"), ('"Mmm, mmm."', "Pooh hummed to himself.", "humming"),
+    ('"Hmmm, hm hm."', "humming a tune,", "humming"),
+    ('"Hmm."', "", None), ('"Hmm, I wonder."', "said Ron.", None),  # thinking, not humming
+    ('"Hmm."', "she hummed.", "humming"),
+    ('"Hmm."', "she did not hum.", None),
+    ('"Mmmm! Delicious."', "", None),
+])
+def test_sneeze_and_humming_rules(line, tag, expected):
+    assert sfx_of(line, tag) == expected
+
+
+def test_only_documented_sfx_names_are_emitted():
+    from app.delivery import TAG_VALUES
+    for line, tag in [('"Achoo!"', ""), ('"Hmm."', "she hummed."), ('"Boo-hoo!"', "she wept."), ('"Ahem!"', ""),
+                      ('"Sniff!"', ""), ('"AAAAH!"', ""), ('"Ha ha!"', ""), ('"Sigh."', "she sighed.")]:
+        assert sfx_of(line, tag) in TAG_VALUES["sfx"]
+
+
+def test_one_sfx_per_chunk_and_none_in_songs():
+    out = with_sfx('"Achoo! Sniff! Ahem!"')
+    assert out.count("<|sfx:") == 1
+    book, p = make_book('"Achoo!" said Ron.', segs(("ron", '"Achoo!"'), ("narrator", "said Ron.")))
+    assert "<|sfx:sneeze|>" in chunk_paragraph(p, book)[0].tts_text
+    song = '"Achoo! Beautiful Soup, so rich and green, Waiting in a hot tureen!"'
+    sung = [Paragraph(idx=0, section_id="s", text="CHORUS.", segments=segs(("narrator", "CHORUS."))),
+            Paragraph(idx=1, section_id="s", text=song, segments=segs(("ron", song)))]
+    book, _ = make_book("CHORUS.", sung[0].segments, more=[(song, sung[1].segments)])
+    tts = chunk_paragraph(book.paragraphs[1], book)[0].tts_text
+    assert "<|style:singing|>" in tts and "<|sfx:" not in tts
+
+
+def test_chunk_rules_version_covers_new_sfx():
+    from app.ttschunks import CHUNK_RULES_VERSION
+    assert CHUNK_RULES_VERSION >= 2

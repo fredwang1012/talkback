@@ -991,3 +991,20 @@ the deployed talkback-public-00001 is the Oct 21 code):
 - Emotion markers: `emotion.strip_tags` removes every `<|...|>` (repeatedly, then stray `|`); split_marker is linear and
   capped at 2000 chars; `/api/speak` strips tags from its text. An empty textbook-notes result is now a failure (keeps
   earlier notes); `start_enrich` purges abandoned equation tickets.
+
+## #135 (backend): non-English TTS and two more sound effects
+
+- `/api/speak` takes an optional `language` (ISO 639-3, validated against `app/tts_lang.py`, the 102 documented languages;
+  the docs give names only, so the codes are ours: all 102 plus `cmn` were accepted live by Boson, 2026-10-23). English
+  (absent or `eng`) is unchanged. Any other language is requested with `timestamps: false`, `language` and `normalize: true`
+  (timestamps switch normalization off; they exist only for English, Chinese and Spanish, and a live Spanish clip with
+  timestamps read "1888" unnormalized). The reply is then raw audio, so `timestamps` is null and the caption highlights the
+  whole sentence. `cache_key` gains language and mode for non-English only, so English keys do not change.
+- delivery.py already had laughter, sigh, crying, sniff, cough (Ahem/Cough) and screaming (#73). Added `sneeze`
+  (Achoo, Ah-choo, Atishoo) and `humming` (Hmm-hmm / Mmm, only when the speech tag says hummed/humming). Never in
+  narration or sung chunks; one sfx per chunk. `burping` is deliberately not used. CHUNK_RULES_VERSION is 2.
+  Effect on the committed public-domain books and Alice: 0 chunks change (rules are strict; there is no Achoo or hummed
+  line in them), so the bump only upgrades uploads and keeps books stamped.
+- `<|reset|>`: the docs say only that a new group of delivery tokens replaces the old one and that reset returns to
+  neutral; sfx are not delivery tokens and chunks are synthesized independently, so no reset is emitted. A live clip with
+  style + sfx + `<|reset|>` was accepted and no tag was read aloud (tag words absent from word timestamps).
