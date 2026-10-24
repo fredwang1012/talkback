@@ -14,6 +14,12 @@ Standing rule: do **not** use the Anthropic key until told (user instruction, 20
 - [ ] Original-art portraits (Holmes, Watson/narrator, the King, Irene Adler, a tutor): drop into `data/portraits/scandal-in-bohemia/<character-id>.png` (also `narrator`, `cover`). Without them the UI shows initials.
 - [ ] A 5-30 s recording of your voice plus its exact transcript, for the voice-clone test.
 
+## 1b. GCP backend (see docs/GCP_PLAN.md)
+- G1 `gcloud auth application-default login` (local Vertex calls).
+- G2 service account `talkback-api` + roles: IAM grants were refused by Claude's permission check; commands are in the plan.
+- G3 hard $50 stop (billing-disable function) needs your approval; alerts exist now.
+- G4 Boson key into Secret Manager.
+
 ## 2. Needs the Anthropic key (all written and tested with a fake LLM; none has made a real call)
 `python scripts/run_all.py --anthropic` runs these in order:
 - [ ] `cast.py` (Sonnet 5.5, ~$0.05) then your review.
