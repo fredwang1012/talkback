@@ -1272,6 +1272,8 @@ async def start_enrichment(book_id: str, background: BackgroundTasks):
     # check without an await before the new status is written: a second request then sees the job and gets a 409
     if book_id in _kind_claims or book_id in _enrich_jobs or book_id in _equation_jobs:   # a job or kind change is running
         raise HTTPException(409, "This book is still being processed; try again when it finishes.")
+    if state == "done":   # a stale "Try again" on a book that has finished meanwhile: just report it
+        return st
     if state not in ("awaiting_confirmation", "error", "refused"):
         raise HTTPException(409, "This book is not waiting for confirmation.")
     if not settings.upload_enrich:   # UPLOAD_ENRICH=false: no paid processing, not even a retry

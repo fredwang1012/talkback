@@ -156,7 +156,9 @@ def test_retry_after_error_runs_the_job(rig):
     r = rig.post(f"/api/books/{BID}/enrich")
     assert r.status_code == 202
     assert rig.get(f"/api/books/{BID}/status").json()["enrich"]["status"] == "done"
-    assert rig.post(f"/api/books/{BID}/enrich").status_code == 409   # done: nothing to retry
+    calls = len(rig.fake.calls)
+    again = rig.post(f"/api/books/{BID}/enrich")   # done: nothing to retry, the status is just reported
+    assert again.json()["enrich"]["status"] == "done" and len(rig.fake.calls) == calls
 
 
 def test_retry_after_interruption_without_restart_writeback(rig):
@@ -332,3 +334,14 @@ def test_enrichment_runs_up_to_enrich_parallel_books_at_once():
         return peak
     assert _a.run(run()) == min(5, settings.enrich_parallel)
     assert isinstance(main._enrich_lock, _a.Semaphore)
+
+
+def test_try_again_on_a_finished_book_just_reports_done(rig):
+    make_book_on_disk(settings.data_dir, book_id=BID)
+    ingest_upload.write_status(BID, "ready", enrich={"status": "done", "stage": "done", "progress": 1.0,
+                                                     "message": pipeline.READY})
+    main._upload_status.clear()
+    calls = len(rig.fake.calls)
+    r = rig.post(f"/api/books/{BID}/enrich")
+    assert r.status_code == 202 and r.json()["enrich"]["status"] == "done"
+    assert len(rig.fake.calls) == calls   # nothing ran
