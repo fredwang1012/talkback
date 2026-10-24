@@ -103,6 +103,35 @@ def equation_tts_text(p: Paragraph) -> str:
     return _fit(build_tts_text(spoken, "", None))
 
 
+INLINE_SPOKEN_MAX = 120  # a longer reading of an inline formula is not used (the shown text is read instead)
+
+
+def inline_spans(p: Paragraph, s: int, e: int) -> list[tuple[int, int, str]]:
+    """(start, end, spoken) relative to `s` of the inline formulas inside p.text[s:e] that have a usable reading."""
+    return [(m.start - s, m.end - s, m.spoken.strip()) for m in p.inline_math
+            if s <= m.start and m.end <= e and m.spoken and m.spoken.strip()
+            and len(m.spoken.strip()) <= INLINE_SPOKEN_MAX]
+
+
+def spoken_text(p: Paragraph, s: int, e: int) -> str:
+    """p.text[s:e] with each inline formula replaced by its reading."""
+    text = p.text[s:e]
+    for a, b, spoken in reversed(inline_spans(p, s, e)):
+        text = text[:a] + spoken + text[b:]
+    return text
+
+
+def _fit_pieces(p: Paragraph, s: int, e: int) -> list[tuple[int, int]]:
+    """Split [s, e) until each piece's spoken text fits in MAX_CHARS."""
+    limit = e - s
+    while len(spoken_text(p, s, e)) > MAX_CHARS and limit > MAX_CHARS // 4:
+        limit -= MAX_CHARS // 8
+        pieces = split_long(p.text[s:e], s, limit)
+        if all(len(spoken_text(p, a, b)) <= MAX_CHARS for a, b in pieces):
+            return pieces
+    return [(s, e)]
+
+
 def chunk_paragraph(p: Paragraph, book: Book) -> list[TtsChunk]:
     narrator_voice = book.narrator.voice if book.narrator else DEFAULT_VOICE
     if p.kind == "code":  # a listing is displayed whole but spoken as one short note
@@ -135,14 +164,16 @@ def chunk_paragraph(p: Paragraph, book: Book) -> list[TtsChunk]:
                 pieces += split_long(seg_text[s:e], base + s)
             else:
                 pieces.append((base + s, base + e))
+        if p.inline_math:
+            pieces = [q for s, e in pieces for q in _fit_pieces(p, s, e)]
         groups: list[tuple[int, int]] = []
         for s, e in pieces:
-            if groups and e - groups[-1][0] <= MAX_CHARS:
+            if groups and len(spoken_text(p, groups[-1][0], e)) <= MAX_CHARS:
                 groups[-1] = (groups[-1][0], e)
             else:
                 groups.append((s, e))
         for s, e in groups:
-            spoken = p.text[s:e]
+            spoken = spoken_text(p, s, e)
             chunks.append(TtsChunk(
                 id=f"p{p.idx}c{len(chunks)}", speaker=seg.speaker if seg.speaker in chars else "narrator",
                 voice=voice, tts_text=build_tts_text(spoken, tags, seg.emotion, seg.style, sfx=seg.speaker in chars),

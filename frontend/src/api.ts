@@ -20,6 +20,17 @@ export type MathBlock = {
   latex?: string | null;
   spoken?: string | null;
 };
+/** A formula inside a sentence whose extracted text is garbled: p.text[start:end] is that text. */
+export type InlineMath = {
+  id: string;
+  start: number;
+  end: number;
+  page: number;
+  bbox: number[];
+  image?: string | null;
+  latex?: string | null;
+  spoken?: string | null;
+};
 export type Paragraph = {
   idx: number;
   section_id: string;
@@ -28,6 +39,7 @@ export type Paragraph = {
   tts_chunks: TtsChunk[];
   kind?: "code" | "math" | null; // code: a textbook listing, shown in a code font, not read aloud; math: an equation
   math?: MathBlock | null;
+  inline_math?: InlineMath[];
 };
 export type Character = {
   id: string;

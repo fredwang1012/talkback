@@ -633,6 +633,58 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   sees the title page, is then asked for the list (schema `authors: list[str]`), and its answer replaces the metadata.
   When no LLM can be used the metadata string is kept as is.
 
+## Display equations in uploaded textbooks (#41, 2026-10-23)
+- PDFs keep drawn glyphs, not LaTeX, so equations extracted as garbled text ("ˆβ1 = Pn i=1..."). Now, during PDF
+  extraction (ingest_upload._mark_math), a display equation becomes its own paragraph (`kind="math"`, `math: MathBlock`
+  with page, bbox, number): math-font lines (CMMI/CMSY/CMEX..., Symbol, *Math) clustered by row, excluded when they
+  share a row with prose (inline math stays in its sentence), and accepted only when set off (indented, taller than a
+  text line, or more than the page's normal leading above and below). Pseudocode is immune. Novels never keep them.
+- After publish, a background job crops each equation from the PDF (200 dpi greyscale PNG, data/books/<id>/equations/,
+  served at /api/books/<id>/equations/<eq>.png without the access code since an <img> cannot send it; guard_book only)
+  and, when Gemini on Vertex is configured (UPLOAD_ENRICH + GCP_PROJECT), sends the pictures 8 per call for LaTeX and a
+  plain-English reading, under the upload spend caps. Locally (no GCP_PROJECT) only the pictures are made.
+- Reader: KaTeX (trust off; refused \href etc. fall back) when LaTeX exists, else the crop (inverted on the dark
+  theme), else the text. Spoken: one chunk, the Gemini reading ("Equation three point four: ..."), else the text when
+  it extracted cleanly, else "Equation three point four." Digits after the point are read one by one (3.18 -> "three
+  point one eight").
+- ISLR (1st printing): 272 equations, 163 of 173 numbered ones found; misses are prose hypotheses (3.12/3.13) and
+  "maximize ... subject to" problems (9.9-9.15), plus (3.27) loses its number (it sits beside the prose condition
+  "if ith person is female"). The bogus "1 B" section (a fraction of (5.8) read as a heading) is gone. Crops of the
+  whole book: 0.8 s, ~1 MB. Inline math inside sentences: see "Inline formulas" below.
+- Books uploaded before this change have no math paragraphs; re-upload to get them.
+- A new GCP project cannot call gemini-2.5-flash (404) and Gemini 3 is served only from the `global` location, so
+  `.env` sets GEMINI_MODEL=gemini-3.5-flash and GEMINI_LOCATION=global (config.gemini_region). Gemini 3 rejects
+  thinking_budget (400): the provider drops it and retries, and adds 8192 output tokens because the model spends the
+  cap on hidden thoughts (two equations took ~1,500 thought tokens).
+
+## Inline formulas in uploaded textbooks (2026-10-23)
+- Inside a prose line, a run of math-font spans (plus the operators, digits, brackets and operator names such as
+  "max" between them) is marked when its text would read wrong: lost glyphs, accents (ˆ ¯), big operators or roots,
+  or sub/superscripts (a span < 85% of the run's size or with a shifted baseline). A plain italic x is left alone.
+  Detection uses fonts and sizes only, nothing book-specific. Leading prose punctuation/numbers ("3.1,", "•") and
+  trailing sentence punctuation stay outside the formula.
+- The marker rides in pdf_to_text's output (parsing.IM_OPEN + page/bbox as private-use chars + text + IM_CLOSE) but
+  only on the final paragraph text: layout heuristics (headers, headings, code, TOC) see the unmarked line. parse()
+  turns markers into `Paragraph.inline_math` (offsets into the text); long-paragraph splits never cut one; novels
+  drop them.
+- After the display equations, the same job crops each distinct inline formula (same text and size share one
+  picture) and Gemini reads them in the same batches; the inline pass is trimmed to fit the per-book cap on the same
+  LLM instance. The reading replaces the garbled text in the TTS chunk (packing measures the spoken length; readings
+  over 120 chars are not used) and its spoken words highlight the formula (tts_cache.align_timestamps `inline`).
+- Reader: KaTeX in text style inside the sentence, else the crop sized by its PDF height, else the text.
+- Crops (display and inline) paint out other lines' text: math fonts report boxes much taller than their glyphs
+  (CMSY "≈" reaches 11pt below its baseline), so a padded box caught the tops of the next line. A span whose baseline
+  is outside the box is whited out over base-0.78*size..base+0.25*size (not its font box, which can reach above the
+  formula's baseline); prose beside an inline formula is whited out up to the box edge. The inline box's baseline is
+  the lowest main-size baseline (the hat of ˆβ sits on a raised one). Picture URLs carry ?v=<hash of the PNG>
+  because the route is cached for a day.
+- ISLR excerpt: 184 inline formulas (79 distinct crops), all read (e.g. "\hat{\beta}_1", "beta one hat"). CQL paper:
+  49. Limits: a formula that pymupdf splits over several text lines (a stacked sum's limits, a hat set on its own
+  line) is marked only in part; ligature glyphs such as "coe!cients" are a separate extraction issue.
+- Pre-existing, not from this change: number expansion ("6,130" -> "six thousand one hundred thirty") runs after
+  the 280-char packing, so number-heavy chunks (tables, prices) reach ~500 chars. Fixing the packing would re-chunk
+  the demo novels and invalidate their pre-rendered audio, so it is left for a separate change.
+
 ## Voice agent: Realtime tools act on the reader (#72, 2026-10-23)
 - `frontend/src/talk/tools.ts` declares ten client function tools to `session.update` (`tools[]`, `tool_choice: auto`):
   jump_to (chapter number / title / Roman numeral / "last" / "bookmark", or a quoted passage), read_chapter, resume_reading,
@@ -673,6 +725,26 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   The session still sets `noise_reduction: near_field`. If Boson adds `create_response: false`, `server_vad` with
   `threshold` ~0.6-0.7 (its default moved to 0.85) would replace the local gate.
 
+## Spoken turns live: tool calls, barge-in leftovers, hands-free echo (#102, #97, #99, #100, #103, 2026-10-23)
+- Spoken commands failed where typed ones worked because the *question* was lost, not the tool. `pttUp` waited a fixed
+  2.5 s for the transcript from the key release; on the first turn of a session the commit is deferred until the socket
+  opens (key fetch + connect), and STT runs after that, so the window expired, the query was "" and it still went to
+  Gemini (`/api/answer` -> "The answer could not be generated") or to retrieval. Now `beginTurn` keeps the
+  ensureOpen/interrupt promises, `pttUp` awaits them, the window (6 s) starts at the real commit, an empty or failed
+  transcript ends the turn with "I didn't catch that" and never asks an empty question (#99 as well).
+- `parseIntent` strips transcription prose ("Okay, read chapter 2, please!" / "Could you ...?") before matching.
+- Realtime: every `returnTools()` re-arms the 15 s answer watchdog (a tool call's continuation is a new response that can
+  go missing); only the latest watchdog acts. A typed question is sent as a user `input_text` item before
+  `response.create` (#97): the instructions carry the passages, not the question.
+- Barge-in (#100): the old answer's `output_audio.delta` / caption deltas keep arriving after the local flush (the server
+  runs ahead of real time); TalkClient drops all output from the interrupt until the next `response.created`. The mic
+  starts at once; audio and the commit are held in the client until the cancel is acknowledged (`response.done` or
+  `response_not_active`), then sent in order. A cancel never acknowledged fails the turn with a message.
+- Boson's AssistantItem content takes `{type: "text"}`; `output_text` (history seeding) was rejected with 22 pydantic errors.
+- Hands-free echo (#103): `getUserMedia` asks for echoCancellation + noiseSuppression + autoGainControl. While the
+  character speaks (and 300 ms after) the gate uses `HANDS_FREE_OVER_SPEECH` (0.10 RMS for 400 ms) instead of the idle
+  profile (0.04 for 150 ms): residual echo and a cough do not interrupt, clear sustained speech does, the mic button /
+  Space always does. The toggle says "Hands-free (use headphones)".
 ## Short chunks: voice before face (#104, 2026-10-23, fake-clock tests, no Boson calls)
 - Cause (read mode): (1) when a chunk's voice ended, FaceSync kept the old clip attached and SHOWN, frozen on its last
   frame ('pause' arrives before 'ended'), until the next clip joined; (2) the next clip opened only when the current
@@ -694,26 +766,6 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   therefore waits longer before its first word, and if the render still falls behind the face drops to the talk loop
   and rejoins (unchanged fallback). Talkback answers and recaps have no speed control, so they are unaffected.
 
-## Spoken turns live: tool calls, barge-in leftovers, hands-free echo (#102, #97, #99, #100, #103, 2026-10-23)
-- Spoken commands failed where typed ones worked because the *question* was lost, not the tool. `pttUp` waited a fixed
-  2.5 s for the transcript from the key release; on the first turn of a session the commit is deferred until the socket
-  opens (key fetch + connect), and STT runs after that, so the window expired, the query was "" and it still went to
-  Gemini (`/api/answer` -> "The answer could not be generated") or to retrieval. Now `beginTurn` keeps the
-  ensureOpen/interrupt promises, `pttUp` awaits them, the window (6 s) starts at the real commit, an empty or failed
-  transcript ends the turn with "I didn't catch that" and never asks an empty question (#99 as well).
-- `parseIntent` strips transcription prose ("Okay, read chapter 2, please!" / "Could you ...?") before matching.
-- Realtime: every `returnTools()` re-arms the 15 s answer watchdog (a tool call's continuation is a new response that can
-  go missing); only the latest watchdog acts. A typed question is sent as a user `input_text` item before
-  `response.create` (#97): the instructions carry the passages, not the question.
-- Barge-in (#100): the old answer's `output_audio.delta` / caption deltas keep arriving after the local flush (the server
-  runs ahead of real time); TalkClient drops all output from the interrupt until the next `response.created`. The mic
-  starts at once; audio and the commit are held in the client until the cancel is acknowledged (`response.done` or
-  `response_not_active`), then sent in order. A cancel never acknowledged fails the turn with a message.
-- Boson's AssistantItem content takes `{type: "text"}`; `output_text` (history seeding) was rejected with 22 pydantic errors.
-- Hands-free echo (#103): `getUserMedia` asks for echoCancellation + noiseSuppression + autoGainControl. While the
-  character speaks (and 300 ms after) the gate uses `HANDS_FREE_OVER_SPEECH` (0.10 RMS for 400 ms) instead of the idle
-  profile (0.04 for 150 ms): residual echo and a cough do not interrupt, clear sustained speech does, the mic button /
-  Space always does. The toggle says "Hands-free (use headphones)".
 
 ## Lip-sync for any voice x face (#113)
 - Before: lip-sync requests sent only the voice and the server animated `faces.voice_face_path(voice)`, so only a
@@ -726,22 +778,3 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   `voice` + `linked: true` (no copy). Deleting the voice deletes only faces made with the clone (no `linked`) and
   unlinks borrowed ones (`faces.unlink_voice`). The old `face` file upload still works.
 - Realtime (Boson realtime) answers are audio only, as before; nothing to lip-sync there.
-## Display equations in uploaded textbooks (#41, 2026-10-23)
-- PDFs keep drawn glyphs, not LaTeX, so equations extracted as garbled text ("ˆβ1 = Pn i=1..."). Now, during PDF
-  extraction (ingest_upload._mark_math), a display equation becomes its own paragraph (`kind="math"`, `math: MathBlock`
-  with page, bbox, number): math-font lines (CMMI/CMSY/CMEX..., Symbol, *Math) clustered by row, excluded when they
-  share a row with prose (inline math stays in its sentence), and accepted only when set off (indented, taller than a
-  text line, or more than the page's normal leading above and below). Pseudocode is immune. Novels never keep them.
-- After publish, a background job crops each equation from the PDF (200 dpi greyscale PNG, data/books/<id>/equations/,
-  served at /api/books/<id>/equations/<eq>.png without the access code since an <img> cannot send it; guard_book only)
-  and, when Gemini on Vertex is configured (UPLOAD_ENRICH + GCP_PROJECT), sends the pictures 8 per call for LaTeX and a
-  plain-English reading, under the upload spend caps. Locally (no GCP_PROJECT) only the pictures are made.
-- Reader: KaTeX (trust off; refused \href etc. fall back) when LaTeX exists, else the crop (inverted on the dark
-  theme), else the text. Spoken: one chunk, the Gemini reading ("Equation three point four: ..."), else the text when
-  it extracted cleanly, else "Equation three point four." Digits after the point are read one by one (3.18 -> "three
-  point one eight").
-- ISLR (1st printing): 272 equations, 163 of 173 numbered ones found; misses are prose hypotheses (3.12/3.13) and
-  "maximize ... subject to" problems (9.9-9.15), plus (3.27) loses its number (it sits beside the prose condition
-  "if ith person is female"). The bogus "1 B" section (a fraction of (5.8) read as a heading) is gone. Crops of the
-  whole book: 0.8 s, ~1 MB. Inline math inside sentences is unchanged (still extracted text).
-- Books uploaded before this change have no math paragraphs; re-upload to get them.
