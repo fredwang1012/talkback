@@ -205,13 +205,29 @@ def estimate(book: Book, positions: int) -> float:
     return gen + answer + judge
 
 
+_client = None
+
+
+def app_client():
+    """One in-process client for the whole run: one event loop (async API clients are bound to the loop that first
+    used them) and no per-IP rate limits (the eval asks 100 questions from one address)."""
+    global _client
+    if _client is None:
+        from fastapi.testclient import TestClient
+
+        from app import main
+        from app.ratelimit import TokenBucket
+
+        for name in ("answer_bucket", "retrieve_bucket", "tts_bucket"):
+            setattr(main, name, TokenBucket(capacity=100_000, per_seconds=60))
+        _client = TestClient(main.app)
+        _client.__enter__()  # keeps the portal (and its loop) open until the process exits
+    return _client
+
+
 def api_retrieve(book_id: str) -> RetrieveFn:
     """The real /api/retrieve endpoint, called in-process."""
-    from fastapi.testclient import TestClient
-
-    from app.main import app
-
-    client = TestClient(app)
+    client = app_client()
 
     def call(query: str, reader_para: int, speaker: str) -> dict:
         r = client.post("/api/retrieve", json={"book_id": book_id, "query": query, "reader_para": reader_para, "speaker_id": speaker})
@@ -225,11 +241,7 @@ def api_answer(book_id: str) -> AnswerFn:
     """The real /api/answer endpoint (retrieval + Gemini), called in-process; returns the spoken answer text."""
     import json
 
-    from fastapi.testclient import TestClient
-
-    from app.main import app
-
-    client = TestClient(app)
+    client = app_client()
 
     def call(query: str, reader_para: int, speaker: str) -> str:
         r = client.post("/api/answer", json={"book_id": book_id, "query": query, "reader_para": reader_para, "speaker_id": speaker})
