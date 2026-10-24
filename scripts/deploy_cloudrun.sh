@@ -31,7 +31,7 @@ if [[ "${YES}" -ne 1 ]]; then
   cat <<EOF
 This script deploys Talkback to Cloud Run. Nothing has been done yet. It will:
   1. Refuse to continue if the git tree is dirty (unless --allow-dirty), so the image tag matches the code.
-  2. Check that the Secret Manager secrets boson-api-key, anthropic-api-key and talkback-access-token exist (stops with the create command if not).
+  2. Check that the Secret Manager secrets boson-api-key and anthropic-api-key exist (stops with the create command if not).
   3. Sync public book data to gs://${BUCKET}:
        data/books     -> gs://${BUCKET}/books      (skipping u-* user uploads and cast_settings.json,
                                                       so settings saved on the live site are never overwritten)
@@ -40,8 +40,8 @@ This script deploys Talkback to Cloud Run. Nothing has been done yet. It will:
   5. gcloud run deploy ${SERVICE} in ${REGION} as ${SA}
        RETRIEVAL_BACKEND=vertex, TRUST_PROXY=true, UPLOAD_LLM=claude, UPLOAD_ENRICH=true, UPLOAD_CONFIRM=false,
        UPLOAD_BOOK_CAP_USD=4, UPLOAD_TOTAL_CAP_USD=15, USAGE_LOG_FILE=false (usage goes to Cloud Logging only),
-       secrets BOSON_API_KEY, ANTHROPIC_API_KEY, TALKBACK_ACCESS_TOKEN, bucket mounted at /app/data, min 0 / max 1 instance, no CPU throttling, 1Gi, 1 CPU,
-       300 s timeout, --allow-unauthenticated (paid endpoints are gated by the TALKBACK_ACCESS_TOKEN secret)
+       secrets BOSON_API_KEY, ANTHROPIC_API_KEY, bucket mounted at /app/data, min 0 / max 1 instance, no CPU throttling, 1Gi, 1 CPU,
+       300 s timeout, --no-allow-unauthenticated --iap (Google sign-in; only emails granted roles/iap.httpsResourceAccessor get in)
 Re-run with --yes to proceed.
 EOF
   exit 1
@@ -66,13 +66,6 @@ if ! gcloud secrets describe anthropic-api-key --project "${PROJECT}" >/dev/null
   echo "Secret anthropic-api-key does not exist. Create it (with ANTHROPIC_API_KEY set in your shell, not echoed):"
   echo "  printf %s \"\$ANTHROPIC_API_KEY\" | gcloud secrets create anthropic-api-key --data-file=- --project ${PROJECT}"
 fi
-if ! gcloud secrets describe talkback-access-token --project "${PROJECT}" >/dev/null 2>&1; then
-  missing=1
-  echo "Secret talkback-access-token does not exist. The service is public, so paid endpoints need this gate."
-  echo "Generate a code and create the secret (keep the code to share with visitors):"
-  echo "  export TALKBACK_ACCESS_TOKEN=\$(openssl rand -hex 16)"
-  echo "  printf %s \"\$TALKBACK_ACCESS_TOKEN\" | gcloud secrets create talkback-access-token --data-file=- --project ${PROJECT}"
-fi
 if [[ "${missing}" -ne 0 ]]; then
   echo "Create the missing secret(s) above, then re-run with --yes." >&2
   exit 1
@@ -95,10 +88,10 @@ gcloud run deploy "${SERVICE}" \
   --image "${IMAGE}" \
   --service-account "${SA}" \
   --set-env-vars "RETRIEVAL_BACKEND=vertex,TRUST_PROXY=true,GCP_PROJECT=${PROJECT},GCP_REGION=${REGION},CORS_ORIGINS=http://localhost:5173,UPLOAD_LLM=claude,UPLOAD_ENRICH=true,UPLOAD_CONFIRM=false,UPLOAD_BOOK_CAP_USD=4,UPLOAD_TOTAL_CAP_USD=15,USAGE_LOG_FILE=false" \
-  --set-secrets "BOSON_API_KEY=boson-api-key:latest,ANTHROPIC_API_KEY=anthropic-api-key:latest,TALKBACK_ACCESS_TOKEN=talkback-access-token:latest" \
+  --set-secrets "BOSON_API_KEY=boson-api-key:latest,ANTHROPIC_API_KEY=anthropic-api-key:latest" \
   --execution-environment gen2 \
   --add-volume "name=data,type=cloud-storage,bucket=${BUCKET}" \
   --add-volume-mount "volume=data,mount-path=/app/data" \
   --min-instances 0 --max-instances 1 --no-cpu-throttling \
   --memory 1Gi --cpu 1 --timeout 300 \
-  --allow-unauthenticated
+  --no-allow-unauthenticated --iap

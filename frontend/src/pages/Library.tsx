@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   changeKind, fetchBooks, MAX_UPLOAD_BYTES, pollBookStatus, pollEnrichment, startEnrichment, uploadBook,
   type BookStatus, type BookSummary, type UploadKind,
+  enrichDoneNote,
 } from "../api";
 import { clearAccessToken, getAccessToken } from "../accessToken";
 import { canMove, groupShelves, kindLabel, moveLabel, moveTarget, seriesTitle } from "../shelves";
@@ -51,7 +52,7 @@ function AddBook({ onReady }: { onReady: () => void }) {
     const detected = first.kind_detected ? kindLabel(first.kind_detected.kind) : undefined;
     if (st.status === "error") setState({ phase: "error", message: st.message || "The book could not be processed." });
     else if (e?.status === "awaiting_confirmation") setState({ phase: "confirm", bookId, title: name, estimate: e.estimate_usd ?? 0 });
-    else if (e?.status === "done") { setState({ phase: "ready", title: name, note: "characters, voices and recap are ready", detected }); onReady(); }
+    else if (e?.status === "done") { setState({ phase: "ready", title: name, note: enrichDoneNote(e), detected }); onReady(); }
     else if (e?.status === "refused" || e?.status === "error") setState({ phase: "ready", title: name, note: e.message, detected });
     else setState({ phase: "ready", title: name, detected });
   }

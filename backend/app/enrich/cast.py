@@ -174,3 +174,30 @@ async def cast_novel(book: Book, call: Callable[..., Awaitable], tier: str = "sm
             c.persona = f"{c.name} speaks in their own way."
 
     await gather_or_cancel(persona(c) for c in book.characters)
+
+
+_SPEECH = r"(?:said|asked|replied|cried|shouted|whispered|answered|exclaimed|called|added|muttered|laughed|growled)"
+_NOT_NAMES = {"The", "And", "But", "Then", "She", "He", "They", "It", "There", "This", "That", "What", "When", "Who",
+              "Why", "How", "Where", "Her", "His", "Their", "You", "We", "Yes", "No", "Oh", "Well", "Now", "One", "Said"}
+
+
+def fallback_cast(book: Book) -> None:
+    """No working LLM: take the names that most often sit next to a speech verb ("said Alice", "Alice replied").
+
+    Deliberately simple: no gender, no real personas, voices handed out in turn. Better than an empty cast.
+    """
+    after = re.compile(rf"\b{_SPEECH}\s+(?:the\s+)?([A-Z][a-z]{{2,}})\b")
+    before = re.compile(rf"\b([A-Z][a-z]{{2,}})\s+{_SPEECH}\b")
+    counts: dict[str, int] = {}
+    for p in book.paragraphs:
+        for m in (*after.finditer(p.text), *before.finditer(p.text)):
+            if m.group(1) not in _NOT_NAMES:
+                counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+    names = [n for n, c in sorted(counts.items(), key=lambda kv: -kv[1]) if c >= 2][:MAIN_MAX]
+    result = MainCast(characters=[
+        MainCharacter(id=re.sub(r"[^a-z]", "", n.lower()), name=n, aliases=[n], first_para=0, gender="unknown",
+                      voice=VOICES[i % len(VOICES)], voice_tags="")
+        for i, n in enumerate(names)], narrator_voice="nora", narrator_is_character=None)
+    apply_cast(book, result, MAIN_MAX, mark_main=True)
+    for c in book.characters:
+        c.persona = f"{c.name} speaks in their own way."

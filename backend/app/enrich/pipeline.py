@@ -19,7 +19,7 @@ from . import cast as cast_mod
 from . import segment as seg_mod
 from . import spend
 from . import summaries as sum_mod
-from .llm import LLM, LLMRefusal, SpendLimit, effective_provider, estimate_usd, make_llm
+from .llm import LLM, LLMRefusal, SpendLimit, effective_provider, estimate_usd, make_llm, no_llm_available
 
 log = logging.getLogger("talkback.enrich")
 
@@ -34,6 +34,7 @@ MESSAGES = {
 TOO_LONG = "This book is too long to process with characters; it will be read by the narrator."
 BUDGET_USED = "Character processing is paused for now; this book will be read by the narrator."
 FAILED = "Character processing stopped early; the book is still readable with the narrator."
+FALLBACK_DONE = "Characters detected with a simple fallback (no LLM key configured). Add ANTHROPIC_API_KEY for full voices and recap."
 BOOK_CAP_MARGIN = 1.25  # a running job stops when its real spend passes the per-book cap by this factor
 ESTIMATE_MARGIN = 1.15
 
@@ -121,12 +122,24 @@ async def enrich_book(book_id: str, report: Report, *, llm: LLM | None = None, i
 
 async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Indexer | None) -> bool:
     stage = STAGES[0]
+    degraded = False
     try:
         book = Book.model_validate_json(path.read_text(encoding="utf-8"))
 
         stage = "cast"
         report(status="running", stage=stage, progress=0.0, message=MESSAGES[stage])
-        await cast_mod.cast_novel(book, llm)
+        try:
+            await cast_mod.cast_novel(book, llm)
+        except (asyncio.CancelledError, SpendLimit):
+            raise
+        except Exception as e:
+            if not no_llm_available(e):
+                raise
+            # no working LLM at all: a simple name-based cast beats none
+            log.warning("cast by LLM failed for %s (%s); using the fallback cast", book_id, type(e).__name__)
+            book.characters, book.narrator = [], None
+            cast_mod.fallback_cast(book)
+            degraded = True
         if book.narrator and book.narrator.is_character:
             rebuild_chunks(book)  # a first-person narrator reads in that character's voice
         await asyncio.to_thread(books.save_book, path, book)
@@ -138,6 +151,8 @@ async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Inde
         rebuild_chunks(book)
         await asyncio.to_thread(books.save_book, path, book)
         log.info("segmented %s: %s", book_id, counts)
+        if counts.get("fallback") and not (counts.get("llm") or counts.get("retry")):
+            degraded = True
 
         stage = "summaries"
         report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
@@ -148,7 +163,8 @@ async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Inde
         report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
         if indexer is not None:
             await indexer(book)
-        report(status="done", stage="done", progress=1.0, message="Characters, recap and search are ready.")
+        report(status="done", stage="done", progress=1.0, degraded=degraded or None,
+               message=FALLBACK_DONE if degraded else "Characters, recap and search are ready.")
         log.info("enriched %s: $%.4f in %d calls", book_id, llm.usd, llm.calls)
         return True
     except asyncio.CancelledError:

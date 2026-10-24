@@ -34,6 +34,7 @@ data/portraits/*
 !data/portraits/.gitkeep
 data/raw/*
 !data/raw/.gitkeep
+!data/raw/alice.txt
 data/samples/
 data/voices.json
 data/voice_faces.json
@@ -49,3 +50,7 @@ data/eval/
 # probe recordings
 scripts/captures/*.mp3
 scripts/captures/*.mp4
+.iap-client.json
+data/faces.json
+data/*.migrated
+data/portraits/
