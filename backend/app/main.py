@@ -64,7 +64,13 @@ async def lifespan(_: FastAPI):
     resume = asyncio.create_task(_resume_enrichments())   # no job survives a restart: pick up the interrupted ones
     reindex = asyncio.create_task(_retry_failed_indexes())   # Vertex indexes a transient error left in state "error"
     backfill = asyncio.create_task(_backfill_local_embeddings())   # local: e5 vectors for books that have none yet
+    orphans = None
+    if settings.retrieval_backend == "vertex":   # datapoints a delete could not remove: retried, paced, in the background
+        from .gcp import orphans as vertex_orphans
+        orphans = asyncio.create_task(vertex_orphans.retry_forever(lambda: _vertex_deps()[1]))
     yield
+    if orphans is not None:
+        orphans.cancel()
     task.cancel()
     resume.cancel()
     reindex.cancel()
@@ -1491,12 +1497,22 @@ async def _reindex_moved_book(book: Book, background: BackgroundTasks) -> None:
 
 async def _reindex_vertex(book: Book, chunks, stale: list[str]) -> None:
     """Drop the old text's datapoints that the new chunks do not overwrite, then index the new chunks. Never raises."""
-    if stale:
-        try:
-            await _vertex_deps()[1].delete(stale)
-        except Exception as e:   # a leftover datapoint is still bound by its own para_end (spoiler rule holds)
-            logging.getLogger(__name__).warning("vertex delete failed: %s", type(e).__name__)
+    if stale:   # a leftover datapoint is still bound by its own para_end (spoiler rule holds); retried later
+        await _vertex_delete_or_remember(stale)
     await _index_in_background(book, chunks)
+
+
+async def _vertex_delete_or_remember(ids: list[str]) -> None:
+    """Delete datapoints; whatever Vertex refuses goes to the background cleanup list (app/gcp/orphans.py). Never
+    raises. Orphans are harmless: every search filters on book_id (query filter and VertexIndex post-filter)."""
+    from .gcp import orphans
+    try:
+        refused = await _vertex_deps()[1].delete(ids) or []
+    except Exception as e:
+        logging.getLogger(__name__).warning("vertex delete failed (%s): %d id(s) kept for cleanup",
+                                            type(e).__name__, len(ids))
+        refused = list(ids)
+    await asyncio.to_thread(orphans.add, list(refused))
 
 
 @app.post("/api/books/{book_id}/kind", status_code=202, dependencies=[Depends(require_access)])
@@ -1650,18 +1666,13 @@ def _tombstone_book(book_id: str) -> list[str]:
 
 
 async def _finish_delete(book_id: str, ids: list[str]) -> None:
-    """Background: the Vertex datapoints first (on failure the folder and deleting.json stay, so a retry resumes),
-    then every file. Never raises; releases the claim taken by delete_book."""
+    """Background: the Vertex datapoints first, then every file. Vertex never blocks the delete: the ids it refuses go
+    to the background cleanup list and the files go anyway. A file that cannot be removed keeps the folder and
+    deleting.json, so a retry resumes. Never raises; releases the claim taken by delete_book."""
     log = logging.getLogger(__name__)
     try:
         if ids:
-            try:
-                await _vertex_deps()[1].delete(ids)
-            except Exception as e:
-                log.warning("vertex delete failed: %s", type(e).__name__)
-                _delete_status[book_id] = {"status": "delete_error",
-                                           "message": "Could not remove the book from search; try deleting again."}
-                return
+            await _vertex_delete_or_remember(ids)
         left = await asyncio.to_thread(ingest_upload.delete_book_files, book_id)
         _forget_book(book_id)
         if left:

@@ -14,13 +14,23 @@ log = logging.getLogger(__name__)
 BASE_URL = "https://vectorsearch.googleapis.com/v1"
 BATCH_SIZE = 1000
 MAX_RETRIES = 3
-DELETE_CONCURRENCY = 32  # parallel per-object DELETEs: a 3000-chunk book takes seconds, not minutes
+DELETE_BATCH = 1000       # dataObjects:batchDelete takes at most 1000 DataObjects (Vector Search 2.0 REST reference)
+DELETE_CONCURRENCY = 4    # per-object fallback: few in flight (32 drew 429s on 3000-chunk books live)
+DELETE_GAP_S = 0.05       # pause after each per-object DELETE, so a 3000-chunk fallback stays well under the quota
+DELETE_429_PAUSE_S = 2.0  # deletes add (attempt + 1) x this to the usual backoff after a 429
 
 
 class VectorStoreError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(f"{status}: {message}")
         self.status, self.message = status, message
+
+
+def _count(statuses: dict) -> dict:
+    out: dict = {}
+    for v in statuses.values():
+        out[str(v)] = out.get(str(v), 0) + 1
+    return out
 
 
 def spoiler_filter(book_id: str, reader_para: int | None, earlier: list[str] | None = None) -> dict:
@@ -64,9 +74,10 @@ class VectorStore:
         self._owned: tuple[asyncio.AbstractEventLoop, httpx.AsyncClient] | None = None
         self._sleep = sleep
 
-    async def _send(self, method: str, url: str, json: Any = None) -> httpx.Response:
+    async def _send(self, method: str, url: str, json: Any = None, pause_429: float = 0.0) -> httpx.Response:
         """Send with retries (backoff + jitter) on 429/5xx and on network errors (httpx ReadError, ConnectError,
-        timeouts...); returns the final response without raising on HTTP status. The last network error is raised."""
+        timeouts...); returns the final response without raising on HTTP status. The last network error is raised.
+        `pause_429`: extra (attempt + 1) x seconds of wait after a 429 (deletes back off longer)."""
         for attempt in range(MAX_RETRIES + 1):
             headers = {"Authorization": f"Bearer {self._token_fn()}",
                        "x-goog-user-project": settings.gcp_project}
@@ -79,7 +90,8 @@ class VectorStore:
                 await self._sleep(retrying.backoff(attempt))
                 continue
             if (resp.status_code == 429 or resp.status_code >= 500) and attempt < MAX_RETRIES:
-                await self._sleep(retrying.backoff(attempt))
+                extra = pause_429 * (attempt + 1) if resp.status_code == 429 else 0.0
+                await self._sleep(retrying.backoff(attempt) + extra)
                 continue
             return resp
         raise AssertionError("unreachable")
@@ -120,28 +132,55 @@ class VectorStore:
             if not resp.is_success:
                 raise self._error(resp)
 
-    async def delete(self, ids: list[str]) -> None:
-        """Delete data objects by id (a missing one is fine), at most DELETE_CONCURRENCY requests in flight.
+    async def delete(self, ids: list[str]) -> list[str]:
+        """Delete data objects by id; returns the ids Vertex refused (empty when all went). Never raises for an HTTP
+        status or a network error: callers keep the refused ids for a later retry (app/gcp/orphans.py).
 
-        One DELETE per object: Vector Search 2.0's batchDelete is not used here because this client has never been
-        verified against it live. The first failure cancels the rest and is raised.
+        Batches of DELETE_BATCH go through dataObjects:batchDelete (POST, {"requests": [{"name": ...}]}, per the
+        Vector Search 2.0 REST reference). The docs do not say how a batch with a missing object behaves, so a batch
+        that is not a plain success falls back to paced per-object DELETEs (404 = already gone = success), at most
+        DELETE_CONCURRENCY in flight; one refusal never cancels the others. Logs name counts and HTTP status only.
         """
+        refused: list[str] = []
+        statuses: dict[str, int] = {}
+        for i in range(0, len(ids), DELETE_BATCH):
+            batch = ids[i:i + DELETE_BATCH]
+            if await self._batch_delete(batch):
+                continue
+            await self._delete_each(batch, refused, statuses)
+        if refused:
+            counts = _count(statuses)
+            why = ", ".join(f"status {k}" if len(counts) == 1 else f"{n} with status {k}" for k, n in sorted(counts.items()))
+            log.warning("vertex delete: %d of %s refused (%s)", len(refused), f"{len(ids):,}", why)
+        return refused
+
+    async def _batch_delete(self, batch: list[str]) -> bool:
+        body = {"requests": [{"name": f"{self.collection_path}/dataObjects/{i}"} for i in batch]}
+        try:
+            resp = await self._send("POST", f"{self._base}/dataObjects:batchDelete", body, pause_429=DELETE_429_PAUSE_S)
+        except httpx.TransportError:
+            return False
+        if not resp.is_success:
+            log.info("vertex batchDelete of %d not accepted (status %s); deleting one by one", len(batch),
+                     resp.status_code)
+        return resp.is_success
+
+    async def _delete_each(self, batch: list[str], refused: list[str], statuses: dict[str, int]) -> None:
         slots = asyncio.Semaphore(DELETE_CONCURRENCY)
 
         async def one(id_: str) -> None:
             async with slots:
-                resp = await self._send("DELETE", f"{self._base}/dataObjects/{id_}")
-            if not resp.is_success and resp.status_code != 404:
-                raise self._error(resp)
+                try:
+                    resp = await self._send("DELETE", f"{self._base}/dataObjects/{id_}", pause_429=DELETE_429_PAUSE_S)
+                    status = resp.status_code if not resp.is_success and resp.status_code != 404 else None
+                except httpx.TransportError as e:
+                    status = type(e).__name__
+                await self._sleep(DELETE_GAP_S)   # pacing: hold the slot a moment after each request
+            if status is not None:
+                refused.append(id_)
+                statuses[id_] = status
 
-        tasks = [asyncio.ensure_future(one(i)) for i in ids]
-        try:
-            await asyncio.gather(*tasks)
-        except BaseException:
-            for t in tasks:
-                t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            raise
+        await asyncio.gather(*(one(i) for i in batch))
 
     @staticmethod
     def _parse(payload: dict) -> list[dict]:

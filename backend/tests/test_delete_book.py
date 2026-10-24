@@ -15,13 +15,15 @@ from tests.test_upload import client, post  # noqa: F401  (client is a fixture)
 
 
 class FakeStore:
-    def __init__(self, fail=False):
-        self.deleted, self.fail = [], fail
+    """delete() returns the ids Vertex refused (VectorStore.delete never raises for HTTP errors)."""
+    def __init__(self, fail=False, refuse=()):
+        self.deleted, self.fail, self.refuse = [], fail, set(refuse)
 
     async def delete(self, ids):
         if self.fail:
             raise RuntimeError("boom")
         self.deleted.append(list(ids))
+        return [i for i in ids if i in self.refuse]
 
 
 def upload(client, title="Gone Soon"):
@@ -95,24 +97,90 @@ def test_vertex_datapoints_deleted_by_id(client, tmp_path, monkeypatch):
     assert not (tmp_path / "books" / bid).exists()
 
 
-def test_vertex_failure_is_reported_and_a_retry_resumes(client, tmp_path, monkeypatch):
+def _orphans(tmp_path):
+    from app.gcp import orphans
+    return orphans.load()
+
+
+def test_vertex_partial_failure_still_deletes_the_book_and_records_orphans(client, tmp_path, monkeypatch):
+    """A delete never gets stuck on Vertex: the refused ids go to the cleanup list, the files and the book go."""
+    bid = upload(client)
+    monkeypatch.setattr(settings, "retrieval_backend", "vertex")
+    from app.gcp.indexing import datapoint_ids
+    expected = datapoint_ids(main.books.load_book(bid))
+    store = FakeStore(refuse=expected[:1])
+    monkeypatch.setattr(main, "_vertex_deps", lambda: (object(), store))
+    assert client.delete(f"/api/books/{bid}").status_code == 202
+    assert store.deleted == [expected]
+    assert not (tmp_path / "books" / bid).exists()
+    assert client.get(f"/api/books/{bid}/status").status_code == 404
+    assert bid not in {b["id"] for b in client.get("/api/books").json()}
+    assert _orphans(tmp_path) == expected[:1]
+    assert main._kind_claims == set() and bid not in main._deleting
+
+
+def test_vertex_exception_still_deletes_the_book_and_records_every_id(client, tmp_path, monkeypatch):
     bid = upload(client)
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
     from app.gcp.indexing import datapoint_ids
     expected = datapoint_ids(main.books.load_book(bid))
     monkeypatch.setattr(main, "_vertex_deps", lambda: (object(), FakeStore(fail=True)))
     assert client.delete(f"/api/books/{bid}").status_code == 202
-    assert bid not in {b["id"] for b in client.get("/api/books").json()}   # gone from the library anyway
-    st = client.get(f"/api/books/{bid}/status").json()
-    assert st["status"] == "delete_error" and "search" in st["message"]
-    assert (tmp_path / "books" / bid / "deleting.json").exists()   # the datapoint ids are kept for the retry
-    assert main._kind_claims == set()   # the claim is released so a retry works
-    store = FakeStore()
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (object(), store))
-    assert client.delete(f"/api/books/{bid}").status_code == 202
-    assert store.deleted == [expected]   # the same ids, though book.json is gone
     assert not (tmp_path / "books" / bid).exists()
     assert client.get(f"/api/books/{bid}/status").status_code == 404
+    assert _orphans(tmp_path) == expected
+
+
+def test_orphan_retry_clears_what_vertex_accepts(tmp_path, monkeypatch):
+    from app.gcp import orphans
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    orphans.add(["x__1", "x__2", "x__3"])
+    orphans.add(["x__2"])   # no duplicates
+    assert orphans.load() == ["x__1", "x__2", "x__3"]
+    store = FakeStore(refuse=["x__2"])
+    asyncio.run(orphans.retry(store))
+    assert store.deleted == [["x__1", "x__2", "x__3"]]
+    assert orphans.load() == ["x__2"]
+    asyncio.run(orphans.retry(FakeStore(fail=True)))   # never raises; the ids stay
+    assert orphans.load() == ["x__2"]
+    asyncio.run(orphans.retry(FakeStore()))
+    assert orphans.load() == [] and not (tmp_path / "cache" / "vertex_orphans.json.tmp").exists()
+
+
+def test_orphan_list_is_bounded(tmp_path, monkeypatch):
+    from app.gcp import orphans
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(orphans, "MAX_IDS", 5)
+    orphans.add([f"a__{i}" for i in range(4)])
+    orphans.add([f"b__{i}" for i in range(4)])
+    assert orphans.load() == ["a__3", "b__0", "b__1", "b__2", "b__3"]   # the newest are kept
+
+
+def test_orphan_retry_paces_itself_and_takes_a_bounded_batch(tmp_path, monkeypatch):
+    from app.gcp import orphans
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    orphans.add([f"a__{i}" for i in range(7)])
+    store = FakeStore()
+    asyncio.run(orphans.retry(store, limit=3))
+    assert store.deleted == [["a__0", "a__1", "a__2"]]
+    assert orphans.load() == [f"a__{i}" for i in range(3, 7)]
+
+
+def test_orphan_loop_runs_on_start_then_every_interval(tmp_path, monkeypatch):
+    from app.gcp import orphans
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    orphans.add(["a__1"])
+    store, waits = FakeStore(), []
+
+    async def fake_sleep(s):
+        waits.append(s)
+        if len(waits) == 3:
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(orphans.retry_forever(lambda: store, sleep=fake_sleep))
+    assert waits == [orphans.START_DELAY_S, orphans.INTERVAL_S, orphans.INTERVAL_S]
+    assert store.deleted == [["a__1"]]   # one call: the list is empty afterwards, so no further Vertex calls
 
 
 def test_partial_disk_failure_still_hides_the_book(client, tmp_path, monkeypatch):
