@@ -3,6 +3,7 @@ import type { Book, Face as FaceT } from "../api";
 import type { TalkUi } from "../talk/useTalk";
 import { PRESETS, type TalkChoice } from "./castLogic";
 import { FaceView } from "./FaceView";
+import { priorTurns } from "../talk/chatLog";
 import { chapterAt, showSpoilerToggle, speakerChoices, speakerName, talkbackStatus, type TalkbackStatus } from "./talkbackLogic";
 
 type Props = {
@@ -72,6 +73,7 @@ export default function TalkbackView({
 
   const press = () => { if (!held.current) { held.current = true; talk.pttDown(); } };
   const release = () => { if (held.current) { held.current = false; talk.pttUp(); } };
+  const remembered = priorTurns(talk.messages, speakerId, 99).length;
   const busy = status === "thinking" || status === "speaking";
 
   const send = () => {
@@ -160,7 +162,13 @@ export default function TalkbackView({
             ))}
           </div>
           <div className="tb-actions">
-            <button className="link-btn" disabled={talk.messages.length === 0} onClick={talk.clearMessages}>Clear</button>
+            {remembered > 0 && (
+              <span className="remembers" title="This chat is kept for this browser tab and given back to the character, so follow-up questions work">
+                {name} remembers this chat ({remembered} {remembered === 1 ? "line" : "lines"})
+              </span>
+            )}
+            <button className="link-btn" disabled={talk.messages.length === 0} onClick={talk.clearMessages}
+                    title="Delete this chat; the character forgets it too">Clear chat</button>
           </div>
           {talk.toast && (
             <div className="toast" role="alert">

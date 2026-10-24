@@ -151,3 +151,21 @@ def test_speak_is_rate_limited_on_misses(env, monkeypatch):
     monkeypatch.setattr(main, "tts_bucket", TokenBucket(1, 60))
     assert client.post("/api/speak", json={"text": "One.", "voice": "marcus"}).status_code == 200
     assert client.post("/api/speak", json={"text": "Two.", "voice": "marcus"}).status_code == 429
+
+
+def test_build_answer_prompt_with_history_keeps_system_prompt_and_adds_turns():
+    hist = [{"role": "user", "text": "Who are you?"}, {"role": "character", "text": "I am Harry."}]
+    system, user = build_answer_prompt(book_with_chunk(), "harry", "", [], "And your age?", history=hist)
+    plain, _ = build_answer_prompt(book_with_chunk(), "harry", "", [], "And your age?")
+    assert system == plain  # story facts still come only from the reader-position prompt
+    assert "Reader: Who are you?" in user and "You: I am Harry." in user and user.endswith("And your age?")
+
+
+def test_answer_endpoint_passes_history_to_the_model(env, monkeypatch):
+    client, _ = env
+    fake = FakeAnswerer(["One."])
+    monkeypatch.setattr(main, "get_answerer", lambda: fake)
+    r = post(client, history=[{"role": "user", "text": "Earlier question"}])
+    assert r.status_code == 200
+    assert "Reader: Earlier question" in fake.prompts[0][1]
+    assert post(client, history=[{"role": "user", "text": "x"}] * 9).status_code == 422

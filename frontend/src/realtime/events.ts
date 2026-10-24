@@ -146,6 +146,17 @@ export function userTextItem(text: string): ClientEvent {
   };
 }
 
+/** An earlier turn of the chat put back into a fresh session (text only, never audio). `eventId` lets us recognise an error about it. */
+export function historyItem(role: "user" | "character", text: string, eventId: string): ClientEvent {
+  return {
+    type: "conversation.item.create",
+    event_id: eventId,
+    item: role === "user"
+      ? { type: "message", role: "user", content: [{ type: "input_text", text }] }
+      : { type: "message", role: "assistant", content: [{ type: "output_text", text }] },
+  } as ClientEvent;
+}
+
 /**
  * Ask the model to produce a turn. Adding an item to the conversation does not
  * start a response — this is what does. (In Part 2, when the server is

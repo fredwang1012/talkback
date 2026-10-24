@@ -30,6 +30,16 @@ describe("streamAnswer", () => {
     expect(JSON.parse(init.body as string)).toEqual({ book_id: "b", query: "q", reader_para: 3, speaker_id: "narrator" });
   });
 
+  it("sends the earlier turns as history, and omits the field when there are none", async () => {
+    const fetchMock = vi.fn(async () => ndjsonResponse(['{"type":"done"}\n']));
+    vi.stubGlobal("fetch", fetchMock);
+    await streamAnswer("b", "q", 3, "harry", () => {}, undefined, false, [{ role: "user", text: "Hi" }]);
+    await streamAnswer("b", "q", 3, "harry", () => {});
+    const body = (i: number) => JSON.parse(((fetchMock.mock.calls[i] as unknown as [string, RequestInit])[1]).body as string);
+    expect(body(0).history).toEqual([{ role: "user", text: "Hi" }]);
+    expect("history" in body(1)).toBe(false);
+  });
+
   it("delivers earlier sentences, then throws on an error line", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ndjsonResponse(['{"type":"sentence","text":"A."}\n{"type":"error","message":"boom"}\n'])));
     const got: string[] = [];

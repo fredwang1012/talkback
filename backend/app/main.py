@@ -28,7 +28,7 @@ from .enrich.detect import detect_kind
 from .gcp import usage
 from .personas import build_answer_prompt, build_instructions
 from .ratelimit import TokenBucket, client_ip
-from .schema import Book
+from .schema import Book, ChatTurn
 from .uploadlimit import UploadSizeLimit
 
 def _warm_up() -> None:
@@ -297,6 +297,7 @@ class RetrieveRequest(BaseModel):
     speaker_id: str = "narrator"
     k: int = Field(default=DEFAULT_K, ge=1, le=12)
     spoilers: bool = False  # full-book mode (novels): reader allows spoilers; default stays spoiler-safe
+    history: list[ChatTurn] = Field(default_factory=list, max_length=8)  # earlier turns with this speaker (answer only)
 
 
 @lru_cache(maxsize=1)
@@ -418,7 +419,7 @@ async def answer(req: RetrieveRequest, request: Request):
         return StreamingResponse(_public_answer_stream(book, speaker, req, out, retrieve_ms, t_retrieved),
                                  media_type="application/x-ndjson")
     system, user = build_answer_prompt(book, req.speaker_id, out["story_so_far"], out["passages"], req.query,
-                                        spoilers=req.spoilers)
+                                        spoilers=req.spoilers, history=req.history)
 
     async def stream():
         first_ms = None
@@ -439,7 +440,7 @@ async def answer(req: RetrieveRequest, request: Request):
 
 async def _public_answer_stream(book: Book, speaker, req: RetrieveRequest, out: dict, retrieve_ms: int, t_retrieved: float):
     first_ms = None
-    payload = public_client.answer_payload(book, speaker, req.speaker_id, out, req.query, req.spoilers)
+    payload = public_client.answer_payload(book, speaker, req.speaker_id, out, req.query, req.spoilers, req.history)
     try:
         async for msg in public_client.stream_answer(payload):
             if first_ms is None:

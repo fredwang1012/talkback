@@ -107,9 +107,31 @@ def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages:
 ANSWER_SUFFIX = "\n\nYour reply is spoken aloud word for word, so write only the words to be spoken."
 
 
+MAX_HISTORY_TURNS = 8
+
+
+def format_history(history: list | None) -> str:
+    """Earlier turns of this chat as plain lines (the reader's questions and this character's replies)."""
+    lines = []
+    for t in (history or [])[-MAX_HISTORY_TURNS:]:
+        role = t["role"] if isinstance(t, dict) else t.role
+        text = (t["text"] if isinstance(t, dict) else t.text).strip()
+        if text:
+            lines.append(f"{'Reader' if role == 'user' else 'You'}: {text}")
+    return "\n".join(lines)
+
+
 def build_answer_prompt(book: Book, speaker_id: str, story_so_far: str, passages: list[dict], query: str,
-                        *, spoilers: bool = False) -> tuple[str, str]:
-    """(system, user) for the answer model: the Talk prompt for `speaker_id` plus a spoken-output rule; user is the question."""
+                        *, spoilers: bool = False, history: list | None = None) -> tuple[str, str]:
+    """(system, user) for the answer model: the Talk prompt for `speaker_id` plus a spoken-output rule; user is the question.
+
+    `history` is the earlier chat with this speaker. It only gives the conversation continuity: the system prompt (built from
+    the reader's place) is still the only source of story facts, so the spoiler rule is unchanged."""
     system = build_instructions(book, speaker_id, story_so_far, passages, MAX_ANSWER_PROMPT_CHARS - len(ANSWER_SUFFIX),
                                 spoilers=spoilers)
+    earlier = format_history(history)
+    if earlier:
+        return system + ANSWER_SUFFIX, (
+            "The conversation so far (it may help you follow the question; it is not a source of story facts):\n"
+            f"{earlier}\n\nThe reader now says: {query}")
     return system + ANSWER_SUFFIX, query

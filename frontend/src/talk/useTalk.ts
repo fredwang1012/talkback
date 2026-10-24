@@ -4,7 +4,7 @@ import { MicCapture } from "../audio/capture";
 import { RingPlayer } from "../audio/playback";
 import { spend } from "../spend";
 import type { LogEntry } from "../ui/DebugDrawer";
-import { addQuestion, appendSentence, finishAnswer, loadChat, saveChat, setPendingText, type ChatMessage } from "./chatLog";
+import { addQuestion, appendSentence, finishAnswer, loadChat, priorTurns, saveChat, setPendingText, type ChatMessage } from "./chatLog";
 import { detectLanguage, type Detected } from "./language";
 import { FaceSync } from "./faceSync";
 import { createPlayingGate, type TimingEvent } from "./speechGate";
@@ -102,6 +102,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   const replayIdRef = useRef(0);
   const replayer = useRef<ReturnType<typeof createReplayPlayer> | null>(null);
   const pendingId = () => msgs.current.findLast((x) => x.pending)?.id;
+  const clientRef = useRef<TalkClient | null>(null);
   const viaGemini = answersViaGemini(health);
   const latest = useRef({ reader, voiceFor, speakerId, canLipSync, wantLipSync, spoilers });
   latest.current = { reader, voiceFor, speakerId, canLipSync, wantLipSync, spoilers };
@@ -114,6 +115,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       createMic: (onChunk, onLevel) => new MicCapture(onChunk, onLevel) as unknown as MicLike,
       onLevel: setLevel,
       onAudioChunk: (b64, first) => { if (first) rtMsgId = pendingId(); if (rtMsgId !== undefined) replayStore.current.addPcm(rtMsgId, b64); },
+      historyProvider: () => priorTurns(msgs.current, latest.current.speakerId),
       onLog: (dir, type, raw) => {
         const r = raw as { audio?: string; delta?: string };
         if (dir === "send" && type === "input_audio_buffer.append" && r.audio) spend.addAudioIn(r.audio.length);
@@ -146,7 +148,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         answer: (query, para, speaker, onSentence, signal) => {
           answerVoice = latest.current.voiceFor(speaker);
           answerMsgId = pendingId();
-          return streamAnswer(bookId, query, para, speaker, (t) => { setMessages((m) => appendSentence(m, t)); onSentence(t); }, signal, latest.current.spoilers);
+          return streamAnswer(bookId, query, para, speaker, (t) => { setMessages((m) => appendSentence(m, t)); onSentence(t); }, signal, latest.current.spoilers, priorTurns(msgs.current, speaker));
         },
         speaker: createSentenceSpeaker(async (text) => {
           const voice = answerVoice;
@@ -177,6 +179,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       onLatency: (l) => { setLatency(l); console.info("[talk] latency", l); },
     });
     controller.current = talk;
+    clientRef.current = client;
     const sync = faceSync.current;
     const replaySpeaker = createSentenceSpeaker(async (text) => {
       const part = (replayStore.current.get(replayIdRef.current) as Extract<ReplayItem, { kind: "sentences" }> | undefined)?.parts.find((p) => p.text === text);
@@ -188,7 +191,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       return runSentences(item.parts, replaySpeaker);
     }, setReplayingId, (e) => setToast(e instanceof Error ? e.message : String(e)));
     return () => {
-      replayer.current?.stop(); replayer.current = null; gate.reset(); sync?.leave(); talk?.dispose(); client.close(); controller.current = null; setState("reading"); setSpeaking(false); };
+      replayer.current?.stop(); replayer.current = null; gate.reset(); sync?.leave(); talk?.dispose(); client.close(); controller.current = null; clientRef.current = null; setState("reading"); setSpeaking(false); };
   }, [bookId, enabled, viaGemini]);
 
   useEffect(() => { controller.current?.setAutoResume(autoResume); }, [autoResume, enabled]);
@@ -209,7 +212,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       via.current = "voice"; // an ignored (empty) ask must not label the next spoken question as typed
     }, []),
     stop: useCallback(() => { void controller.current?.stop(); }, []),
-    clearMessages: useCallback(() => { void controller.current?.stop(); replayer.current?.stop(); replayStore.current.clear(); setMessages(() => []); }, [setMessages]),
+    clearMessages: useCallback(() => { void controller.current?.stop(); replayer.current?.stop(); replayStore.current.clear(); clientRef.current?.resetConversation(); setMessages(() => []); }, [setMessages]),
     replayable, replayingId,
     replay: useCallback((id: number) => {
       const item = replayStore.current.get(id);

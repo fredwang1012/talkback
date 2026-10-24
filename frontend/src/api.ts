@@ -155,11 +155,12 @@ export async function fetchRetrieve(bookId: string, query: string, readerPara: n
 export async function streamAnswer(
   bookId: string, query: string, readerPara: number, speakerId: string,
   onSentence: (text: string) => void, signal?: AbortSignal, spoilers = false,
+  history: { role: "user" | "character"; text: string }[] = [],
 ): Promise<void> {
   const res = await timedFetch("/api/answer", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId, ...(spoilers ? { spoilers: true } : {}) }),
+    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId, ...(spoilers ? { spoilers: true } : {}), ...(history.length ? { history } : {}) }),
     signal,
   }, 20000);
   if (!res.ok) {

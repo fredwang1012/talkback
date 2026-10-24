@@ -1,7 +1,7 @@
 """Pydantic schema for data/books/<book_id>/book.json (brief section 4)."""
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 Emotion = Literal[
     "elation", "amusement", "enthusiasm", "determination", "pride", "contentment",
@@ -9,6 +9,12 @@ Emotion = Literal[
     "anger", "fear", "disgust", "bitterness", "sadness", "shame", "helplessness",
 ]
 EMOTIONS: tuple[str, ...] = Emotion.__args__  # type: ignore[attr-defined]
+
+
+class ChatTurn(BaseModel):
+    """One earlier turn of the Talkback chat, sent back so the character remembers it (history, never new facts)."""
+    role: Literal["user", "character"]
+    text: str = Field(max_length=600)
 
 
 class Section(BaseModel):

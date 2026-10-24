@@ -89,7 +89,7 @@ describe("TalkbackView", () => {
     act(() => { host.querySelector<HTMLFormElement>(".tb-text")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     expect(talk.ask).toHaveBeenCalledWith("Who is Hagrid?");
     expect(host.querySelector<HTMLInputElement>("#tb-q")!.value).toBe("");
-    act(() => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Clear")!.click(); });
+    act(() => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Clear chat")!.click(); });
     expect(talk.clearMessages).toHaveBeenCalled();
   });
 

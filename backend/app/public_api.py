@@ -33,7 +33,7 @@ from .enrich import pipeline, spend
 from .enrich.llm import SpendLimit, make_llm, price_usd
 from .personas import build_answer_prompt
 from .ratelimit import TokenBucket, client_key, normalize_ip
-from .schema import Book, Character, Paragraph, Section
+from .schema import Book, ChatTurn, Character, Paragraph, Section
 from .uploadlimit import _reply
 
 log = logging.getLogger("talkback.public")
@@ -123,6 +123,7 @@ class AnswerRequest(BaseModel):
     passages: list[Passage] = Field(default_factory=list, max_length=12)
     query: str = Field(min_length=1, max_length=500)
     spoilers: bool = False
+    history: list[ChatTurn] = Field(default_factory=list, max_length=8)
 
     @field_validator("passages")
     @classmethod
@@ -140,7 +141,7 @@ class AnswerRequest(BaseModel):
         book = Book(id="public", title=self.title, author="", kind=self.kind, license="n/a", sections=[],
                     paragraphs=[], characters=chars)
         return build_answer_prompt(book, self.speaker_id, self.story_so_far, [p.model_dump() for p in self.passages],
-                                   self.query, spoilers=self.spoilers)
+                                   self.query, spoilers=self.spoilers, history=self.history)
 
 
 # ---------- state ----------

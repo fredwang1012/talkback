@@ -347,3 +347,34 @@ describe("TalkClient reply audio capture", () => {
     expect(got).toEqual([["AAA", true], ["BBB", false]]);
   });
 });
+
+describe("TalkClient history on a fresh session", () => {
+  it("puts the last turns back as text items after the session config, never audio, and tolerates their errors", async () => {
+    const turns = [{ role: "user" as const, text: "Who is Hagrid?" }, { role: "character" as const, text: "A big fellow." }];
+    const h = setup({ historyProvider: () => turns });
+    const p = h.client.ensureOpen("marcus");
+    await flush();
+    h.sockets[0].open();
+    await p;
+    const sent = h.sockets[0].sent;
+    expect(sent.map((e) => e.type)).toEqual(["session.update", "conversation.item.create", "conversation.item.create"]);
+    expect(sent[1].item).toEqual({ type: "message", role: "user", content: [{ type: "input_text", text: "Who is Hagrid?" }] });
+    expect(sent[2].item.role).toBe("assistant");
+    expect(JSON.stringify(sent)).not.toContain("input_audio");
+    h.sockets[0].recv({ type: "error", error: { type: "invalid_request_error", message: "bad item", event_id: "seed-1" } });
+    expect(h.events.filter((e) => e.type === "error")).toHaveLength(0);
+  });
+
+  it("seeds again after a reconnect and an emptied chat seeds nothing; resetConversation drops the socket", async () => {
+    let turns = [{ role: "user" as const, text: "Hi" }];
+    const h = setup({ historyProvider: () => turns });
+    let p = h.client.ensureOpen("marcus");
+    await flush(); h.sockets[0].open(); await p;
+    h.client.resetConversation();
+    turns = [];
+    p = h.client.ensureOpen("marcus");
+    await flush(); h.sockets[1].open(); await p;
+    expect(h.sockets[1].types()).toEqual(["session.update"]);
+    expect(h.tokens()).toBe(2);
+  });
+});

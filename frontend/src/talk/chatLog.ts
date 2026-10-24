@@ -45,6 +45,24 @@ export function finishAnswer(m: ChatMessage[]): ChatMessage[] {
   return m.filter((x) => !(x.pending && !x.text)).map((x) => (x.pending ? { ...x, pending: false } : x));
 }
 
+export type Turn = { role: "user" | "character"; text: string };
+export const HISTORY_TURNS = 6;
+const HISTORY_CHARS = 500;
+
+/**
+ * The finished turns of the chat with `speakerId` (their questions and replies), oldest first, for a character that
+ * must remember them. Text only, capped in count and length. A pending answer and the question it belongs to are left out:
+ * that is the turn being asked right now.
+ */
+export function priorTurns(m: ChatMessage[], speakerId: string, n = HISTORY_TURNS): Turn[] {
+  let end = m.length;
+  if (end && m[end - 1].pending) end = end >= 2 && m[end - 2].role === "user" ? end - 2 : end - 1;
+  return m.slice(0, end)
+    .filter((x) => x.speakerId === speakerId && !x.pending && x.text.trim())
+    .slice(-n)
+    .map((x) => ({ role: x.role, text: x.text.trim().slice(0, HISTORY_CHARS) }));
+}
+
 // ---- per-book store (memory, mirrored to sessionStorage) ----
 
 const mem = new Map<string, ChatMessage[]>();
