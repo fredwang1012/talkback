@@ -533,3 +533,8 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
 .read-face .rf-talk.on { opacity: 1; }
 @media (max-width: 600px) { .medallion.big { width: 128px; height: 128px; font-size: 3rem; } }
 @media (max-width: 960px) and (min-width: 601px) { .speaker.big { flex-direction: row; text-align: left; } .medallion.big { width: 140px; height: 140px; } }
+
+/* The face circle grows when a real face is set and shrinks back to the monogram when it is removed. */
+.medallion { transition: width 280ms ease, height 280ms ease, font-size 280ms ease; }
+.speaker { transition: gap 280ms ease; }
+@media (prefers-reduced-motion: reduce) { .medallion, .speaker { transition: none; } }
