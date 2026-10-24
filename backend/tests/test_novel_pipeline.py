@@ -649,7 +649,8 @@ def test_confirm_mode_refused_when_caps_hit(client, monkeypatch):
     st = client.get(f"/api/books/{book_id}/status").json()
     assert st["enrich"] == {"status": "refused", "message": pipeline.TOO_LONG}
     assert client.get(f"/api/books/{book_id}").status_code == 200 and not client.fake.calls
-    assert client.post(f"/api/books/{book_id}/enrich").status_code == 409
+    r = client.post(f"/api/books/{book_id}/enrich")   # retry allowed, but the caps are checked again: still refused
+    assert r.status_code == 202 and r.json()["enrich"]["status"] == "refused" and not client.fake.calls
 
 
 def test_demo_mode_refusal_is_silent_but_plain(client, monkeypatch):

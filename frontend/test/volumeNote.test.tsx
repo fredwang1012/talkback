@@ -11,7 +11,7 @@ describe("noteFromEnrich", () => {
     expect(noteFromEnrich("b1", { status: "error" })?.text).toBe("Character processing did not run.");
   });
   it("keeps refusals and confirmations as before, and shows nothing otherwise", () => {
-    expect(noteFromEnrich("b1", { status: "refused", message: "Too long" })).toEqual({ id: "b1", text: "Too long" });
+    expect(noteFromEnrich("b1", { status: "refused", message: "Too long" })).toEqual({ id: "b1", text: "Too long", retry: true });
     expect(noteFromEnrich("b1", { status: "awaiting_confirmation", estimate_usd: 0.5 })?.confirm).toBe(0.5);
     expect(noteFromEnrich("b1", { status: "done" })).toBeNull();
     expect(noteFromEnrich("b1", undefined)).toBeNull();
