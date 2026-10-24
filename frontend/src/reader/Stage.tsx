@@ -3,7 +3,7 @@ import type { Book, Face as FaceT, Health } from "../api";
 import type { TalkUi } from "../talk/useTalk";
 import type { TalkState } from "../talk/TalkController";
 import { splitCharacters } from "./position";
-import { FaceView } from "./FaceView";
+import { FaceView, ReadFace } from "./FaceView";
 
 type Props = {
   book: Book;
@@ -23,6 +23,9 @@ type Props = {
   faceFor: (speakerId: string) => FaceT | undefined; // the face shown in Talk mode
   readingFace: FaceT | null; // face of whoever is reading aloud right now in read mode
   spoilers: boolean; // full-book mode (novels): answers may use the whole book
+  readSpeaking: boolean; // read mode: the audio is audibly speaking right now (not in a pause)
+  levelRef: { current: number }; // read mode: live loudness of the audio, for the still-image pulse
+  reserveFace: boolean; // the book has a face assigned somewhere: keep the big circle so the layout never jumps
 };
 
 const STATUS: Record<TalkState, string> = {
@@ -71,7 +74,7 @@ function Waveform() {
   );
 }
 
-export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, spoilers }: Props) {
+export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, spoilers, readSpeaking, levelRef, reserveFace }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
   const [remember, setRemember] = useState(true);
   const tutor = book.kind === "textbook";
@@ -87,6 +90,7 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
   // In read mode the reading cast's face is shown while it reads; otherwise the Talk avatar choice decides.
   const face = readingFace ?? faceFor(speakerId);
   const faceSpeaking = readingFace ? true : talk.speaking;
+  const big = !!face || !!avatarSrc || reserveFace; // a real face gets a big circle; no face keeps the small monogram
   const thinking = ["transcribing", "retrieving", "answering"].includes(talk.state) && !talk.speaking;
   const talkTo = (id: string) => { onSpeaker(id); onMode("talk"); };
   const pressed = useRef(false); // survives re-renders between press and release
@@ -96,9 +100,10 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
 
   return (
     <aside className="stage" aria-label="Stage">
-      <div className="speaker">
-        <div className={`medallion${live ? " live" : ""}${thinking ? " thinking" : ""}${talk.speaking ? " speaking" : ""}`} aria-hidden="true">
+      <div className={`speaker${big ? " big" : ""}`}>
+        <div className={`medallion${big ? " big" : ""}${live ? " live" : ""}${thinking ? " thinking" : ""}${talk.speaking ? " speaking" : ""}`} aria-hidden="true">
           {avatarSrc ? <AvatarVideo src={avatarSrc} playing={avatarPlaying} />
+            : face && readingFace ? <ReadFace face={face} speaking={readSpeaking} levelRef={levelRef} />
             : face ? <FaceView face={face} speaking={faceSpeaking} clip={readingFace ? null : talk.clip} />
             : portrait ? <img src={portrait} alt="" /> : <span>{name.charAt(0)}</span>}
         </div>

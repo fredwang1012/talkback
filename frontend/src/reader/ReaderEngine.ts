@@ -215,6 +215,11 @@ export class ReaderEngine {
     if (this.state === "playing") this.prefetchFrom(this.index);
   }
 
+  /** The audio element of the chunk that is current (playing or paused), for level metering. */
+  currentAudio(): AudioLike | null {
+    return this.current?.audio ?? null;
+  }
+
   /** The word being spoken now, as offsets into the chunk's text; null when timestamps are unavailable. */
   activeWord(): { charStart: number; charEnd: number } | null {
     const cur = this.current;
