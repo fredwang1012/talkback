@@ -36,7 +36,8 @@ This script deploys the public processing API to Cloud Run. Nothing has been don
      commands if not; docs/DEPLOY.md lists them with the IAM roles: aiplatform.user on the project, objectAdmin on that bucket only).
   3. Build ${IMAGE} with Cloud Build unless that tag already exists (it is the same image as the main service).
   4. gcloud run deploy ${SERVICE} in ${REGION} as ${SA}
-       PUBLIC_API=true (only /api/health and /api/public/*), UPLOAD_LLM=gemini, TRUST_PROXY=true, USAGE_LOG_FILE=false,
+       PUBLIC_API=true (only /api/health and /api/public/*: enrich, answer, translate, detect, describe,
+       faces/detect, equations; their extra limits are constants in backend/app/public_api.py), UPLOAD_LLM=gemini, TRUST_PROXY=true, USAGE_LOG_FILE=false,
        PUBLIC_BOOK_CAP_USD=1.5, PUBLIC_TOTAL_CAP_USD=10, PUBLIC_IP_DAILY_CAP_USD=2, PUBLIC_ANSWER_DAILY_CAP_USD=2, no secrets,
        bucket mounted at /app/data (spend counters), min 0 / max 1 instance, no CPU throttling (jobs run between polls),
        1Gi, 1 CPU, 120 s request timeout (jobs are polled, no long request),

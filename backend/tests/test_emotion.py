@@ -232,3 +232,47 @@ def test_closing_the_tagged_stream_closes_the_answerer_so_usage_is_still_recorde
         await gen.aclose()
     asyncio.run(go())
     assert closed == [True]
+
+
+# ---------- hostile markers (review of #133) ----------
+
+@pytest.mark.parametrize("raw", [
+    "Hi <|<|x|>sfx:laughter|> there",                     # one-pass stripping would leave <|sfx:laughter|>
+    "Hi <|sfx:" + "a" * 60 + "|> there",                   # longer than the old 40-char tag limit
+    "Hi <<||>|sfx:laughter|>> there",
+    "Hi <|style:singing there",                            # unclosed
+])
+def test_no_boson_tag_survives_split_marker(raw):
+    text, _ = emotion.split_marker(raw)
+    assert "<|" not in text and "|>" not in text and text.startswith("Hi") and text.endswith("there")
+
+
+def test_split_marker_is_linear_on_whitespace_and_capped():
+    import time
+    start = time.perf_counter()
+    emotion.split_marker("a" + " " * 20000 + "b")
+    emotion.split_marker("x " * 200_000)
+    emotion._INNER.sub("", "a" + " " * 20000 + "b")      # the pattern itself, below the cap
+    emotion.strip_tags("a" + " " * 20000 + "<|" * 5000 + "b")
+    assert time.perf_counter() - start < 0.5
+    assert len(emotion.split_marker("word " * 10_000)[0]) <= emotion.SENTENCE_MAX
+
+
+def test_strip_tags_removes_every_boson_tag():
+    assert emotion.strip_tags("Hi <|<|x|>sfx:laughter|> there") == "Hi there"
+    assert emotion.strip_tags("[sadness] plain words") == "[sadness] plain words"   # only Boson tags
+
+
+def test_speak_never_passes_raw_tags_from_the_text(env, monkeypatch):  # noqa: F811
+    client, _ = env
+    seen = []
+
+    async def spy(boson, tts_text, voice, plain):
+        seen.append((tts_text, plain))
+        return {"audio_url": "/media/x.mp3", "timestamps": None, "cached": False}
+    monkeypatch.setattr(tts_cache, "get_or_create", spy)
+    r = client.post("/api/speak", json={"text": "<|style:singing|>I miss <|<|x|>sfx:laughter|> him.", "voice": "marcus",
+                                        "emotion": "sadness"})
+    assert r.status_code == 200
+    assert seen[-1] == ("<|emotion:sadness|>I miss him.", "I miss him.")
+    assert client.post("/api/speak", json={"text": "<|sfx:laughter|>", "voice": "marcus"}).status_code == 400

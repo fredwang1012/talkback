@@ -10,7 +10,9 @@ import functools
 import json
 import logging
 import time
+import base64
 from pathlib import Path
+from types import SimpleNamespace
 from typing import AsyncIterator, Awaitable, Callable
 
 import httpx
@@ -19,7 +21,8 @@ from pydantic import ValidationError
 from . import books
 from .config import settings
 from .enrich import cast as cast_mod
-from .enrich import pipeline, textbook
+from .enrich import equations, pipeline, textbook
+from .enrich.minor import MINOR_IDS, MINOR_VOICES
 from .enrich.segment import SegItem, narrator_only, speaker_ids, validate_segments
 from .schema import Book, Character, Narrator, Summary
 
@@ -72,6 +75,16 @@ def active() -> bool:
 
 def _base() -> str:
     return settings.public_api_url.strip().rstrip("/")
+
+
+def _new_client(timeout=None) -> httpx.AsyncClient:
+    """A client of the service (tests replace this to reach an in-process app or a mock)."""
+    return httpx.AsyncClient(base_url=_base(), timeout=timeout)
+
+
+def known_unavailable() -> bool:
+    """The last health check or call (within PROBE_TTL) found the service closed or unreachable."""
+    return _probe is not None and not _probe[1] and time.monotonic() - _probe[0] < PROBE_TTL
 
 
 _probe: tuple[float, bool] | None = None
@@ -176,10 +189,19 @@ def apply_result(book: Book, result: dict) -> None:
     """Merge the service's answer into `book`, validating it: the server is not trusted to keep the text intact."""
     n = len(book.paragraphs)
     chars: list[Character] = []
+    stand_ins: list[Character] = []
     seen: set[str] = set()
-    for raw in (result.get("characters") or [])[:cast_mod.MAIN_MAX]:
+    for raw in (result.get("characters") or [])[:cast_mod.MAIN_MAX + len(MINOR_VOICES)]:
         c = Character.model_validate(raw)
         if c.id in seen or not c.id:
+            continue
+        if c.id in MINOR_IDS:   # a stand-in voice for uncast speakers (enrich/minor.py): rebuilt from our own table
+            v = next(v for v in MINOR_VOICES.values() if v.id == c.id)
+            seen.add(c.id)
+            stand_ins.append(Character(id=v.id, name=v.name, first_para=0, voice=v.voice, voice_tags=v.tags,
+                                       persona="A minor speaker outside the cast.", main=False))
+            continue
+        if len(chars) >= cast_mod.MAIN_MAX:
             continue
         seen.add(c.id)
         c.first_para = max(0, min(c.first_para, n - 1))
@@ -192,13 +214,17 @@ def apply_result(book: Book, result: dict) -> None:
         chars.append(c)
     if not chars:
         raise ValueError("no characters in the result")
-    book.characters = chars
+    book.characters = chars + stand_ins
     nar = result.get("narrator") or {}
-    is_char = nar.get("is_character") if nar.get("is_character") in seen else None
+    is_char = nar.get("is_character") if nar.get("is_character") in {c.id for c in chars} else None
     voice = next((c.voice for c in chars if c.id == is_char), nar.get("voice"))
     book.narrator = Narrator(voice=voice if voice in cast_mod.VOICES else "nora", is_character=is_char)
+    series, idx = result.get("series"), result.get("series_index")
+    cast_mod.apply_series(book, SimpleNamespace(
+        series=series if isinstance(series, str) else None,
+        series_index=idx if isinstance(idx, int) and not isinstance(idx, bool) else None))
 
-    speakers = speaker_ids(book)
+    speakers = speaker_ids(book) | {c.id for c in stand_ins}
     segs = result.get("segments") or {}
     for p in book.paragraphs:
         out = None
@@ -245,7 +271,7 @@ async def enrich_book(book_id: str, report: Callable[..., None], *, indexer=None
         try:
             report(status="running", stage="cast", progress=0.0, message=pipeline.MESSAGES["cast"])
             result = await _remote_enrich(book, report, client, sleep)
-            apply_result(book, result)
+            await asyncio.to_thread(apply_result, book, result)  # a whole-book rechunk: off the event loop
         except PublicFailure as e:
             log.warning("public enrichment of %s failed: %s %s", book_id, e.kind, e)
             note = LIMIT_NOTE if e.kind == "limit" else UNAVAILABLE_NOTE
@@ -357,3 +383,176 @@ async def stream_answer(payload: dict, client: httpx.AsyncClient | None = None) 
     finally:
         if own:
             await client.aclose()
+
+
+# ---------- small single calls: question translation, kind, title/author, face box ----------
+
+TRANSLATE_SECONDS = 3.5   # under multilingual.TRANSLATE_TIMEOUT_S: the answer never waits on a slow service
+SMALL_SECONDS = 25.0
+
+
+async def _post(path: str, body: dict, timeout: float, client: httpx.AsyncClient | None = None) -> dict:
+    """POST one small JSON request; returns the JSON answer. Raises PublicFailure (closed, unreachable, capped)."""
+    if known_unavailable():
+        raise PublicFailure("unavailable", "closed")
+    own = client is None
+    client = client or _new_client(httpx.Timeout(timeout, connect=min(timeout, 3.0)))
+    try:
+        try:
+            r = await client.post(path, json=body)
+        except httpx.HTTPError as e:
+            raise PublicFailure("unavailable", type(e).__name__) from e
+        if r.status_code != 200:
+            if r.status_code in (401, 403):
+                mark_unavailable()   # closed: the other calls (answers too) skip it for a minute
+            raise _failure(r)
+        try:
+            out = r.json()
+        except ValueError as e:
+            raise PublicFailure("unavailable", "bad json") from e
+        if not isinstance(out, dict):
+            raise PublicFailure("unavailable", "bad json")
+        return out
+    finally:
+        if own:
+            await client.aclose()
+
+
+async def translate(text: str, client: httpx.AsyncClient | None = None) -> str:
+    """English translation of a reader's question, for searching (#12). Raises PublicFailure."""
+    out = await _post("/api/public/translate", {"text": text[:500]}, TRANSLATE_SECONDS, client)
+    english = out.get("text")
+    if not isinstance(english, str):
+        raise PublicFailure("unavailable", "bad answer")
+    return english[:1000]
+
+
+class RemoteLLM:
+    """Stands in for the local LLM of enrich/detect.py ("detect") and enrich/describe.py ("describe"): the service
+    runs the same fixed prompt and only the text is sent. The answer is validated with the caller's own schema."""
+
+    def __init__(self, task: str):
+        self.task = task
+
+    async def complete_json(self, system: str, user: str, schema_model, tier: str = "fast", **_):
+        out = await _post(f"/api/public/{self.task}", {"text": user}, SMALL_SECONDS)
+        return schema_model.model_validate(out)
+
+
+def remote_llm(task: str) -> RemoteLLM:
+    return RemoteLLM(task)
+
+
+async def detect_face(image: bytes, ext: str) -> dict | None:
+    """The main face's box through the service, re-clamped here (the server is not trusted), or None. Never raises."""
+    from . import face_detect
+    try:
+        out = await _post("/api/public/faces/detect", {"image": base64.b64encode(image).decode()}, SMALL_SECONDS)
+        face = out.get("face")
+        if not isinstance(face, dict):
+            return None
+        vals = [face.get(k) for k in ("x", "y", "w", "h")]
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals):
+            return None
+        return face_detect.clamp_box(*map(float, vals))
+    except PublicFailure as e:
+        log.info("face detection through the service unavailable: %s", e.kind)
+    except Exception as e:
+        log.warning("face detection through the service failed: %s", type(e).__name__)
+    return None
+
+
+# ---------- equation readings (#41) ----------
+
+EQUATIONS_UNAVAILABLE = "Equations stay as pictures (the processing service is unavailable right now)."
+EQUATIONS_LIMIT = "Equations stay as pictures (the free processing limit has been reached)."
+EQUATIONS_PARTIAL = "Some equations stay as pictures (the free processing limit has been reached)."
+EQ_PNG_MAX = 256 * 1024          # as public_api.EQ_PNG_MAX: a bigger picture is not sent
+EQ_REQUEST_BYTES = 2 * 1024 * 1024
+EQ_ITEMS = 24
+EQ_SECONDS = 110.0
+EQ_BUSY_RETRIES = 12
+EQ_BUSY_SECONDS = 5.0
+
+
+def _chunks(items: list[tuple[str, bytes, str]], batch: int):
+    out, size = [], 0
+    for it in items:
+        if out and (len(out) >= batch or size + len(it[1]) > EQ_REQUEST_BYTES):
+            yield out
+            out, size = [], 0
+        out.append(it)
+        size += len(it[1])
+    if out:
+        yield out
+
+
+def _readings(raw, sent: set[str]) -> dict[str, dict]:
+    """Keep only readings for pictures we sent, cleaned like local ones (the server is not trusted)."""
+    out: dict[str, dict] = {}
+    if not isinstance(raw, dict):
+        return out
+    for k, v in raw.items():
+        if k not in sent or not isinstance(v, dict):
+            continue
+        try:
+            r = equations.Reading(id=k, latex=str(v.get("latex") or ""), spoken=str(v.get("spoken") or ""))
+        except ValidationError:
+            continue
+        if clean := equations._clean(r):
+            out[k] = clean
+    return out
+
+
+async def transcribe_equations(book_id: str, crops: dict[str, tuple[bytes, str]], inline: dict[str, tuple[bytes, str]],
+                               *, stop: Callable[[], bool] = lambda: False,
+                               sleep: Callable[[float], Awaitable] = asyncio.sleep) -> tuple[dict, dict, str | None]:
+    """({display id: reading}, {inline id: reading}, note) through the service: a ticket first (the service estimates
+    and checks its caps), then a few pictures per request, display equations first. The note is None when every
+    picture was read normally, else says why (some) equations stay pictures. Never raises."""
+    items = [(k, png, hint) for k, (png, hint) in list(crops.items()) + list(inline.items()) if len(png) <= EQ_PNG_MAX]
+    if not items:
+        return {}, {}, None
+    found: dict[str, dict] = {}
+    note = None
+    client = _new_client(httpx.Timeout(EQ_SECONDS, connect=10.0))
+    try:
+        t = await _post("/api/public/equations", {"count": len(items)}, 30.0, client)
+        try:
+            ticket, accepted = str(t["ticket"]), int(t["accepted"])
+            batch = max(1, min(int(t.get("batch") or EQ_ITEMS), EQ_ITEMS))
+        except (KeyError, TypeError, ValueError):
+            raise PublicFailure("unavailable", "bad ticket") from None
+        if accepted < len(items):
+            note = EQUATIONS_PARTIAL
+        for chunk in _chunks(items[:max(0, accepted)], batch):
+            if stop():
+                break
+            body = {"items": [{"id": k, "png": base64.b64encode(png).decode(), "hint": hint[:equations.HINT_CHARS]}
+                              for k, png, hint in chunk]}
+            for attempt in range(EQ_BUSY_RETRIES + 1):
+                try:
+                    out = await _post(f"/api/public/equations/{ticket}", body, EQ_SECONDS, client)
+                    break
+                except PublicFailure as e:
+                    if e.kind == "limit" and str(e) in ("busy", "rate") and attempt < EQ_BUSY_RETRIES:
+                        await sleep(EQ_BUSY_SECONDS)
+                        continue
+                    raise
+            found.update(_readings(out.get("readings"), {k for k, _p, _h in chunk}))
+            if out.get("stopped") in ("cap", "book_cap"):
+                note = EQUATIONS_PARTIAL
+                break
+    except PublicFailure as e:
+        log.warning("equations of %s through the service: %s %s", book_id, e.kind, e)
+        if found:
+            note = EQUATIONS_PARTIAL
+        else:
+            note = EQUATIONS_LIMIT if e.kind == "limit" else EQUATIONS_UNAVAILABLE
+    except Exception as e:
+        log.warning("equations of %s through the service failed: %s", book_id, type(e).__name__)
+        note = EQUATIONS_PARTIAL if found else EQUATIONS_UNAVAILABLE
+    finally:
+        await client.aclose()
+    display = {k: v for k, v in found.items() if k in crops}
+    return display, {k: v for k, v in found.items() if k in inline and k not in crops}, note

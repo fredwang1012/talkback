@@ -83,23 +83,52 @@ def build_tts_text(spoken: str, voice_tags: str, emotion: str | None, style: str
     return tags + (with_sfx(text, tag) if sfx else text)
 
 
-def _prev_paragraph(p: Paragraph, book: Book) -> Paragraph | None:
+class BookIndex:
+    """What lead_pause / sing_offset look up for every paragraph, built once per book: the section start paragraphs
+    and paragraph idx -> paragraph (rechunk_book on 30k paragraphs x 3k sections went from ~10 s to linear)."""
+
+    def __init__(self, book: Book):
+        self.book, self.paragraphs, self.sections = book, book.paragraphs, book.sections
+        self.n_paragraphs, self.n_sections = len(book.paragraphs), len(book.sections)
+        self.starts = frozenset(s.start_para for s in book.sections)
+        self.by_idx: dict[int, Paragraph] = {}
+        for q in book.paragraphs:
+            self.by_idx.setdefault(q.idx, q)   # the first paragraph with an idx, as the old linear scan found
+
+    def fits(self, book: Book) -> bool:
+        return (self.book is book and self.paragraphs is book.paragraphs and self.sections is book.sections
+                and self.n_paragraphs == len(book.paragraphs) and self.n_sections == len(book.sections))
+
+
+_last_index: BookIndex | None = None   # single-paragraph calls (no index passed) on the same book reuse one index
+
+
+def book_index(book: Book) -> BookIndex:
+    global _last_index
+    idx = _last_index
+    if idx is None or not idx.fits(book):
+        idx = _last_index = BookIndex(book)
+    return idx
+
+
+def _prev_paragraph(p: Paragraph, book: Book, index: BookIndex | None = None) -> Paragraph | None:
     ps = book.paragraphs
     if 0 < p.idx <= len(ps) and ps[p.idx - 1].idx == p.idx - 1:
         return ps[p.idx - 1]
-    return next((q for q in ps if q.idx == p.idx - 1), None)
+    return (index or book_index(book)).by_idx.get(p.idx - 1)
 
 
-def lead_pause(p: Paragraph, book: Book) -> str | None:
+def lead_pause(p: Paragraph, book: Book, index: BookIndex | None = None) -> str | None:
     """Positional pause before a paragraph's first chunk (#73), or None.
 
     long_pause: first paragraph of a section (after the chapter heading) or right after a scene break ('* * *').
     pause: a dialogue paragraph right after a paragraph of pure narration that ended a sentence."""
     if is_scene_break(p.text):
         return None
-    if any(s.start_para == p.idx for s in book.sections):
+    index = index or book_index(book)
+    if p.idx in index.starts:
         return "long_pause"
-    prev = _prev_paragraph(p, book)
+    prev = _prev_paragraph(p, book, index)
     if prev is None or prev.kind == "code":
         return None
     if is_scene_break(prev.text):
@@ -134,15 +163,15 @@ def _groups(p: Paragraph, text: str, base: int) -> list[tuple[int, int]]:
     return groups
 
 
-def sing_offset(p: Paragraph, book: Book) -> int | None:
+def sing_offset(p: Paragraph, book: Book, index: BookIndex | None = None) -> int | None:
     """Offset in p.text from which the paragraph is sung (#74), or None. Looks back over the same chapter only."""
     if p.kind == "code" or len(p.text) > 4000:
         return None
-    starts = {s.start_para for s in book.sections}
+    index = index or book_index(book)
     prev: list[str] = []
     cur = p
-    while len(prev) <= SONG_MAX_PARAS and cur.idx not in starts:
-        cur = _prev_paragraph(cur, book)
+    while len(prev) <= SONG_MAX_PARAS and cur.idx not in index.starts:
+        cur = _prev_paragraph(cur, book, index)
         if cur is None:
             break
         prev.insert(0, cur.text)
@@ -209,9 +238,10 @@ def _fit_pieces(p: Paragraph, s: int, e: int) -> list[tuple[int, int]]:
     return [(s, e)]
 
 
-def chunk_paragraph(p: Paragraph, book: Book, *, expressive: bool = True) -> list[TtsChunk]:
+def chunk_paragraph(p: Paragraph, book: Book, *, expressive: bool = True, index: BookIndex | None = None) -> list[TtsChunk]:
     """TTS chunks for one paragraph. expressive=False leaves out the #73 additions (pauses, expressive_*, sfx other
-    than laughter context), which scripts/estimate_expressive.py uses to measure what they change."""
+    than laughter context), which scripts/estimate_expressive.py uses to measure what they change. `index` (from
+    book_index) saves the per-book lookups when chunking many paragraphs."""
     narrator_voice = book.narrator.voice if book.narrator else DEFAULT_VOICE
     if p.kind == "code":  # a listing is displayed whole but spoken as one short note
         return [TtsChunk(id=f"p{p.idx}c0", speaker="narrator", voice=narrator_voice,
@@ -224,8 +254,8 @@ def chunk_paragraph(p: Paragraph, book: Book, *, expressive: bool = True) -> lis
     apply_styles(segments)  # rule-based whispering/shouting; keeps a style the enrich LLM already set
     chunks: list[TtsChunk] = []
     cursor = 0
-    pause = lead_pause(p, book) if expressive else None
-    sing_at = sing_offset(p, book) if expressive else None
+    pause = lead_pause(p, book, index) if expressive else None
+    sing_at = sing_offset(p, book, index) if expressive else None
     for si, seg in enumerate(segments):
         seg_text = seg.text.strip()
         if not seg_text:
@@ -264,8 +294,9 @@ def chunk_paragraph(p: Paragraph, book: Book, *, expressive: bool = True) -> lis
 def rechunk_book(book: Book) -> None:
     """Rebuild every paragraph's tts_chunks with the current rules and stamp CHUNK_RULES_VERSION. Keeps segment
     styles (apply_styles only fills in missing ones). Raises ValueError if a segment does not match its paragraph."""
+    index = BookIndex(book)   # fresh: segments / sections may have changed since any cached one
     for p in book.paragraphs:
-        p.tts_chunks = chunk_paragraph(p, book)
+        p.tts_chunks = chunk_paragraph(p, book, index=index)
     book.chunk_rules = CHUNK_RULES_VERSION
 
 

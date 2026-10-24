@@ -111,3 +111,44 @@ describe("PlayerBar natural speed hint", () => {
     expect(off).not.toContain("(uses Boson credit)");
   });
 });
+
+describe("ReaderEngine natural speed change while a chunk loads", () => {
+  class TrackedAudio extends FakeAudio {
+    paused = true;
+    async play() { this.paused = false; }
+    pause() { this.paused = true; }
+  }
+  function deferredSetup() {
+    const fetched: { id: string; speed?: string | null }[] = [];
+    const pending: (() => void)[] = [];
+    const audios: TrackedAudio[] = [];
+    const engine = new ReaderEngine(chunks, {
+      fetchTts: (chunk, _voice, speed): Promise<TtsResult> => {
+        fetched.push({ id: chunk.id, speed });
+        return new Promise((res) => pending.push(() => res({ audio_url: `/media/${chunk.id}-${speed ?? "n"}.mp3`, timestamps: null })));
+      },
+      createAudio: (url) => { const a = new TrackedAudio(url); audios.push(a); return a; },
+    });
+    return { engine, fetched, pending, audios };
+  }
+
+  it("changing the tag during 'Preparing audio' still plays the loading chunk (not paused, onended wired)", async () => {
+    const { engine, fetched, pending, audios } = deferredSetup();
+    engine.setSpeed(1, "slow");
+    engine.play();
+    await flush();
+    expect(engine.snapshot().state).toBe("loading");
+    const firstFetches = fetched.filter((f) => f.id === "c0").length;
+    engine.setSpeed(1.25, "fast");
+    await flush();
+    for (const p of pending.splice(0)) p();
+    await flush(); await flush();
+    expect(engine.snapshot().state).toBe("playing");
+    const playing = audios.find((a) => !a.paused);
+    expect(playing).toBeDefined();
+    expect(playing!.src).toContain("c0");
+    expect(playing!.onended).not.toBeNull();
+    // no second synth of the chunk that was already loading
+    expect(fetched.filter((f) => f.id === "c0").length).toBe(firstFetches);
+  });
+});

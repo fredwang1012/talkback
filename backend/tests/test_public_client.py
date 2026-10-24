@@ -14,7 +14,7 @@ from app.ratelimit import TokenBucket
 from app.schema import Book
 
 from .test_api import env  # noqa: F401  (fixture)
-from .test_novel_pipeline import FakeProvider, data_dir, make_book_on_disk, saved, story  # noqa: F401
+from .test_novel_pipeline import FakeProvider, cpu_calls, data_dir, make_book_on_disk, saved, story  # noqa: F401
 from .test_answer import LeakyIndex, lines
 
 BOOK = "u-test-aaaaaaaa"
@@ -301,3 +301,12 @@ def test_without_public_url_the_local_answer_path_is_unchanged(env, monkeypatch)
     monkeypatch.setattr(public_client, "stream_answer", lambda *a, **k: pytest.fail("public API must not be called"))
     assert [o["type"] for o in lines(ask(client))] == ["sentence", "done"]
     assert client.get("/api/health").json()["answer_backend"] == "realtime"
+
+
+def test_apply_result_runs_off_the_event_loop(served, data_dir, cpu_calls):  # noqa: F811
+    """The service's result is applied (segments + a whole-book rechunk) in a worker thread, not on the loop."""
+    make_book_on_disk(data_dir)
+    ok, _ = run(served)
+    assert ok
+    client_side = cpu_calls[-1:]   # the service's own pipeline runs first (in-process); the client's rechunk is last
+    assert client_side == [("rechunk", False)], cpu_calls

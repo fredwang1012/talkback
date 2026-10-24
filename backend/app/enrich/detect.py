@@ -77,7 +77,12 @@ def heuristic(text: str) -> tuple[str, float]:
 
 
 async def detect_kind(text: str, *, llm: LLM | None = None, book_id: str = "detect") -> tuple[str, float, str]:
-    """(kind, confidence, method) with method "llm" or "heuristic"."""
+    """(kind, confidence, method) with method "llm" or "heuristic". A clone with no LLM of its own asks the public
+    processing service (public_client.active())."""
+    if llm is None and settings.upload_enrich:
+        from .. import public_client
+        if public_client.active():
+            llm = public_client.remote_llm("detect")
     if settings.upload_enrich or llm is not None:
         try:
             if llm is None:

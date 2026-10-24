@@ -4,8 +4,8 @@ with an English translation of the question, so BM25 and the English summaries s
 The language guess mirrors the reader's badge (frontend/src/talk/language.ts): a non-Latin script, or the common words
 of a language. It is deliberately cautious: a question only counts as non-English when its script says so or at least
 two of its common words belong to that language and outnumber the English ones, so an English question is never told
-to be answered in Spanish. Translation uses Gemini on Vertex when GCP_PROJECT is set; without it (or on any failure) the
-original question is searched, which the multilingual embeddings still partly match.
+to be answered in Spanish. Translation uses Gemini on Vertex when GCP_PROJECT is set, else the public processing service
+when the clone uses it (PUBLIC_API_URL); without either (or on any failure) the original question is searched, which the multilingual embeddings still partly match.
 """
 import asyncio
 import logging
@@ -85,8 +85,12 @@ class Unavailable(Exception):
 
 
 async def translate(text: str) -> str:
-    """English translation of `text` with Gemini on Vertex. Raises on any failure (the caller falls back)."""
+    """English translation of `text` with Gemini on Vertex, or through the public processing service on a clone with
+    no LLM of its own (public_client.active()). Raises on any failure (the caller falls back)."""
     if not settings.gcp_project:
+        from . import public_client
+        if public_client.active():
+            return await public_client.translate(text)
         raise Unavailable("no GCP_PROJECT")
     from google import genai
     from google.genai import types

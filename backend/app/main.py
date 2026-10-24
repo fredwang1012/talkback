@@ -495,11 +495,14 @@ class SpeakRequest(BaseModel):
 async def speak(req: SpeakRequest, request: Request):
     if not voices.is_known_voice(req.voice):
         raise HTTPException(400, f"Unknown voice '{req.voice}'.")
-    tts_text = emotion.tts_input(req.text, emotion.valid(req.emotion))
+    text = emotion.strip_tags(req.text)   # answer / recap text: it never carries its own Boson tags
+    if not text:
+        raise HTTPException(400, "Nothing to say.")
+    tts_text = emotion.tts_input(text, emotion.valid(req.emotion))
     if not tts_cache.is_cached(tts_text, req.voice) and not tts_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many new audio requests; wait a moment.")
     try:
-        out = await tts_cache.get_or_create(boson, tts_text, req.voice, req.text)
+        out = await tts_cache.get_or_create(boson, tts_text, req.voice, text)
     except (BosonError, RuntimeError) as e:
         raise boson_http_error(e)
     return {"voice": req.voice, **out}
@@ -849,7 +852,11 @@ async def _equations_job(book_id: str, data: bytes) -> None:
     try:
         crops = await asyncio.to_thread(ingest_upload.render_equations, book_id, data, stop)
         inline, shared = await asyncio.to_thread(ingest_upload.render_inline, book_id, data, stop)
-        if not (crops or inline) or not enrich_equations.available() or stop():
+        if not (crops or inline) or stop():
+            return
+        if not enrich_equations.available():
+            if settings.upload_enrich and public_client.active():   # a clone with only a Boson key
+                await _public_equations(book_id, crops, inline, shared, stop)
             return
         llm = enrich_equations.make_llm("gemini")
         readings = await enrich_equations.transcribe(book_id, crops, llm=llm) if crops else {}
@@ -863,6 +870,18 @@ async def _equations_job(book_id: str, data: bytes) -> None:
         logging.getLogger(__name__).warning("equations of %s failed: %s", book_id, type(e).__name__)
     finally:
         _equation_jobs.discard(book_id)
+
+
+async def _public_equations(book_id: str, crops: dict, inline: dict, shared: dict, stop) -> None:
+    """The equation readings through the public processing service (its caps); what it cannot read stays pictures."""
+    display, inl, note = await public_client.transcribe_equations(book_id, crops, inline, stop=stop)
+    if display and not stop():
+        await asyncio.to_thread(ingest_upload.update_equations, book_id, display)
+    fields = {i: r for k, r in inl.items() for i in shared.get(k, [k])}
+    if fields and not stop():
+        await asyncio.to_thread(ingest_upload.update_equations, book_id, fields)
+    if note:
+        logging.getLogger(__name__).info("equations of %s: %s", book_id, note)
 
 
 _EQ_ID = re.compile(r"^(?:e\d{1,5}|m\d{1,6})$")  # display equation / inline formula
@@ -1050,6 +1069,8 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
     textbook -> novel starts enrichment (same caps and UPLOAD_CONFIRM behaviour as an upload) unless the book already
     has its characters; novel -> textbook keeps the characters in the file (the UI ignores them) and writes the
     textbook recap notes (same caps) only when the book has no summaries at all.
+    A PDF is read again so display equations and inline formulas that were dropped while it was a novel come back, and
+    their pictures are cropped.
     """
     users.guard_book(book_id)
     if not book_id.startswith("u-"):
@@ -1069,11 +1090,28 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
         return st
     _kind_claims.add(book_id)
     try:
-        book = book.model_copy(deep=True)  # load_book's result is cached and must not be mutated
-        book.kind = body.kind
-        await asyncio.to_thread(books.save_book, settings.data_dir / "books" / book_id / "book.json", book)
+        def set_kind(b) -> None:
+            b.kind = body.kind
+        path = settings.data_dir / "books" / book_id / "book.json"
+        pdf_bytes = restored = None
+        pdf = ingest_upload.upload_path(book_id, ".pdf")
+        if body.kind == "textbook" and pdf.is_file():
+            try:
+                pdf_bytes = pdf.read_bytes()
+                restored = await asyncio.to_thread(ingest_upload.restore_as_textbook, book.model_copy(deep=True), pdf_bytes)
+            except Exception as e:  # still move the shelf; the text they already have stays
+                logging.getLogger(__name__).warning("textbook restore failed: %s", type(e).__name__)
+                pdf_bytes = restored = None
+        if restored is not None:
+            def set_kind(b) -> None:  # the re-read text replaces the book's, written under its lock
+                for name in restored.model_fields:
+                    setattr(b, name, getattr(restored, name))
+        # a fresh read under the book's write lock (never the cached object, never a stale copy of it)
+        book = await asyncio.to_thread(books.update_book, path, set_kind)
         _index_for.cache_clear()
         _set_status(book_id, "ready", kind=body.kind)
+        if pdf_bytes is not None and any(p.kind == "math" or p.inline_math for p in book.paragraphs):
+            _start_equations(book_id, pdf_bytes)
         # a novel's own summaries are kept when it moves to Textbooks (recap then uses them as before)
         needs = not book.characters if body.kind == "novel" else not book.summaries
         if settings.upload_enrich and needs:

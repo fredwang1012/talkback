@@ -144,7 +144,9 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   resetIfSpeakerChanged.current = () => {
     const c = controller.current;
     if (!c || viaGeminiRef.current || sessionSpeaker.current === latest.current.speakerId) return;
-    if (!["reading", "talk-idle", "resuming"].includes(c.state)) return; // an answer is in progress: after it ends
+    // an answer in progress plays on and the reset waits until it ends, or until the reader cuts in: a new question
+    // (listening, also a hands-free barge-in straight from answering) always goes to the new character's session
+    if (!["reading", "talk-idle", "resuming", "listening"].includes(c.state)) return;
     sessionSpeaker.current = latest.current.speakerId;
     clientRef.current?.resetConversation();
   };
@@ -217,7 +219,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       },
       onToolRun: (chip) => setMessages((m) => addToolChip(m, chip)),
       onInterrupted: () => setMessages(markInterrupted),
-      onState: (st) => { setState(st); if (st !== "answering") setLivePaused(false); if (["listening", "retrieving", "answering"].includes(st)) { replayer.current?.stop(); narration.current?.stop(); } if (["reading", "talk-idle", "resuming"].includes(st)) { setMessages(finishAnswer); resetIfSpeakerChanged.current(); } },
+      onState: (st) => { setState(st); if (st !== "answering") setLivePaused(false); if (["listening", "retrieving", "answering"].includes(st)) { replayer.current?.stop(); narration.current?.stop(); } if (["reading", "talk-idle", "resuming"].includes(st)) { setMessages(finishAnswer); resetIfSpeakerChanged.current(); } if (st === "listening") resetIfSpeakerChanged.current(); },
       onToast: setToast,
       onCaption: (text) => { setCaption(text); if (!viaGemini && text) setMessages((m) => setPendingText(m, text)); },
       onSpeaking: setSpeaking,
@@ -278,7 +280,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       via.current = "voice"; // an ignored (empty) ask must not label the next spoken question as typed
     }, []),
     stop: useCallback(() => { void controller.current?.stop(); narration.current?.stop(); }, []),
-    clearMessages: useCallback(() => { void controller.current?.stop(); replayer.current?.stop(); narration.current?.reset(); replayStore.current.clear(); clientRef.current?.resetConversation(); setMessages(() => []); }, [setMessages]),
+    clearMessages: useCallback(() => { controller.current?.endQuiz(); void controller.current?.stop(); replayer.current?.stop(); narration.current?.reset(); replayStore.current.clear(); clientRef.current?.resetConversation(); setMessages(() => []); }, [setMessages]),
     replayable: playable, liveId,
     replayingId: narratingKey !== null ? Number(narratingKey) : replayingId ?? (liveId !== null && !livePaused ? liveId : null),
     isPaused: (id: number) => {

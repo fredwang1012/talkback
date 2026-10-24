@@ -24,7 +24,7 @@ import { lipSyncTargetFor, readClipsOn, readFaceFor, speechSeconds, type ReadFac
 import Stage from "../reader/Stage";
 import { toggleMode, validSpeaker } from "../reader/talkbackLogic";
 import TalkbackView, { ModeToggle } from "../reader/TalkbackView";
-import { loadNaturalSpeed, saveNaturalSpeed, speedTagFor } from "../reader/naturalSpeed";
+import { loadNaturalSpeed, saveNaturalSpeed, speedTagFor, type SpeedTag } from "../reader/naturalSpeed";
 import { loadSpoilers, saveSpoilers } from "../reader/spoilers";
 import VoiceLab from "../reader/VoiceLab";
 import { spend, type SpendSnapshot } from "../spend";
@@ -88,6 +88,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [readSpeaking, setReadSpeaking] = useState(false);
   const getAudio = useCallback(() => (engineRef.current?.currentAudio() as unknown as FollowAudio | null) ?? null, []);
   const indexRef = useRef(0);
+  const speedRef = useRef<{ speed: number; tag: SpeedTag | null }>({ speed: 1, tag: null }); // what a rebuilt engine starts with
   const playingRef = useRef(false);
   indexRef.current = index;
   playingRef.current = playing;
@@ -133,6 +134,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       sync: readSync.current as FaceSync,
     }, indexRef.current);
     engineRef.current = engine;
+    engine.setSpeed(speedRef.current.speed, speedRef.current.tag); // a rebuilt engine keeps the speed (and tag) the UI shows
     const off = engine.on((s) => {
       setIndex(s.index);
       setPlaying(s.state === "playing" || s.state === "loading");
@@ -291,7 +293,8 @@ export default function Reader({ bookId }: { bookId: string }) {
 
   // natural speed (#78) needs new audio, which a demo (pre-rendered only) cannot have
   const speedTag = speedTagFor(speed, naturalSpeed && !demo);
-  useEffect(() => { engineRef.current?.setSpeed(speed, speedTag); }, [speed, speedTag, audioAvailable, book]);
+  speedRef.current = { speed, tag: speedTag };
+  useEffect(() => { engineRef.current?.setSpeed(speed, speedTag); }, [speed, speedTag, audioAvailable, book, chunks, demo]);
   useEffect(() => { saveNaturalSpeed(naturalSpeed); }, [naturalSpeed]);
   // a changed cast applies at once, from the local copy (the save runs in the background)
   useEffect(() => {

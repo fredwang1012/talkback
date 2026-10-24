@@ -86,6 +86,18 @@ describe("section resolution", () => {
     expect(findSectionByNumber(sections, "9.9")).toBeNull();
     expect(findSectionByNumber(sections, "1.5")).toBeNull();
   });
+  it("the gap rule only fills the one missing number between siblings, never with back matter", () => {
+    const s = (id: string, title: string, start_para: number, level = 2) => ({ id, title, start_para, level });
+    const book = [
+      s("c1", "1 Intro", 0, 1), s("c1.1", "1.1 A", 1), s("c1.2", "1.2 B", 2), s("c1.3", "1.3 C", 3), s("c1.4", "1.4 D", 4),
+      s("ex", "Exercises", 5), s("c2", "2 Next", 6, 1), s("c2.1", "2.1 E", 7), s("c2.2", "2.2 F", 8), s("ref", "References", 9),
+      s("c2.4", "2.4 G", 10), s("c2.5", "2.5 H", 11), s("lost", "Lost heading", 12), s("c2.8", "2.8 I", 13),
+    ];
+    expect(findSectionByNumber(book, "1.5")).toBeNull(); // the chapter's exercises are not section 1.5
+    expect(findSectionByNumber(book, "2.3")).toBeNull(); // a back-matter heading never stands in for a number
+    expect(findSectionByNumber(book, "2.6")).toBeNull(); // two numbers missing: which one the heading lost is unknown
+    expect(findSectionByNumber(book, "2.7")).toBeNull();
+  });
   it("finds sections by title words; ties go to the next one from the reader, else the last before", () => {
     expect(findSectionByTitle(sections, "inverted indexes", 0)?.section.id).toBe("c1.2");
     expect(findSectionByTitle(sections, "wildcard queries", 0)?.section.id).toBe("c3.2");
@@ -309,6 +321,14 @@ describe("explain_here", () => {
     expect(fig.output).toContain("Figure 3.1: A binary tree");
     expect(runTool("explain_here", {}, ctx({ readerPara: 27, index: 54 }), a).output).toContain("A union B"); // on the equation itself
     expect(runTool("explain_here", { what: "equation" }, ctx(), a).ok).toBe(false); // none nearby
+  });
+  it("a novel with spoilers off never explains an equation or figure past the reader; a textbook may look just ahead", () => {
+    const { a } = acts();
+    // the figure is at 24, the equation at 27: from 25 only the figure is behind; the equation is one paragraph ahead
+    expect(runTool("explain_here", { what: "equation" }, ctx({ readerPara: 25, index: 50 }), a).output).toContain("A union B");
+    expect(runTool("explain_here", { what: "equation" }, ctx({ kind: "novel", readerPara: 25, index: 50 }), a).ok).toBe(false);
+    expect(runTool("explain_here", { what: "figure" }, ctx({ kind: "novel", readerPara: 23, index: 46 }), a).ok).toBe(false);
+    expect(runTool("explain_here", { what: "equation" }, ctx({ kind: "novel", spoilers: true, readerPara: 25, index: 50 }), a).ok).toBe(true);
   });
 });
 

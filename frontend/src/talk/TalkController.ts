@@ -39,8 +39,9 @@ export interface TalkSession {
   /**
    * Start streaming mic audio; audio captured while the socket is still connecting is buffered then sent.
    * `voiceStarted`: the hands-free voice gate opened the turn, so the pre-roll from before it goes first (#114).
+   * `overSpeech`: it opened while the character was speaking (a barge-in): only a short pre-roll, the rest is echo.
    */
-  startMic(voiceStarted?: boolean): Promise<void>;
+  startMic(voiceStarted?: boolean, overSpeech?: boolean): Promise<void>;
   /** Stop the mic. With `discard`, drop what was captured instead of keeping it for a commit. */
   stopMic(discard?: boolean): Promise<void>;
   commit(): void;
@@ -119,6 +120,11 @@ export class TalkController {
   private pressedAt = 0;
   /** A quiz in progress (quiz_me): the next turns carry its rules and text until the last answer is graded, or it is ended. */
   private quiz: (Quiz & { answered: number }) | null = null;
+  /** The quiz answer being graded now: it counts only once that answer is complete (not cut off or cancelled). */
+  private quizPending: { quiz: Quiz & { answered: number }; n: number } | null = null;
+
+  /** End a quiz in progress (the chat was cleared, or reading went on). */
+  endQuiz(): void { this.quiz = null; this.quizPending = null; }
   private turn = 0; // bumped whenever a turn is abandoned, so stale async work is ignored
   private resumeTimer: ReturnType<typeof setTimeout> | null = null;
   private waiters: { predicate: (e: SessionEvent) => boolean; resolve: (e: SessionEvent | null) => void }[] = [];
@@ -195,11 +201,11 @@ export class TalkController {
 
   private talkback = false;
   /** In the Talkback view a short tap on the mic never starts or stops the story; it just cancels the question. */
-  setTalkback(v: boolean): void { if (v !== this.talkback) this.quiz = null; this.talkback = v; }
+  setTalkback(v: boolean): void { if (v !== this.talkback) this.endQuiz(); this.talkback = v; }
 
   /** Picking someone else to talk to; applied to the session voice before the next question. */
   async setSpeaker(id: string): Promise<void> {
-    if (id !== this.speakerId) this.quiz = null; // a quiz belongs to the one who asked it
+    if (id !== this.speakerId) this.endQuiz(); // a quiz belongs to the one who asked it
     this.speakerId = id;
     try { await this.d.session.setVoice(this.d.voiceFor(id)); } catch { /* the next ensureOpen reconnects with the right voice */ }
   }
@@ -210,7 +216,7 @@ export class TalkController {
   }
 
   dispose(): void {
-    this.quiz = null;
+    this.endQuiz();
     this.off();
     this.clearResumeTimer();
     this.cancelAnswer();
@@ -245,7 +251,7 @@ export class TalkController {
     const now = this.d.now();
     const overSpeech = this._state !== "listening" && (this.speaking || now - this.quietSince < TalkController.ECHO_TAIL_MS);
     const ev = this.gate.feed(rms, now, overSpeech ? HANDS_FREE_OVER_SPEECH : undefined);
-    if (ev === "start" && ["reading", "talk-idle", "answering", "resuming"].includes(this._state)) void this.beginTurn(true);
+    if (ev === "start" && ["reading", "talk-idle", "answering", "resuming"].includes(this._state)) void this.beginTurn(true, overSpeech);
     else if (ev === "stop" && this._state === "listening") { this.handsFreeTurn = true; void this.pttUp(); } // a pressed turn ends on silence too, and is never a tap
   }
 
@@ -253,12 +259,14 @@ export class TalkController {
 
   pttDown(): Promise<void> { return this.beginTurn(false); }
 
-  private async beginTurn(handsFree: boolean): Promise<void> {
+  private async beginTurn(handsFree: boolean, overSpeech = false): Promise<void> {
     this.handsFreeTurn = handsFree;
     this.clearResumeTimer(); // pressing during the 1.5 s window starts a follow-up question
     const turn = ++this.turn;
     this.pressedAt = this.d.now();
     const wasAnswering = this._state === "answering";
+    this.quizPending = null; // a barge-in: the answer being graded was cut off and does not count
+    if (this.d.reader.isPlaying()) this.endQuiz(); // the reader read on since the quiz: this is not an answer to it
     const wasBusy = ["transcribing", "retrieving"].includes(this._state);
     const viaAnswer = this.run !== null;
     if (wasAnswering) this.d.onInterrupted?.(); // barge-in (#10): the bubble shows it was cut off, the next answer is told
@@ -280,7 +288,7 @@ export class TalkController {
       : Promise.resolve();
     const connecting = this.d.session.ensureOpen(this.d.voiceFor(this.speakerId)).catch((e: unknown) => this.fail(turn, e));
     this.opening = Promise.all([interrupting, connecting]).then(() => undefined);
-    try { await this.d.session.startMic(handsFree); } catch (e) { this.fail(turn, e, micErrorMessage(e)); }
+    try { await this.d.session.startMic(handsFree, handsFree && overSpeech); } catch (e) { this.fail(turn, e, micErrorMessage(e)); }
   }
 
   async pttUp(): Promise<void> {
@@ -297,7 +305,7 @@ export class TalkController {
       const index = this.resumeIndex;
       this.resumeIndex = null;
       this.set("reading");
-      if (!wasPlaying && index !== null) this.d.reader.play();
+      if (!wasPlaying && index !== null) { this.endQuiz(); this.d.reader.play(); } // reading on ends a quiz
       return;
     }
 
@@ -371,10 +379,11 @@ export class TalkController {
   /** The quiz part of this turn (and the answer it grades), or null when no quiz runs. Ends the quiz on its last answer or on a stop / command. */
   private quizTurn(query: string): { quiz: Quiz; n: number } | null {
     const q = this.quiz;
+    this.quizPending = null;
     if (!q) return null;
-    if (endsQuiz(query)) { this.quiz = null; return null; }
-    const n = ++q.answered;
-    if (n >= QUIZ_QUESTIONS) this.quiz = null; // graded and scored in this answer
+    if (endsQuiz(query)) { this.endQuiz(); return null; }
+    const n = q.answered + 1; // counted when this answer completes (afterAnswer), so a cut-off one is asked again
+    this.quizPending = { quiz: q, n };
     return { quiz: q, n };
   }
 
@@ -564,6 +573,7 @@ export class TalkController {
     try { outcome = (this.d.tools as ToolRunner)(name, args); } catch (e) { outcome = { ok: false, output: `The tool failed: ${e instanceof Error ? e.message : String(e)}`, chip: null }; }
     if (outcome.chip) this.d.onToolRun?.(outcome.chip);
     this.quiz = outcome.ok && outcome.quiz ? { ...outcome.quiz, answered: 0 } : null; // quiz_me starts one; any other tool ends it
+    this.quizPending = null;
     if (!outcome.ok) return outcome;
     if (outcome.moveTo !== undefined) this.resumeIndex = outcome.moveTo; // reading goes on there, if it goes on at all
     if (outcome.play) { this.resumeIndex ??= this.d.reader.currentIndex(); this.wasPlayingBeforePress = true; this.forceResume = true; }
@@ -578,6 +588,12 @@ export class TalkController {
   }
 
   private afterAnswer(): void {
+    const p = this.quizPending;
+    this.quizPending = null;
+    if (p && this.quiz === p.quiz) { // the graded answer is complete: it counts; the last one ends the quiz
+      p.quiz.answered = p.n;
+      if (p.n >= QUIZ_QUESTIONS) this.quiz = null;
+    }
     if ((this.autoResume || this.forceResume) && this.resumeIndex !== null && this.wasPlayingBeforePress) {
       const turn = this.turn;
       this.set("resuming");
@@ -595,10 +611,12 @@ export class TalkController {
   private backToReading(): void {
     const index = this.resumeIndex;
     const wasPlaying = this.wasPlayingBeforePress;
+    this.quizPending = null; // the turn ended without a complete answer (or reading goes on): it does not count
     this.resumeIndex = null;
     this.forceResume = false;
     this.clearResumeTimer();
     if (index !== null && wasPlaying) {
+      this.endQuiz(); // reading goes on: a quiz in progress is over
       this.set("reading");
       this.d.reader.resumeAt(index);
     } else {
