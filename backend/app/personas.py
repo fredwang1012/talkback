@@ -1,7 +1,8 @@
 """Talk prompts (brief section 7.4). All prompt logic lives here so it is testable; keep them short and behavioural."""
 from .schema import Book
 
-MAX_INSTRUCTIONS_CHARS = 8000
+MAX_INSTRUCTIONS_CHARS = 8000   # Boson Realtime instructions
+MAX_ANSWER_PROMPT_CHARS = 16000  # Gemini answer prompt: room for the earlier books' recap as well
 
 CHARACTER_TEMPLATE = """You are {name} from "{title}", chatting with a reader who has paused the story.
 Speak as {name}: {persona}
@@ -40,10 +41,13 @@ Always reply in the language the reader used.
 def format_passages(passages: list[dict]) -> str:
     if not passages:
         return "(nothing relevant)"
-    return "\n\n".join(f"[¶{p['para_start'] + 1}-{p['para_end'] + 1}] {p['text']}" for p in passages)
+    return "\n\n".join(
+        f"[{p['book'] + ', ' if p.get('book') else ''}¶{p['para_start'] + 1}-{p['para_end'] + 1}] {p['text']}"
+        for p in passages)
 
 
-def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages: list[dict]) -> str:
+def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages: list[dict],
+                       limit: int = MAX_INSTRUCTIONS_CHARS) -> str:
     """Render the Talk prompt for `speaker_id` ("narrator" or a character id). Raises KeyError for unknown ids."""
     text_passages = format_passages(passages)
     story = story_so_far.strip() or "(the story has only just begun)"
@@ -57,7 +61,7 @@ def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages:
             raise KeyError(speaker_id)
         out = CHARACTER_TEMPLATE.format(name=character.name, title=book.title, persona=character.persona,
                                         story_so_far=story, passages=text_passages)
-    return out[:MAX_INSTRUCTIONS_CHARS]
+    return out[:limit]
 
 
 ANSWER_SUFFIX = "\n\nYour reply is spoken aloud word for word, so write only the words to be spoken."
@@ -65,5 +69,5 @@ ANSWER_SUFFIX = "\n\nYour reply is spoken aloud word for word, so write only the
 
 def build_answer_prompt(book: Book, speaker_id: str, story_so_far: str, passages: list[dict], query: str) -> tuple[str, str]:
     """(system, user) for the answer model: the Talk prompt for `speaker_id` plus a spoken-output rule; user is the question."""
-    system = build_instructions(book, speaker_id, story_so_far, passages)[: MAX_INSTRUCTIONS_CHARS - len(ANSWER_SUFFIX)]
+    system = build_instructions(book, speaker_id, story_so_far, passages, MAX_ANSWER_PROMPT_CHARS - len(ANSWER_SUFFIX))
     return system + ANSWER_SUFFIX, query

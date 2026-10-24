@@ -21,12 +21,18 @@ class VectorStoreError(Exception):
         self.status, self.message = status, message
 
 
-def spoiler_filter(book_id: str, reader_para: int | None) -> dict:
-    """Novel filter when reader_para is given (para_end <= reader_para), else book-only (textbooks)."""
+def spoiler_filter(book_id: str, reader_para: int | None, earlier: list[str] | None = None) -> dict:
+    """Novel filter when reader_para is given (para_end <= reader_para), else book-only (textbooks).
+
+    `earlier`: ids of the series books before this one; their chunks are eligible in full ($in / $or verified live).
+    """
     book = {"book_id": {"$eq": book_id}}
     if reader_para is None:
         return book
-    return {"$and": [book, {"para_end": {"$lte": reader_para}}]}
+    current = {"$and": [book, {"para_end": {"$lte": reader_para}}]}
+    if not earlier:
+        return current
+    return {"$or": [{"book_id": {"$in": list(earlier)}}, current]}
 
 
 def rrf(lists: list[list[dict]], key: str = "chunk_id", k: int = 60) -> list[dict]:

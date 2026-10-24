@@ -75,3 +75,6 @@ class Book(BaseModel):
     characters: list[Character] = []
     narrator: Narrator | None = None
     summaries: list[Summary] = []
+    # Books of one series (same `series`, ordered by `series_index`): a reader of book N already knows books 1..N-1.
+    series: str | None = None
+    series_index: int | None = None

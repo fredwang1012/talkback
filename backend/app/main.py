@@ -185,7 +185,8 @@ def _index_for(book_id: str) -> retrieval.Index:
     book = books.load_book(book_id)
     if settings.retrieval_backend == "vertex":
         from .gcp.vertex_index import VertexIndex
-        return VertexIndex(book, _LazyEmbedder(), _LazyStore())
+        earlier = {b.id: b.title for b in books.earlier_in_series(book)}
+        return VertexIndex(book, _LazyEmbedder(), _LazyStore(), earlier)
     index_dir = settings.data_dir / "books" / book_id / "index"
     if (index_dir / "chunks.json").exists():
         return retrieval.Index.load(index_dir, embedder=_embedder())
@@ -214,6 +215,12 @@ def _embedder():
         return None
 
 
+def _series_context(book: Book) -> dict:
+    """Keyword args for retrieval.aretrieve: earlier books of the series are fully known to the reader."""
+    earlier = books.earlier_in_series(book)
+    return {"earlier": frozenset(b.id for b in earlier), "recap": books.series_recap(book)}
+
+
 def _resolve_talk(book_id: str, speaker_id: str, reader_para: int):
     """Shared 404/403 checks for talk endpoints: returns (book, speaker or None, clamped reader_para)."""
     book = books.load_book(book_id)
@@ -233,7 +240,7 @@ async def retrieve(req: RetrieveRequest, request: Request):
     if not retrieve_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many lookups; wait a moment.")
     book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para)
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k)
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, **_series_context(book))
     out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"])
     out["persona"] = speaker.persona if speaker else None
     return out
@@ -258,7 +265,7 @@ async def answer(req: RetrieveRequest, request: Request):
         raise HTTPException(429, "Too many questions; wait a moment.")
     book, _, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para)
     t0 = time.monotonic()
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k)
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, **_series_context(book))
     t_retrieved = time.monotonic()
     retrieve_ms = int((t_retrieved - t0) * 1000)
     system, user = build_answer_prompt(book, req.speaker_id, out["story_so_far"], out["passages"], req.query)
