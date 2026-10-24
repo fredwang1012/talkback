@@ -90,3 +90,11 @@ def test_lipsync_render_failure_is_a_clean_error(tmp_path, monkeypatch):
     r = client.post("/api/avatar/talk", json={"audio_url": f"/media/tts/{KEY}.mp3", "voice": "voice_abc"})
     assert r.status_code >= 500 and "MP4" not in r.text
     assert not list((tmp_path / "cache" / "avatar" / "talk").glob("*.mp4"))
+
+
+def test_voice_and_face_lists_need_the_access_code_when_one_is_set(env, monkeypatch):  # noqa: F811
+    client, _ = env
+    monkeypatch.setattr(settings, "access_token", "s3cret")
+    assert client.get("/api/voices").status_code == 401
+    assert client.get("/api/voices/faces").status_code == 401
+    assert client.get("/api/voices/faces", headers={"X-Talkback-Token": "s3cret"}).status_code == 200

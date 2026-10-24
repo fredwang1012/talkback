@@ -557,14 +557,15 @@ async def clone_voice(request: Request, audio: UploadFile = File(...), transcrip
     return {"voice": voice_id, "name": name, "face": face_url}
 
 
-@app.get("/api/voices")
+@app.get("/api/voices", dependencies=[Depends(require_access)])
 def list_voices():
     return voices.load_voices()
 
 
-@app.get("/api/voices/faces")
+@app.get("/api/voices/faces", dependencies=[Depends(require_access)])
 def list_voice_faces():
-    """voice id -> portrait URL for cloned voices that have a face (shown for any speaker using that voice)."""
+    """voice id -> portrait URL for cloned voices that have a face (shown for any speaker using that voice).
+    Gated: the face is a real person's. The files are named after the voice id, which only these gated lists reveal."""
     return voices.load_faces()
 
 
