@@ -23,3 +23,10 @@ def _never_write_real_usage_log(monkeypatch, tmp_path_factory):
         return Path(settings.data_dir) / "cache" / "usage.jsonl"
 
     monkeypatch.setattr(usage, "_log_path", log_path)
+
+
+@pytest.fixture(autouse=True)
+def _local_backends_unless_a_test_says_otherwise(monkeypatch):
+    """Tests never reach Google Cloud because of a developer's .env (RETRIEVAL_BACKEND=vertex)."""
+    monkeypatch.setattr(settings, "retrieval_backend", "local")
+    monkeypatch.setattr(settings, "answer_backend", None, raising=False)

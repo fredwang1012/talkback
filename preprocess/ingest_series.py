@@ -120,6 +120,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pdf", required=True)
     ap.add_argument("--only", type=int, action="append", help="series index to ingest (repeatable); default all")
+    ap.add_argument("--skip-existing", action="store_true",
+                    help="keep books that already have a book.json (re-ingesting drops their cast, segments and summaries)")
     args = ap.parse_args()
     doc = pymupdf.open(args.pdf)
     specs = plan_books(doc.get_toc())
@@ -127,6 +129,9 @@ def main() -> None:
         sys.exit(f"expected {len(IDS)} books in the table of contents, found {[s['title'] for s in specs]}")
     for spec in specs:
         if args.only and spec["index"] not in args.only:
+            continue
+        if args.skip_existing and (ROOT / "data" / "books" / spec["id"] / "book.json").exists():
+            print(f"{spec['id']}: exists, kept")
             continue
         book = build(doc, spec)
         d = ROOT / "data" / "books" / book.id

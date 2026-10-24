@@ -59,6 +59,7 @@ class VectorStore:
         self._base = f"{BASE_URL}/{collection_path}"
         self._token_fn = token_fn
         self._client = client
+        self._owned: tuple[asyncio.AbstractEventLoop, httpx.AsyncClient] | None = None
         self._sleep = sleep
 
     async def _send(self, method: str, url: str, json: Any = None) -> httpx.Response:
@@ -66,14 +67,22 @@ class VectorStore:
         for attempt in range(MAX_RETRIES + 1):
             headers = {"Authorization": f"Bearer {self._token_fn()}",
                        "x-goog-user-project": settings.gcp_project}
-            if self._client is None:  # one keep-alive client: a fresh TLS handshake per search cost ~0.3 s
-                self._client = httpx.AsyncClient(timeout=60)
-            resp = await self._client.request(method, url, json=json, headers=headers)
+            resp = await self._http().request(method, url, json=json, headers=headers)
             if (resp.status_code == 429 or resp.status_code >= 500) and attempt < MAX_RETRIES:
                 await self._sleep(0.5 * 2**attempt)
                 continue
             return resp
         raise AssertionError("unreachable")
+
+    def _http(self) -> httpx.AsyncClient:
+        """The injected client, else one keep-alive client per event loop (a fresh TLS handshake per search cost
+        ~0.3 s; a client cannot be reused once its loop is closed, e.g. scripts that run several loops)."""
+        if self._client is not None:
+            return self._client
+        loop = asyncio.get_running_loop()
+        if self._owned is None or self._owned[0] is not loop:
+            self._owned = (loop, httpx.AsyncClient(timeout=60))
+        return self._owned[1]
 
     @staticmethod
     def _error(resp: httpx.Response) -> VectorStoreError:

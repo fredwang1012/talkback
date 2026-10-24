@@ -38,3 +38,6 @@ data/voices.json
 data/voice_faces.json
 logs/
 *.log
+
+# access code for the deployed app (share it with visitors; never commit)
+.talkback-access-code

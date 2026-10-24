@@ -18,25 +18,26 @@ USD_PER_1K_CHARS = 0.000025
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--book", required=True)
+    ap.add_argument("--book", required=True, action="append", help="repeatable")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    book = load_book(args.book)
-    if book is None:
-        sys.exit(f"book not found: {args.book}")
-    chunks = load_chunks(book)
-    chars = sum(len(embed_text(c)) for c in chunks)
-    print(f"{book.id}: {len(chunks)} chunks, {chars} characters")
-    print(f"estimated embedding cost: ${chars / 1000 * USD_PER_1K_CHARS:.4f} (estimate)")
-    if args.dry_run:
-        return
+    for book_id in args.book:
+        book = load_book(book_id)
+        if book is None:
+            sys.exit(f"book not found: {book_id}")
+        chunks = load_chunks(book)
+        chars = sum(len(embed_text(c)) for c in chunks)
+        print(f"{book.id}: {len(chunks)} chunks, {chars} characters")
+        print(f"estimated embedding cost: ${chars / 1000 * USD_PER_1K_CHARS:.4f} (estimate)")
+        if args.dry_run:
+            continue
 
-    from app.gcp.embed import GeminiEmbedder
-    from app.gcp.vectorstore import VectorStore
+        from app.gcp.embed import GeminiEmbedder
+        from app.gcp.vectorstore import VectorStore
 
-    n = await index_book(book, chunks, GeminiEmbedder(), VectorStore(settings.vs_collection_path))
-    print(f"upserted {n} objects")
+        n = await index_book(book, chunks, GeminiEmbedder(), VectorStore(settings.vs_collection_path))
+        print(f"upserted {n} objects")
 
 
 if __name__ == "__main__":
