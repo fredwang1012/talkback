@@ -1228,3 +1228,19 @@ was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-
   minute` every ~30 s while throttled; retry lines now name the status (`ClientError 429`), never the message.
 - face_detect builds its client with settings.gemini_region() like the other Gemini clients (embeddings stay regional).
 - Embeddings (gcp/embed.py, sync worker threads) are not under the pacer: a different quota, and no 429s seen there.
+
+## Local meaning-based search for uploads (chore/cleanup-findings, 2026-10-24)
+- RETRIEVAL_BACKEND=local (laptops, GitHub clones): an upload is published with BM25-only chunks as before, then
+  `main._embed_locally` computes multilingual-e5 passage embeddings for its chunks (`app/local_index.py`) and saves
+  `index/embeddings.npy`, the format `preprocess/index.py` writes for the shipped books; `_index_for` is cleared, so the
+  upload is scored hybrid (0.6 cosine + 0.4 BM25) like a shipped book. Same spoiler filter (para_end <= reader_para).
+- One book at a time (a one-slot semaphore), batches of 32 encoded in a worker thread: the event loop never blocks and
+  CPU/RAM stay bounded. Progress is the upload card's usual "Indexing" line (status.json `index`) plus log lines
+  `embedding <id> locally: N chunks` / `embedded <id> locally`. Enrichment does not wait for it.
+- No sentence-transformers (the optional `embed` extra): skipped with one log line, no status, BM25 keeps serving. Model
+  fails to load: index state "error" ("using basic search"). LOCAL_EMBED_UPLOADS=false turns it off.
+- Deletes are not blocked by it: the job stops between batches once the book is deleted and never writes into a removed
+  folder. A kind change re-chunks the book: the running job's vectors no longer match chunks.json and are dropped, and
+  the new chunks are embedded right after. `save_index(..., None)` now removes a stale embeddings.npy, and
+  `Index.load` ignores vectors whose count differs from the chunks. Vertex mode is unchanged.
+- Not measured: e5-small speed on a laptop CPU for a 1300-chunk textbook (tests use a fake embedder).

@@ -91,6 +91,8 @@ def save_index(dir_: Path, chunks: list[Chunk], embeddings: np.ndarray | None) -
     (dir_ / "chunks.json").write_text(json.dumps([c.__dict__ for c in chunks]), encoding="utf-8")
     if embeddings is not None:
         np.save(dir_ / "embeddings.npy", embeddings.astype(np.float32))
+    else:   # new chunks without vectors: older vectors (if any) belong to other chunks
+        (dir_ / "embeddings.npy").unlink(missing_ok=True)
 
 
 class Index:
@@ -105,6 +107,8 @@ class Index:
         chunks = [Chunk(**c) for c in json.loads((dir_ / "chunks.json").read_text(encoding="utf-8"))]
         emb_path = dir_ / "embeddings.npy"
         emb = np.load(emb_path) if emb_path.exists() else None
+        if emb is not None and len(emb) != len(chunks):   # vectors from other chunks: BM25 until they are rebuilt
+            emb = None
         return cls(chunks, emb, embedder if emb is not None else None)
 
     @property
