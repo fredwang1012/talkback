@@ -117,8 +117,9 @@ class VectorStore:
 
     async def text_search(self, query: str, filter: dict, top_k: int) -> list[dict]:
         """Best-effort: any HTTP error or malformed response yields []."""
-        body = {"text_search": {"search_text": query, "data_field_name": "text",
-                                "top_k": top_k, "filter": filter}}
+        body = {"text_search": {"search_text": query, "data_field_names": ["text"],
+                                "top_k": top_k, "filter": filter,
+                                "output_fields": {"data_fields": "*"}}}
         try:
             resp = await self._call("POST", f"{self._base}/dataObjects:search", body)
             return self._parse(resp.json())

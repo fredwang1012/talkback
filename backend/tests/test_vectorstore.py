@@ -118,7 +118,8 @@ def test_text_search_shape_and_errors_to_empty():
     f = spoiler_filter("b", None)
     assert run(make(ok).text_search("hi", f, 3)) == [{"data": {"chunk_id": "1"}, "distance": None}]
     assert json.loads(seen[0].content) == {"text_search": {
-        "search_text": "hi", "data_field_name": "text", "top_k": 3, "filter": f}}
+        "search_text": "hi", "data_field_names": ["text"], "top_k": 3, "filter": f,
+        "output_fields": {"data_fields": "*"}}}
     assert run(make(lambda r: httpx.Response(400, text="bad")).text_search("hi", f, 3)) == []
     assert run(make(lambda r: httpx.Response(200, text="not json")).text_search("hi", f, 3)) == []
     assert run(make(lambda r: httpx.Response(200, json={"results": [{"x": 1}]})).text_search("hi", f, 3)) == []
