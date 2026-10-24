@@ -44,9 +44,19 @@ const cmpNum = (a: string, b: string) => {
   return 0;
 };
 
+/** Headings that end a chapter rather than number a section: never stand-ins for a missing number. */
+const BACK_MATTER = /^(?:exercises?|references?|bibliography|further reading|summary|problems?|notes?)\b/i;
+
+/** `b` is the sibling right after `a` ("2.2" -> "2.3"): same depth and prefix, last part one higher. */
+const nextSibling = (a: string, b: string) => {
+  const x = a.split(".").map(Number), y = b.split(".").map(Number);
+  return x.length === y.length && x.slice(0, -1).every((v, i) => v === y[i]) && y[y.length - 1] === x[x.length - 1] + 1;
+};
+
 /**
- * The section numbered `num` ("2.3", "3"), at any depth. When no title carries that number but it falls in a gap of the
- * numbering with exactly one unnumbered section in it (a heading the PDF parse lost its number on), that section.
+ * The section numbered `num` ("2.3", "3"), at any depth. When no title carries that number but it is the one number
+ * missing between two siblings ("2.2" ... "2.4") with exactly one unnumbered section in that gap (a heading the PDF
+ * parse lost its number on), that section, unless it is back matter ("Exercises", "References").
  */
 export function findSectionByNumber<S extends SectionLike>(sections: S[], num: string): S | null {
   const nums = sections.map((s) => titleNumber(s.title));
@@ -58,7 +68,8 @@ export function findSectionByNumber<S extends SectionLike>(sections: S[], num: s
   while (before >= 0 && nums[before] === null) before--;
   if (before < 0) return null;
   const gap = sections.slice(before + 1, after);
-  return gap.length === 1 ? gap[0] : null;
+  if (gap.length !== 1 || BACK_MATTER.test(titleText(gap[0].title))) return null;
+  return nextSibling(nums[before]!, num) && nextSibling(num, nums[after]!) ? gap[0] : null;
 }
 
 /** The deepest section containing paragraph `para` (the last one starting at or before it). */
