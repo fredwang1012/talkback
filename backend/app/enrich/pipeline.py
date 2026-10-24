@@ -18,7 +18,7 @@ from typing import Awaitable, Callable
 from .. import books
 from ..config import settings
 from ..schema import Book
-from ..ttschunks import chunk_paragraph
+from ..ttschunks import rechunk_book
 from . import attribute as attribute_mod
 from . import cast as cast_mod
 from . import minor as minor_mod
@@ -115,8 +115,7 @@ def _book_path(book_id: str) -> Path:
 
 
 def rebuild_chunks(book: Book) -> None:
-    for p in book.paragraphs:
-        p.tts_chunks = chunk_paragraph(p, book)
+    rechunk_book(book)  # stamps Book.chunk_rules
 
 
 def _meter(book_id: str, llm: LLM) -> None:

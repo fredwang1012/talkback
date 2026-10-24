@@ -6,6 +6,10 @@ from .schema import Book, Paragraph, Segment, TtsChunk
 from .textnorm import normalize_for_tts
 
 MAX_CHARS = 280
+# Bump whenever chunk_paragraph's output can change (tags, pauses, sfx, splitting, normalisation): every book built
+# with a lower Book.chunk_rules is re-chunked once by the server (books.load_book). History:
+#   1: expressive delivery (#73: lead pauses, sfx, expressive_*) and singing (#74). Books without the field are 0.
+CHUNK_RULES_VERSION = 1
 DEFAULT_VOICE = "default"
 ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "st", "messrs", "capt", "col", "prof", "no", "vs", "etc", "sr", "jr", "gen", "lt"}
 
@@ -255,6 +259,18 @@ def chunk_paragraph(p: Paragraph, book: Book, *, expressive: bool = True) -> lis
                     id=f"p{p.idx}c{len(chunks)}", speaker=seg.speaker if is_char else "narrator",
                     voice=voice, tts_text=text, char_start=s, char_end=e))
     return chunks
+
+
+def rechunk_book(book: Book) -> None:
+    """Rebuild every paragraph's tts_chunks with the current rules and stamp CHUNK_RULES_VERSION. Keeps segment
+    styles (apply_styles only fills in missing ones). Raises ValueError if a segment does not match its paragraph."""
+    for p in book.paragraphs:
+        p.tts_chunks = chunk_paragraph(p, book)
+    book.chunk_rules = CHUNK_RULES_VERSION
+
+
+def needs_rechunk(book: Book) -> bool:
+    return (book.chunk_rules or 0) < CHUNK_RULES_VERSION
 
 
 def _legacy_tts_text(spoken: str, voice_tags: str, emotion: str | None, style: str | None, sfx: bool) -> str:

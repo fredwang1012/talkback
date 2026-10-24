@@ -21,7 +21,7 @@ from app.ingest_upload import _LIGATURES, _PAGE_NUMBER, Line, _cap_paragraphs, m
 from app.parsing import normalize  # noqa: E402
 from app.schema import Book, Narrator, Paragraph, Section  # noqa: E402
 from app.books import save_book  # noqa: E402
-from app.ttschunks import chunk_paragraph  # noqa: E402
+from app.ttschunks import rechunk_book  # noqa: E402
 
 SERIES = "harry-potter"
 AUTHOR = "J.K. Rowling"
@@ -110,8 +110,7 @@ def build(doc, spec: dict) -> Book:
     book = Book(id=spec["id"], title=spec["title"], author=AUTHOR, kind="novel", license=LICENSE,
                 sections=sections, paragraphs=paragraphs, narrator=Narrator(voice=NARRATOR_VOICE),
                 series=SERIES, series_index=spec["index"])
-    for p in book.paragraphs:
-        p.tts_chunks = chunk_paragraph(p, book)
+    rechunk_book(book)  # stamps Book.chunk_rules
     return book
 
 

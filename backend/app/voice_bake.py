@@ -15,7 +15,7 @@ from typing import Callable
 
 from . import voices
 from .schema import Book, Character
-from .ttschunks import chunk_paragraph
+from .ttschunks import rechunk_book
 
 # ~10 s of calm, neutral speech; tags go in front (the same prefix the reader puts on this character's lines).
 SAMPLE_TEXT = ("The morning was quiet, and the road ran on ahead of us, past the old stone wall and down toward "
@@ -73,8 +73,7 @@ def apply_voice(book: Book, char: Character, voice_id: str) -> None:
     char.voice, char.voice_tags = voice_id, ""
     if book.narrator and book.narrator.is_character == char.id:
         book.narrator.voice = voice_id
-    for p in book.paragraphs:
-        p.tts_chunks = chunk_paragraph(p, book)
+    rechunk_book(book)  # stamps Book.chunk_rules
 
 
 async def bake_character(client, book: Book, char: Character, *,

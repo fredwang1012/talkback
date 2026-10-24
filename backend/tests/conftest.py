@@ -50,6 +50,12 @@ def _public_api_off_unless_a_test_says_otherwise(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_auto_rechunk_unless_a_test_says_otherwise(monkeypatch):
+    """Tests load the committed data/books: the server's background re-chunk (books._upgrade) must never rewrite them."""
+    monkeypatch.setattr(settings, "auto_rechunk", False, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_minor_voices_unless_a_test_says_otherwise(monkeypatch):
     """Pipeline tests assert exact casts and segments; the generic-voice pass (#70) is tested on its own."""
     monkeypatch.setattr(settings, "minor_voices", False, raising=False)
