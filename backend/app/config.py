@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # Uploaded novels: cast, dialogue split and summaries by an LLM after the text ingest (app/enrich).
     usage_log_file: bool = True       # append every billable call to data/cache/usage.jsonl (off on Cloud Run: logs only)
     upload_enrich: bool = True
+    # Re-chunk (and save) a book whose tts_chunks were built with older rules (ttschunks.CHUNK_RULES_VERSION), in a
+    # background thread at startup / on first load. No LLM, no API call; changed chunks are re-voiced when played.
+    auto_rechunk: bool = True
     minor_voices: bool = True  # uncast speakers in uploaded novels read in one of two generic voices (enrich/minor.py)
     upload_llm: Literal["claude", "gemini"] = "claude"   # developer-only; claude falls back to gemini when out of credit
     upload_confirm: bool = False      # testing mode: show the estimate and wait for POST /api/books/{id}/enrich

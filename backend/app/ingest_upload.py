@@ -26,7 +26,7 @@ from . import retrieval
 from .config import settings
 from .parsing import CODE_MARK, HEADING_MARK, parse
 from .schema import Book, Narrator, Paragraph, Section
-from .ttschunks import chunk_paragraph, sentence_spans, split_long
+from .ttschunks import rechunk_book, sentence_spans, split_long
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MULTIPART_SLACK = 1024 * 1024  # form-encoding overhead allowed on top of the file cap when checking Content-Length
@@ -771,8 +771,7 @@ def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_
         raise UploadError("No paragraphs were found in the file.")
     book = Book(id=book_id, title=title, author=author, kind=kind, kind_detected=kind_detected, license=LICENSE,
                 sections=sections, paragraphs=paragraphs, narrator=Narrator(voice=NARRATOR_VOICE))
-    for p in book.paragraphs:
-        p.tts_chunks = chunk_paragraph(p, book)
+    rechunk_book(book)  # stamps Book.chunk_rules
     return book
 
 

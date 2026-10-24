@@ -777,3 +777,25 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   HP2 1, HP4 1 (egg song), others 0. Known misses: Sorting Hat's last 3 short stanzas, Twinkle's second half (lead-in
   'in this way:—' has no singing word), Toad's song (lead-in ends on a bare dash), 'Weasley is our King'.
   No book.json was rebuilt: songs are sung after a book's chunks are rebuilt (preprocess/chunk_tts.py) and in new uploads.
+
+## Chunk-rules version: books pick up new TTS delivery rules by themselves (2026-10-23)
+- `ttschunks.CHUNK_RULES_VERSION` (now 1 = #73 expressive delivery + #74 singing) and `Book.chunk_rules` (default 0,
+  so every existing book.json still validates). `ttschunks.rechunk_book` rebuilds all chunks and stamps the version;
+  ingest (`ingest_upload.build_book`, `ingest_series`), enrich (`pipeline.rebuild_chunks`, `minor`), voice baking and
+  `preprocess/attribute.py` / `chunk_tts.py` all go through it. **Bump the constant whenever chunk/tag rules change.**
+- Server: `books.load_book` queues a re-chunk of an out-of-date book on one background thread
+  (`books._upgrade`), and `main._warm_up` queues every book at startup (`books.schedule_all_upgrades`). Requests keep
+  the old chunks until the new file is saved; the next `load_book` sees the new mtime/size and returns a new object,
+  so `main._book_bodies` re-serialises. Measured: Alice 1812 chunks 0.28 s (171 chunks change), HP5 18k chunks 2.9 s
+  (1836 change); styles unchanged (Alice 17 shouting / 12 whispering before and after).
+- Safety: works on a fresh parse (not the shared cached object, so no portrait URLs get written); one upgrade per file
+  at a time (in-process dedupe); skips the write if the file changed since it was read (an enrich save wins); any error
+  (bad segment, read-only disk) is logged, the old file stays, and that file version is not retried. Segment styles
+  are never cleared. Two Cloud Run instances can both rewrite a book once; the content is identical. `AUTO_RECHUNK=false`
+  turns it off (tests do, so they never rewrite the committed data/books).
+- Side effect: running the server rewrites out-of-date committed `data/books/*/book.json` in a clone (git shows them
+  modified) until the rebuilt files are committed. Rebuild offline with `preprocess/chunk_tts.py --book <id>`.
+- `preprocess/chunk_tts.py` now keeps segment styles by default (it used to clear them, which dropped Alice's
+  LLM-assigned styles, 17->7 shouting, 12->7 whispering); `--redetect-styles` keeps the old behaviour.
+- Cost: TTS cache keys are sha256(model, tts_text, voice, ...), so only chunks whose tts_text changed are re-voiced,
+  and only when played (same for lip-sync videos). Unchanged chunks keep their audio (tested).

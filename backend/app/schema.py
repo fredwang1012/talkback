@@ -103,3 +103,6 @@ class Book(BaseModel):
     # Books of one series (same `series`, ordered by `series_index`): a reader of book N already knows books 1..N-1.
     series: str | None = None
     series_index: int | None = None
+    # ttschunks.CHUNK_RULES_VERSION the tts_chunks were built with (0 = before the version existed). The server
+    # re-chunks an older book once after loading it (books.load_book), keeping segment styles.
+    chunk_rules: int = 0

@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 
 from ..schema import Book, Character
-from ..ttschunks import chunk_paragraph
+from ..ttschunks import rechunk_book
 from . import attribute as at
 
 
@@ -138,6 +138,5 @@ def assign_minor_voices(book: Book, apply: bool = True) -> list[at.Decision]:
     lines = [d for d in ds if d.rule == "minor"]
     if apply and lines:
         ensure_stand_ins(book, {d.speaker for d in lines})
-        for p in book.paragraphs:
-            p.tts_chunks = chunk_paragraph(p, book)
+        rechunk_book(book)  # stamps Book.chunk_rules
     return lines
