@@ -516,3 +516,19 @@ However, I, Percy Weasley, did try to offer some comforting words, assuring him 
 - `backend/app/delivery.py`: rule-based, no LLM. Style comes from a short speech tag in the adjacent narrator segment (whisper/hiss/breathed/mutter/murmur -> whispering; shout/yell/bellow/roar/scream/thunder/bawl -> shouting), or from mostly-uppercase dialogue with "!". Ambiguous or contradictory cases get no style. Laughter sfx only when a character's chunk starts with Ha / Ha ha / Hahaha / Hee hee / Ho ho / Heh (inserted after the opening quote). tts_text order: voice prosody tags, style, emotion, text. `Segment.style` stores the result; the enrich LLM may also return `style`, and the rule wins where it fires.
 - Cache keys hash tts_text and chunk ids are positional, so only chunks whose tts_text changed need new audio (HP1-7: 1107 of 69293 chunks).
 - Real probe (3 short lines, HTTP 200): style tags come back glued to the first word ('stylewhisperingyou'll', 'styleshoutingI', 'sfxlaughterHa'); `tts_cache.strip_tag_residue` removes them so highlighting stays aligned. A lone `"<|sfx:laughter|>Ha!"` returned empty timestamps (whole chunk highlighted).
+
+## Spoiler eval: judge with retrieved passages, then outcome-rule fix (hp3, safe mode, 122 questions)
+Judge option `--judge-passages` shows the judge the passages the answer was given ("anything supported by these passages (already read) is NOT a leak"). All retrieved passages were verified <= reader position (structural leaks 0).
+
+| | before (no passages) | before, judged with passages | after fix (judged with passages) |
+|---|---|---|---|
+| judge-flagged leaks | 13 | 2 | 3 |
+| true leaks (manual check) | n/a | 1 | 3 |
+| earlier-text accuracy | 74% | 74% | 74% |
+| future questions declined/handled | 76% | 92% | 96% |
+| detail (earlier, 1-3) | 2.24 | 2.24 | 2.26 |
+
+True leaks before: (1) para 1988 harry, "Did Crookshanks really eat Scabbers?": answer denied it and said "he's still alive" (an outcome the notes do not establish). The other flag (para 2565 ginny, Firebolt/Sirius) was a false alarm: para 1987 in the passages says Hermione thinks Sirius sent it.
+Fix: both spoiler-safe templates in `backend/app/personas.py` now say never to state or deny an outcome the notes do not establish (survived, escaped, eaten, guilty, lying), to say the story has not revealed it yet, and not to attribute a detail to a scene unless a passage shows it. Full-book templates are unchanged.
+True leaks after (different questions, so sampling noise in Gemini answers): (1) para 756 dumbledore, why Harry reacted to the dementor: said the screams were his mother's before Voldemort's attack (outside knowledge, text does not explain it yet); (2) para 756 dobby, Harry's Grim omen: described Trelawney's tea-leaf reading and said Harry does not die; (3) para 1868 hagrid, what is wrong with Lupin: said Snape's potion is the only thing that helps him (later fact). The outcome rule fixed the survival-denial pattern but Gemini still volunteers outside knowledge or later facts when the passages are thin. One more prompt iteration was not run (Claude budget).
+Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results in data/eval/ (before in data/eval/before-fix/).
