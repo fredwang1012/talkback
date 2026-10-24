@@ -23,6 +23,7 @@ from . import books, cast, faces, ingest_upload, public_client, retrieval, tts_c
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
+from .enrich import describe as describe_book
 from .enrich import pipeline as enrich_pipeline
 from .enrich.detect import detect_kind
 from .gcp import usage
@@ -871,6 +872,37 @@ def _upload_conflict(found: tuple[str, str, str | None] | None) -> JSONResponse 
     if running:
         return _duplicate("deleting", book_id)
     return _duplicate("duplicate", book_id, title) if state == "ready" else None
+
+
+describe_bucket = TokenBucket(capacity=12, per_seconds=60)  # per IP / account: each may cost one Gemini Flash call
+
+
+@app.post("/api/books/describe", dependencies=[Depends(require_access)])
+async def describe_upload(request: Request, file: UploadFile = File(...)):
+    """Title and author for the Add book form, read from the chosen file (#83). Nothing is stored.
+
+    May cost one Gemini Flash call, so: signed-in accounts only under PER_USER, a per-caller bucket here, and a global
+    bucket, daily cap and budget reservation in describe_book. Only the start of a .txt is read (a PDF needs its whole
+    structure, up to the upload cap); parsing runs under a small global limit (429 when full) with a timeout.
+    """
+    users.require_account("Sign in to add books.")
+    if not describe_bucket.allow(rate_key(request)):
+        raise HTTPException(429, "Too many files at once; type the title for now.")
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in (".pdf", ".txt"):
+        raise HTTPException(400, "Upload a .pdf or .txt file.")
+    if ext == ".txt":
+        data = await file.read(describe_book.TEXT_PREFIX_BYTES)
+    else:
+        data = await file.read(ingest_upload.MAX_UPLOAD_BYTES + 1)
+        if len(data) > ingest_upload.MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "File is too large (20 MB maximum).")
+        if not data.startswith(b"%PDF"):
+            raise HTTPException(400, "That does not look like a PDF.")
+    try:
+        return await describe_book.describe(data, ext)
+    except describe_book.Busy:
+        raise HTTPException(429, "Busy reading other files; type the title for now.") from None
 
 
 @app.get("/api/books/{book_id}/status")

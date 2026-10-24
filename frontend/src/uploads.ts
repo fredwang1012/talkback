@@ -70,3 +70,13 @@ export function conflictPatch(e: unknown): Pick<UploadJob, "phase" | "message" |
   if (!(e instanceof UploadConflict) || e.reason === "deleting") return null;
   return e.reason === "duplicate" ? { phase: "exists", message: e.message, existing: e.bookId } : { phase: "exists", message: e.message };
 }
+
+/** The form's title and author after the server's guess (#83): never overwrites what the reader typed. */
+export function autoFill(
+  form: { title: string; author: string }, guess: { title: string; author: string }, touched: { title: boolean; author: boolean },
+): { title: string; author: string } {
+  return {
+    title: !touched.title && guess.title ? guess.title : form.title,
+    author: !touched.author && guess.author ? guess.author : form.author,
+  };
+}

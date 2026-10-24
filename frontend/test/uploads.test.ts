@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { indexingLabel, pollIndexing, uploadBook, UploadConflict, type BookStatus } from "../src/api";
-import { conflictPatch, fileProblem, isBusyError, isDeletingConflict, jobFinished, jobLine, jobProgress, titleFromFile, uploadSettled, type UploadJob } from "../src/uploads";
+import { indexingLabel, pollIndexing, uploadBook, UploadConflict, type BookStatus, describeBook } from "../src/api";
+import { conflictPatch, fileProblem, isBusyError, isDeletingConflict, jobFinished, jobLine, jobProgress, titleFromFile, uploadSettled, type UploadJob, autoFill } from "../src/uploads";
 import { vi, afterEach } from "vitest";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -97,5 +97,39 @@ describe("duplicate uploads (#82)", () => {
     expect(jobLine(j)).toBe("This file is already in your library as “Dune”.");
     expect(jobFinished(j)).toBe(true);
     expect(jobFinished(job({ phase: "processing" }))).toBe(false);
+  });
+});
+
+describe("auto title and author (#83)", () => {
+  it("fills only what the reader has not typed", () => {
+    const guess = { title: "The Time Machine", author: "H. G. Wells" };
+    expect(autoFill({ title: "tm", author: "" }, guess, { title: false, author: false })).toEqual(guess);
+    expect(autoFill({ title: "Mine", author: "" }, guess, { title: true, author: false })).toEqual({ title: "Mine", author: "H. G. Wells" });
+    expect(autoFill({ title: "tm", author: "Me" }, { title: "", author: "" }, { title: false, author: true })).toEqual({ title: "tm", author: "Me" });
+  });
+
+  it("asks the server with the file and returns its guess", async () => {
+    const f = vi.fn(async (_u: string, _i?: RequestInit) => new Response(JSON.stringify({ title: "Dune", author: "Frank Herbert", source: "llm" })));
+    vi.stubGlobal("fetch", f);
+    expect(await describeBook(new File(["x"], "dune.pdf"))).toEqual({ title: "Dune", author: "Frank Herbert", source: "llm" });
+    const [url, init] = f.mock.calls[0];
+    expect(url).toBe("/api/books/describe");
+    expect(((init?.body as FormData).get("file") as File).name).toBe("dune.pdf");
+  });
+
+  it("sends only the start of a text file", async () => {
+    const f = vi.fn(async (_u: string, _i?: RequestInit) => new Response(JSON.stringify({ title: "", author: "", source: "none" })));
+    vi.stubGlobal("fetch", f);
+    await describeBook(new File(["x".repeat(100_000)], "big.txt"));
+    const sent = ((f.mock.calls[0][1]?.body as FormData).get("file") as File);
+    expect(sent.name).toBe("big.txt");
+    expect(sent.size).toBe(24_000);
+  });
+
+  it("a failed guess is just no guess", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 429 })));
+    expect(await describeBook(new File(["x"], "a.pdf"))).toBeNull();
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Failed to fetch"); }));
+    expect(await describeBook(new File(["x"], "a.pdf"))).toBeNull();
   });
 });

@@ -362,6 +362,26 @@ export async function uploadBook(file: File, title: string, author: string, kind
   return res.json() as Promise<{ book_id: string }>;
 }
 
+export const DESCRIBE_TEXT_BYTES = 24_000; // backend describe.TEXT_PREFIX_BYTES
+export type BookGuess = { title: string; author: string; source: "metadata" | "llm" | "none" };
+
+/** The title and author the server reads from a chosen file (PDF metadata, else its first pages); null on any failure
+ * (the form keeps the file-name title). Nothing is stored server-side. */
+export async function describeBook(file: File, signal?: AbortSignal): Promise<BookGuess | null> {
+  const form = new FormData();
+  // a text file's title is in its opening lines: send only those (the server reads no more); a PDF needs all of it
+  const body = /\.txt$/i.test(file.name) ? new File([file.slice(0, DESCRIBE_TEXT_BYTES)], file.name, { type: file.type }) : file;
+  form.append("file", body, file.name);
+  try {
+    const res = await timedFetch("/api/books/describe", { method: "POST", headers: authHeaders(), body: form, signal }, 30000);
+    if (!res.ok) return null;
+    const j = (await res.json()) as Partial<BookGuess>;
+    return { title: j.title ?? "", author: j.author ?? "", source: j.source ?? "none" };
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchBookStatus(id: string): Promise<BookStatus> {
   const res = await timedFetch(`/api/books/${encodeURIComponent(id)}/status`, { headers: authHeaders() });
   if (!res.ok) {

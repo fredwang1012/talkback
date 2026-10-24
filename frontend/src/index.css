@@ -140,6 +140,7 @@ button:disabled { cursor: not-allowed; }
 .add-book { margin-top: 56px; max-width: 520px; }
 .add-book h2 { font-family: var(--font-title); font-weight: 400; font-size: 1.9rem; margin: 0 0 16px; }
 .add-book .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.add-book .field-hint { margin-left: 6px; color: var(--ink-faint); font-style: italic; font-size: 0.85rem; }
 .add-book label { font-size: 0.9rem; color: var(--ink-soft); }
 .add-book input, .add-book select {
   font: inherit; color: var(--ink); width: 100%; min-height: 44px; padding: 8px 10px;

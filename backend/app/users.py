@@ -294,12 +294,12 @@ def guard_book(book_id: str) -> None:
         raise HTTPException(404, "Book not found")
 
 
-def require_account() -> Identity:
-    """Destructive actions: with PER_USER on, only a signed-in account (never the shared anonymous namespace) may run
-    them. With PER_USER off (a single-user local run) they stay allowed behind the usual access-code gate."""
+def require_account(message: str = "Sign in to delete things.") -> Identity:
+    """Destructive or paid actions: with PER_USER on, only a signed-in account (never the shared anonymous namespace)
+    may run them. With PER_USER off (a single-user local run) they stay allowed behind the usual access-code gate."""
     ident = current()
     if ident.ns and not ident.email:
-        raise HTTPException(403, "Sign in to delete things.")
+        raise HTTPException(403, message)
     return ident
 
 

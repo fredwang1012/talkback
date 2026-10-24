@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import {
-  accountLabel, changeKind, deleteBook, fetchBooks, fetchHiddenBooks, hideBook, restoreBook, waitForDeletion, type HiddenBook, fetchMe, SIGN_OUT_URL, type Me, pollEnrichment, pollUpload, startEnrichment, uploadBook,
+  accountLabel, changeKind, deleteBook, fetchBooks, fetchHiddenBooks, hideBook, restoreBook, waitForDeletion, type HiddenBook, fetchMe, SIGN_OUT_URL, type Me, pollEnrichment, pollUpload, startEnrichment, uploadBook, describeBook,
   type BookStatus, type BookSummary, type UploadKind,
   enrichDoneNote,
 } from "../api";
 import { clearAccessToken, getAccessToken } from "../accessToken";
 import { canDelete, cardActions, groupShelves, hiddenLabel, kindLabel, moveTarget, seriesBlurb, seriesTitle, wrapIndex, type CardAction, type SeriesGroup } from "../shelves";
-import { conflictPatch, fileProblem, isBusyError, isDeletingConflict, jobFinished, jobLine, jobProgress, titleFromFile, uploadSettled, type UploadJob } from "../uploads";
+import { conflictPatch, fileProblem, isBusyError, isDeletingConflict, jobFinished, jobLine, jobProgress, titleFromFile, uploadSettled, type UploadJob, autoFill } from "../uploads";
 
 const pct = (p: number | undefined) => Math.round(Math.max(0, Math.min(1, p ?? 0)) * 100);
 
@@ -21,12 +21,33 @@ function AddBook({ onStart, onCancel }: { onStart: (req: UploadRequest) => void;
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [detecting, setDetecting] = useState(false);
+  const touched = useRef({ title: false, author: false });   // typed by the reader: a late guess never overwrites it
+  const guessCtl = useRef<AbortController | null>(null);
+  useEffect(() => () => guessCtl.current?.abort(), []);
 
   function pick(list: FileList | File[] | null) {
     const picked = list ? [...list] : [];
     setFiles(picked);
     setTitle(picked.length === 1 ? titleFromFile(picked[0].name) : "");
     setError(null);
+    guessCtl.current?.abort();
+    touched.current = { title: false, author: false };
+    setDetecting(false);
+    if (picked.length === 1 && !fileProblem(picked[0])) void detect(picked[0]);
+  }
+
+  /** Title and author from the file (PDF metadata, else its title page); the fields stay editable meanwhile. */
+  async function detect(file: File) {
+    const ctl = new AbortController();
+    guessCtl.current = ctl;
+    setDetecting(true);
+    const guess = await describeBook(file, ctl.signal);
+    if (ctl.signal.aborted) return;
+    setDetecting(false);
+    if (!guess) return;
+    setTitle((t) => autoFill({ title: t, author: "" }, guess, touched.current).title);
+    setAuthor((a) => autoFill({ title: "", author: a }, guess, touched.current).author);
   }
 
   function drop(e: DragEvent) {
@@ -45,6 +66,7 @@ function AddBook({ onStart, onCancel }: { onStart: (req: UploadRequest) => void;
       files: files.map((f) => ({ file: f, title: files.length === 1 ? title.trim() : titleFromFile(f.name) || f.name })),
       author: author.trim(), kind,
     });
+    guessCtl.current?.abort(); setDetecting(false);
     setFiles([]); setTitle(""); setAuthor(""); setError(null);
     if (fileRef.current) fileRef.current.value = "";
   }
@@ -66,13 +88,15 @@ function AddBook({ onStart, onCancel }: { onStart: (req: UploadRequest) => void;
         </div>
         {files.length <= 1 && (
           <div className="field">
-            <label htmlFor="ab-title">Title</label>
-            <input id="ab-title" type="text" value={title} maxLength={120} onChange={(e) => setTitle(e.target.value)} />
+            <label htmlFor="ab-title">Title {detecting && <span className="field-hint" role="status">detecting title and author…</span>}</label>
+            <input id="ab-title" type="text" value={title} maxLength={120} aria-busy={detecting}
+              onChange={(e) => { touched.current.title = true; setTitle(e.target.value); }} />
           </div>
         )}
         <div className="field">
           <label htmlFor="ab-author">Author (optional{files.length > 1 ? ", used for every file" : ""})</label>
-          <input id="ab-author" type="text" value={author} maxLength={120} onChange={(e) => setAuthor(e.target.value)} />
+          <input id="ab-author" type="text" value={author} maxLength={120} aria-busy={detecting}
+            onChange={(e) => { touched.current.author = true; setAuthor(e.target.value); }} />
         </div>
         <div className="field">
           <label htmlFor="ab-kind">Kind</label>
