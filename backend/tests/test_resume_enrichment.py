@@ -204,6 +204,7 @@ def test_retry_only_for_uploads(rig):
 def test_retry_per_user_permissions(pu, monkeypatch):  # noqa: F811
     client, _ = pu
     monkeypatch.setattr(main, "_deleted", set())   # other tests' deleted ids
+    monkeypatch.setattr(settings, "upload_enrich", True)
     started = []
 
     async def fake_run(book_id, resume=False):
@@ -285,3 +286,25 @@ def test_retries_are_limited_and_persisted(rig, monkeypatch):
         assert st(BID)["status"] == "error"
     r = rig.post(f"/api/books/{BID}/enrich")
     assert r.status_code == 409 and "several times" in r.json()["detail"]
+
+
+# ---------- UPLOAD_ENRICH=false: no resume, no retry (#141 review) ----------
+
+def test_resume_respects_upload_enrich_off(rig, monkeypatch):
+    stale(BID)
+    monkeypatch.setattr(settings, "upload_enrich", False)
+    asyncio.run(main._resume_enrichments())
+    assert not rig.fake.calls
+    e = st(BID)
+    assert e["status"] == "error" and e["message"] == main.ENRICH_OFF
+
+
+def test_retry_respects_upload_enrich_off(rig, monkeypatch):
+    make_book_on_disk(settings.data_dir, book_id=BID)
+    ingest_upload.write_status(BID, "ready", enrich={"status": "error", "message": pipeline.FAILED})
+    main._upload_status.clear()
+    monkeypatch.setattr(settings, "upload_enrich", False)
+    r = rig.post(f"/api/books/{BID}/enrich")
+    assert r.status_code == 409 and r.json()["detail"] == main.ENRICH_OFF
+    assert not rig.fake.calls
+

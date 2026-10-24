@@ -733,6 +733,7 @@ async def _enrich_indexer(book: Book) -> None:
 
 
 MAX_ENRICH_RETRIES = 3          # user retries per book (persisted in status.json as enrich_retries)
+ENRICH_OFF = "Character processing is turned off on this server; the book stays readable with the narrator."
 _enrich_jobs: set[str] = set()   # books with an enrichment job queued or running
 _kind_claims: set[str] = set()   # books whose kind change is being handled (check-and-claim, see change_kind)
 
@@ -801,6 +802,9 @@ async def _resume_enrichments() -> None:
         jobs = []
         for book_id in todo:
             if book_id in _enrich_jobs or book_id in _kind_claims or book_id in _deleted:
+                continue
+            if not settings.upload_enrich:   # UPLOAD_ENRICH=false: never pay for a resume
+                _set_enrich(book_id, status="error", message=ENRICH_OFF)
                 continue
             book = await asyncio.to_thread(books.load_book, book_id)
             if book is None:
@@ -1135,6 +1139,8 @@ async def start_enrichment(book_id: str, background: BackgroundTasks):
         raise HTTPException(409, "This book is still being processed; try again when it finishes.")
     if state not in ("awaiting_confirmation", "error"):   # also "refused": a cap stop is final
         raise HTTPException(409, "This book is not waiting for confirmation.")
+    if not settings.upload_enrich:   # UPLOAD_ENRICH=false: no paid processing, not even a retry
+        raise HTTPException(409, ENRICH_OFF)
     retries = int(st.get("enrich_retries") or 0)
     if retry and retries >= MAX_ENRICH_RETRIES:
         raise HTTPException(409, "Character processing has failed several times; the book stays readable with the narrator.")
