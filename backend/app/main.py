@@ -920,6 +920,16 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
                         message=enrich_pipeline.TEXTBOOK_FAILED if kind == "textbook" else enrich_pipeline.FAILED)
 
 
+_series_tasks: set[asyncio.Task] = set()
+
+
+def _start_series_early(book_id: str) -> None:
+    from .enrich import series_early
+    task = asyncio.create_task(series_early.detect_default(book_id))
+    _series_tasks.add(task)
+    task.add_done_callback(_series_tasks.discard)
+
+
 async def _ingest_work(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str):
     """Parse, chunk and publish one upload (the caller holds an ingest slot). Returns (book, chunks, final kind)."""
     if book_id in _deleted:

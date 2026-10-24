@@ -45,6 +45,8 @@ class ParityFake:
             out = {"title": "Alice's Adventures", "authors": ["Lewis Carroll"]}
         elif title == "SeriesGuess":
             out = {"member": True, "index": 1}
+        elif title == "EarlyGuess":
+            out = {"series": "Dune", "series_index": 1}
         elif title == "FaceBox":
             out = {"found": self.found, "x": 0.2, "y": 0.1, "w": 0.5, "h": 0.6}
         elif title == "Readings":
@@ -81,7 +83,7 @@ def test_the_new_routes_exist_and_nothing_else(par):
     paths = {r.path for r in public_api.app.routes if hasattr(r, "methods")}
     assert paths == {"/api/health", "/api/public/enrich", "/api/public/enrich/{job_id}", "/api/public/answer",
                      "/api/public/translate", "/api/public/detect", "/api/public/describe",
-                     "/api/public/series", "/api/public/faces/detect", "/api/public/equations", "/api/public/equations/{ticket}"}
+                     "/api/public/series", "/api/public/series-early", "/api/public/faces/detect", "/api/public/equations", "/api/public/equations/{ticket}"}
 
 
 # ---------- translate (#12) ----------
@@ -134,6 +136,13 @@ def test_series_question_route(par):
     assert r.status_code == 200 and r.json() == {"member": True, "index": 1}
     assert par.fake.calls == ["SeriesGuess"] and public_api.answer_budget.spent() > 0
     assert par.post("/api/public/series", json={"text": "x" * (public_api.SERIES_MAX_CHARS + 1)}).status_code == 422
+
+
+def test_series_early_route(par):
+    r = par.post("/api/public/series-early", json={"text": "Title: Dune Author: Frank Herbert Opening text: In the week"})
+    assert r.status_code == 200 and r.json() == {"series": "Dune", "series_index": 1}
+    assert par.fake.calls == ["EarlyGuess"] and public_api.answer_budget.spent() > 0
+    assert par.post("/api/public/series-early", json={"text": "x" * 3000}).status_code == 422
 
 
 def test_detect_and_describe_size_limits(par):

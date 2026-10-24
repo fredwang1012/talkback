@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .config import settings
 from .enrich import describe as describe_mod
 from .enrich import detect as detect_mod
-from .enrich import equations, pipeline, series_link, spend, textbook
+from .enrich import equations, pipeline, series_early, series_link, spend, textbook
 from .enrich.llm import CHARS_PER_TOKEN, SpendLimit, make_llm, price_usd
 from . import face_detect, multilingual
 from . import emotion
@@ -611,6 +611,8 @@ class BodyLimit:
     LIMITS = {"/api/public/enrich": ENRICH_BODY_LIMIT, "/api/public/answer": ANSWER_BODY_LIMIT,
               "/api/public/translate": SMALL_BODY_LIMIT, "/api/public/detect": SMALL_BODY_LIMIT,
               "/api/public/describe": SMALL_BODY_LIMIT, "/api/public/series": SMALL_BODY_LIMIT,
+              "/api/public/series-early": SMALL_BODY_LIMIT,
+              "/api/public/series-early": SMALL_BODY_LIMIT,
               "/api/public/faces/detect": FACE_BODY_LIMIT,
               "/api/public/equations": 1024}
 
@@ -895,6 +897,30 @@ async def public_series(req: TextRequest, request: Request):
     _small_allowed(request)
     out = await _single_call(series_link.SYSTEM, req.text, series_link.SeriesGuess,
                              in_chars=len(series_link.SYSTEM) + len(req.text), max_out=200, seconds=SMALL_SECONDS)
+    return out.model_dump()
+
+
+@app.post("/api/public/series-early")
+async def public_series_early(req: TextRequest, request: Request):
+    """Series name and volume number from a new upload's title, author and opening text (enrich/series_early.py)."""
+    if len(req.text) > series_early.MAX_REQUEST_CHARS:
+        raise PublicError(422, "invalid", "Invalid request: text")
+    _small_allowed(request)
+    out = await _single_call(series_early.SYSTEM, req.text, series_early.EarlyGuess,
+                             in_chars=len(series_early.SYSTEM) + len(req.text), max_out=series_early.OUT_TOKENS * 5,
+                             seconds=SMALL_SECONDS)
+    return out.model_dump()
+
+
+@app.post("/api/public/series-early")
+async def public_series_early(req: TextRequest, request: Request):
+    """Series name and volume number from a new upload's title, author and opening text (enrich/series_early.py)."""
+    if len(req.text) > series_early.MAX_REQUEST_CHARS:
+        raise PublicError(422, "invalid", "Invalid request: text")
+    _small_allowed(request)
+    out = await _single_call(series_early.SYSTEM, req.text, series_early.EarlyGuess,
+                             in_chars=len(series_early.SYSTEM) + len(req.text), max_out=series_early.OUT_TOKENS * 5,
+                             seconds=SMALL_SECONDS)
     return out.model_dump()
 
 

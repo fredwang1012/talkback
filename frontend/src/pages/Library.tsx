@@ -7,6 +7,7 @@ import {
 import { clearAccessToken, getAccessToken } from "../accessToken";
 import { canDelete, cardActions, groupShelves, hiddenLabel, kindLabel, moveTarget, seriesBlurb, seriesTitle, wrapIndex, type CardAction, type SeriesGroup } from "../shelves";
 import { VolumeNote, noteFromEnrich, type MoveNote } from "./VolumeNote";
+import { isProcessing, sameList, stageKey, startListRefresh } from "../liveList";
 import { conflictPatch, fileProblem, isBusyError, isDeletingConflict, jobFinished, jobLine, jobProgress, titleFromFile, uploadSettled, type UploadJob, autoFill } from "../uploads";
 
 const pct = (p: number | undefined) => Math.round(Math.max(0, Math.min(1, p ?? 0)) * 100);
@@ -311,21 +312,38 @@ export default function Library() {
   const alive = useRef<AbortController>(new AbortController());
   const abortRef = useRef<AbortController | null>(null);
 
-  const load = () => fetchBooks().then(setBooks).catch((e: Error) => setError(e.message));
+  const load = () => fetchBooks().then((next) => setBooks((cur) => (sameList(cur, next) ? cur : next))).catch((e: Error) => setError(e.message));
+  const [serverBusy, setServerBusy] = useState(0);   // listed uploads whose enrichment or indexing is still running or queued
+  const refresher = useRef<{ poke: () => void } | null>(null);
   const loadHidden = () => fetchHiddenBooks().then(setHidden).catch(() => setHidden([]));
   useEffect(() => { load(); loadHidden(); fetchMe().then(setMe); }, []);
   // an upload whose character processing was interrupted (a server restart) or failed offers "Try again" on its card
   useEffect(() => {
     const c = new AbortController();
-    for (const b of books ?? []) {
-      if (!b.id.startsWith("u-")) continue;
+    const uploads = (books ?? []).filter((b) => b.id.startsWith("u-"));
+    let busy = 0, answered = 0; if (books && uploads.length === 0) setServerBusy(0);
+    for (const b of uploads) {
       fetchBookStatus(b.id).then((st) => {
+        answered++;
+        if (st.status === "ready" && (st.enrich?.status === "running" || st.index?.state === "running" || st.index?.state === "queued")) busy++;
+        if (!c.signal.aborted && answered === uploads.length) setServerBusy(busy);
         const n = st.enrich?.status === "error" ? noteFromEnrich(b.id, st.enrich) : null;
         if (n && !c.signal.aborted) setNotes((cur) => (cur[b.id] ? cur : { ...cur, [b.id]: n }));
-      }).catch(() => undefined);
+      }).catch(() => { answered++; if (!c.signal.aborted && answered === uploads.length) setServerBusy(busy); });
     }
     return () => c.abort();
   }, [books]);
+  // while an upload is processing (its series may be set any moment), keep the list fresh; stop when idle
+  const processing = isProcessing(jobs, serverBusy);
+  useEffect(() => {
+    if (!processing) return;
+    const r = startListRefresh({
+      fetch: fetchBooks,
+      apply: (next) => setBooks((cur) => (sameList(cur, next) ? cur : next)),
+    });
+    refresher.current = r;
+    return () => { r.stop(); if (refresher.current === r) refresher.current = null; };
+  }, [processing]);
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => { const c = new AbortController(); alive.current = c; return () => c.abort(); }, []);
 
@@ -417,9 +435,13 @@ export default function Library() {
   async function followJob(key: string, bookId: string) {
     const signal = alive.current.signal;
     let listed = false;
+    let lastStage = "";
     const onUpdate = (s: BookStatus) => {
       updJob(key, { phase: "processing", status: s });
+      const stage = stageKey(s);
       if (s.status === "ready" && !listed) { listed = true; load(); }
+      else if (s.status === "ready" && stage !== lastStage) refresher.current ? refresher.current.poke() : load();
+      lastStage = stage;
     };
     try {
       const st = await pollUpload(bookId, uploadSettled, onUpdate, signal);
