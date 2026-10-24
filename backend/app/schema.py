@@ -1,7 +1,7 @@
 """Pydantic schema for data/books/<book_id>/book.json (brief section 4)."""
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 Emotion = Literal[
     "elation", "amusement", "enthusiasm", "determination", "pride", "contentment",
@@ -22,6 +22,12 @@ class Section(BaseModel):
     title: str
     start_para: int
     level: int = 1  # nesting depth in the chapter list: 1 = chapter, 2 = 2.1, 3 = 2.1.1 (old book.json files: 1)
+
+    @field_validator("title")
+    @classmethod
+    def _clean_title(cls, v: str) -> str:  # old books keep stray glyphs / page numbers in book.json; never show them
+        from .parsing import clean_title
+        return clean_title(v)
 
 
 class Segment(BaseModel):

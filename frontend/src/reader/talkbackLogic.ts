@@ -1,6 +1,7 @@
 import type { Book, Character } from "../api";
 import type { TalkState } from "../talk/TalkController";
 import { splitCharacters } from "./position";
+import { cleanTitle } from "./cleanTitle";
 
 export type Mode = "read" | "talk";
 export const toggleMode = (m: Mode): Mode => (m === "read" ? "talk" : "read");
@@ -8,8 +9,8 @@ export const toggleMode = (m: Mode): Mode => (m === "read" ? "talk" : "read");
 /** The chapter (section) a paragraph belongs to, or null for a book with no sections. */
 export function chapterAt(book: Pick<Book, "sections">, para: number): string | null {
   let title: string | null = null;
-  for (const s of book.sections) if (s.start_para <= para) title = s.title; else break;
-  return title ?? book.sections[0]?.title ?? null;
+  for (const s of book.sections) if (s.start_para <= para) title = cleanTitle(s.title); else break;
+  return title ?? (book.sections[0] ? cleanTitle(book.sections[0].title) : null);
 }
 
 /**

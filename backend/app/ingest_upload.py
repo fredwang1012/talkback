@@ -41,6 +41,7 @@ HEADING_REGEX = (r"^(?=.{1,69}\Z)(?:(?i:(?:chapter|part|book|section|unit)\s+(?:
                  r"|[IVXLC]+\.|\d{1,3}\s+[A-Z][^.!?]*|\d{1,2}\.\d{1,2}(?:\.\d{1,2})?\s+[A-Z][^.!?]*"
                  r"|\x01.+)\Z")  # \x01: a heading found by font size alone (see parsing.HEADING_MARK)
 _HEADING = re.compile(HEADING_REGEX)
+_BARE_NUMBER = re.compile(r"^\d{1,3}$")  # a chapter number set alone in a huge font above its title
 _BARE_LABEL = re.compile(r"^(?i:chapter|part|book|section|unit)\s+(?:\d+|[ivxlc]+|" + _NUMBER_WORDS + r")\s*$", re.I)
 _CONTENTS = re.compile(r"^(?:table of\s+)?contents$", re.I)
 HEADING_BIG = 1.15     # a short line this much larger than the body text is a heading
@@ -363,6 +364,11 @@ _FRONT_MATTER = re.compile(
     r"\bpublished by\b|\bdraft of\b|\bonline edition\b", re.I)
 
 
+def _is_formula(text: str) -> bool:
+    """A typeset equation or symbol line ("Score(q, d) = ∑"), never a heading."""
+    return "=" in text or bool(re.search(r"\(\d+\.\d+\)$", text)) or any(unicodedata.category(c) in ("Sm", "So", "Co") and c not in "+-" for c in text)
+
+
 def _heading_candidate(blk: list[tuple], body: float) -> tuple[str, bool] | None:
     """(text, found by font alone) when the block looks like a heading: the regex, or large / bold short text.
 
@@ -375,9 +381,13 @@ def _heading_candidate(blk: list[tuple], body: float) -> tuple[str, bool] | None
         return None
     if _is_heading(text):
         return text, False
+    size = max(ln[5] for ln in blk)
+    if _BARE_NUMBER.match(text):
+        return (text, True) if body and size >= body * HEADING_BIG else None
+    if _is_formula(text):
+        return None
     if len(text) > 68 or len(text) < 2 or not any(c.isalpha() for c in text) or re.search(r"[.!?,;:]$", text):
         return None
-    size = max(ln[5] for ln in blk)
     if body and (size >= body * HEADING_BIG or (all(ln[6] for ln in blk) and size >= body * HEADING_BOLD)):
         return text, True
     return None
@@ -418,6 +428,13 @@ def _mark_headings(blocks: list[list[tuple]], body: float) -> list[list[tuple]]:
             continue
         text, by_font = cand
         nxt = cands[i] if i < len(blocks) and i not in drop else None
+        if _BARE_NUMBER.match(text):  # "1" over "Boolean retrieval" is the heading "1 Boolean retrieval"
+            if nxt is None or not nxt[1] or _BARE_NUMBER.match(nxt[0]):
+                out.append([ln[:7] + (False,) for ln in blk])  # a lone big digit is not a heading
+                continue
+            text, by_font = text + " " + nxt[0], True
+            blk = blk + blocks[i]
+            i += 1
         if _BARE_LABEL.match(text) and nxt is not None and not _BARE_LABEL.match(nxt[0]):
             text, by_font = text + " " + nxt[0], by_font or nxt[1]
             blk = blk + blocks[i]
@@ -554,7 +571,10 @@ def pdf_to_text(data: bytes) -> str:
     repeated = {k for k, n in edge.items() if n >= 3 and n >= 0.2 * len(pages)}
 
     def is_noise(block) -> bool:
-        return key(block) in repeated or bool(_PAGE_NUMBER.match(" ".join(ln[0] for ln in block)))
+        text = " ".join(ln[0] for ln in block)
+        if _BARE_NUMBER.match(text) and body and max(ln[5] for ln in block) >= body * HEADING_BIG:
+            return False  # a big lone number is a chapter number, not a page number
+        return key(block) in repeated or bool(_PAGE_NUMBER.match(text))
 
     body = sizes.most_common(1)[0][0] if sizes else 0.0
 

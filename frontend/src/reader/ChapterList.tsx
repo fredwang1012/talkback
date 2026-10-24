@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Book } from "../api";
 import { openAround, visibleRows } from "./chapterTree";
+import { cleanTitle } from "./cleanTitle";
 
 type Props = { book: Book; current: number; onGo: (i: number) => void };
 
@@ -10,7 +11,7 @@ export default function ChapterList({ book, current, onGo }: Props) {
   const [open, setOpen] = useState<ReadonlySet<number>>(() => openAround(book.sections, current, new Set()));
   useEffect(() => { setOpen((o) => openAround(book.sections, current, o)); }, [book.sections, current]);
   const toggle = (i: number) => setOpen((o) => { const n = new Set(o); if (n.has(i)) n.delete(i); else n.add(i); return n; });
-  const label = (i: number) => book.sections[i].title || `Part ${i + 1}`;
+  const label = (i: number) => cleanTitle(book.sections[i].title) || `Part ${i + 1}`;
   return (
     <div className="chapter-tree">
       <button aria-expanded={shown} aria-controls="chapter-tree-list" onClick={() => setShown(!shown)}>
