@@ -34,3 +34,8 @@ The answer-quality work (bigger chunks, k=8, prompts, re-index) and its after-ev
 ## Task 5: Talkback mode + remembered access code (user, 2026-10-20)
 - A dedicated conversation mode, "Talkback", toggled with Read | Talkback at the top of the reader (T key). Reading pauses; the book text column is replaced by a conversation view: large face of the selected character (loops / lip-sync / still), character dropdown (one at a time; met-only unless spoilers on), Voice Auto/choose, Avatar Auto/choose, Spoilers toggle (content only), chat transcript (you / character bubbles, kept per book for the session), hold-to-talk mic button (and spacebar) plus a text box, "You're at <chapter>" badge, "Back to reading" resumes at the same sentence. Textbooks: narrator only. Mobile layout.
 - Access code: "Remember on this device" (localStorage, default on) with a "Forget code" control; never in the bundle or URL.
+
+## Parked (user, 2026-10-21) — do later, not now
+- Unified reading + conversation (no Read/Talkback mode switch): mic on/off, speak or type to cut in; local VAD gate before streaming to Realtime; echo handling (duck/pause reading on speech, headphones hint); addressed character by name else last picked.
+- Barge-in interruption + multilingual code-switching in Talkback (Higgs specialist).
+- Emotion: (a) voice — TTS emotion tags exist on ~8% of segments; consider more coverage/answer-time emotion; (b) avatar face — check Higgs Avatar docs for expression/emotion control beyond audio-driven lip-sync; (c) detect the reader's emotion from their own voice (check whether Higgs Realtime/STT exposes emotion/paralinguistics; else infer from transcript) and let characters respond to it.
