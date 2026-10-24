@@ -44,3 +44,7 @@ logs/
 
 # spoiler-eval reports quote copyrighted book text
 data/eval/
+
+# probe recordings
+scripts/captures/*.mp3
+scripts/captures/*.mp4
