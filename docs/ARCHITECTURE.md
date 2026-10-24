@@ -113,7 +113,7 @@ speakers when `RETRIEVAL_BACKEND=vertex`). Typical time is 3 to 5 minutes for a 
 - `/api/answer` (Gemini): k = 8 (`DEFAULT_K`), passages capped at 12,000 characters (`MAX_PASSAGE_CHARS`), whole prompt at
   24,000 (`MAX_ANSWER_PROMPT_CHARS`). The most recent two paragraphs are always added.
 - `/api/retrieve` (Boson realtime instructions): k <= 4 (`REALTIME_K`), passages capped at 4,500 characters
-  (`REALTIME_MAX_PASSAGE_CHARS`), so the instructions fit `MAX_INSTRUCTIONS_CHARS` = 8,000 and stay short (BRIEF: long
+  (`REALTIME_MAX_PASSAGE_CHARS`), so the instructions fit `MAX_INSTRUCTIONS_CHARS` = 8,000 and stay short (docs/internal/BRIEF.md: long
   realtime prompts made the model stop calling tools).
 
 ## The spoiler rule (enforced on the server, never by the model)

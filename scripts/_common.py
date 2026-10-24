@@ -20,8 +20,8 @@ def note(line: str = "") -> None:
 
 
 def flush_notes(title: str) -> None:
-    """Append this probe's findings to NOTES.md."""
-    with (ROOT / "NOTES.md").open("a", encoding="utf-8") as f:
+    """Append this probe's findings to docs/internal/NOTES.md."""
+    with (ROOT / "docs" / "internal" / "NOTES.md").open("a", encoding="utf-8") as f:
         f.write(f"\n### Probe: {title} ({datetime.datetime.now():%Y-%m-%d %H:%M})\n")
         f.write("\n".join(f"- {l}" if l else "" for l in _lines) + "\n")
 
