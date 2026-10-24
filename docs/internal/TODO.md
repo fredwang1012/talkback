@@ -48,6 +48,7 @@ Reading (default)                           Expanded (click ⤢)
 - **Reader's emotion from their own voice:** check whether Higgs Realtime/STT reports emotion or tone; if not, infer from the words. Let characters react ("You sound worried, Harry…").
 
 ## 5. Smaller items
+- **Favicon:** replace the default Vite favicon with a Talkback icon (e.g. an open book with a speech bubble, in the dark green + gold palette). Provide `favicon.svg` plus PNG fallbacks (32×32, 180×180 apple-touch-icon) and a matching `<title>`/theme colour in `frontend/index.html`, so it shows the same everywhere: local runs, GitHub clones (committed in `frontend/public/`) and the live site (ships with the next deploy).
 - Dobby's character description (Gemini wrote a generic one; he refers to himself in the third person).
 - Harry Potter dialogue: lines without a "said X" tag are still read by the narrator (needs a model with credit to redo).
 - Live site: allow 2–3 uploads to process at once instead of one at a time (if several people upload during judging).
