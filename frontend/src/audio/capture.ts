@@ -2,7 +2,7 @@
 import captureWorkletSource from "./worklets/capture-processor.js?raw";
 import { addWorkletModule } from "./loadWorklet";
 import { createResampler, floatTo16BitPCM, type Resampler } from "./resample";
-import { AUDIO_RATE } from "../realtime/sessionConfig";
+import { AUDIO_RATE } from "./constants";
 
 /**
  * base64-encode an ArrayBuffer.

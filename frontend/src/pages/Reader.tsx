@@ -4,6 +4,9 @@ import BookText from "../reader/BookText";
 import PlayerBar from "../reader/PlayerBar";
 import { ReaderEngine, type AudioLike } from "../reader/ReaderEngine";
 import Stage from "../reader/Stage";
+import { spend, type SpendSnapshot } from "../spend";
+import { useTalk } from "../talk/useTalk";
+import { DebugDrawer } from "../ui/DebugDrawer";
 import {
   clampIndex, flattenChunks, loadPosition, readerPara, savePosition, silentDurationMs,
 } from "../reader/position";
@@ -23,8 +26,14 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [word, setWord] = useState<{ charStart: number; charEnd: number } | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [spendNow, setSpendNow] = useState<SpendSnapshot>(spend.snapshot());
+  useEffect(() => spend.subscribe(setSpendNow), []);
   const lastManualScroll = useRef(0);
   const engineRef = useRef<ReaderEngine | null>(null);
+  const indexRef = useRef(0);
+  const playingRef = useRef(false);
+  indexRef.current = index;
+  playingRef.current = playing;
 
   useEffect(() => {
     fetchBook(bookId).then((b) => {
@@ -43,7 +52,11 @@ export default function Reader({ bookId }: { bookId: string }) {
   useEffect(() => {
     if (!book || !audioAvailable || chunks.length === 0) return;
     const engine = new ReaderEngine(chunks, {
-      fetchTts: (chunk, voice) => fetchTts(book.id, chunk.id, voice),
+      fetchTts: async (chunk, voice) => {
+        const r = await fetchTts(book.id, chunk.id, voice);
+        if (!r.cached) spend.addTts(chunk.tts_text.length); // only freshly synthesised speech costs money
+        return r;
+      },
       createAudio: (url) => new Audio(url) as unknown as AudioLike, // the engine only assigns a plain onended callback
     }, loadPosition(book.id, chunks.length));
     engineRef.current = engine;
@@ -62,6 +75,49 @@ export default function Reader({ bookId }: { bookId: string }) {
     raf = requestAnimationFrame(tick);
     return () => { cancelAnimationFrame(raf); off(); engine.dispose(); engineRef.current = null; setWord(null); };
   }, [book, chunks, audioAvailable]);
+
+
+  // Talk mode: push-to-talk questions, answered from what has been read so far (needs the Boson key).
+  const talk = useTalk({
+    bookId,
+    enabled: audioAvailable && !!book,
+    speakerId,
+    autoResume,
+    voiceFor: (id) => (id === "narrator" ? book?.narrator?.voice : book?.characters.find((c) => c.id === id)?.voice) ?? "marcus",
+    reader: {
+      isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
+      currentIndex: () => indexRef.current,
+      currentPara: () => readerPara(chunks, indexRef.current),
+      pause: () => (engineRef.current ? engineRef.current.pause() : setPlaying(false)),
+      play: () => (engineRef.current ? engineRef.current.play() : setPlaying(true)),
+      resumeAt: (i) => {
+        if (engineRef.current) { engineRef.current.seek(i); engineRef.current.play(); }
+        else { setIndex(clampIndex(i, chunks.length)); setPlaying(true); }
+      },
+    },
+  });
+  const { pttDown, pttUp } = talk;
+
+  // Hold Space to talk (works while reading, to interrupt).
+  useEffect(() => {
+    if (!audioAvailable) return;
+    let held = false;
+    const typing = (e: KeyboardEvent) => ["SELECT", "INPUT", "TEXTAREA", "BUTTON"].includes((e.target as HTMLElement).tagName);
+    const down = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || e.repeat || typing(e)) return;
+      e.preventDefault();
+      if (!held) { held = true; pttDown(); }
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || !held) return;
+      e.preventDefault();
+      held = false;
+      pttUp();
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
+  }, [audioAvailable, pttDown, pttUp]);
 
   useEffect(() => { engineRef.current?.setSpeed(speed); }, [speed, audioAvailable, book]);
   useEffect(() => {
@@ -131,8 +187,10 @@ export default function Reader({ bookId }: { bookId: string }) {
           <BookText book={book} chunks={chunks} index={index} word={word}
                     onPick={(i) => { lastManualScroll.current = Date.now(); seek(i); }} />
         </div>
-        <Stage book={book} para={para} speakerId={speakerId} onSpeaker={setSpeakerId} health={health} />
+        <Stage book={book} para={para} speakerId={speakerId} onSpeaker={setSpeakerId} health={health}
+               talk={talk} audioAvailable={audioAvailable} onTalkMode={() => engineRef.current?.pause()} />
       </div>
+      <DebugDrawer entries={talk.logs} spend={spendNow} />
       <PlayerBar
         playing={playing} loading={loading} onToggle={toggle}
         onPrev={() => { lastManualScroll.current = 0; step(-1); }} onNext={() => { lastManualScroll.current = 0; step(1); }}

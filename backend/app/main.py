@@ -1,7 +1,11 @@
 import base64
 from functools import lru_cache
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+import asyncio
+import secrets
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -13,7 +17,23 @@ from .personas import build_instructions
 from .ratelimit import TokenBucket
 from .schema import Book
 
-app = FastAPI(title="Bookson")
+def _warm_up() -> None:
+    """Load the embedding model and every book's index before the first question (the model takes ~17 s to load)."""
+    try:
+        for info in books.list_books():
+            _index_for(info["id"])
+    except Exception:  # never block startup; retrieval falls back to BM25 / loads lazily
+        pass
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    task = asyncio.create_task(asyncio.to_thread(_warm_up))
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="Bookson", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -26,6 +46,19 @@ app.mount("/media", StaticFiles(directory=settings.data_dir / "cache"), name="me
 
 boson = BosonClient()
 token_bucket = TokenBucket(capacity=10, per_seconds=60)
+tts_bucket = TokenBucket(capacity=120, per_seconds=60)   # only cache misses (real Boson calls) consume this
+clone_bucket = TokenBucket(capacity=5, per_seconds=60)
+
+
+def client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def require_access(x_bookson_token: str | None = Header(default=None)) -> None:
+    """Opt-in gate for endpoints that spend Boson credit: set BOOKSON_ACCESS_TOKEN for any public deployment."""
+    expected = settings.access_token
+    if expected and not secrets.compare_digest(x_bookson_token or "", expected):
+        raise HTTPException(401, "Missing or invalid access token.")
 
 
 def boson_http_error(e: BosonError | RuntimeError) -> HTTPException:
@@ -61,11 +94,10 @@ def get_book(book_id: str):
 
 # ---------- realtime key ----------
 
-@app.post("/api/realtime/token")
+@app.post("/api/realtime/token", dependencies=[Depends(require_access)])
 async def realtime_token(request: Request):
     """Mint a fresh ephemeral Realtime key per call (never cached). The real API key never leaves the server."""
-    ip = request.client.host if request.client else "unknown"
-    if not token_bucket.allow(ip):
+    if not token_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many connection attempts; wait a moment.")
     try:
         return await boson.mint_client_secret(600)
@@ -81,8 +113,8 @@ class TtsRequest(BaseModel):
     voice_override: str | None = None
 
 
-@app.post("/api/tts")
-async def tts(req: TtsRequest):
+@app.post("/api/tts", dependencies=[Depends(require_access)])
+async def tts(req: TtsRequest, request: Request):
     book = books.load_book(req.book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
@@ -90,6 +122,10 @@ async def tts(req: TtsRequest):
         for c in p.tts_chunks:
             if c.id == req.chunk_id:
                 voice = req.voice_override or c.voice
+                if not voices.is_known_voice(voice):
+                    raise HTTPException(400, f"Unknown voice '{voice}'.")
+                if not tts_cache.is_cached(c.tts_text, voice) and not tts_bucket.allow(client_ip(request)):
+                    raise HTTPException(429, "Too many new audio requests; wait a moment.")
                 try:
                     out = await tts_cache.get_or_create(boson, c.tts_text, voice, p.text[c.char_start:c.char_end])
                 except (BosonError, RuntimeError) as e:
@@ -102,7 +138,7 @@ async def tts(req: TtsRequest):
 
 class RetrieveRequest(BaseModel):
     book_id: str
-    query: str = ""
+    query: str = Field(default="", max_length=500)
     reader_para: int = Field(ge=0)
     speaker_id: str = "narrator"
     k: int = Field(default=4, ge=1, le=8)
@@ -145,10 +181,12 @@ def retrieve(req: RetrieveRequest):
 
 # ---------- voice cloning ----------
 
-@app.post("/api/voices/clone")
-async def clone_voice(audio: UploadFile = File(...), transcript: str = Form(...), name: str = Form(...),
-                      consent: str = Form("false")):
-    data = await audio.read()
+@app.post("/api/voices/clone", dependencies=[Depends(require_access)])
+async def clone_voice(request: Request, audio: UploadFile = File(...), transcript: str = Form(..., max_length=2000),
+                      name: str = Form(..., max_length=60), consent: str = Form("false")):
+    if not clone_bucket.allow(client_ip(request)):
+        raise HTTPException(429, "Too many voice uploads; wait a moment.")
+    data = await audio.read(voices.MAX_BYTES + 1)  # bounded read: never buffer an unbounded upload
     try:
         voices.validate_clone_request(data, transcript, name, consent)
     except voices.VoiceInputError as e:

@@ -5,6 +5,7 @@ import wave
 
 from .config import settings
 
+PRESET_VOICES = frozenset({"default", "chloe", "eleanor", "jake", "marcus", "nora", "oliver"})
 MAX_BYTES = 10 * 1024 * 1024
 MIN_SECONDS = 3.0
 
@@ -49,3 +50,8 @@ def save_voice(name: str, voice_id: str) -> None:
     voices = load_voices()
     voices[name] = voice_id
     _store().write_text(json.dumps(voices, indent=1), encoding="utf-8")
+
+
+def is_known_voice(voice: str) -> bool:
+    """Presets or voices this server registered. Anything else would let a caller mint unlimited cache entries."""
+    return voice in PRESET_VOICES or voice in load_voices().values()

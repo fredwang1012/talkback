@@ -79,6 +79,11 @@ def _paths(key: str) -> tuple[Path, Path]:
     return d / f"{key}.{FORMAT}", d / f"{key}.json"
 
 
+def is_cached(tts_text: str, voice: str) -> bool:
+    audio_path, meta_path = _paths(cache_key(tts_text, voice))
+    return audio_path.exists() and meta_path.exists()
+
+
 async def get_or_create(client: BosonClient, tts_text: str, voice: str, plain: str) -> dict:
     """Return {audio_url, timestamps, cached}. Concurrent requests for the same chunk share one Boson call."""
     key = cache_key(tts_text, voice)

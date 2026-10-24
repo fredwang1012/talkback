@@ -32,8 +32,9 @@ Rule for now: do **not** use the Anthropic key (user instruction, 2026-10-15). B
 - [x] `TalkController` state machine (15 tests incl. 10 consecutive cycles). Not yet attached to a real socket.
 
 ## Still to build without a key
-- [ ] `TalkClient` (real WebSocket adapter for manual turns, reuses tutorial audio code) + wire Talk mode/PTT into the Stage UI. Live behaviour (voice change, commit during response) must be confirmed with the probes.
+- [x] `TalkClient` (WebSocket adapter, manual turns, 17 tests with fake socket) + Talk/PTT wired into the Stage (hold Space or the mic button) + debug drawer with spend estimate. **Unverified against the live API**: mid-session voice change (has a reconnect fallback), commit-during-response, real audio latency. Needs BOSON_API_KEY.
+- [x] Security hardening after review: voice allowlist, cache-miss rate limit, bounded upload read, query length cap, optional `BOOKSON_ACCESS_TOKEN`.
 - [ ] Voice lab UI (consent checkbox, record/upload, transcript).
-- [ ] Textbook ingest (OpenStax Biology 2e ch. 8): try fetching.
+- [ ] Textbook ingest (OpenStax Biology 2e ch. 8): fetch tool refused to return the text verbatim -> **needs you to paste it** into `data/raw/biology2e_ch8.txt` (plus a `.meta.yaml`; I'll write that).
 - [ ] README with setup + 90-second demo script; demo mode (`?demo=1`).
-- [ ] Debug drawer + cost guard in the UI.
+- [x] Debug drawer + cost guard in the UI (backtick).

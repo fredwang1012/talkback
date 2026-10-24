@@ -167,6 +167,13 @@ button:disabled { cursor: not-allowed; }
 }
 .mic-button:disabled { border-color: var(--ink-faint); color: var(--ink-faint); opacity: 0.6; }
 .mic p { margin: 0; color: var(--ink-soft); font-size: 0.88rem; line-height: 1.45; }
+.medallion.live { border-color: var(--seal-bright); box-shadow: 0 0 0 5px var(--ground-sunk), 0 0 0 7px var(--seal); }
+.mic-button.live { background: var(--seal); color: var(--ink); border-color: var(--seal-bright); }
+.mic-button { touch-action: none; user-select: none; }
+.meter { margin-top: 8px; height: 4px; width: 140px; background: var(--ground-raised); border-radius: 2px; overflow: hidden; }
+.meter span { display: block; height: 100%; background: var(--seal-bright); transition: width 80ms linear; }
+.toast { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--seal); border-left-width: 4px; border-radius: var(--radius); color: var(--ink); font-size: 0.9rem; line-height: 1.4; }
+.toast button { background: transparent; border: 0; color: var(--ink-soft); text-decoration: underline; padding: 0; }
 .captions { min-height: 3.2em; color: var(--ink-faint); font-family: var(--font-book); font-style: italic; font-size: 0.95rem; line-height: 1.5; }
 
 /* ---------- Player bar ---------- */
@@ -184,6 +191,16 @@ button:disabled { cursor: not-allowed; }
 .player select { background: var(--ground-raised); color: var(--ink); border: 1px solid var(--brass-soft); border-radius: var(--radius); padding: 5px 8px; font: inherit; }
 .player .pos { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--ink-soft); font-size: 0.92rem; }
 .player .note { flex-basis: 100%; margin: 0; color: var(--ink-faint); font-size: 0.82rem; }
+.drawer { position: fixed; left: 16px; bottom: 96px; z-index: 6; max-width: min(560px, calc(100vw - 32px)); font-size: 0.82rem; }
+.drawer-toggle { background: var(--ground-sunk); border: 1px solid var(--brass-soft); border-radius: var(--radius); padding: 5px 10px; color: var(--ink-soft); }
+.drawer.open .drawer-toggle { border-color: var(--brass); }
+.drawer-spend { margin: 8px 0 0; padding: 8px 10px; background: var(--ground-sunk); border: 1px solid var(--brass-soft); color: var(--ink-soft); line-height: 1.45; }
+.drawer-list { list-style: none; margin: 4px 0 0; padding: 0; max-height: 40vh; overflow: auto; background: var(--ground-sunk); border: 1px solid var(--brass-soft); }
+.entry-head { display: flex; gap: 8px; width: 100%; background: transparent; border: 0; padding: 4px 8px; text-align: left; align-items: baseline; }
+.entry-head .time { margin-left: auto; color: var(--ink-faint); }
+.entry.dir-send .arrow { color: var(--brass); }
+.entry.dir-recv .arrow { color: var(--ink-soft); }
+.entry-body { margin: 0; padding: 6px 10px; white-space: pre-wrap; word-break: break-all; color: var(--ink-soft); background: var(--ground); }
 .state-line { color: var(--ink-faint); padding: 80px 24px; text-align: center; }
 
 @media (prefers-reduced-motion: reduce) {

@@ -43,6 +43,9 @@ def env(tmp_path, monkeypatch):
     (d / "book.json").write_text(book_with_chunk().model_dump_json(), encoding="utf-8")
     main._index_for.cache_clear()
     monkeypatch.setattr(main, "token_bucket", TokenBucket(3, 60))
+    monkeypatch.setattr(main, "tts_bucket", TokenBucket(1000, 60))   # fresh limiter state per test
+    monkeypatch.setattr(main, "clone_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(settings, "access_token", "")
     calls = {"n": 0}
 
     def handler(req: httpx.Request):
@@ -106,7 +109,7 @@ def test_tts_unknown_chunk_and_missing_key(env, monkeypatch):
     client, _ = env
     assert client.post("/api/tts", json={"book_id": "demo", "chunk_id": "nope"}).status_code == 404
     monkeypatch.setattr(settings, "boson_api_key", "")
-    r = client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "voice_override": "x"})
+    r = client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "voice_override": "nora"})
     assert r.status_code == 503 and "BOSON_API_KEY" in r.json()["detail"]
 
 
@@ -181,3 +184,66 @@ def test_align_handles_numbers_tags_and_null():
     assert align_timestamps(None, plain) is None and align_timestamps([], plain) is None
     tagged = [{"word": "<|emotion:anger|>", "start": 0, "end": 0}] + words[:2]
     assert len(align_timestamps(tagged, plain)) == 2  # tag token skipped
+
+
+# ---------- hardening: cost abuse, resource bounds, access control ----------
+
+def test_tts_rejects_unknown_voice_without_calling_boson(env):
+    client, calls = env
+    r = client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "voice_override": "../../evil"})
+    assert r.status_code == 400 and "Unknown voice" in r.json()["detail"]
+    assert calls["n"] == 0
+
+
+def test_tts_accepts_a_registered_cloned_voice(env):
+    client, calls = env
+    assert clone(client).status_code == 200  # registers voice_abc
+    r = client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "voice_override": "voice_abc"})
+    assert r.status_code == 200 and r.json()["voice"] == "voice_abc"
+
+
+def test_new_audio_is_rate_limited_but_cache_hits_are_free(env, monkeypatch):
+    client, calls = env
+    monkeypatch.setattr(main, "tts_bucket", TokenBucket(2, 60))
+    voices = ["marcus", "nora", "jake"]
+    codes = [client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "voice_override": v}).status_code for v in voices]
+    assert codes == [200, 200, 429]
+    again = client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "voice_override": "marcus"})
+    assert again.status_code == 200 and again.json()["cached"] is True  # a cached chunk never consumes the budget
+
+
+def test_access_token_gates_endpoints_that_spend_credit(env, monkeypatch):
+    client, calls = env
+    monkeypatch.setattr(settings, "access_token", "letmein")
+    body = {"book_id": "demo", "chunk_id": "p0c0"}
+    assert client.post("/api/tts", json=body).status_code == 401
+    assert client.post("/api/realtime/token").status_code == 401
+    assert clone(client).status_code == 401
+    assert calls["n"] == 0
+    h = {"X-Bookson-Token": "letmein"}
+    assert client.post("/api/tts", json=body, headers=h).status_code == 200
+    assert client.post("/api/realtime/token", headers=h).status_code == 200
+    assert client.post("/api/tts", json=body, headers={"X-Bookson-Token": "wrong"}).status_code == 401
+    assert client.get("/api/books").status_code == 200  # reading stays open
+
+
+def test_clone_upload_is_read_with_a_bound_and_rejected_when_too_big(env, monkeypatch):
+    client, calls = env
+    from app import voices as v
+    monkeypatch.setattr(v, "MAX_BYTES", 1000)
+    r = clone(client, audio=b"x" * 5000)
+    assert r.status_code == 400 and "10 MB" in r.json()["detail"]
+    assert calls["n"] == 0
+
+
+def test_clone_is_rate_limited(env, monkeypatch):
+    client, _ = env
+    monkeypatch.setattr(main, "clone_bucket", TokenBucket(1, 60))
+    assert clone(client).status_code == 200
+    assert clone(client).status_code == 429
+
+
+def test_retrieve_query_length_is_capped(env):
+    client, _ = env
+    r = client.post("/api/retrieve", json={"book_id": "demo", "query": "x" * 501, "reader_para": 1})
+    assert r.status_code == 422

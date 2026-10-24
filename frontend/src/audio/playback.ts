@@ -1,7 +1,7 @@
 // Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Bookson.
 import playbackWorkletSource from "./worklets/playback-processor.js?raw";
 import { addWorkletModule } from "./loadWorklet";
-import { AUDIO_RATE } from "../realtime/sessionConfig";
+import { AUDIO_RATE } from "./constants";
 
 /** base64 text -> the raw bytes it encodes. */
 function base64ToBytes(base64: string): ArrayBuffer {

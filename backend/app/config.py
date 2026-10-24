@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     boson_base_url: str = "https://api.boson.ai"
     data_dir: Path = ROOT / "data"
+    # Optional shared secret. When set, endpoints that spend Boson credit require header X-Bookson-Token.
+    access_token: str = ""
 
     def require_boson_key(self) -> str:
         if not self.boson_api_key:
