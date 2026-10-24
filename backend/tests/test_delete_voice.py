@@ -155,14 +155,14 @@ def test_unmarked_store_entries_and_legacy_files_are_deletable_samples_untouched
     voices.save_voice("Cloned narrator", "voice_narr")        # plain store entries, as on the author's machine
     fid = faces.create_face(PNG, "Me", voice="voice_narr")["id"]
     (d / "portraits" / "voices").mkdir(parents=True)
-    for n in ("voice_narr.png", "voice_narr-idle.mp4", "voice_narr-talk.mp4", "other.png"):
+    for n in ("voice_narr.png", "voice_narr-idle.mp4", "voice_narr-talk.mp4", "other.png", "voice_narrator.png"):
         (d / "portraits" / "voices" / n).write_bytes(b"x")
     (d / "samples" / "person").mkdir(parents=True)
     (d / "samples" / "person" / "voice-clip.wav").write_bytes(b"ref")
     assert client.delete("/api/voices/voice_narr").status_code == 200
     assert boson["deleted"] == ["voice_narr"]
     assert not list((d / "portraits" / "faces").glob(f"{fid}*"))
-    assert sorted(p.name for p in (d / "portraits" / "voices").iterdir()) == ["other.png"]
+    assert sorted(p.name for p in (d / "portraits" / "voices").iterdir()) == ["other.png", "voice_narrator.png"]
     assert (d / "samples" / "person" / "voice-clip.wav").read_bytes() == b"ref"
 
 

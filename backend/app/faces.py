@@ -214,8 +214,11 @@ def delete_legacy_voice_files(voice: str) -> None:
         stem = Path(n).stem
         for f in (d / Path(n).name, d / f"{stem}-idle.mp4", d / f"{stem}-talk.mp4"):
             f.unlink(missing_ok=True)
-    for f in d.glob(f"{glob_escape(voice)}*") if d.is_dir() else []:
-        f.unlink(missing_ok=True)
+    if d.is_dir():   # exact names only: "abc" must not take "abcdef.png" with it
+        for f in [p for p in d.glob(f"{glob_escape(voice)}.*") if p.stem == voice]:
+            f.unlink(missing_ok=True)
+        for f in (d / f"{voice}-idle.mp4", d / f"{voice}-talk.mp4"):
+            f.unlink(missing_ok=True)
 
 
 def delete_face(fid: str) -> bool:
