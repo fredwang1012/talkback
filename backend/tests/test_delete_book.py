@@ -137,3 +137,47 @@ def test_owner_marker_must_match_even_for_owner_only_ids(pu):
     (settings.data_dir / "books" / "u-alice-1" / "owner.txt").write_text(users.ns_for(BOB))
     assert client.delete("/api/books/u-alice-1", headers=h(token(ALICE))).status_code == 404
     assert (settings.data_dir / "books" / "u-alice-1" / "book.json").exists()
+
+
+def test_refused_while_vertex_indexing(client, tmp_path):
+    bid = upload(client)
+    main._upload_status[bid] = {"status": "ready", "index": {"state": "running", "done": 400, "total": 3000}}
+    try:
+        assert client.delete(f"/api/books/{bid}").status_code == 409
+        assert (tmp_path / "books" / bid / "book.json").exists()
+    finally:
+        main._upload_status.pop(bid, None)
+
+
+def test_a_retry_during_a_slow_delete_joins_it(client, tmp_path, monkeypatch):
+    """The browser gives up after 60 s; the retry must wait for the same delete, not get 409."""
+    import asyncio
+    bid = upload(client)
+    monkeypatch.setattr(settings, "retrieval_backend", "vertex")
+    calls = []
+
+    class SlowStore:
+        async def delete(self, ids):
+            calls.append(len(ids))
+            await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(main, "_vertex_deps", lambda: (object(), SlowStore()))
+
+    async def both():
+        return await asyncio.gather(main.delete_book(bid), main.delete_book(bid))
+
+    a, b = asyncio.run(both())
+    assert a == b == {"deleted": bid, "incomplete": []}
+    assert len(calls) == 1 and not (tmp_path / "books" / bid).exists()
+    assert main._deleting == {}
+
+
+def test_start_enrichment_refused_during_a_delete(client):
+    bid = upload(client)
+    main._upload_status[bid] = {"status": "ready", "enrich": {"status": "awaiting_confirmation"}}
+    main._kind_claims.add(bid)
+    try:
+        assert client.post(f"/api/books/{bid}/enrich").status_code == 409
+    finally:
+        main._kind_claims.discard(bid)
+        main._upload_status.pop(bid, None)

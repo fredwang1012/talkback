@@ -491,13 +491,65 @@ class IngestGuard:
 _ingest_guard = IngestGuard()
 
 
+# Books deleted by this process (ids are never reused): background jobs check it so they never write a deleted book
+# back to disk or start paid work on it.
+_deleted: set[str] = set()
+
+
+class _BookDeleted(Exception):
+    """Raised from an indexing progress callback to stop the job once its book has been deleted."""
+
+
+def _mem_index(book_id: str) -> dict | None:
+    """The in-memory indexing progress (newer than status.json, whose progress writes are throttled)."""
+    return (_upload_status.get(book_id) or {}).get("index")
+
+
 def _set_status(book_id: str, status: str, message: str | None = None, **kind_info) -> None:
-    _upload_status[book_id] = ingest_upload.write_status(book_id, status, message, **kind_info)
+    if book_id in _deleted:
+        return
+    _upload_status[book_id] = ingest_upload.write_status(book_id, status, message, index=_mem_index(book_id),
+                                                         **kind_info)
+
+
+def _index_status(book_id: str, fields: dict) -> dict:
+    """The current status with its indexing progress replaced; everything else (enrich, kind) is kept."""
+    cur = _upload_status.get(book_id) or ingest_upload.read_status(book_id) or {}
+    return {**{k: v for k, v in cur.items() if k != "index"}, "status": "ready", "index": fields}
 
 
 def _set_index(book_id: str, **fields) -> None:
-    """Record the Vertex indexing progress {state, done, total, message?} next to the (ready) status."""
-    _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", index=fields)
+    """Record the Vertex indexing progress {state, done, total, message?} next to the (ready) status (sync write)."""
+    if book_id in _deleted:
+        return
+    _upload_status[book_id] = st = _index_status(book_id, fields)
+    ingest_upload.save_status(book_id, st)
+    _index_written_at[book_id] = time.monotonic()
+
+
+INDEX_WRITE_EVERY_S = 2.0   # status.json lives on a GCS FUSE mount: progress is written at most this often
+_index_written_at: dict[str, float] = {}
+_index_writes: dict[str, asyncio.Future] = {}
+
+
+def _write_current_status(book_id: str) -> None:
+    """Worker thread: write the latest in-memory status (read now, so a newer enrich update is not overwritten)."""
+    st = _upload_status.get(book_id)
+    if st is not None and book_id not in _deleted:
+        ingest_upload.save_status(book_id, st)
+
+
+def _index_progress(book_id: str, done: int, total: int) -> None:
+    """index_book's progress callback (on the loop): memory always, status.json throttled and off the loop."""
+    if book_id in _deleted:
+        raise _BookDeleted(book_id)
+    _upload_status[book_id] = _index_status(book_id, {"state": "running", "done": done, "total": total})
+    pending = _index_writes.get(book_id)
+    now = time.monotonic()
+    if (pending is not None and not pending.done()) or now - _index_written_at.get(book_id, 0.0) < INDEX_WRITE_EVERY_S:
+        return
+    _index_written_at[book_id] = now
+    _index_writes[book_id] = asyncio.ensure_future(asyncio.to_thread(_write_current_status, book_id))
 
 
 # One Vertex indexing job at a time across uploads and enrichment: the upload guard is released once a book is
@@ -508,25 +560,41 @@ _index_lock = asyncio.Lock()
 async def _index_in_background(book: Book, chunks) -> None:
     """Index a published book into Vertex; the book is readable (BM25) meanwhile. Never raises."""
     book_id, total = book.id, len(chunks)
+    final: dict | None = None
     try:
         async with _index_lock:
+            if book_id in _deleted:   # deleted while queued: nothing to pay for
+                return
             _set_index(book_id, state="running", done=0, total=total)
             embedder, store = _vertex_deps()
             from .gcp.indexing import index_book
             await index_book(book, chunks, embedder, store,
-                             on_progress=lambda done, tot: _set_index(book_id, state="running", done=done, total=tot))
-        _set_index(book_id, state="done", done=total, total=total)
+                             on_progress=lambda done, tot: _index_progress(book_id, done, tot))
+        final = {"state": "done", "done": total, "total": total}
+    except _BookDeleted:
+        pass
     except Exception as e:  # the book stays readable and keeps the BM25 fallback
-        logging.getLogger(__name__).warning("vertex indexing failed: %s", type(e).__name__)
-        _set_index(book_id, state="error", done=0, total=total, message="Search indexing failed; using basic search.")
+        if book_id not in _deleted:
+            logging.getLogger(__name__).warning("vertex indexing failed: %s", type(e).__name__)
+            final = {"state": "error", "done": 0, "total": total,
+                     "message": "Search indexing failed; using basic search."}
     finally:
         _index_for.cache_clear()
+        pending = _index_writes.pop(book_id, None)
+        if pending is not None:   # a throttled progress write must not land after the final one
+            await asyncio.gather(pending, return_exceptions=True)
+        _index_written_at.pop(book_id, None)
+    if final is not None and book_id not in _deleted:
+        _upload_status[book_id] = _index_status(book_id, final)
+        await asyncio.to_thread(_write_current_status, book_id)
 
 
 def _set_enrich(book_id: str, **fields) -> None:
     """Record the novel enrichment sub-status next to the (ready) ingest status."""
+    if book_id in _deleted:
+        return
     enrich = {k: v for k, v in fields.items() if v is not None}
-    _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", enrich=enrich)
+    _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", enrich=enrich, index=_mem_index(book_id))
 
 
 _enrich_lock = asyncio.Lock()  # one enrichment at a time (cost control and rate limits)
@@ -621,9 +689,12 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
         _ingest_guard.release(token)
     if ready is not None and settings.retrieval_backend == "vertex":
         await _index_in_background(ready, chunks)
-    if ready is not None and kind == "novel" and settings.upload_enrich:
+    if ready is not None and kind == "novel" and settings.upload_enrich and book_id not in _deleted:
+        current = books.load_book(book_id)   # the reader may have moved it to Textbooks (or deleted it) meanwhile
+        if current is None or current.kind != "novel":
+            return
         try:
-            await _plan_enrichment(book_id, ready)
+            await _plan_enrichment(book_id, current)
         except Exception as e:  # the book stays readable with the narrator
             logging.getLogger(__name__).warning("enrichment planning failed: %s", type(e).__name__)
             _set_enrich(book_id, status="error", message=enrich_pipeline.FAILED)
@@ -686,6 +757,8 @@ def book_status(book_id: str):
 async def start_enrichment(book_id: str, background: BackgroundTasks):
     """Testing mode (UPLOAD_CONFIRM): start the character processing the reader just confirmed."""
     st = book_status(book_id)
+    if book_id in _kind_claims:   # a delete or kind change is in progress
+        raise HTTPException(409, "This book is still being processed; try again when it finishes.")
     if (st.get("enrich") or {}).get("status") != "awaiting_confirmation":
         raise HTTPException(409, "This book is not waiting for confirmation.")
     book = books.load_book(book_id)
@@ -742,9 +815,10 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
 
 
 def _book_busy(book_id: str) -> bool:
-    """True while an ingest, enrichment or kind change for this book is running."""
+    """True while an ingest, Vertex indexing (running or queued), enrichment or kind change for this book is running."""
     st = _upload_status.get(book_id) or {}
     return (st.get("status") == "processing" or (st.get("enrich") or {}).get("status") == "running"
+            or (st.get("index") or {}).get("state") == "running"
             or book_id in _enrich_jobs or book_id in _kind_claims)
 
 
@@ -769,12 +843,26 @@ async def delete_book(book_id: str):
         raise HTTPException(403, "Only books you uploaded can be deleted.")
     if ident.ns and users.book_owner_ns(book_id) != ident.ns:   # explicit owner check, whatever can_see_book allows
         raise HTTPException(404, "Book not found")
+    running = _deleting.get(book_id)
+    if running is not None:   # a retry (the browser gave up waiting): join the delete in progress, do not 409
+        return await asyncio.shield(running)
     book_dir = settings.data_dir / "books" / book_id
     if not book_dir.is_dir():
         raise HTTPException(404, "Book not found")
     if _book_busy(book_id):
         raise HTTPException(409, "This book is still being processed; try again when it finishes.")
     _kind_claims.add(book_id)   # blocks a concurrent kind change / enrichment start while we delete
+    # A task of its own, so the delete finishes even if the client disconnects, and a retry can wait for it.
+    task = _deleting[book_id] = asyncio.ensure_future(_delete_claimed_book(book_id))
+    task.add_done_callback(lambda _t: _deleting.pop(book_id, None))
+    return await asyncio.shield(task)
+
+
+_deleting: dict[str, asyncio.Future] = {}   # deletes in progress, so a retry joins one instead of getting 409
+
+
+async def _delete_claimed_book(book_id: str) -> dict:
+    """The delete itself (the caller checked access and claimed the book in _kind_claims; released here)."""
     try:
         if settings.retrieval_backend == "vertex":
             from .gcp.indexing import datapoint_ids
@@ -786,6 +874,7 @@ async def delete_book(book_id: str):
             except Exception as e:
                 logging.getLogger(__name__).warning("vertex delete failed: %s", type(e).__name__)
                 raise HTTPException(502, "Could not remove the book from search; nothing was deleted, try again.")
+        _deleted.add(book_id)   # from now on no background job writes this book back
         left = await asyncio.to_thread(ingest_upload.delete_book_files, book_id)
         _forget_book(book_id)
     finally:

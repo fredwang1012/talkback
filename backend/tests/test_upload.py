@@ -284,3 +284,86 @@ def test_vertex_indexing_runs_one_job_at_a_time(client, monkeypatch):
 
     asyncio.run(run())
     assert state["max"] == 1
+
+
+def test_book_deleted_during_indexing_is_not_recreated_or_enriched(client, monkeypatch):
+    planned = []
+
+    async def index_then_deleted(book, chunks, embedder, store, on_progress=None):
+        on_progress(1, 5)
+        ingest_upload.delete_book_files(book.id)   # what delete_book does (it is refused while indexing; defence)
+        main._deleted.add(book.id)
+        main._forget_book(book.id)
+        on_progress(2, 5)   # must stop the job
+        raise AssertionError("indexing carried on after the delete")
+
+    async def fake_plan(book_id, book):
+        planned.append(book_id)
+
+    monkeypatch.setattr("app.gcp.indexing.index_book", index_then_deleted)
+    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(main, "_plan_enrichment", fake_plan)
+    monkeypatch.setattr(settings, "retrieval_backend", "vertex")
+    monkeypatch.setattr(settings, "upload_enrich", True)
+    bid = post(client, "n.txt", b"One paragraph.", kind="novel").json()["book_id"]
+    assert planned == []
+    assert not (settings.data_dir / "books" / bid).exists()
+    assert bid not in main._upload_status
+    main._deleted.discard(bid)
+
+
+def test_set_index_keeps_the_enrich_status(client):
+    ingest_upload.write_status("u-k-00000000", "ready", enrich={"status": "awaiting_confirmation"})
+    main._upload_status["u-k-00000000"] = ingest_upload.read_status("u-k-00000000")
+    main._set_index("u-k-00000000", state="done", done=2, total=2)
+    for st in (main._upload_status["u-k-00000000"], ingest_upload.read_status("u-k-00000000")):
+        assert st["enrich"] == {"status": "awaiting_confirmation"} and st["index"]["state"] == "done"
+
+
+def test_index_progress_is_throttled_and_written_off_the_loop(client, monkeypatch):
+    import threading
+    writes, seen = [], {}
+    real = ingest_upload.save_status
+
+    def counting(book_id, st):
+        writes.append((threading.get_ident(), (st.get("index") or {}).get("done")))
+        return real(book_id, st)
+
+    async def many_ticks(book, chunks, embedder, store, on_progress=None):
+        seen["loop"] = threading.get_ident()
+        for i in range(1, 51):
+            on_progress(i, 50)
+        await asyncio.sleep(0.05)   # let a pending background write finish
+        seen["mem"] = main._upload_status[book.id]["index"]
+        return 50
+
+    import asyncio
+    monkeypatch.setattr(ingest_upload, "save_status", counting)
+    monkeypatch.setattr("app.gcp.indexing.index_book", many_ticks)
+    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(settings, "retrieval_backend", "vertex")
+    bid = post(client, "b.txt", b"One paragraph.").json()["book_id"]
+    assert seen["mem"] == {"state": "running", "done": 50, "total": 50}   # memory is always current
+    after_start = [w for w in writes if w[1] not in (0, None)]   # the start writes report done=0
+    assert 1 <= len(after_start) <= 3   # 50 ticks: a throttled progress write or two, plus the final one
+    assert all(t != seen["loop"] for t, _ in after_start)   # written in a worker thread, not on the event loop
+    assert ingest_upload.read_status(bid)["index"]["state"] == "done"
+
+
+def test_novel_moved_to_textbooks_while_indexing_is_not_enriched(client, monkeypatch):
+    planned = []
+
+    async def index_and_move(book, chunks, embedder, store, on_progress=None):
+        assert client.post(f"/api/books/{book.id}/kind", json={"kind": "textbook"}).status_code == 202
+        return 0
+
+    async def fake_plan(book_id, book):
+        planned.append(book_id)
+
+    monkeypatch.setattr("app.gcp.indexing.index_book", index_and_move)
+    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(main, "_plan_enrichment", fake_plan)
+    monkeypatch.setattr(settings, "retrieval_backend", "vertex")
+    monkeypatch.setattr(settings, "upload_enrich", True)
+    post(client, "n.txt", b"One paragraph.", kind="novel")
+    assert planned == []

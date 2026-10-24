@@ -721,6 +721,15 @@ def write_status(book_id: str, status: str, message: str | None = None, enrich: 
     return out
 
 
+def save_status(book_id: str, st: dict) -> bool:
+    """Write a status snapshot as is; never recreates a book folder that is gone (a deleted book). True if written."""
+    d = settings.data_dir / "books" / book_id
+    if not d.is_dir():
+        return False
+    (d / "status.json").write_text(json.dumps(st), encoding="utf-8")
+    return True
+
+
 def read_status(book_id: str) -> dict | None:
     path = settings.data_dir / "books" / book_id / "status.json"
     if path.is_file():
