@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { Book, Health, VoiceFace } from "../api";
+import type { Book, Face as FaceT, Health } from "../api";
+import { PRESETS, type TalkChoice } from "./castLogic";
 import type { TalkUi } from "../talk/useTalk";
 import type { TalkState } from "../talk/TalkController";
 import { splitCharacters } from "./position";
@@ -20,9 +21,17 @@ type Props = {
   needsCode: boolean;
   onCode: (code: string) => void;
   onOpenLab: () => void;
-  faces: Record<string, VoiceFace>; // voice id -> face, for cloned voices that have one
-  voiceFor: (speakerId: string) => string;
-  readingVoice: string | null; // voice reading aloud right now in read mode
+  faces: FaceT[]; // the face library
+  voiceFor: (speakerId: string) => string; // the voice answers use (Talk choice, else the reading cast)
+  autoVoiceFor: (speakerId: string) => string; // the reading-cast voice, shown beside "Auto"
+  faceFor: (speakerId: string) => FaceT | undefined; // the face shown in Talk mode
+  readingFace: FaceT | null; // face of whoever is reading aloud right now in read mode
+  lipSyncable: boolean; // the shown face is bound to the answer voice, so the server can lip-sync it
+  choice: TalkChoice;
+  onChoice: (c: TalkChoice) => void;
+  voices: { value: string; label: string }[]; // presets and cloned voices
+  spoilers: boolean; // full-book mode (novels): answers may use the whole book
+  onSpoilers: (on: boolean) => void;
   lipSync: boolean;
   onLipSync: (on: boolean) => void;
 };
@@ -51,7 +60,7 @@ function FaceLoop({ src }: { src: string }) {
 }
 
 /** The face for the medallion: a lip-synced clip, else the speaking loop while speaking, else the idle loop or portrait. */
-function FaceView({ face, speaking, clip }: { face: VoiceFace; speaking: boolean; clip: string | null }) {
+function FaceView({ face, speaking, clip }: { face: FaceT; speaking: boolean; clip: string | null }) {
   if (clip) return <video key={clip} src={clip} muted autoPlay playsInline />; // the audio element plays the sound
   if (speaking && face.talk) return <FaceLoop src={face.talk} />;
   if (face.idle) return <FaceLoop src={face.idle} />;
@@ -86,20 +95,21 @@ function Waveform() {
   );
 }
 
-export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, mode, onMode, pinned, needsCode, onCode, onOpenLab, faces, voiceFor, readingVoice, lipSync, onLipSync }: Props) {
+export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, mode, onMode, pinned, needsCode, onCode, onOpenLab, faces, voiceFor, autoVoiceFor, faceFor, readingFace, lipSyncable, choice, onChoice, voices, spoilers, onSpoilers, lipSync, onLipSync }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
-  const { met, locked } = splitCharacters(book.characters, para);
-  const speaker = met.find((c) => c.id === speakerId);
   const tutor = book.kind === "textbook";
+  const fullBook = !tutor && spoilers;
+  const { met, locked } = splitCharacters(book.characters, para, fullBook);
+  const speaker = met.find((c) => c.id === speakerId);
   const name = speaker?.name ?? (tutor ? "Tutor" : "Narrator");
   const blurb = speaker ? speaker.persona : tutor ? "Explains the chapter in plain words. Ask about anything." : book.narrator?.is_character
     ? `Tells the story as ${book.characters.find((c) => c.id === book.narrator?.is_character)?.name ?? "a character"}.`
     : "Reads the text as written.";
   const live = talk.state === "listening";
   const portrait = speaker ? speaker.portrait : book.narrator?.portrait ?? null;
-  // In read mode a voice with a face is shown while it reads; otherwise the chosen speaker's voice decides.
-  const readingFace = readingVoice ? faces[readingVoice] : undefined;
-  const face = readingFace ?? faces[voiceFor(speakerId)];
+  // In read mode the reading cast's face is shown while it reads; otherwise the Talk avatar choice decides.
+  const face = readingFace ?? faceFor(speakerId);
+  const voiceLabel = (v: string) => (PRESETS.includes(v) ? v : "your cloned voice");
   const faceSpeaking = readingFace ? true : talk.speaking;
   const thinking = ["transcribing", "retrieving", "answering"].includes(talk.state) && !talk.speaking;
   const pressed = useRef(false); // survives re-renders between press and release
@@ -134,22 +144,32 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
       </div>
       {talk.speaking && <Waveform />}
 
-      <div className="badge">
-        <strong>{speaker ? `${name} knows` : "Story position:"}</strong> up to paragraph {para + 1}.
-        {locked.length > 0 && <> {locked.length} more {locked.length === 1 ? "character appears" : "characters appear"} later.</>}
+      <div className={`badge${fullBook ? " spoilers-on" : ""}`}>
+        {fullBook
+          ? <><strong>Full book — spoilers on.</strong> {speaker ? name : "The narrator"} may reveal anything from the whole book.</>
+          : <>
+              <strong>{speaker ? `${name} knows` : "Story position:"}</strong> up to paragraph {para + 1}.
+              {locked.length > 0 && <> {locked.length} more {locked.length === 1 ? "character appears" : "characters appear"} later.</>}
+            </>}
       </div>
+      {!tutor && (
+        <button className="spoiler-toggle" aria-pressed={spoilers} onClick={() => onSpoilers(!spoilers)}
+                title="Let answers use the whole book, including what comes later">
+          Spoilers: {spoilers ? "on" : "off"}
+        </button>
+      )}
 
       <section aria-label="Who to talk to">
         <ul className="cast-list">
           <li>
             <button aria-pressed={speakerId === "narrator"} disabled={!!pinned} onClick={() => onSpeaker("narrator")}>
-              <span className="who"><Face src={faces[voiceFor("narrator")]?.image ?? book.narrator?.portrait ?? null} name={tutor ? "Tutor" : "Narrator"} />{tutor ? "Tutor" : "Narrator"}</span> <small>{faces[voiceFor("narrator")] ? "your cloned voice" : voiceFor("narrator")}</small>
+              <span className="who"><Face src={faceFor("narrator")?.image ?? book.narrator?.portrait ?? null} name={tutor ? "Tutor" : "Narrator"} />{tutor ? "Tutor" : "Narrator"}</span> <small>{voiceLabel(voiceFor("narrator"))}</small>
             </button>
           </li>
           {met.map((c) => (
             <li key={c.id}>
               <button aria-pressed={speakerId === c.id} disabled={!!pinned && pinned !== c.id} onClick={() => onSpeaker(c.id)}>
-                <span className="who"><Face src={faces[voiceFor(c.id)]?.image ?? c.portrait} name={c.name} />{c.name}</span> <small>{faces[voiceFor(c.id)] ? "your cloned voice" : voiceFor(c.id)}</small>
+                <span className="who"><Face src={faceFor(c.id)?.image ?? c.portrait} name={c.name} />{c.name}</span> <small>{voiceLabel(voiceFor(c.id))}</small>
               </button>
             </li>
           ))}
@@ -175,8 +195,23 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
           </div>
         </form>
       )}
-      <button className="link-btn" onClick={onOpenLab}>Voices and cloning</button>
-      {faces[voiceFor(speakerId)] && (
+      <div className="talk-pick">
+        <label htmlFor="talk-voice">Voice</label>
+        <select id="talk-voice" value={choice.voice ?? ""} onChange={(e) => onChoice({ ...choice, voice: e.target.value || null })}>
+          <option value="">Auto ({voiceLabel(autoVoiceFor(speakerId))})</option>
+          {choice.voice && !voices.some((v) => v.value === choice.voice) && <option value={choice.voice}>{choice.voice}</option>}
+          {voices.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
+        </select>
+        <label htmlFor="talk-avatar">Avatar</label>
+        <select id="talk-avatar" value={choice.face ?? ""} onChange={(e) => onChoice({ ...choice, face: e.target.value || null })}>
+          <option value="">Auto</option>
+          <option value="none">None</option>
+          {choice.face && choice.face !== "none" && !faces.some((f) => f.id === choice.face) && <option value={choice.face}>(removed face)</option>}
+          {faces.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+        </select>
+      </div>
+      <button className="link-btn" onClick={onOpenLab}>Voices, faces and cloning</button>
+      {face && lipSyncable && (
         <label className="lipsync">
           <input type="checkbox" checked={lipSync} onChange={(e) => onLipSync(e.target.checked)} />
           Lip-synced face (answers start about 10 seconds later)

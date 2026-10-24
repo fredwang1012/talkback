@@ -164,6 +164,13 @@ button:disabled { cursor: not-allowed; }
 
 .badge { border-left: 3px solid var(--brass); padding: 4px 0 4px 12px; color: var(--ink-soft); font-size: 0.9rem; line-height: 1.45; }
 .badge strong { color: var(--ink); font-weight: 600; }
+.badge.spoilers-on { border-left-color: var(--seal-bright); }
+.spoiler-toggle {
+  align-self: flex-start; padding: 5px 12px; border-radius: var(--radius); font-size: 0.85rem;
+  border: 1px solid var(--brass-soft); background: transparent; color: var(--ink-soft); cursor: pointer;
+}
+.spoiler-toggle[aria-pressed="true"] { border-color: var(--seal-bright); color: var(--ink); background: var(--ground-raised); }
+.spoiler-toggle:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
 .cast-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .cast-list button {
@@ -286,3 +293,22 @@ button:disabled { cursor: not-allowed; }
 .chapter-nav button:disabled { opacity: 0.45; }
 .chapter-nav button:focus-visible, .chapter-nav select:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 .lipsync { display: flex; gap: 8px; align-items: flex-start; font-size: 0.88rem; color: var(--ink-soft); }
+
+/* Recap panel (reuses the .lab side-panel look) and its trigger in the player bar */
+.recap-btn { background: transparent; border: 1px solid var(--brass-soft); border-radius: var(--radius); padding: 6px 12px; color: var(--ink); }
+.recap-btn:hover { border-color: var(--brass); }
+.recap-text { white-space: pre-line; line-height: 1.6; margin: 0; }
+.recap-empty { color: var(--ink-soft); margin: 0; }
+.recap-earlier summary { cursor: pointer; color: var(--ink-soft); margin-bottom: 8px; }
+
+/* Voices panel: cast table, face library; Talk voice/avatar pickers */
+.lab-cast li.cast-row { grid-template-columns: 1fr 1fr auto; }
+.lab-cast .cast-name { grid-column: 1 / -1; font-weight: 600; }
+.face-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.face-list li { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; align-items: center; }
+.face-list .face-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.face-list .face-error { grid-column: 1 / -1; font-size: 0.88rem; }
+.talk-pick { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; }
+.talk-pick label { font-size: 0.9rem; color: var(--ink-soft); }
+.talk-pick select { background: var(--ground-raised); color: var(--ink); border: 1px solid var(--brass-soft); border-radius: var(--radius); padding: 6px 8px; font: inherit; min-width: 0; }
+.lab .mode { margin-bottom: 4px; }

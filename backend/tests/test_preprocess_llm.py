@@ -330,3 +330,13 @@ def test_series_cast_gates_characters_by_first_appearance_across_books():
     assert {c.id: c.first_para for c in b1.characters} == {"harry": 0, "hagrid": 1}
     assert {c.id: c.first_para for c in b2.characters} == {"harry": 0, "hagrid": 0, "dobby": 0}
     assert {c.id for c in b3.characters} == {"harry", "hagrid", "dobby"}  # met earlier: known; lupin never appears
+
+
+def test_running_out_of_tokens_falls_back_to_the_narrator_instead_of_crashing():
+    book = quote_book()
+
+    async def fake(model, system, user, schema, **kw):
+        raise RuntimeError("hit max_tokens")
+
+    out = run(segment_batch(book, [book.paragraphs[0]], fake))
+    assert out[0][1] == "fallback" and [s.speaker for s in out[0][0]] == ["narrator"]

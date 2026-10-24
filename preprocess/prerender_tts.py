@@ -20,13 +20,16 @@ CONFIRM_ABOVE_USD = 5.0
 CONCURRENCY = 4
 
 
-def pending_work(book: Book) -> list[tuple[str, str, str, int]]:
-    """(tts_text, voice, plain_text, chars) for every chunk that is not cached yet."""
+def pending_work(book: Book, from_para: int = 0, to_para: int | None = None,
+                 narrator_voice: str | None = None) -> list[tuple[str, str, str, int]]:
+    """(tts_text, voice, plain_text, chars) for every chunk in the paragraph range that is not cached yet.
+    narrator_voice renders the narrator's chunks in another voice (e.g. a cloned narrator picked in the reader)."""
     out = []
-    for p in book.paragraphs:
+    for p in book.paragraphs[from_para:None if to_para is None else to_para + 1]:
         for c in p.tts_chunks:
-            if not tts_cache.is_cached(c.tts_text, c.voice):
-                out.append((c.tts_text, c.voice, p.text[c.char_start:c.char_end], len(c.tts_text)))
+            voice = narrator_voice if narrator_voice and c.speaker == "narrator" else c.voice
+            if not tts_cache.is_cached(c.tts_text, voice):
+                out.append((c.tts_text, voice, p.text[c.char_start:c.char_end], len(c.tts_text)))
     return out
 
 
@@ -34,8 +37,9 @@ def estimate_usd(work: list[tuple[str, str, str, int]]) -> float:
     return sum(w[3] for w in work) / 1000 * RATE_PER_1K_CHARS
 
 
-async def run(book: Book, limit: int | None, yes: bool) -> int:
-    work = pending_work(book)
+async def run(book: Book, limit: int | None, yes: bool, from_para: int = 0, to_para: int | None = None,
+              narrator_voice: str | None = None) -> int:
+    work = pending_work(book, from_para, to_para, narrator_voice)
     total = sum(1 for p in book.paragraphs for _ in p.tts_chunks)
     if limit is not None:  # --limit 0 means render nothing (a dry run), never everything
         work = work[:limit]
@@ -79,6 +83,9 @@ if __name__ == "__main__":
     ap.add_argument("--book", required=True)
     ap.add_argument("--yes", action="store_true")
     ap.add_argument("--limit", type=int)
+    ap.add_argument("--from-para", type=int, default=0)
+    ap.add_argument("--to-para", type=int)
+    ap.add_argument("--narrator-voice", help="render narrator chunks in this voice id (e.g. the cloned narrator)")
     a = ap.parse_args()
     b = Book.model_validate_json((ROOT / "data/books" / a.book / "book.json").read_text(encoding="utf-8"))
-    sys.exit(1 if asyncio.run(run(b, a.limit, a.yes)) else 0)
+    sys.exit(1 if asyncio.run(run(b, a.limit, a.yes, a.from_para, a.to_para, a.narrator_voice)) else 0)

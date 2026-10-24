@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from app.schema import EMOTIONS, Book, Paragraph, Segment  # noqa: E402
+from app.books import save_book  # noqa: E402
 
 MODEL = "claude-haiku-5-5"
 Emotion = Literal[
@@ -103,8 +104,8 @@ async def segment_paragraph(book: Book, p: Paragraph, call: CallFn, refusal_exc:
     user = build_user(book, p)
     for attempt in range(2):
         try:
-            result = await call(MODEL, SYSTEM, user, SegResult, max_tokens=3000, effort="low")
-        except refusal_exc:
+            result = await call(MODEL, SYSTEM, user, SegResult, max_tokens=max(3000, 2 * len(p.text)), effort="low")
+        except (refusal_exc, RuntimeError):  # refused, or ran out of tokens: the narrator reads this paragraph
             break  # refused: fall back to the narrator for this paragraph
         ok = validate_segments(p.text, result.segments, speakers)
         if ok:
@@ -151,7 +152,7 @@ async def segment_batch(book: Book, paras: list[Paragraph], call: CallFn,
         result = await call(MODEL, BATCH_SYSTEM, build_batch_user(book, paras), BatchResult,
                             max_tokens=4000 + 600 * len(paras), effort="low")
         answers = {bp.para: bp.segments for bp in result.paragraphs}
-    except refusal_exc:
+    except (refusal_exc, RuntimeError):  # refused or out of tokens: each paragraph is retried on its own below
         pass
     out = []
     for p in paras:
@@ -237,7 +238,7 @@ async def main() -> None:
             for p in book.paragraphs:
                 p.segments = narrator_only(p.text)
             print("textbook: one narrator segment per paragraph (use --emphasis for awe/enthusiasm picks)")
-        path.write_text(book.model_dump_json(indent=1), encoding="utf-8")
+        save_book(path, book)
         print("Next: rerun chunk_tts.py.")
         return
     await segment_novels(llm, args.book, args.yes)
@@ -277,7 +278,7 @@ async def segment_novels(llm, book_ids: list[str], yes: bool) -> None:
             segs, how = done.get(p.idx) or (narrator_only(p.text), "skipped")
             p.segments = segs
             counts[how] = counts.get(how, 0) + 1
-        path.write_text(book.model_dump_json(indent=1), encoding="utf-8")
+        save_book(path, book)
         llm_total = sum(counts.get(k, 0) for k in ("llm", "retry", "fallback"))
         ok_rate = (counts.get("llm", 0) + counts.get("retry", 0)) / llm_total if llm_total else 1.0
         print(f"{book.id}: {counts}; verbatim check passed for {ok_rate:.1%} of LLM paragraphs (target >= 95%)")

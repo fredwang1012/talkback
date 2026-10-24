@@ -12,7 +12,7 @@ talking to, and the reading picks up where it stopped.
 | Backend (FastAPI, Python 3.12) | localhost:8000, or Cloud Run service `talkback` (us-central1) | every API below; holds all keys; enforces the spoiler rule |
 | Book data | `data/books/<id>/book.json` (+ `index/chunks.json`); on Cloud Run the bucket `gs://frederick-talkback-data` is mounted at `/app/data` | paragraphs, chapters, cast, segments, TTS chunks, summaries |
 | Audio cache | `data/cache/tts/<sha256>.mp3` + `.json` (word timestamps), served at `/media/tts/` | every Boson TTS clip is made once |
-| Faces | `data/portraits/voices/<voice>.png`, `-talk.mp4`, `-idle.mp4`; lip-synced clips in `data/cache/avatar/talk/` (`/media/avatar/`) | the cloned narrator's face |
+| Faces | `data/faces.json` + `data/portraits/faces/<id>.png`, `-talk.mp4`, `-idle.mp4`; lip-synced clips in `data/cache/avatar/talk/` (`/media/avatar/`) | the face library (see Faces and cast settings) |
 | Spend log | `data/cache/usage.jsonl` (never served); `scripts/usage.py` prints the report | every paid call: Gemini, embeddings, Claude, Boson |
 
 ## External services
@@ -56,6 +56,30 @@ to the paragraph text for highlighting. Voice choices (e.g. the cloned narrator)
 browser, so one choice covers all seven books. Audio is made on demand; nothing is pre-rendered (the series is
 ~6 M characters).
 
+## Faces and cast settings
+
+- **Face library** (`app/faces.py`): `POST /api/faces` (multipart `image`, `name`; PNG/JPEG/WebP by magic bytes, <= 5 MB),
+  `GET /api/faces`, `DELETE /api/faces/{id}`. Ids are random. A face is a still portrait until the user clicks
+  "Animate": `POST /api/faces/{id}/animate` renders the talk and idle loops with Boson Avatar (a few cents; idempotent,
+  one render per face at a time, rate-limited with the lip-sync bucket). Faces made with a voice clone carry that
+  voice id, so lip-sync and `/api/voices/faces` read from the same list; the old `data/voice_faces.json` is migrated
+  into the library on first access.
+- **Cast settings** (`app/cast.py`): `GET/PUT /api/books/{id}/cast` stores `main` (character ids), the narrator's and
+  each character's `{voice, face}` in `data/books/<id>/cast_settings.json` (atomic write). `null` means the book's own
+  voice / no face. `/api/tts` resolves a chunk's voice as request override, then the cast voice for its speaker, then
+  the book's voice. Every endpoint above is gated by the access code.
+
+## Retrieval sizes
+
+- Chunks (`retrieval.make_chunks`): paragraph-aligned, about 1,400 characters (min 900, max 2,000; a single longer paragraph
+  stays one chunk), neighbours sharing about one trailing paragraph (up to 250 characters). HP book 3 is 607 chunks
+  (median 1,308 characters). The whole series is 6,208 Vector Search objects (was 17,327 three-paragraph chunks, median 443 chars).
+- `/api/answer` (Gemini): k = 8 (`DEFAULT_K`), passages capped at 12,000 characters (`MAX_PASSAGE_CHARS`), whole prompt at
+  24,000 (`MAX_ANSWER_PROMPT_CHARS`). The most recent two paragraphs are always added.
+- `/api/retrieve` (Boson realtime instructions): k <= 4 (`REALTIME_K`), passages capped at 4,500 characters
+  (`REALTIME_MAX_PASSAGE_CHARS`), so the instructions fit `MAX_INSTRUCTIONS_CHARS` = 8,000 and stay short (BRIEF: long
+  realtime prompts made the model stop calling tools).
+
 ## The spoiler rule (enforced on the server, never by the model)
 
 - A passage of the book being read is eligible only if `para_end <= reader_para`. Earlier books of the series are
@@ -63,8 +87,13 @@ browser, so one choice covers all seven books. Audio is made on demand; nothing 
 - Enforced three times: the Vector Search filter, the `VertexIndex` post-filter, and `retrieval._finish`.
 - Summaries: only those with `upto_para <= reader_para`. They are built incrementally, each from the previous
   summary plus the new paragraphs only, so no summary ever saw later text.
-- Characters can be talked to only after they have appeared (`first_para`; 0 if met in an earlier book).
+- Characters can be talked to only after they have appeared (`first_para`; 0 if met in an earlier book). Full-book mode lifts
+  this gate (server 403 and the Stage picker), so every character is available with spoilers on.
 - Checked by `preprocess/eval_spoilers.py` (questions written by Sonnet, answered by the real `/api/answer`, judged by Opus).
+- Full-book mode: `/api/retrieve` and `/api/answer` accept `spoilers: true` (default false, so every existing client stays
+  spoiler-safe). For a novel it makes the whole book and the earlier books eligible (the Vector Search filter becomes
+  current book OR earlier books), uses the book's last summary as "Whole book:", and switches to the full-book persona
+  prompts. Textbooks ignore the flag, and the Reader toggle ("Spoilers: off / on") is stored per book in localStorage.
 
 ## Preprocessing pipeline (`scripts/run_all.py`)
 
@@ -83,5 +112,5 @@ browser, so one choice covers all seven books. Audio is made on demand; nothing 
 - Keys never reach the browser. On a public deployment, `TALKBACK_ACCESS_TOKEN` gates every endpoint that spends
   money and the full-text book endpoint (copyrighted text).
 - Per-IP rate limits on answers, retrieval, TTS cache misses, lip-sync renders, uploads and clones.
-- The cloned voice and face (`data/voices.json`, `data/voice_faces.json`, `data/portraits/`) and the books
+- The cloned voice and face (`data/voices.json`, `data/faces.json`, `data/portraits/`) and the books
   (`data/books/hp*`) are gitignored. The deploy script syncs `data/books` to the private bucket but never portraits.

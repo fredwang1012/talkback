@@ -16,8 +16,9 @@ export function readerPara(chunks: FlatChunk[], index: number): number {
   return chunks[clampIndex(index, chunks.length)]?.para ?? 0;
 }
 
-/** Characters the reader has met. Everything else stays locked (spoiler rule, mirrored from the backend). */
-export function splitCharacters(characters: Character[], para: number) {
+/** Characters the reader has met. Everything else stays locked (spoiler rule, mirrored from the backend) unless the reader chose full-book mode. */
+export function splitCharacters(characters: Character[], para: number, fullBook = false) {
+  if (fullBook) return { met: characters, locked: [] as Character[] }; // spoilers on: everyone is available
   return {
     met: characters.filter((c) => c.first_para <= para),
     locked: characters.filter((c) => c.first_para > para),

@@ -18,7 +18,8 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import books, ingest_upload, retrieval, tts_cache, voices
+from . import books, cast, faces, ingest_upload, retrieval, tts_cache, voices
+from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
 from .gcp import usage
@@ -32,6 +33,8 @@ def _warm_up() -> None:
     try:
         for info in books.list_books():
             _index_for(info["id"])
+        if settings.retrieval_backend == "vertex":  # first Vertex call pays auth + TLS setup (~5 s): pay it now
+            _vertex_deps()[0].embed_query("warm up")
     except Exception:  # never block startup; retrieval falls back to BM25 / loads lazily
         pass
 
@@ -135,6 +138,22 @@ def get_book(book_id: str, accept_encoding: str = Header(default="")):
     return Response(cached[1], media_type="application/json")
 
 
+@app.get("/api/books/{book_id}/recap", dependencies=[Depends(require_access)])
+def get_recap(book_id: str, para: int = 0):
+    """Spoiler-safe "Previously..." for the reader's place: the latest stored summary written from text at or
+    before `para` (never a later one), the chapter they are in, and the closing summaries of earlier books."""
+    book = books.load_book(book_id)
+    if book is None:
+        raise HTTPException(404, "Book not found")
+    _, para = retrieval._clamp(book, para)
+    ok = [s for s in book.summaries if s.upto_para <= para]
+    best = max(ok, key=lambda s: s.upto_para) if ok else None
+    sections = [s for s in book.sections if s.start_para <= para]
+    chapter = max(sections, key=lambda s: s.start_para).title if sections else ""
+    return {"upto_para": best.upto_para if best else None, "chapter": chapter,
+            "text": best.text if best else "", "earlier": books.series_recap(book)}
+
+
 # ---------- realtime key ----------
 
 @app.post("/api/realtime/token", dependencies=[Depends(require_access)])
@@ -167,7 +186,7 @@ async def tts(req: TtsRequest, request: Request):
     for p in book.paragraphs:
         for c in p.tts_chunks:
             if c.id == req.chunk_id:
-                voice = req.voice_override or c.voice
+                voice = req.voice_override or cast.voice_for(book, c.speaker) or c.voice
                 if not voices.is_known_voice(voice):
                     raise HTTPException(400, f"Unknown voice '{voice}'.")
                 cached = tts_cache.is_cached(c.tts_text, voice)
@@ -190,7 +209,8 @@ class RetrieveRequest(BaseModel):
     query: str = Field(default="", max_length=500)
     reader_para: int = Field(ge=0)
     speaker_id: str = "narrator"
-    k: int = Field(default=4, ge=1, le=8)
+    k: int = Field(default=DEFAULT_K, ge=1, le=12)
+    spoilers: bool = False  # full-book mode (novels): reader allows spoilers; default stays spoiler-safe
 
 
 @lru_cache(maxsize=1)
@@ -242,8 +262,10 @@ def _series_context(book: Book) -> dict:
     return {"earlier": frozenset(b.id for b in earlier), "recap": books.series_recap(book)}
 
 
-def _resolve_talk(book_id: str, speaker_id: str, reader_para: int):
-    """Shared 404/403 checks for talk endpoints: returns (book, speaker or None, clamped reader_para)."""
+def _resolve_talk(book_id: str, speaker_id: str, reader_para: int, spoilers: bool = False):
+    """Shared 404/403 checks for talk endpoints: returns (book, speaker or None, clamped reader_para).
+
+    Full-book mode (`spoilers`) lifts the "not met yet" gate: every character is available."""
     book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
@@ -251,7 +273,7 @@ def _resolve_talk(book_id: str, speaker_id: str, reader_para: int):
         raise HTTPException(404, "Unknown speaker")
     reader_para = min(reader_para, len(book.paragraphs) - 1)
     speaker = next((c for c in book.characters if c.id == speaker_id), None)
-    if speaker and book.kind == "novel" and speaker.first_para > reader_para:
+    if speaker and book.kind == "novel" and not spoilers and speaker.first_para > reader_para:
         raise HTTPException(403, f"{speaker.name} has not appeared yet at this point in the story.")  # server-side gate
     return book, speaker, reader_para
 
@@ -260,9 +282,11 @@ def _resolve_talk(book_id: str, speaker_id: str, reader_para: int):
 async def retrieve(req: RetrieveRequest, request: Request):
     if not retrieve_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many lookups; wait a moment.")
-    book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para)
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, **_series_context(book))
-    out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"])
+    book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
+    # realtime (Boson) instructions must stay short: fewer passages and a smaller character cap than /api/answer
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, min(req.k, REALTIME_K),
+                                    spoilers=req.spoilers, max_chars=REALTIME_MAX_PASSAGE_CHARS, **_series_context(book))
+    out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"], spoilers=req.spoilers)
     out["persona"] = speaker.persona if speaker else None
     return out
 
@@ -284,12 +308,14 @@ def _line(obj: dict) -> str:
 async def answer(req: RetrieveRequest, request: Request):
     if not answer_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many questions; wait a moment.")
-    book, _, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para)
+    book, _, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
     t0 = time.monotonic()
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, **_series_context(book))
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, spoilers=req.spoilers,
+                                    **_series_context(book))
     t_retrieved = time.monotonic()
     retrieve_ms = int((t_retrieved - t0) * 1000)
-    system, user = build_answer_prompt(book, req.speaker_id, out["story_so_far"], out["passages"], req.query)
+    system, user = build_answer_prompt(book, req.speaker_id, out["story_so_far"], out["passages"], req.query,
+                                        spoilers=req.spoilers)
 
     async def stream():
         first_ms = None
@@ -489,7 +515,7 @@ async def lipsync(req: LipSyncRequest, request: Request):
     cached by audio key, so the same sentence never renders twice.
     """
     m = _TTS_URL.match(req.audio_url)
-    face = voices.face_path(req.voice) if voices.is_known_voice(req.voice) else None
+    face = faces.voice_face_path(req.voice) if voices.is_known_voice(req.voice) else None
     if not m or face is None:
         raise HTTPException(400, "Lip-sync needs audio from /api/speak and a voice that has a face.")
     audio = settings.data_dir / "cache" / "tts" / f"{m.group(1)}.mp3"
@@ -505,7 +531,7 @@ async def lipsync(req: LipSyncRequest, request: Request):
             data = audio.read_bytes()
             try:
                 vid = await boson.create_video(base64.b64encode(face.read_bytes()).decode(), base64.b64encode(data).decode(),
-                                               image_mime=voices.FACE_EXTS[face.suffix.lstrip(".").lower()],
+                                               image_mime=faces.FACE_EXTS[face.suffix.lstrip(".").lower()],
                                                seconds=len(data) / 16000)  # 128 kbit/s mp3
                 await boson.wait_video(vid, interval=1, timeout=120)
                 video = await boson.download_video(vid)
@@ -538,32 +564,126 @@ async def clone_voice(request: Request, audio: UploadFile = File(...), transcrip
     if not clone_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many voice uploads; wait a moment.")
     data = await audio.read(voices.MAX_BYTES + 1)  # bounded read: never buffer an unbounded upload
-    image = await face.read(voices.MAX_FACE_BYTES + 1) if face is not None else None
-    face_ext = Path(face.filename or "").suffix if face is not None else ""
+    image = await face.read(faces.MAX_FACE_BYTES + 1) if face is not None else None
     try:
         voices.validate_clone_request(data, transcript, name, consent)
-        if image is not None and (len(image) > voices.MAX_FACE_BYTES or face_ext.lower().lstrip(".") not in voices.FACE_EXTS):
-            raise voices.VoiceInputError("The face must be a PNG, JPEG or WebP image of at most 5 MB.")
-    except voices.VoiceInputError as e:
+        if image is not None:
+            faces.validate_image(image)  # before the paid clone call
+    except (voices.VoiceInputError, faces.FaceInputError) as e:
         raise HTTPException(400, str(e))
     try:
         voice_id = await boson.create_voice(base64.b64encode(data).decode(), transcript, description=name)
     except (BosonError, RuntimeError) as e:
         raise boson_http_error(e)
     voices.save_voice(name, voice_id)
-    face_url = voices.save_face(voice_id, image, face_ext) if image is not None else None
+    face_url = faces.create_face(image, name, voice=voice_id)["image"] if image is not None else None
     return {"voice": voice_id, "name": name, "face": face_url}
 
 
-@app.get("/api/voices")
+@app.get("/api/voices", dependencies=[Depends(require_access)])
 def list_voices():
     return voices.load_voices()
 
 
-@app.get("/api/voices/faces")
+@app.get("/api/voices/faces", dependencies=[Depends(require_access)])
 def list_voice_faces():
-    """voice id -> portrait URL for cloned voices that have a face (shown for any speaker using that voice)."""
-    return voices.load_faces()
+    """voice id -> portrait URL for cloned voices that have a face (shown for any speaker using that voice).
+    Gated: the face is a real person's. The files are named after the voice id, which only these gated lists reveal."""
+    return faces.voice_faces()
+
+
+# ---------- face library ----------
+
+face_bucket = TokenBucket(capacity=10, per_seconds=60)  # uploads write to disk
+_face_locks: dict[str, asyncio.Lock] = {}
+
+
+def _safe_face_id(face_id: str) -> str:
+    if not faces.FACE_ID.match(face_id):
+        raise HTTPException(404, "Face not found")
+    return face_id
+
+
+@app.post("/api/faces", dependencies=[Depends(require_access)])
+async def upload_face(request: Request, image: UploadFile = File(...), name: str = Form(..., max_length=60)):
+    if not face_bucket.allow(client_ip(request)):
+        raise HTTPException(429, "Too many face uploads; wait a moment.")
+    data = await image.read(faces.MAX_FACE_BYTES + 1)  # bounded read
+    try:
+        return faces.create_face(data, name)
+    except faces.FaceInputError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/faces", dependencies=[Depends(require_access)])
+def list_faces():
+    """Gated: faces can be real people's portraits."""
+    return faces.list_faces()
+
+
+@app.delete("/api/faces/{face_id}", dependencies=[Depends(require_access)])
+async def delete_face(face_id: str):
+    _safe_face_id(face_id)
+    lock = _face_locks.setdefault(face_id, asyncio.Lock())
+    try:
+        async with lock:  # waits for a running animate, so no loops are written after the delete
+            deleted = faces.delete_face(face_id)
+    finally:
+        _release_face_lock(face_id, lock)
+    if not deleted:
+        raise HTTPException(404, "Face not found")
+    return {"deleted": face_id}
+
+
+def _release_face_lock(face_id: str, lock: asyncio.Lock) -> None:
+    if not lock.locked() and _face_locks.get(face_id) is lock:
+        del _face_locks[face_id]
+
+
+@app.post("/api/faces/{face_id}/animate", dependencies=[Depends(require_access)])
+async def animate_face(face_id: str, request: Request):
+    """Generate the talk and idle loops (a few cents of Boson avatar credit). Idempotent: existing loops are kept."""
+    _safe_face_id(face_id)
+    if not faces.face_exists(face_id):
+        raise HTTPException(404, "Face not found")
+    lock = _face_locks.setdefault(face_id, asyncio.Lock())
+    try:
+        async with lock:  # a double click waits, then finds the loops and spends nothing
+            if not faces.face_exists(face_id):  # deleted while we waited
+                raise HTTPException(404, "Face not found")
+            if faces.needs_animation(face_id):
+                if not avatar_bucket.allow(client_ip(request)):
+                    raise HTTPException(429, "Too many avatar renders; wait a moment.")
+                try:
+                    face = await faces.animate(boson, face_id)
+                except (BosonError, RuntimeError) as e:
+                    raise boson_http_error(e)
+                return {**face, "animated": True, "approx_cost_usd": faces.APPROX_ANIMATE_COST_USD}
+            return {**faces.get_face(face_id), "animated": False, "approx_cost_usd": 0}
+    finally:
+        _release_face_lock(face_id, lock)
+
+
+# ---------- cast settings per book ----------
+
+def _book_for_cast(book_id: str) -> Book:
+    book = books.load_book(book_id) if _SAFE_NAME.match(book_id) else None
+    if book is None:
+        raise HTTPException(404, "Book not found")
+    return book
+
+
+@app.get("/api/books/{book_id}/cast", dependencies=[Depends(require_access)])
+def get_cast(book_id: str):
+    return cast.load(_book_for_cast(book_id))
+
+
+@app.put("/api/books/{book_id}/cast", dependencies=[Depends(require_access)])
+def put_cast(book_id: str, body: cast.CastSettings):
+    try:
+        return cast.save(_book_for_cast(book_id), body)
+    except cast.CastError as e:
+        raise HTTPException(400, str(e))
 
 
 # ---------- single-service deploy: serve the built frontend from the same origin (no CORS, one container) ----------

@@ -15,3 +15,5 @@ logs
 .git
 .playwright-mcp
 .superpowers
+.talkback-access-code
+.claude/

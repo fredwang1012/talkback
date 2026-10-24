@@ -16,7 +16,12 @@ from rank_bm25 import BM25Okapi
 
 from .schema import Book
 
-MAX_PASSAGE_CHARS = 6000
+DEFAULT_K = 8                  # passages per Gemini answer (/api/answer)
+MAX_PASSAGE_CHARS = 12000      # hard cap on passage text per Gemini answer
+REALTIME_K = 4                 # passages per Boson realtime session (/api/retrieve): its instructions stay short
+REALTIME_MAX_PASSAGE_CHARS = 4500
+CHUNK_TARGET, CHUNK_MIN, CHUNK_MAX = 1400, 900, 2000   # retrieval chunk size in characters
+CHUNK_OVERLAP_CHARS = 250      # neighbouring chunks share about one trailing paragraph (up to this many chars)
 RECENCY_WINDOW = 15
 RECENCY_BOOST = 0.05
 W_EMBED, W_BM25 = 0.6, 0.4
@@ -44,16 +49,40 @@ class Chunk:
     book_title: str = ""
 
 
-def make_chunks(book: Book, size: int = 3, overlap: int = 1) -> list[Chunk]:
-    """Retrieval chunks of `size` paragraphs with `overlap` paragraphs shared between neighbours."""
-    paras, step = book.paragraphs, max(1, size - overlap)
-    chunks = []
-    for start in range(0, len(paras), step):
-        group = paras[start:start + size]
-        chunks.append(Chunk(id=f"r{len(chunks)}", para_start=group[0].idx, para_end=group[-1].idx,
-                            text="\n".join(p.text for p in group)))
-        if start + size >= len(paras):
+def make_chunks(book: Book, target: int = CHUNK_TARGET, min_chars: int = CHUNK_MIN, max_chars: int = CHUNK_MAX,
+                overlap_chars: int = CHUNK_OVERLAP_CHARS) -> list[Chunk]:
+    """Paragraph-aligned chunks of about `target` chars (never above `max_chars` unless one paragraph alone is longer).
+
+    A chunk closes once it reaches `min_chars` and adding the next paragraph would overshoot `target`, or would exceed
+    `max_chars`. Neighbours overlap by the trailing paragraph(s) totalling at most `overlap_chars` (at least one
+    paragraph when that paragraph alone fits within the limit; the next chunk always advances).
+    """
+    paras = book.paragraphs
+    n = len(paras)
+    lens = [len(p.text) + 1 for p in paras]  # +1 for the joining newline
+    chunks: list[Chunk] = []
+    start, fresh = 0, 0  # `fresh`: first paragraph not already in the previous chunk (each chunk must add one)
+    while start < n:
+        end, size = start, lens[start]  # inclusive end
+        while end + 1 < n:
+            nxt = lens[end + 1]
+            if size + nxt > max_chars or (end >= fresh and size >= min_chars and size + nxt > target):
+                break
+            end += 1
+            size += nxt
+        chunks.append(Chunk(id=f"r{len(chunks)}", para_start=paras[start].idx, para_end=paras[end].idx,
+                            text="\n".join(p.text for p in paras[start:end + 1])))
+        if end + 1 >= n:
             break
+        # next chunk starts at the earliest paragraph (>= start+1) such that the overlap stays within overlap_chars,
+        # but always keeps at least the last paragraph as overlap
+        nstart, shared = end, lens[end]
+        while nstart - 1 > start and shared + lens[nstart - 1] <= overlap_chars:
+            nstart -= 1
+            shared += lens[nstart]
+        while nstart <= end and sum(lens[nstart:end + 2]) > max_chars:  # overlap must leave room for the next paragraph
+            nstart += 1
+        start, fresh = max(nstart, start + 1), end + 1
     return chunks
 
 
@@ -94,7 +123,7 @@ class Index:
         cos = self.embeddings @ (q / (np.linalg.norm(q) or 1.0))
         return W_EMBED * cos + W_BM25 * bm_norm
 
-    def search(self, query: str, reader_para: int, k: int = 4, *, spoiler_safe: bool = True) -> list[Chunk]:
+    def search(self, query: str, reader_para: int, k: int = DEFAULT_K, *, spoiler_safe: bool = True) -> list[Chunk]:
         """Top-k chunks, in book order. With spoiler_safe, only chunks fully at or before reader_para are eligible."""
         eligible = [i for i, c in enumerate(self.chunks) if (c.para_end <= reader_para if spoiler_safe else True)]
         if not eligible:
@@ -132,13 +161,19 @@ def is_eligible(c: Chunk, book: Book, reader_para: int, earlier: frozenset[str])
     return c.para_end <= reader_para
 
 
+def final_summary(book: Book) -> str:
+    """The book's last (whole-book) summary: only used in full-book (spoilers on) mode."""
+    return max(book.summaries, key=lambda s: s.upto_para).text if book.summaries else ""
+
+
 def _finish(book: Book, index, found: list[Chunk], reader_para: int, spoiler_safe: bool,
-            earlier: frozenset[str] = frozenset(), recap: str = "") -> dict:
-    """Shared post-search step: recent passage, char cap, story summary (with the earlier books' recap)."""
+            earlier: frozenset[str] = frozenset(), recap: str = "", full_book: bool = False,
+            max_chars: int = MAX_PASSAGE_CHARS) -> dict:
+    """Shared post-search step: recent passage, char cap (`max_chars`), story summary (with the earlier books' recap)."""
     if spoiler_safe:  # backstop: enforce the spoiler invariant whatever the index returned
         found = [c for c in found if is_eligible(c, book, reader_para, earlier)]
-    else:
-        found = [c for c in found if not c.book_id or c.book_id == book.id]
+    else:  # textbook, or full-book mode (novel, spoilers on): the whole book, plus earlier books if any
+        found = [c for c in found if not c.book_id or c.book_id == book.id or (full_book and c.book_id in earlier)]
     passages = []
     for c in found:
         p = {"para_start": c.para_start, "para_end": c.para_end, "text": c.text}
@@ -155,41 +190,50 @@ def _finish(book: Book, index, found: list[Chunk], reader_para: int, spoiler_saf
         return float("inf") if "book" in p else abs(reader_para - p["para_end"])
 
     # hard cap: drop the passages furthest from the reader first (earlier books count as furthest), never the recent one
-    while sum(len(p["text"]) for p in passages) > MAX_PASSAGE_CHARS and len(passages) > 1:
+    while sum(len(p["text"]) for p in passages) > max_chars and len(passages) > 1:
         victim = max((p for p in passages if p is not recent), key=distance, default=None)
         if victim is None:
             break
         passages.remove(victim)
     total = 0
     for p in passages:  # a single oversized passage is trimmed rather than dropped
-        p["text"] = p["text"][: max(0, MAX_PASSAGE_CHARS - total)]
+        p["text"] = p["text"][: max(0, max_chars - total)]
         total += len(p["text"])
     story = latest_summary(book, reader_para) if spoiler_safe else ""
     if spoiler_safe and recap:
         story = f"Earlier books:\n{recap}\n\nThis book so far:\n{story or '(just started)'}"
+    elif full_book:  # whole-book note (the last summary) plus the earlier books' recap
+        whole = final_summary(book)
+        parts = ([f"Earlier books:\n{recap}"] if recap else []) + ([f"Whole book:\n{whole}"] if whole else [])
+        story = "\n\n".join(parts)
     return {"passages": passages, "story_so_far": story, "mode": index.mode, "reader_para": reader_para}
 
 
-def _clamp(book: Book, reader_para: int) -> tuple[bool, int]:
-    return book.kind == "novel", max(0, min(reader_para, len(book.paragraphs) - 1))
+def _clamp(book: Book, reader_para: int, spoilers: bool = False) -> tuple[bool, int]:
+    """(spoiler_safe, clamped para). Full-book mode (`spoilers`) only applies to novels."""
+    return book.kind == "novel" and not spoilers, max(0, min(reader_para, len(book.paragraphs) - 1))
 
 
-def retrieve(book: Book, index: Index, query: str, reader_para: int, k: int = 4) -> dict:
-    """Passages (cap MAX_PASSAGE_CHARS) + story_so_far for the Talk prompt."""
-    spoiler_safe, reader_para = _clamp(book, reader_para)
+def retrieve(book: Book, index: Index, query: str, reader_para: int, k: int = DEFAULT_K, *, spoilers: bool = False,
+             max_chars: int = MAX_PASSAGE_CHARS) -> dict:
+    """Passages (cap `max_chars`, default MAX_PASSAGE_CHARS) + story_so_far for the Talk prompt."""
+    spoiler_safe, reader_para = _clamp(book, reader_para, spoilers)
     found = index.search(query, reader_para, k, spoiler_safe=spoiler_safe)
-    return _finish(book, index, found, reader_para, spoiler_safe)
+    return _finish(book, index, found, reader_para, spoiler_safe, full_book=book.kind == "novel" and spoilers, max_chars=max_chars)
 
 
-async def aretrieve(book: Book, index, query: str, reader_para: int, k: int = 4, *,
-                    earlier: frozenset[str] = frozenset(), recap: str = "") -> dict:
+async def aretrieve(book: Book, index, query: str, reader_para: int, k: int = DEFAULT_K, *,
+                    earlier: frozenset[str] = frozenset(), recap: str = "",
+                    spoilers: bool = False, max_chars: int = MAX_PASSAGE_CHARS) -> dict:
     """Async `retrieve`: same output; awaits index.asearch when present, else runs the sync search in a thread.
 
     `earlier`: ids of the series books before this one (fully eligible); `recap`: their closing summaries.
+    `spoilers`: full-book mode (novels only): the whole book and the earlier books are eligible.
     """
-    spoiler_safe, reader_para = _clamp(book, reader_para)
+    spoiler_safe, reader_para = _clamp(book, reader_para, spoilers)
     if hasattr(index, "asearch"):
         found = await index.asearch(query, reader_para, k, spoiler_safe=spoiler_safe)
     else:
         found = await asyncio.to_thread(index.search, query, reader_para, k, spoiler_safe=spoiler_safe)
-    return _finish(book, index, found, reader_para, spoiler_safe, earlier, recap)
+    return _finish(book, index, found, reader_para, spoiler_safe, earlier, recap,
+                   full_book=book.kind == "novel" and spoilers, max_chars=max_chars)

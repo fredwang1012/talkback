@@ -21,17 +21,17 @@ class VertexIndex:
 
     def _eligible(self, d: dict, reader_para: int, spoiler_safe: bool) -> bool:
         if d.get("book_id") in self.earlier:
-            return spoiler_safe  # earlier books only take part in spoiler-safe (novel) talk
+            return self.book.kind == "novel"  # earlier books take part in all novel talk (spoiler-safe or full-book)
         if d.get("book_id") != self.book.id:
             return False
         return not spoiler_safe or (isinstance(d.get("para_end"), int) and d["para_end"] <= reader_para)
 
-    async def asearch(self, query: str, reader_para: int, k: int = 4, *, spoiler_safe: bool = True) -> list[Chunk]:
+    async def asearch(self, query: str, reader_para: int, k: int = 8, *, spoiler_safe: bool = True) -> list[Chunk]:
         """Top-k chunks: earlier-book chunks first, then this book's in book order."""
         if not query.strip():
             return []
         flt = spoiler_filter(self.book.id, reader_para if spoiler_safe else None,
-                             list(self.earlier) if spoiler_safe else None)
+                             list(self.earlier) if self.book.kind == "novel" else None)
         n = 4 * k
         text_task = asyncio.ensure_future(self.store.text_search(query, flt, n))  # needs no embedding: start now
         try:

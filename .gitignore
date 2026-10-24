@@ -41,3 +41,10 @@ logs/
 
 # access code for the deployed app (share it with visitors; never commit)
 .talkback-access-code
+
+# spoiler-eval reports quote copyrighted book text
+data/eval/
+
+# probe recordings
+scripts/captures/*.mp3
+scripts/captures/*.mp4

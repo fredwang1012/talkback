@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 from app.schema import Book  # noqa: E402
+from app.books import save_book  # noqa: E402
 from app.textnorm import normalize_for_tts  # noqa: E402,F401
 from app.ttschunks import (  # noqa: E402,F401
     ABBREVIATIONS, DEFAULT_VOICE, MAX_CHARS, build_tts_text, chunk_paragraph, sentence_spans, split_long,
@@ -30,7 +31,7 @@ def main() -> None:
         for p in book.paragraphs:
             p.tts_chunks = chunk_paragraph(p, book)
             total += sum(len(c.tts_text) for c in p.tts_chunks)
-        path.write_text(book.model_dump_json(indent=1), encoding="utf-8")
+        save_book(path, book)
         n = sum(len(p.tts_chunks) for p in book.paragraphs)
         print(f"{book_id}: {n} chunks, {total} TTS chars (~${total / 1000 * 0.015:.2f} at $0.015/1K)")
 

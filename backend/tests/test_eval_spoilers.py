@@ -74,7 +74,7 @@ def test_full_flow_with_fake_models_counts_leaks_and_accuracy():
                 Question(question="How does it end?", kind="future", key_fact="the end")])
         if schema is Answer:
             return Answer(answer="He cannot say yet." if "end" in user else "Clue one.")
-        return Verdict(leaked_future_info="end" in user and "SPOILER" in user, answered_correctly=True, reason="ok")
+        return Verdict(leaked_future_info="end" in user and "SPOILER" in user, answered_correctly=True, detail=2, reason="ok")
 
     cases = run(generate_cases(book, [10, 30], fake))
     assert len(cases) == 4
@@ -91,7 +91,7 @@ def test_full_flow_with_fake_models_counts_leaks_and_accuracy():
 def test_report_lists_a_flagged_leak():
     book = make_book()
     leaky = Case(question=Question(question="Who did it?", kind="future", key_fact="X"), reader_para=5, speaker="narrator",
-                 answer="It was X.", verdict=Verdict(leaked_future_info=True, answered_correctly=False, reason="named X"))
+                 answer="It was X.", verdict=Verdict(leaked_future_info=True, answered_correctly=False, detail=2, reason="named X"))
     stats = summarize([leaky])
     assert stats["llm_leaks"] == 1
     report = render_report(book, [leaky], stats)
@@ -114,3 +114,52 @@ def test_question_context_is_bounded_and_includes_the_ending():
     read, unread = question_context(book, 30)
     assert len(read) <= READ_WINDOW and "p30 " in read and "p31 " not in read
     assert len(unread) <= UNREAD_WINDOW + ENDING_CHARS + 20 and "p31 " in unread and "THE ENDING" in unread
+
+
+def test_judge_prompts_differ_by_mode_and_full_mode_gives_future_ground_truth():
+    from eval_spoilers import FULL_JUDGE_SYSTEM, JUDGE_SYSTEM, build_judge_prompt
+    book = make_book()
+    fut = Case(question=Question(question="How does it end?", kind="future", key_fact="KEYFACT-END"), reader_para=10,
+               speaker="narrator", answer="It ends well.")
+    sys_safe, user_safe = build_judge_prompt(book, fut, "safe")
+    sys_full, user_full = build_judge_prompt(book, fut, "full")
+    assert sys_safe == JUDGE_SYSTEM and sys_full == FULL_JUDGE_SYSTEM
+    assert "### Unread text" in user_safe and "Later text (excerpt)" in user_full
+    assert "marker30" in user_full and "KEYFACT-END" in user_full and "It ends well." in user_full
+    earlier = Case(question=Question(question="q", kind="earlier", key_fact="K"), reader_para=10, speaker="narrator", answer="a")
+    assert "Later text" not in build_judge_prompt(book, earlier, "full")[1]
+
+
+def test_full_mode_plumbing_scores_future_accuracy_detail_and_beyond_passages():
+    from eval_spoilers import FullVerdict, mode_list
+    assert mode_list("both") == ("safe", "full") and mode_list("full") == ("full",)
+    book = make_book()
+    calls = []
+
+    async def fake(model, system, user, schema, **kw):
+        calls.append((model, schema))
+        if schema is Answer:
+            return Answer(answer="It ends.")
+        return FullVerdict(answered_correctly="KEY" in user, detail=3, reason="ok")
+
+    def retrieve(q, p, s):  # full-mode style: a passage past the reader
+        return {"passages": [{"para_start": p, "para_end": p + 5, "text": "x"}], "instructions": "i"}
+
+    cases = [Case(question=Question(question="q", kind=k, key_fact="KEY"), reader_para=10, speaker="narrator")
+             for k in ("earlier", "future")]
+    done = [run(run_case(book, c, retrieve, fake, None, "full", "judge-x")) for c in cases]
+    stats = summarize(done, "full")
+    assert stats["earlier_accuracy"] == 1.0 and stats["future_handled"] == 1.0
+    assert stats["avg_detail_earlier"] == 3 and stats["avg_detail_future"] == 3
+    assert stats["structural_leaks"] == 2 and stats["llm_leaks"] == 0
+    assert ("judge-x", FullVerdict) in calls
+    report = render_report(book, done, stats)
+    assert "expected > 0" in report and "future-question accuracy: 100%" in report
+
+
+def test_safe_mode_detail_and_default_judge_is_sonnet():
+    from eval_spoilers import JUDGE_MODEL
+    assert JUDGE_MODEL == "claude-sonnet-5-5"
+    c = Case(question=Question(question="q", kind="earlier", key_fact="k"), reader_para=5, speaker="narrator",
+             verdict=Verdict(leaked_future_info=False, answered_correctly=True, detail=1, reason="r"))
+    assert summarize([c])["avg_detail_earlier"] == 1

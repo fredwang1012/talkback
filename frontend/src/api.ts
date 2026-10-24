@@ -92,6 +92,11 @@ export const fetchBooks = () => getJson<BookSummary[]>("/api/books");
 export const fetchBook = (id: string) => getJson<Book>(`/api/books/${encodeURIComponent(id)}`);
 export const fetchHealth = () => getJson<Health>("/api/health");
 
+export type Recap = { upto_para: number | null; chapter: string; text: string; earlier: string };
+/** "Previously...": the latest stored summary written from text at or before `para`. */
+export const fetchRecap = (bookId: string, para: number) =>
+  getJson<Recap>(`/api/books/${encodeURIComponent(bookId)}/recap?para=${Math.max(0, Math.floor(para))}`);
+
 export type WordTiming = { start: number; end: number; char_start: number; char_end: number };
 export type TtsResponse = { chunk_id: string; voice: string; audio_url: string; timestamps: WordTiming[] | null; cached: boolean };
 
@@ -117,11 +122,11 @@ export type RetrieveResponse = {
   reader_para: number;
 };
 
-export async function fetchRetrieve(bookId: string, query: string, readerPara: number, speakerId: string): Promise<RetrieveResponse> {
+export async function fetchRetrieve(bookId: string, query: string, readerPara: number, speakerId: string, spoilers = false): Promise<RetrieveResponse> {
   const res = await timedFetch("/api/retrieve", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId }),
+    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId, ...(spoilers ? { spoilers: true } : {}) }),
   }, 10000);
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
@@ -136,12 +141,12 @@ export async function fetchRetrieve(bookId: string, query: string, readerPara: n
  */
 export async function streamAnswer(
   bookId: string, query: string, readerPara: number, speakerId: string,
-  onSentence: (text: string) => void, signal?: AbortSignal,
+  onSentence: (text: string) => void, signal?: AbortSignal, spoilers = false,
 ): Promise<void> {
   const res = await timedFetch("/api/answer", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId }),
+    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId, ...(spoilers ? { spoilers: true } : {}) }),
     signal,
   }, 20000);
   if (!res.ok) {
@@ -310,3 +315,58 @@ export async function fetchAvatars(bookId: string): Promise<string[]> {
   try { return await getJson<string[]>(`/api/avatars/${encodeURIComponent(bookId)}`); } catch { return []; }
 }
 export const avatarUrl = (bookId: string, chunkId: string) => `/api/avatar/${encodeURIComponent(chunkId)}?book=${encodeURIComponent(bookId)}`;
+
+// ---------- face library and per-book cast settings ----------
+
+/** A saved face. `talk` / `idle` are muted loops that exist only after "Animate"; `voice` binds it to a cloned voice. */
+export type Face = { id: string; name: string; image: string; voice: string | null; talk: string | null; idle: string | null };
+export type Assignment = { voice: string | null; face: string | null };
+export type Cast = { main: string[]; narrator: Assignment; characters: Record<string, Assignment> };
+
+async function readError(res: Response, fallback: string): Promise<Error> {
+  const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+  return new Error(typeof detail === "string" ? detail : `${fallback} (${res.status})`);
+}
+
+export const fetchFaces = () => getJson<Face[]>("/api/faces");
+
+export async function uploadFace(image: File, name: string): Promise<Face> {
+  const form = new FormData();
+  form.append("image", image, image.name);
+  form.append("name", name);
+  const res = await timedFetch("/api/faces", { method: "POST", headers: authHeaders(), body: form }, 60000);
+  if (!res.ok) throw await readError(res, "Face upload failed");
+  return res.json() as Promise<Face>;
+}
+
+export async function deleteFace(id: string): Promise<void> {
+  const res = await timedFetch(`/api/faces/${encodeURIComponent(id)}`, { method: "DELETE", headers: authHeaders() });
+  if (!res.ok) throw await readError(res, "Could not delete the face");
+}
+
+export type AnimatedFace = Face & { animated: boolean; approx_cost_usd: number };
+export const ANIMATE_TIMEOUT_MS = 4 * 60 * 1000; // rendering takes 1 to 2 minutes
+
+/** Renders the talk and idle loops (a few cents of Boson credit). Slow; `signal` cancels the wait. */
+export async function animateFace(id: string, signal?: AbortSignal): Promise<AnimatedFace> {
+  const res = await timedFetch(`/api/faces/${encodeURIComponent(id)}/animate`, { method: "POST", headers: authHeaders(), signal }, ANIMATE_TIMEOUT_MS);
+  if (!res.ok) {
+    if (res.status === 402) throw new Error("The Boson account is out of credit, so the face could not be animated.");
+    if (res.status === 429) throw new Error("Too many animations right now. Wait a minute and try again.");
+    throw await readError(res, "Animation failed");
+  }
+  return res.json() as Promise<AnimatedFace>;
+}
+
+export const fetchCast = (bookId: string) => getJson<Cast>(`/api/books/${encodeURIComponent(bookId)}/cast`);
+
+/** Replaces the whole cast of a book (send every field). */
+export async function saveCast(bookId: string, cast: Cast): Promise<Cast> {
+  const res = await timedFetch(`/api/books/${encodeURIComponent(bookId)}/cast`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(cast),
+  });
+  if (!res.ok) throw await readError(res, "Could not save the cast");
+  return res.json() as Promise<Cast>;
+}

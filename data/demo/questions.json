@@ -1,0 +1,608 @@
+[
+  {
+    "book_id": "hp1-sorcerers-stone",
+    "title": "Harry Potter and the Sorcerer's Stone",
+    "positions": [
+      {
+        "fraction": 0.4,
+        "section_id": "s8",
+        "chapter": "Chapter 8: The Potions Master",
+        "reader_para": 1109,
+        "already_read": [
+          {
+            "question": "What pet did Harry get in Diagon Alley?",
+            "answer": "Harry got an owl named Hedwig."
+          },
+          {
+            "question": "Which house did the Sorting Hat put Harry in?",
+            "answer": "Harry was placed in Gryffindor after he begged against Slytherin."
+          },
+          {
+            "question": "What did Dumbledore say about the third-floor corridor?",
+            "answer": "He said the third-floor corridor on the right is off limits on pain of a painful death."
+          }
+        ],
+        "earlier_book": [],
+        "future": [
+          {
+            "question": "What is hidden in the third-floor corridor?",
+            "expected": "should decline"
+          },
+          {
+            "question": "Why does Harry's scar hurt when Snape looks at him?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "ron",
+          "name": "Ron",
+          "question": "Ron, what was it like meeting Harry on the Hogwarts Express, and what do you think of Gryffindor so far?"
+        }
+      },
+      {
+        "fraction": 0.75,
+        "section_id": "s15",
+        "chapter": "Chapter 15: The Forbidden Forest",
+        "reader_para": 2133,
+        "already_read": [
+          {
+            "question": "Who took Norbert away from Hogwarts?",
+            "answer": "Charlie Weasley's four friends arrived on broomsticks, buckled Norbert into a harness, and flew him away."
+          },
+          {
+            "question": "How did Malfoy find out about the dragon?",
+            "answer": "He learned the plan from Charlie's letter."
+          },
+          {
+            "question": "What did Harry and Hermione leave behind on top of the tower?",
+            "answer": "They left the Invisibility Cloak on top of the tower."
+          }
+        ],
+        "earlier_book": [],
+        "future": [
+          {
+            "question": "Will Harry and Hermione get in serious trouble with Filch?",
+            "expected": "should decline"
+          },
+          {
+            "question": "Is Snape really trying to steal the Sorcerer's Stone?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "hagrid",
+          "name": "Hagrid",
+          "question": "Hagrid, what is it about dragons that you love so much, and how did you feel saying goodbye to Norbert?"
+        }
+      }
+    ]
+  },
+  {
+    "book_id": "hp2-chamber-of-secrets",
+    "title": "Harry Potter and the Chamber of Secrets",
+    "positions": [
+      {
+        "fraction": 0.4,
+        "section_id": "s9",
+        "chapter": "Chapter 9: The Writing on the Wall",
+        "reader_para": 1113,
+        "already_read": [
+          {
+            "question": "Whose deathday party did Harry, Ron and Hermione go to?",
+            "answer": "They went to Nearly Headless Nick's Halloween deathday party in a dungeon."
+          },
+          {
+            "question": "What did Harry hear as they left the party?",
+            "answer": "He heard a cold, murderous voice saying it was hungry, wanted to kill, and smelled blood, and nobody else could hear it."
+          },
+          {
+            "question": "What did they find in the second-floor corridor?",
+            "answer": "They found foot-high words saying the Chamber of Secrets has been opened, and Mrs. Norris hanging stiff by her tail from a torch bracket."
+          }
+        ],
+        "earlier_book": [
+          {
+            "question": "Who did Harry face when he went after the Sorcerer's Stone?",
+            "answer": "He faced Quirrell, who carried Voldemort on the back of his head, and Harry's touch burned Quirrell."
+          }
+        ],
+        "future": [
+          {
+            "question": "Who is the Heir of Slytherin that opened the Chamber of Secrets?",
+            "expected": "should decline"
+          },
+          {
+            "question": "Is Mrs. Norris dead, or will she be okay?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "ron",
+          "name": "Ron",
+          "question": "Ron, what did you think when you saw Mrs. Norris hanging there, and why did you want to leave right away?"
+        }
+      },
+      {
+        "fraction": 0.75,
+        "section_id": "s15",
+        "chapter": "Chapter 15: Aragog",
+        "reader_para": 2141,
+        "already_read": [
+          {
+            "question": "Who showed up with an Order of Suspension for Dumbledore?",
+            "answer": "Lucius Malfoy arrived with an Order of Suspension signed by all twelve school governors."
+          },
+          {
+            "question": "What did Hagrid tell Harry and Ron to do if they wanted answers?",
+            "answer": "He said anyone wanting answers should follow the spiders, and that someone must feed Fang."
+          },
+          {
+            "question": "How did Harry and Ron manage to be in Hagrid's hut without being seen?",
+            "answer": "They hid under the Invisibility Cloak."
+          }
+        ],
+        "earlier_book": [
+          {
+            "question": "Who was carried on the back of Quirrell's head in the first book?",
+            "answer": "Voldemort was on the back of Quirrell's head, and Harry's touch burned Quirrell."
+          }
+        ],
+        "future": [
+          {
+            "question": "Who is really behind the attacks on the students?",
+            "expected": "should decline"
+          },
+          {
+            "question": "Will Hagrid be sent to Azkaban for good, or cleared of the attacks?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "hagrid",
+          "name": "Hagrid",
+          "question": "Hagrid, how do you feel about leaving Fang behind, and what's Fang like when he's scared?"
+        }
+      }
+    ]
+  },
+  {
+    "book_id": "hp3-prisoner-of-azkaban",
+    "title": "Harry Potter and the Prisoner of Azkaban",
+    "positions": [
+      {
+        "fraction": 0.4,
+        "section_id": "s9",
+        "chapter": "Chapter 9: Grim Defeat",
+        "reader_para": 1393,
+        "already_read": [
+          {
+            "question": "Why did Harry have to run away from Privet Drive?",
+            "answer": "He inflated Aunt Marge and fled the house."
+          },
+          {
+            "question": "What did Harry find when the students got back to Gryffindor Tower on Halloween?",
+            "answer": "The Fat Lady's portrait had been slashed and she was gone."
+          },
+          {
+            "question": "Who did Peeves say attacked the Fat Lady's portrait?",
+            "answer": "Peeves said Sirius Black did it after she refused him entry."
+          }
+        ],
+        "earlier_book": [
+          {
+            "question": "How did Dobby become a free elf?",
+            "answer": "Harry tricked Lucius Malfoy into freeing him by hiding the diary in a sock, which Malfoy threw aside and Dobby caught."
+          }
+        ],
+        "future": [
+          {
+            "question": "Why is Snape bringing Lupin a smoking potion?",
+            "expected": "should decline"
+          },
+          {
+            "question": "Is Sirius Black really the murderer everyone says he is?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "ron",
+          "name": "Ron",
+          "question": "Ron, what do you think of Crookshanks, and why do you worry so much about Scabbers?"
+        }
+      },
+      {
+        "fraction": 0.75,
+        "section_id": "s17",
+        "chapter": "Chapter 17: Cat, Rat, and Dog",
+        "reader_para": 2825,
+        "already_read": [
+          {
+            "question": "Why did Harry run away from Privet Drive?",
+            "answer": "He fled after inflating Aunt Marge."
+          },
+          {
+            "question": "Who taught Harry the Patronus Charm?",
+            "answer": "Lupin taught him the Patronus Charm."
+          },
+          {
+            "question": "Who came down from the castle to Hagrid's hut for Buckbeak's execution?",
+            "answer": "Dumbledore, Fudge, the feeble Committee member and the executioner Macnair."
+          }
+        ],
+        "earlier_book": [
+          {
+            "question": "How did Harry free Dobby from the Malfoys?",
+            "answer": "He tricked Lucius Malfoy into throwing aside a sock holding the diary, which Dobby caught, freeing him."
+          }
+        ],
+        "future": [
+          {
+            "question": "Is Scabbers really just an ordinary rat?",
+            "expected": "should decline"
+          },
+          {
+            "question": "Is Sirius Black truly guilty of betraying the Potters?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "hagrid",
+          "name": "Hagrid",
+          "question": "Hagrid, what is it about Buckbeak that you love so much?"
+        }
+      }
+    ]
+  },
+  {
+    "book_id": "hp4-goblet-of-fire",
+    "title": "Harry Potter and the Goblet of Fire",
+    "positions": [
+      {
+        "fraction": 0.4,
+        "section_id": "s18",
+        "chapter": "Chapter 18: The Weighing of the Wands",
+        "reader_para": 2229,
+        "already_read": [
+          {
+            "question": "Who did the Goblet of Fire choose as champions?",
+            "answer": "It chose Krum, Fleur and Cedric, and then ejected a fourth name, Harry Potter."
+          },
+          {
+            "question": "When is the first task going to happen?",
+            "answer": "Crouch announced that the first task is on November 24."
+          },
+          {
+            "question": "Why is Ron upset with Harry?",
+            "answer": "Ron suspects Harry secretly crossed the Age Line and is hurt that Harry didn't tell him."
+          }
+        ],
+        "earlier_book": [
+          {
+            "question": "How did Harry survive Voldemort's attack when he was a baby?",
+            "answer": "Voldemort killed Lily and James but failed to kill baby Harry, and Dumbledore explained that his mother's love protected him."
+          }
+        ],
+        "future": [
+          {
+            "question": "Who really put Harry's name in the Goblet of Fire?",
+            "expected": "should decline"
+          },
+          {
+            "question": "Will Ron and Harry make up and become friends again?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "fred",
+          "name": "Fred",
+          "question": "Fred, what was it like celebrating in the common room when Harry was chosen as a champion, and did you believe he didn't enter?"
+        }
+      },
+      {
+        "fraction": 0.75,
+        "section_id": "s29",
+        "chapter": "Chapter 29: The Dream",
+        "reader_para": 4384,
+        "already_read": [
+          {
+            "question": "What did Mr. Crouch say when he stumbled out of the forest?",
+            "answer": "He begged for Dumbledore, said Bertha was dead, that he and his son were to blame, and that Voldemort was growing stronger."
+          },
+          {
+            "question": "Who did Harry leave guarding Mr. Crouch while he fetched Dumbledore?",
+            "answer": "Harry left Viktor Krum to guard him."
+          },
+          {
+            "question": "What did Hagrid do when Karkaroff accused Dumbledore of a plot?",
+            "answer": "Hagrid slammed Karkaroff against a tree until Dumbledore told him to stop."
+          }
+        ],
+        "earlier_book": [
+          {
+            "question": "How did Harry trick Lucius Malfoy into freeing Dobby?",
+            "answer": "Harry gave him Riddle's diary inside a sock, Malfoy threw it aside, and Dobby caught it and was freed."
+          }
+        ],
+        "future": [
+          {
+            "question": "Where did Mr. Crouch go, and will he be found?",
+            "expected": "should decline"
+          },
+          {
+            "question": "Who attacked Krum and is that person really working for Voldemort?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "hagrid",
+          "name": "Hagrid",
+          "question": "Hagrid, why don't you trust foreigners, and what happened when Madame Maxime tried to get the third task out of you?"
+        }
+      }
+    ]
+  },
+  {
+    "book_id": "hp5-order-of-the-phoenix",
+    "title": "Harry Potter and the Order of the Phoenix",
+    "positions": [
+      {
+        "fraction": 0.4,
+        "section_id": "s16",
+        "chapter": "Chapter 16: In the Hog's Head",
+        "reader_para": 3166,
+        "already_read": [
+          {
+            "question": "What does Hermione suggest Harry should do about Umbridge's Defense Against the Dark Arts classes?",
+            "answer": "She proposes that they learn Defense Against the Dark Arts themselves, with Harry as the teacher."
+          },
+          {
+            "question": "What does Harry have to write during his detentions with Umbridge?",
+            "answer": "He writes I must not tell lies, and his cut hand reopens as he writes."
+          },
+          {
+            "question": "What does Harry do when he gets angry at Ron and Hermione?",
+            "answer": "He smashes the murtlap bowl and shouts that they have never faced Voldemort or known the fear of dying."
+          }
+        ],
+        "earlier_book": [
+          {
+            "question": "Who was really pretending to be Moody in the Goblet of Fire?",
+            "answer": "Moody was actually Barty Crouch Jr."
+          }
+        ],
+        "future": [
+          {
+            "question": "Does Harry end up agreeing to teach the others Defense Against the Dark Arts?",
+            "expected": "should decline"
+          },
+          {
+            "question": "Will Umbridge find out about Harry's secret lessons?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "hermione",
+          "name": "Hermione",
+          "question": "Hermione, why did you decide that Harry should be the one to teach everyone Defense Against the Dark Arts?"
+        }
+      },
+      {
+        "fraction": 0.75,
+        "section_id": "s29",
+        "chapter": "Chapter 29: Career Advice",
+        "reader_para": 6154,
+        "already_read": [
+          {
+            "question": "Who is running Hogwarts after Dumbledore escapes?",
+            "answer": "Umbridge, as High Inquisitor, runs Hogwarts, with Malfoy in her Inquisitorial Squad."
+          },
+          {
+            "question": "What did Harry see in Snape's Pensieve?",
+            "answer": "A memory of fifteen-year-old James, Sirius, Lupin and Wormtail bullying Snape after an O.W.L. exam."
+          },
+          {
+            "question": "How did Lily react when James hung Snape upside down?",
+            "answer": "She demanded they stop and made James lift the curse."
+          }
+        ],
+        "earlier_book": [
+          {
+            "question": "How did Harry trick Lucius Malfoy into freeing Dobby?",
+            "answer": "He gave Malfoy the diary inside a sock, which Malfoy threw aside and Dobby caught."
+          }
+        ],
+        "future": [
+          {
+            "question": "Will Snape ever teach Harry Occlumency again?",
+            "expected": "should decline"
+          },
+          {
+            "question": "Does Umbridge get removed from Hogwarts?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "snape",
+          "name": "Snape",
+          "question": "Professor Snape, what do you think makes a good Potions student, and what annoys you most about teaching the subject?"
+        }
+      }
+    ]
+  },
+  {
+    "book_id": "hp6-half-blood-prince",
+    "title": "Harry Potter and the Half-Blood Prince",
+    "positions": [
+      {
+        "fraction": 0.4,
+        "section_id": "s13",
+        "chapter": "Chapter 13: The Secret Riddle",
+        "reader_para": 2106,
+        "already_read": [
+          {
+            "question": "Who touched the cursed necklace and what happened to her?",
+            "answer": "Katie Bell touched the package containing the cursed opal necklace and screamed in agony."
+          },
+          {
+            "question": "Why wouldn't Professor McGonagall blame Malfoy?",
+            "answer": "She said visiting the shop wasn't enough to blame him, and he had been in detention with her that day."
+          },
+          {
+            "question": "Who did Harry catch with a Black family goblet?",
+            "answer": "Harry caught Mundungus Fletcher with it before he Disapparated."
+          }
+        ],
+        "earlier_book": [
+          {
+            "question": "How did Harry trick Lucius Malfoy into freeing Dobby?",
+            "answer": "He gave Malfoy the diary inside a sock, which Malfoy threw aside and Dobby caught, freeing him."
+          }
+        ],
+        "future": [
+          {
+            "question": "Who actually gave Katie Bell the cursed necklace?",
+            "expected": "should decline"
+          },
+          {
+            "question": "Is Malfoy really up to something dangerous this year?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "hermione",
+          "name": "Hermione",
+          "question": "Hermione, why don't you trust the Half-Blood Prince and his Potions book?"
+        }
+      },
+      {
+        "fraction": 0.75,
+        "section_id": "s22",
+        "chapter": "Chapter 22: After the Burial",
+        "reader_para": 3836,
+        "already_read": [
+          {
+            "question": "What did Dumbledore ask Harry to do about Slughorn?",
+            "answer": "Dumbledore tasked Harry with obtaining Slughorn's genuine memory."
+          },
+          {
+            "question": "How did Crabbe and Goyle guard the Room of Requirement?",
+            "answer": "They stood guard disguised as girls using stolen Polyjuice."
+          },
+          {
+            "question": "Why did Tonks come to the school?",
+            "answer": "She came to see Dumbledore, who was away."
+          }
+        ],
+        "earlier_book": [
+          {
+            "question": "How did Dobby get freed from the Malfoys?",
+            "answer": "Harry tricked Lucius Malfoy into giving Dobby a sock inside the diary, which freed him."
+          }
+        ],
+        "future": [
+          {
+            "question": "What is Draco Malfoy really doing in the Room of Requirement?",
+            "expected": "should decline"
+          },
+          {
+            "question": "Will Harry manage to get the real memory from Slughorn?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "ron",
+          "name": "Ron",
+          "question": "Ron, how did you feel about your first Apparition practice, and what did you make of Snape's mockery?"
+        }
+      }
+    ]
+  },
+  {
+    "book_id": "hp7-deathly-hallows",
+    "title": "Harry Potter and the Deathly Hallows",
+    "positions": [
+      {
+        "fraction": 0.4,
+        "section_id": "s16",
+        "chapter": "Chapter 16: Godric's Hollow",
+        "reader_para": 2536,
+        "already_read": [
+          {
+            "question": "Who took the locket from Umbridge at the Ministry?",
+            "answer": "Harry, Ron and Hermione took Regulus's locket from Umbridge at the Ministry."
+          },
+          {
+            "question": "Why did Ron and Harry quarrel in the tent?",
+            "answer": "Ron, wearing the locket, exploded about hunger, their lack of progress and his family's safety, and the argument escalated."
+          },
+          {
+            "question": "What did Harry and Hermione realize about Gryffindor's sword?",
+            "answer": "They realized the basilisk-venom sword can destroy Horcruxes and that Dumbledore hid the real one."
+          }
+        ],
+        "earlier_book": [
+          {
+            "question": "Who was the Half-Blood Prince?",
+            "answer": "Hermione found that Eileen Prince was Snape's mother, and Harry blamed himself for trusting the Prince."
+          }
+        ],
+        "future": [
+          {
+            "question": "Where is the real sword of Gryffindor hidden?",
+            "expected": "should decline"
+          },
+          {
+            "question": "Does Ron come back to Harry and Hermione?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "hermione",
+          "name": "Hermione",
+          "question": "Hermione, what was going through your mind when you cast Protego between Harry and Ron?"
+        }
+      },
+      {
+        "fraction": 0.75,
+        "section_id": "s29",
+        "chapter": "Chapter 29: The Lost Diadem",
+        "reader_para": 4704,
+        "already_read": [
+          {
+            "question": "Who is the barman at the Hog's Head who takes Harry, Ron and Hermione in?",
+            "answer": "Aberforth, Dumbledore's brother."
+          },
+          {
+            "question": "What happened to Ariana, Aberforth's sister, when she was a child?",
+            "answer": "She was attacked by Muggle boys, and her magic was damaged."
+          },
+          {
+            "question": "Who does Ariana's portrait bring back through the painted tunnel?",
+            "answer": "Neville Longbottom, battered and ripped."
+          }
+        ],
+        "earlier_book": [
+          {
+            "question": "How did Dobby get freed from the Malfoys?",
+            "answer": "Harry tricked Lucius Malfoy into giving Dobby a sock holding Riddle's diary, which Malfoy threw aside and Dobby caught."
+          }
+        ],
+        "future": [
+          {
+            "question": "Will Harry find the way into Hogwarts and get what he came for?",
+            "expected": "should decline"
+          },
+          {
+            "question": "Does Aberforth end up helping Harry fight in the final battle?",
+            "expected": "should decline"
+          }
+        ],
+        "character": {
+          "id": "neville",
+          "name": "Neville",
+          "question": "Neville, how did you get so battered, and what made you so sure Harry would come back?"
+        }
+      }
+    ]
+  }
+]

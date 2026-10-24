@@ -130,7 +130,7 @@ export default function Library() {
               </div>
               <div>
                 <ul className="facts">
-                  <li>{b.sections} parts, {b.paragraphs} paragraphs</li>
+                  <li>{b.sections} {b.sections === 1 ? "chapter" : "chapters"}, {b.paragraphs} paragraphs</li>
                   <li>{b.characters > 0 ? `${b.characters} characters you can talk to` : "Narrator only so far; the cast is not set yet"}</li>
                 </ul>
                 <div className="open">Open the book</div>
@@ -143,7 +143,7 @@ export default function Library() {
       <AddBook onReady={load} />
 
       <p className="licence">
-        The Harry Potter series is ingested from your own copy and stays on this machine; it is never committed or shared.
+        The Harry Potter series is read from your own copy. It is never committed to git; an online copy of this app needs an access code to open the books.
       </p>
     </main>
   );

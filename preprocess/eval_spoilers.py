@@ -1,6 +1,6 @@
 """eval_spoilers (M5): does Talk mode ever leak what the reader has not read yet?
 
-Usage: uv run --project backend python preprocess/eval_spoilers.py --book hp1-sorcerers-stone [--n 100] [--yes] [--notes]
+Usage: uv run --project backend python preprocess/eval_spoilers.py --book hp1-sorcerers-stone [--n 100] [--mode safe|full|both] [--judge-model M] [--yes] [--notes]
 
 Pipeline (brief section 8, item 8):
 1. Sonnet writes questions at random reader positions: half answerable from the text already read, half that can only
@@ -8,9 +8,11 @@ Pipeline (brief section 8, item 8):
 2. Each question goes through the real /api/retrieve endpoint (in-process) to get the real Talk prompt.
 3. The question is answered by the real answer path (/api/answer: Gemini) when the server is set up for it,
    else by Sonnet as a stand-in (--answer sonnet).
-4. Opus judges: did the answer leak future information? Did it answer earlier questions correctly?
+4. A Claude judge (default Sonnet) grades. Safe mode (spoilers=false): leaks, earlier-text accuracy, future questions declined,
+   detail 1-3. Full mode (spoilers=true, whole-book retrieval): accuracy on earlier AND future questions against the stored
+   key fact (plus an excerpt of the later text), detail 1-3, no leak scoring; counts answers that used passages past the reader.
 Also checked deterministically, with no LLM: every retrieved passage must end at or before the reader's paragraph.
-Target: 0 leaks. Report -> data/eval/<book>-spoilers.md, summary appended to NOTES.md with --notes.
+Target: 0 leaks. Reports -> data/eval/<book>-safe.md and -full.md (+ .json results), summary appended to NOTES.md with --notes.
 Spends Anthropic credit: nothing runs until you rerun with --yes if the estimate is over $5.
 """
 import argparse
@@ -31,7 +33,7 @@ from app.schema import Book  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 GEN_MODEL = "claude-sonnet-5-5"
 ANSWER_MODEL = "claude-sonnet-5-5"  # proxy for Higgs Realtime text mode
-JUDGE_MODEL = "claude-opus-5-5"
+JUDGE_MODEL = "claude-sonnet-5-5"
 PER_POSITION = 4  # two earlier, two future
 
 
@@ -53,9 +55,19 @@ class Answer(BaseModel):
 
 
 class Verdict(BaseModel):
+    """Safe mode: spoiler judge."""
     model_config = ConfigDict(extra="forbid")
     leaked_future_info: bool
     answered_correctly: bool
+    detail: int  # 1 vague / one line, 2 some specifics, 3 specific with names and events
+    reason: str
+
+
+class FullVerdict(BaseModel):
+    """Full-book mode: accuracy against ground truth, no leak scoring."""
+    model_config = ConfigDict(extra="forbid")
+    answered_correctly: bool
+    detail: int
     reason: str
 
 
@@ -67,12 +79,23 @@ Write exactly {PER_POSITION} questions a curious reader might ask out loud at th
   (for example "How does this end?" or "Who is really behind this?"). key_fact is the later fact a spoiler would reveal.
 Keep each question under 25 words."""
 
+DETAIL_RUBRIC = """detail: 1 = vague or a single thin line; 2 = answers the question with some specifics; 3 = specific, naming the
+people, places and events involved. Rate how detailed the answer is, independent of whether it is correct."""
+
 JUDGE_SYSTEM = """You judge a reading companion's answer for spoilers. The reader has read only the "read text".
 leaked_future_info: true if the answer states, confirms or clearly hints at ANY fact that is only established in the
 "unread text" (an outcome, identity, twist, or event). Declining, saying it cannot know yet, or restating facts from the
 read text is NOT a leak. Speculation that happens to match the unread text counts as a leak only if it is specific.
 answered_correctly: for an "earlier" question, true if the answer agrees with the key fact; for a "future" question,
-true if the answer sensibly declines or stays within the read text. One short sentence of reason."""
+true if the answer sensibly declines or stays within the read text. """ + DETAIL_RUBRIC + """
+One short sentence of reason."""
+
+FULL_JUDGE_SYSTEM = """You judge a reading companion's answer. The reader has allowed spoilers, so the answer may use the
+whole book. The "key fact" is the authoritative ground truth for the question (the later text excerpt is supporting
+evidence only). answered_correctly: true if the answer agrees with the key fact and does not contradict the book.
+For a "future" question the answer must actually give the later fact; declining or saying it is unknown is NOT correct.
+No spoiler judgement: revealing the future is fine. """ + DETAIL_RUBRIC + """
+One short sentence of reason."""
 
 
 @dataclass
@@ -83,8 +106,8 @@ class Case:
     instructions: str = ""
     passages: list[dict] = field(default_factory=list)
     answer: str = ""
-    verdict: Verdict | None = None
-    structural_leak: bool = False
+    verdict: Verdict | FullVerdict | None = None
+    structural_leak: bool = False  # a passage of this book ends after the reader's paragraph (a leak in safe mode; expected in full mode)
 
 
 def sample_positions(book: Book, count: int, seed: int = 7) -> list[int]:
@@ -143,7 +166,23 @@ def pick_speakers(book: Book, cases: list[Case], seed: int = 11) -> None:
         c.speaker = rng.choice(["narrator", *met])
 
 
-async def run_case(book: Book, case: Case, retrieve: RetrieveFn, call: CallFn, answer: AnswerFn | None = None) -> Case:
+def build_judge_prompt(book: Book, case: Case, mode: str = "safe") -> tuple[str, str]:
+    """(system, user) for the judge. Safe: read/unread windows for leak checking. Full: the key fact is the ground truth;
+    future questions also get the bounded unread excerpt the question writer saw (near text plus the ending) as evidence."""
+    q = case.question
+    tail = f"### Question ({q.kind})\n{q.question}\nKey fact: {q.key_fact}\n\n### Answer to judge\n{case.answer}"
+    if mode == "full":
+        read, unread = question_context(book, case.reader_para)
+        context = f"### Read text (most recent part)\n{read[-6000:]}\n\n"
+        if q.kind == "future":
+            context += f"### Later text (excerpt)\n{unread}\n\n"
+        return FULL_JUDGE_SYSTEM, context + tail
+    read, unread = read_and_unread(book, case.reader_para)
+    return JUDGE_SYSTEM, f"### Read text\n{read[-6000:]}\n\n### Unread text\n{unread[:12000]}\n\n" + tail
+
+
+async def run_case(book: Book, case: Case, retrieve: RetrieveFn, call: CallFn, answer: AnswerFn | None = None,
+                   mode: str = "safe", judge_model: str = JUDGE_MODEL) -> Case:
     out = retrieve(case.question.question, case.reader_para, case.speaker)
     case.passages, case.instructions = out["passages"], out["instructions"]
     case.structural_leak = structural_leak(case.passages, case.reader_para)
@@ -151,38 +190,72 @@ async def run_case(book: Book, case: Case, retrieve: RetrieveFn, call: CallFn, a
         case.answer = await asyncio.to_thread(answer, case.question.question, case.reader_para, case.speaker)
     else:
         case.answer = (await call(ANSWER_MODEL, case.instructions, case.question.question, Answer, max_tokens=400, effort="low")).answer
-    read, unread = read_and_unread(book, case.reader_para)
-    user = (f"### Read text\n{read[-6000:]}\n\n### Unread text\n{unread[:12000]}\n\n"
-            f"### Question ({case.question.kind})\n{case.question.question}\nKey fact: {case.question.key_fact}\n\n"
-            f"### Answer to judge\n{case.answer}")
-    case.verdict = await call(JUDGE_MODEL, JUDGE_SYSTEM, user, Verdict, max_tokens=300, effort="low")
+    system, user = build_judge_prompt(book, case, mode)
+    case.verdict = await call(judge_model, system, user, FullVerdict if mode == "full" else Verdict, max_tokens=1000, effort="low")
     return case
 
 
-def summarize(cases: list[Case]) -> dict:
+def _avg(xs: list[int]) -> float | None:
+    return sum(xs) / len(xs) if xs else None
+
+
+def summarize(cases: list[Case], mode: str = "safe") -> dict:
     judged = [c for c in cases if c.verdict]
     earlier = [c for c in judged if c.question.kind == "earlier"]
+    future = [c for c in judged if c.question.kind == "future"]
     return {
+        "mode": mode,
         "questions": len(cases),
-        "llm_leaks": sum(c.verdict.leaked_future_info for c in judged),
-        "structural_leaks": sum(c.structural_leak for c in cases),
+        "unjudged": len(cases) - len(judged),
+        "llm_leaks": sum(getattr(c.verdict, "leaked_future_info", False) for c in judged),
+        "structural_leaks": sum(c.structural_leak for c in cases),  # full mode: answers that used passages past the reader
         "earlier_accuracy": (sum(c.verdict.answered_correctly for c in earlier) / len(earlier)) if earlier else None,
-        "future_handled": (sum(c.verdict.answered_correctly for c in judged if c.question.kind == "future")
-                           / max(1, sum(c.question.kind == "future" for c in judged))),
+        "future_handled": (sum(c.verdict.answered_correctly for c in future) / len(future)) if future else None,
+        "avg_detail_earlier": _avg([c.verdict.detail for c in earlier]),
+        "avg_detail_future": _avg([c.verdict.detail for c in future]) if mode == "full" else None,
     }
 
 
-def render_report(book: Book, cases: list[Case], stats: dict) -> str:
-    acc = stats["earlier_accuracy"]
+def _pct(x: float | None) -> str:
+    return "n/a" if x is None else f"{x:.0%}"
+
+
+def _num(x: float | None) -> str:
+    return "n/a" if x is None else f"{x:.2f}"
+
+
+def render_report(book: Book, cases: list[Case], stats: dict, label: str = "") -> str:
+    mode = stats.get("mode", "safe")
+    judge = stats.get("judge_model", JUDGE_MODEL)
     lines = [
-        f"## Spoiler eval, {book.title} ({date.today().isoformat()})",
+        f"## {'Full-book' if mode == 'full' else 'Spoiler-safe'} eval{f' ({label})' if label else ''}, {book.title} ({date.today().isoformat()})",
         "",
-        f"- Questions: {stats['questions']} at {len({c.reader_para for c in cases})} reader positions",
-        f"- **Leaks (Opus judge): {stats['llm_leaks']}**; passages beyond the reader's paragraph: {stats['structural_leaks']}",
-        f"- Earlier-text accuracy: {'n/a' if acc is None else f'{acc:.0%}'}; future questions declined or stayed in bounds: {stats['future_handled']:.0%}",
-        f"- Models: questions {GEN_MODEL}, answers {stats.get('answer_model', ANSWER_MODEL)}, judge {JUDGE_MODEL}",
-        "",
+        f"- Questions: {stats['questions']} at {len({c.reader_para for c in cases})} reader positions"
+        + (f" ({stats['unjudged']} could not be judged)" if stats.get("unjudged") else ""),
     ]
+    if mode == "full":
+        lines += [
+            f"- Earlier-text accuracy: {_pct(stats['earlier_accuracy'])}; future-question accuracy: {_pct(stats['future_handled'])}",
+            f"- Average detail (1-3): earlier {_num(stats['avg_detail_earlier'])}, future {_num(stats['avg_detail_future'])}",
+            f"- Answers whose retrieval used passages beyond the reader's paragraph: {stats['structural_leaks']} of {stats['questions']} (expected > 0)",
+        ]
+    else:
+        lines += [
+            f"- **Leaks ({judge} judge): {stats['llm_leaks']}**; passages beyond the reader's paragraph: {stats['structural_leaks']}",
+            f"- Earlier-text accuracy: {_pct(stats['earlier_accuracy'])}; future questions declined or stayed in bounds: {_pct(stats['future_handled'])}",
+            f"- Average detail on earlier-text answers (1-3): {_num(stats['avg_detail_earlier'])}",
+        ]
+    lines.append(f"- Models: questions {GEN_MODEL}, answers {stats.get('answer_model', ANSWER_MODEL)}, judge {judge}")
+    if stats.get("cost_usd") is not None:
+        lines.append(f"- Real cost this mode: ${stats['cost_usd']:.2f}")
+    lines.append("")
+    if mode == "full":
+        wrong = [c for c in cases if c.verdict and not c.verdict.answered_correctly]
+        lines.append(f"### Wrong answers ({len(wrong)})")
+        for c in wrong:
+            lines += [f"- ¶{c.reader_para + 1}, {c.speaker}, {c.question.kind}: {c.question.question}",
+                      f"  - key fact: {c.question.key_fact}", f"  - answer: {c.answer}", f"  - judge: {c.verdict.reason}"]
+        return "\n".join(lines) + "\n"
     bad = [c for c in cases if c.structural_leak or (c.verdict and c.verdict.leaked_future_info)]
     if bad:
         lines.append("### Leaks to review")
@@ -194,50 +267,81 @@ def render_report(book: Book, cases: list[Case], stats: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def estimate(book: Book, positions: int) -> float:
+def results_json(cases: list[Case], stats: dict) -> str:
+    import json
+    rows = [{"question": c.question.model_dump(), "reader_para": c.reader_para, "speaker": c.speaker, "answer": c.answer,
+             "beyond_reader": c.structural_leak,
+             "passages": [{k: p.get(k) for k in ("para_start", "para_end", "book")} for p in c.passages],
+             "verdict": c.verdict.model_dump() if c.verdict else None} for c in cases]
+    return json.dumps({"stats": stats, "cases": rows}, indent=1)
+
+
+def estimate(book: Book, positions: int, modes: tuple[str, ...] = ("safe", "full"), judge_model: str = JUDGE_MODEL, claude_answers: bool = True) -> float:
     import llm
 
     text_chars = sum(len(p.text) for p in book.paragraphs)
     n = positions * PER_POSITION
     gen = llm.estimate_cost(GEN_MODEL, min(text_chars, READ_WINDOW + UNREAD_WINDOW + ENDING_CHARS) + 800, 300, calls=positions)
-    answer = llm.estimate_cost(ANSWER_MODEL, 6000, 120, calls=n)
-    judge = llm.estimate_cost(JUDGE_MODEL, 9000 + 2000, 80, calls=n)
-    return gen + answer + judge
+    answer = llm.estimate_cost(ANSWER_MODEL, 6000, 120, calls=n) if claude_answers else 0.0  # Gemini answers cost GCP, not Anthropic credit
+    total = gen  # question generation is cached on re-runs, so this is an upper bound
+    for mode in modes:
+        if mode == "safe":
+            total += answer + llm.estimate_cost(judge_model, 6000 + 12000 + 1500, 100, calls=n)
+        else:  # full: earlier judged on ~6k read chars; future also gets ~38k chars of later text
+            total += answer + llm.estimate_cost(judge_model, 7500, 100, calls=n // 2)
+            total += llm.estimate_cost(judge_model, 7500 + UNREAD_WINDOW + ENDING_CHARS, 100, calls=n // 2)
+    return total
 
 
-def api_retrieve(book_id: str) -> RetrieveFn:
+_client = None
+
+
+def app_client():
+    """One in-process client for the whole run: one event loop (async API clients are bound to the loop that first
+    used them) and no per-IP rate limits (the eval asks 100 questions from one address)."""
+    global _client
+    if _client is None:
+        from fastapi.testclient import TestClient
+
+        from app import main
+        from app.ratelimit import TokenBucket
+
+        for name in ("answer_bucket", "retrieve_bucket", "tts_bucket"):
+            setattr(main, name, TokenBucket(capacity=100_000, per_seconds=60))
+        _client = TestClient(main.app)
+        _client.__enter__()  # keeps the portal (and its loop) open until the process exits
+    return _client
+
+
+def api_retrieve(book_id: str, spoilers: bool = False) -> RetrieveFn:
     """The real /api/retrieve endpoint, called in-process."""
-    from fastapi.testclient import TestClient
-
-    from app.main import app
-
-    client = TestClient(app)
+    client = app_client()
 
     def call(query: str, reader_para: int, speaker: str) -> dict:
-        r = client.post("/api/retrieve", json={"book_id": book_id, "query": query, "reader_para": reader_para, "speaker_id": speaker})
+        r = client.post("/api/retrieve", json={"book_id": book_id, "query": query, "reader_para": reader_para, "speaker_id": speaker, "spoilers": spoilers})
         r.raise_for_status()
         return r.json()
 
     return call
 
 
-def api_answer(book_id: str) -> AnswerFn:
+def api_answer(book_id: str, spoilers: bool = False) -> AnswerFn:
     """The real /api/answer endpoint (retrieval + Gemini), called in-process; returns the spoken answer text."""
     import json
 
-    from fastapi.testclient import TestClient
-
-    from app.main import app
-
-    client = TestClient(app)
+    client = app_client()
 
     def call(query: str, reader_para: int, speaker: str) -> str:
-        r = client.post("/api/answer", json={"book_id": book_id, "query": query, "reader_para": reader_para, "speaker_id": speaker})
+        r = client.post("/api/answer", json={"book_id": book_id, "query": query, "reader_para": reader_para, "speaker_id": speaker, "spoilers": spoilers})
         r.raise_for_status()
         lines = [json.loads(x) for x in r.text.splitlines() if x.strip()]
         return " ".join(x["text"] for x in lines if x["type"] == "sentence")
 
     return call
+
+
+def mode_list(mode: str) -> tuple[str, ...]:
+    return ("safe", "full") if mode == "both" else (mode,)
 
 
 async def main() -> None:
@@ -246,6 +350,9 @@ async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--book", required=True)
     ap.add_argument("--n", type=int, default=100, help="total questions (4 per reader position)")
+    ap.add_argument("--mode", choices=["safe", "full", "both"], default="both")
+    ap.add_argument("--judge-model", default=JUDGE_MODEL)
+    ap.add_argument("--label", default="baseline (3-paragraph chunks, k=4)", help="label for the report and NOTES.md summary")
     ap.add_argument("--yes", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="print the cost estimate and stop")
     ap.add_argument("--notes", action="store_true", help="append the summary to NOTES.md")
@@ -258,40 +365,53 @@ async def main() -> None:
     if not book.summaries:
         print("warning: no summaries yet (run summaries.py); the eval will still run on passages alone")
 
+    modes = mode_list(args.mode)
+    from app.config import settings
+    use_gemini = args.answer == "gemini" or (args.answer == "auto" and settings.effective_answer_backend == "gemini")
     positions = sample_positions(book, max(1, args.n // PER_POSITION))
-    est = estimate(book, len(positions))
-    print(f"eval_spoilers: {len(positions) * PER_POSITION} questions, estimated ${est:.2f}")
+    est = estimate(book, len(positions), modes, args.judge_model, claude_answers=not use_gemini)
+    print(f"eval_spoilers: {len(positions) * PER_POSITION} questions x modes {list(modes)}, judge {args.judge_model}, estimated ${est:.2f} (Anthropic only)")
     if args.dry_run:
         return
     if est > 5 and not args.yes:
         sys.exit("estimate > $5; rerun with --yes")
 
-    retrieve = api_retrieve(args.book)
-    from app.config import settings
-    use_gemini = args.answer == "gemini" or (args.answer == "auto" and settings.effective_answer_backend == "gemini")
-    answer = api_answer(args.book) if use_gemini else None
-    print(f"answers from: {'Gemini via /api/answer' if use_gemini else ANSWER_MODEL}")
-    cases = await generate_cases(book, positions, llm.call_structured)
-    pick_speakers(book, cases)
-    sem = asyncio.Semaphore(6)
+    answer_name = "Gemini via /api/answer" if use_gemini else ANSWER_MODEL
+    print(f"answers from: {answer_name}")
+    cases0 = await generate_cases(book, positions, llm.call_structured)
+    pick_speakers(book, cases0)
+    leaked = False
+    for mode in modes:
+        spoilers = mode == "full"
+        retrieve = api_retrieve(args.book, spoilers)
+        answer = api_answer(args.book, spoilers) if use_gemini else None
+        sem = asyncio.Semaphore(6)
+        cost0 = llm.usage["usd"]
+        cases = [Case(question=c.question, reader_para=c.reader_para, speaker=c.speaker) for c in cases0]
 
-    async def guarded(c: Case) -> Case:
-        async with sem:
-            return await run_case(book, c, lambda q, p, s: retrieve(q, p, s), llm.call_structured, answer)
+        async def guarded(c: Case) -> Case:
+            async with sem:
+                try:
+                    return await run_case(book, c, retrieve, llm.call_structured, answer, mode, args.judge_model)
+                except Exception as e:  # one failed case must not throw away the paid-for rest of the run
+                    print(f"  case failed (¶{c.reader_para}, {c.speaker}): {type(e).__name__}: {e}")
+                    return c
 
-    cases = await asyncio.gather(*(guarded(c) for c in cases))
-    stats = summarize(cases)
-    stats["answer_model"] = "Gemini via /api/answer" if use_gemini else ANSWER_MODEL
-    report = render_report(book, cases, stats)
-    out = ROOT / "data/eval" / f"{args.book}-spoilers.md"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(report, encoding="utf-8")
-    print(report)
-    if args.notes:
-        with (ROOT / "NOTES.md").open("a", encoding="utf-8") as f:
-            f.write("\n" + report)
+        cases = await asyncio.gather(*(guarded(c) for c in cases))
+        stats = summarize(cases, mode)
+        stats.update(answer_model=answer_name, judge_model=args.judge_model, cost_usd=llm.usage["usd"] - cost0)
+        report = render_report(book, cases, stats, args.label)
+        out = ROOT / "data/eval" / f"{args.book}-{mode}.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(report, encoding="utf-8")
+        out.with_suffix(".json").write_text(results_json(cases, stats), encoding="utf-8")
+        print(report)
+        if args.notes:
+            with (ROOT / "NOTES.md").open("a", encoding="utf-8") as f:
+                f.write("\n" + report)
+        leaked = leaked or (mode == "safe" and bool(stats["llm_leaks"] or stats["structural_leaks"]))
     llm.print_usage()
-    sys.exit(1 if stats["llm_leaks"] or stats["structural_leaks"] else 0)
+    sys.exit(1 if leaked else 0)
 
 
 if __name__ == "__main__":

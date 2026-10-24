@@ -36,40 +36,44 @@ Copy `.env.example` to `.env` (gitignored) and fill it in:
 **Set a monthly spend cap in the Boson workspace** (Billing, then Usage) before running anything that calls the API.
 The debug drawer (backtick key) shows a running estimate of this session's spend.
 
-## When the keys arrive: one command
-
-```bash
-python scripts/run_all.py --plan                 # what would run, what is blocked and why (runs nothing)
-python scripts/run_all.py                        # with BOSON_API_KEY: probes, then pre-render all audio (~$0.7)
-python scripts/run_all.py --anthropic            # also cast (pauses for your review), segment, summaries, spoiler eval
-```
-
-It stops at the first failure, skips stages whose key is missing, and never spends Anthropic credit without `--anthropic`.
-Every stage is safe to rerun.
-
-## Preprocessing, one step at a time
-
-Each script takes `--book <id>`, prints a cost estimate first, and asks before spending more than $5.
-
-```bash
-cd backend
-uv run python ../preprocess/ingest.py     --book hp1-sorcerers-stone   # text -> paragraphs
-uv run python ../preprocess/cast.py       --book hp1-sorcerers-stone   # Anthropic: characters, personas, voices (review the result!)
-uv run python ../preprocess/segment.py    --book hp1-sorcerers-stone   # Anthropic Haiku: who speaks each part, with emotions
-uv run python ../preprocess/chunk_tts.py  --book hp1-sorcerers-stone   # TTS chunks of at most 280 characters
-uv run python ../preprocess/summaries.py  --book hp1-sorcerers-stone   # Anthropic: "story so far" notes (prefix-only)
-uv run python ../preprocess/index.py      --book hp1-sorcerers-stone   # retrieval index; add --blurbs to use Anthropic
-uv run python ../preprocess/prerender_tts.py --book hp1-sorcerers-stone # Boson: prerender audio (check the estimate first)
-uv run python ../preprocess/eval_spoilers.py --book hp1-sorcerers-stone --dry-run   # M5 leak test (Anthropic); drop --dry-run to run
-```
+## The pipeline: one command
 
 The app contains only the Harry Potter series (7 books: `hp1-sorcerers-stone`, `hp2-chamber-of-secrets`,
 `hp3-prisoner-of-azkaban`, `hp4-goblet-of-fire`, `hp5-order-of-the-phoenix`, `hp6-half-blood-prince`,
-`hp7-deathly-hallows`). They are ingested from your own PDF at `data/uploads/harry-potter-collection.pdf`
-(gitignored). The books are copyrighted: `data/uploads/` and `data/books/hp*/` are never committed.
+`hp7-deathly-hallows`), ingested from your own PDF at `data/uploads/harry-potter-collection.pdf` (gitignored).
+The books are copyrighted: `data/uploads/` and `data/books/hp*/` are never committed.
 
-Optional extras: portraits go in `data/portraits/<book>/<character-id>.png` (also `narrator` and `cover`); the Stage and
-cast list pick them up automatically. Avatars: `scripts/probe_avatar.py`, then `preprocess/prerender_avatar.py`.
+```bash
+python scripts/run_all.py --plan          # what would run, what is blocked and why (runs nothing)
+python scripts/run_all.py                 # probes, ingest (keeps existing books), chunking, Vector Search indexing
+python scripts/run_all.py --anthropic     # also summaries, series cast (pauses for review), segmentation, spoiler eval
+```
+
+Each step on its own (all print a cost estimate and ask before spending more than $5):
+
+```bash
+uv run --project backend python preprocess/ingest_series.py --pdf data/uploads/harry-potter-collection.pdf
+uv run --project backend python preprocess/summaries.py --book hp1-sorcerers-stone [--book ...]   # Sonnet, incremental
+uv run --project backend python preprocess/cast.py --series harry-potter                          # Sonnet, one call
+uv run --project backend python preprocess/segment.py --book hp1-sorcerers-stone [--book ...]     # Haiku, batched
+uv run --project backend python preprocess/chunk_tts.py --book hp1-sorcerers-stone [--book ...]
+uv run --project backend python scripts/index_vertex.py --book hp1-sorcerers-stone [--book ...]   # Gemini embeddings
+uv run --project backend python preprocess/eval_spoilers.py --book hp3-prisoner-of-azkaban --dry-run
+uv run --project backend python scripts/usage.py --gcp-budget 50 --anthropic-budget 77.33        # spend so far
+```
+
+Read-mode audio is made on demand and cached (the series is ~6 M characters, so nothing is pre-rendered).
+
+### A cloned narrator with a face
+
+```bash
+uv run --project backend python scripts/clone_voice.py --audio clip.wav --transcript clip.txt     --name "Cloned narrator" --face portrait.jpg --i-have-consent
+uv run --project backend python scripts/make_face_loops.py --name "Cloned narrator"   # speaking + idle loops
+```
+
+Then pick it for the narrator in the reader's Voices panel (the choice covers the whole series). Its face shows in the
+Stage while it reads or answers; tick "Lip-synced face" for real lip-sync on answers (~10 s extra per answer).
+The voice, face and loops stay local (gitignored, never deployed). Architecture: `docs/ARCHITECTURE.md`.
 
 ## Run
 
@@ -83,9 +87,10 @@ backend to get audio and Talk mode.
 
 ## The 90-second demo
 
-Run `prerender_tts.py` first, then open `http://localhost:5173/?demo=1#/read/hp1-sorcerers-stone`. Demo mode starts just
-at a preset point in book 1, plays pre-rendered audio only (no live synthesis, so no surprises), and pins the
-character to Hagrid.
+Open `http://localhost:5173/?demo=1#/read/hp1-sorcerers-stone` after pre-rendering the demo stretch
+(`preprocess/prerender_tts.py --book hp1-sorcerers-stone --from-para N --to-para M`, plus
+`--narrator-voice <id>` if the narrator uses the cloned voice). Demo mode starts at a preset point
+in book 1, plays pre-rendered audio only (no live synthesis, so no surprises), and pins the character to Hagrid.
 
 1. Press play. The narrator and characters read in their own voices, the current word lit as it is spoken.
 2. Hold Space mid-scene and ask: "Hagrid, what do you make of this visitor?" He answers in character from what has been
@@ -100,8 +105,9 @@ character to Hagrid.
 ```
 backend/    FastAPI: books, TTS cache + word-timestamp alignment, spoiler-safe retrieval, token minting, voice cloning
 frontend/   React + Vite: library, reader, Stage (Talk), voice lab, debug drawer
-preprocess/ offline scripts (ingest, cast, segment, chunk_tts, summaries, index, prerender_tts, eval_spoilers, prerender_avatar)
-scripts/    live API probes (probe_*.py) that record findings in NOTES.md, and run_all.py
+preprocess/ offline scripts (ingest_series, summaries, cast, segment, chunk_tts, eval_spoilers, prerender_tts, prerender_avatar)
+scripts/    run_all.py, index_vertex.py, usage.py, clone_voice.py, make_face_loops.py, deploy_cloudrun.sh, probes
+infra/      budget_stop: the Cloud Run function behind the $50 hard stop
 data/       raw texts, generated books and indexes, caches (cache/ is gitignored)
 ```
 

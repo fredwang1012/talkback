@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from app.schema import Book, Summary  # noqa: E402
+from app.books import save_book  # noqa: E402
 
 MODEL = "claude-sonnet-5-5"
 EVERY = 10
@@ -118,7 +119,7 @@ async def main() -> None:
 
     async def one(book: Book, path: Path) -> None:
         book.summaries = await build_summaries(book, llm.call_structured)
-        path.write_text(book.model_dump_json(indent=1), encoding="utf-8")
+        save_book(path, book)
         print(f"wrote {len(book.summaries)} summaries for {book.id}")
 
     await asyncio.gather(*(one(b, p) for b, p in zip(books, paths)))

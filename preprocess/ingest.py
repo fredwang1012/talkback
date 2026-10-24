@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 from app.parsing import BLANK_LINE, CURLY, ROMAN, normalize, parse  # noqa: E402,F401
 from app.schema import Book  # noqa: E402
+from app.books import save_book  # noqa: E402
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -46,7 +47,7 @@ def main() -> None:
             "sections": sections, "title": book.title, "author": book.author, "kind": book.kind,
             "license": book.license, "attribution": book.attribution})
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(book.model_dump_json(indent=1), encoding="utf-8")
+    save_book(out, book)
     chars = sum(len(p.text) for p in paragraphs)
     print(f"{args.book}: {len(sections)} sections, {len(paragraphs)} paragraphs, {chars} chars -> {out}")
 
