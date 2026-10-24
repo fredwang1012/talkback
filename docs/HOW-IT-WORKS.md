@@ -749,11 +749,33 @@ must stay short; capped at 8,000 chars).
 `main.answer_backend()` -> `/api/health.answer_backend`, read by `useTalk.answersViaGemini`:
 - `ANSWER_BACKEND` explicit; else `vertex` retrieval -> **gemini**; local retrieval -> **realtime**; a clone with the
   public service reachable -> **gemini** (answers written by the service).
-- **Realtime path**: `/api/retrieve` returns `instructions` (persona + rules + story so far + passages, with a
-  "let the feeling show in your voice" rule) -> `TalkClient.respond` sends `response.create {instructions,
-  max_output_tokens: 600}` -> Boson speaks directly (PCM 24 kHz into `RingPlayer`). Tool calls possible. No lip-sync.
+- **Realtime path, text mode (the default, B1)**: `/api/retrieve` (`text_answer: true`) returns `instructions`
+  (persona + rules + story so far + passages + the chat so far + the spoken-output and `[feeling]` marker rule, the
+  same `ANSWER_SUFFIX` Gemini gets) -> `TalkClient.respond` sends `response.create {instructions, input: [the
+  question], max_output_tokens: 600}` to a session opened with `output_modalities: ["text"]` -> the answer arrives as
+  `response.output_text.delta`; `talk/sentences.ts` splits it into sentences as it streams, `talk/emotionMarker.ts`
+  strips the marker (the port of `emotion.split_marker`), and each sentence goes through the same `sentencePlayer`
+  as a Gemini answer: `/api/speak` with the emotion tag in the speaker's voice, a lip-sync clip on the face shown,
+  the start gate and face sync. Captions, memory (the bubble text), barge-in (`heard` = the sentences whose sound had
+  started), pause/resume, quiz mode, function tools and hands-free all work as before. Live (2026-10-24 probe) the
+  text comes almost at once (0.12 s to the first delta, 0.30 s to the whole answer); the first sentence's TTS takes
+  about 2.5 s, so time to first audio is about 2.8 s against 0.6 s for direct audio (the lip-sync start gate adds its
+  own wait, as on the Gemini path).
+- **Realtime path, direct audio (`?answers=audio`, or localStorage `talkback:answers=audio`)**: the old path for a
+  comparison: `output_modalities: ["audio"]`, Boson speaks the answer itself (PCM 24 kHz into `RingPlayer`), no
+  emotion tags and no lip-sync (the face uses its talk loop). `talk/answerMode.ts`.
 - **Gemini path**: `/api/answer` streams NDJSON sentences; the browser speaks each with Boson TTS (`/api/speak`) and
   lip-syncs it. No Realtime function calls: commands go through `parseIntent` (section 13).
+
+Live finding behind both Realtime modes (probes `scripts/probe_realtime_text*.py`, 2026-10-24, `higgs-realtime`): when
+`response.create` carries per-response `instructions`, the model does not see the conversation's items: not a user
+text item, not the committed audio turn, not seeded history, not a `function_call_output`. Only `response.input` reaches
+it (a bare `response.create` without instructions does see the items), and a note appended to the instructions is not
+acted on either. So the question (typed, or the transcript of what was said) always travels as `response.input`, the
+chat history is written into the instructions by `/api/retrieve`, and a tool continuation carries the tool results as a
+`user` input message (`TalkClient.returnTools`; a `system` role is refused with "Invalid role"). Until this change the
+Realtime path answered from the retrieved passages without seeing the question itself, and a tool continuation never
+saw the tool's result.
 
 ```mermaid
 sequenceDiagram
@@ -828,8 +850,18 @@ sends `<|emotion:X|>text` to Boson (`emotion.tts_input`), stripping any other Bo
 ### 12.6 Google Search grounding
 
 - **When**: `websearch.allowed(kind, spoilers)`: textbooks always; novels **only with spoilers on**; never with
-  `WEB_SEARCH=false`. A spoiler-safe novel never gets the tool (the web would reveal later events). Boson's own
-  `web_search` tool is never declared on Realtime.
+  `WEB_SEARCH=false`. A spoiler-safe novel never gets the tool (the web would reveal later events).
+- **Realtime path (B2)**: the same rule picks Boson's server-side `{"type": "web_search"}` tool
+  (`talk/webSearch.ts sessionTools`, rebuilt before every turn so the spoilers switch is honoured at once; the open
+  web, no `allowed_domains`). The server runs the search itself: the response ends with a `function_call` item
+  (`name: "web_search"`, `executor: "server"`) right after the model's own preamble ("Let me dig that up"), the
+  result arrives as a `function_call_output` item (`conversation.item.added`), and the server starts the answer
+  response on its own. `TalkClient` therefore does **not** treat such a response as a finished turn (no
+  `response-done`, no auto-resume: the latent bug #4 of the research notes), never sends `response.create` or a
+  `function_call_output` for it, expects the server-started `response.created`, shows "Searching the web…" in the
+  chat meanwhile, and reads the links out of the result item ("[n] Title / URL / excerpt" blocks, a format the docs
+  call unstable) into the reply's source links. A barge-in during the search cancels the answer the server then starts.
+  Live (2026-10-24): preamble at 0.8 s, result at 1.3 s, the server's answer at 1.8 s, with three sources.
 - **Cap**: `take_local()` spends one of `GROUNDED_DAILY_CAP` (default 100 per UTC day, persisted in
   `data/usage/grounded_answers.json`); past it, a normal answer. Deploy sets 100,000.
 - **Call**: `tools=[GoogleSearch()]`; if the grounded request is refused before streaming, it retries once without the

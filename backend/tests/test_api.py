@@ -320,3 +320,56 @@ def test_tts_speed_is_validated_and_default_request_has_no_tag(env):
     assert client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "speed": "warp"}).status_code == 422
     from app import tts_cache
     assert tts_cache.is_cached("<|prosody:speed_fast|>It was in March, eighteen eighty-eight, that Harry spoke.", "marcus") is False
+
+
+# ---------- Realtime answer path: text mode (B1) and web_search (B2) ----------
+
+def _textbook(tmp_path):
+    from app.schema import Narrator
+    book = Book(id="tb", title="IR Book", author="A", kind="textbook", license="PD",
+                sections=[Section(id="s1", title="1 Boolean retrieval", start_para=0)],
+                paragraphs=[Paragraph(idx=0, section_id="s1", text="An inverted index maps terms to documents."),
+                            Paragraph(idx=1, section_id="s1", text="Tf-idf weights terms by rarity.")],
+                characters=[], narrator=Narrator(voice="marcus", persona="A warm tutor."))
+    d = tmp_path / "books" / "tb"
+    d.mkdir(parents=True)
+    (d / "book.json").write_text(book.model_dump_json(), encoding="utf-8")
+
+
+def test_retrieve_text_answer_asks_for_feeling_markers_instead_of_the_voice_rule(env):
+    client, _ = env
+    from app.personas import ANSWER_EMOTION_RULE, REALTIME_EMOTION_RULE
+    plain = client.post("/api/retrieve", json={"book_id": "demo", "query": "who is Harry?", "reader_para": 1, "speaker_id": "harry"}).json()
+    assert REALTIME_EMOTION_RULE in plain["instructions"] and ANSWER_EMOTION_RULE not in plain["instructions"]
+    text = client.post("/api/retrieve", json={"book_id": "demo", "query": "who is Harry?", "reader_para": 1, "speaker_id": "harry",
+                                              "text_answer": True}).json()
+    assert ANSWER_EMOTION_RULE in text["instructions"]
+    assert REALTIME_EMOTION_RULE not in text["instructions"]
+    assert "spoken aloud word for word" in text["instructions"]
+    assert "Later the King arrived" not in text["instructions"]  # the spoiler rule is untouched
+
+
+def test_retrieve_web_search_rule_only_where_a_search_cannot_spoil(env, tmp_path):
+    client, _ = env
+    from app.personas import WEB_SEARCH_RULE
+    _textbook(tmp_path)
+    novel = client.post("/api/retrieve", json={"book_id": "demo", "query": "q", "reader_para": 1, "speaker_id": "harry",
+                                               "text_answer": True, "web_search": True}).json()
+    assert WEB_SEARCH_RULE.strip() not in novel["instructions"]  # a spoiler-safe novel: never, whatever the page asks
+    full = client.post("/api/retrieve", json={"book_id": "demo", "query": "q", "reader_para": 1, "speaker_id": "harry",
+                                              "text_answer": True, "web_search": True, "spoilers": True}).json()
+    assert WEB_SEARCH_RULE.strip() in full["instructions"]
+    tb = client.post("/api/retrieve", json={"book_id": "tb", "query": "q", "reader_para": 1, "speaker_id": "narrator",
+                                            "web_search": True}).json()
+    assert WEB_SEARCH_RULE.strip() in tb["instructions"]
+    quiet = client.post("/api/retrieve", json={"book_id": "tb", "query": "q", "reader_para": 1, "speaker_id": "narrator"}).json()
+    assert WEB_SEARCH_RULE.strip() not in quiet["instructions"]  # the session did not declare the tool
+
+
+def test_retrieve_puts_the_chat_history_into_the_instructions(env):
+    client, _ = env
+    r = client.post("/api/retrieve", json={"book_id": "demo", "query": "and then?", "reader_para": 1, "speaker_id": "harry",
+                                           "history": [{"role": "user", "text": "Who knocked?"}, {"role": "character", "text": "A stranger."}]}).json()
+    assert "The conversation so far" in r["instructions"]
+    assert "Who knocked?" in r["instructions"] and "A stranger." in r["instructions"]
+    assert r["instructions"].index("Who knocked?") > r["instructions"].index("Harry")  # after the persona and passages

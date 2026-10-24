@@ -1316,3 +1316,26 @@ was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-
   identical output. HP7 and the HP collection: same titles, drop-cap words rejoined.
 - Already-uploaded books are not re-parsed: CHUNK_RULES_VERSION only rebuilds TTS chunks from stored paragraphs.
   Delete and upload the PDF again (the same file is a 409 duplicate while the old copy exists).
+### Probe: Realtime text mode, web_search, and what a response with `instructions` can see (2026-10-24)
+Scripts `scripts/probe_realtime_text.py` .. `_text6.py` on `higgs-realtime`, text items only, about $0.02 in total.
+- `output_modalities: ["text"]` works with function tools and with `web_search`; the model follows the `[feeling]`
+  marker rule (ANSWER_SUFFIX) in text mode most of the time (the server-started answer after a web search had none).
+  Text arrives almost at once: 0.12 s to the first `output_text.delta`, 0.30 s to `response.done`; Higgs TTS of the
+  first 76-char sentence took 2.48 s, so time to first audio is about 2.8 s against 0.62 s for direct audio output.
+- **With per-response `instructions`, the model does not see the conversation**: not a user text item created just
+  before (ack'd or not), not the committed audio turn (TTS'd question appended + committed), not seeded history items,
+  not a `function_call_output`. A bare `response.create` (no instructions) does see the text item. `response.input`
+  is seen, and tools fire from it (jump_to in text and audio mode; web_search in text mode). A tool continuation with
+  the results in its instructions is still not acted on (the model summarises the notes); as a `user` input message it
+  is ("Alice has now found herself in the Pool of Tears"); a `system` input role is refused ("Invalid role: system").
+  Consequence: before this change the Realtime path answered from the retrieved passages without seeing the question,
+  and tool confirmations never knew the result. Now the question always goes as `response.input`, `/api/retrieve`
+  writes the chat history into the instructions, and `returnTools` repeats the results as an input message. Not checked
+  on `higgs-realtime-1.5-preview`.
+- `session.update {tools}` mid-session is accepted (`session.updated` echoes the new list), so web_search can come and
+  go with the spoilers switch without a reconnect.
+- web_search wire order (text mode): `response.created` -> assistant message (preamble "Let me dig that up for you real
+  quick.") -> `response.output_item.added` function_call `web_search` `executor: "server"` -> `response.done` at 0.8 s
+  with both items -> `conversation.item.added` function_call_output at 1.3 s (output: numbered "[n] Title", URL line,
+  excerpt; 3 results, 2.5 KB) -> server-started `response.created` at 1.8 s -> the answer (Sparck Jones, 1972) ->
+  `response.done` at 2.6 s. Capture: `scripts/captures/realtime_text_websearch.json`.

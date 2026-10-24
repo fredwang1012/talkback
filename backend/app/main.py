@@ -30,7 +30,7 @@ from .enrich import equations as enrich_equations
 from .enrich import pipeline as enrich_pipeline
 from .enrich.detect import detect_kind
 from .gcp import usage
-from .personas import build_answer_prompt, build_instructions
+from .personas import build_answer_prompt, realtime_instructions
 from . import websearch
 from .mp3dur import mp3_seconds
 from .ratelimit import TokenBucket, client_ip
@@ -352,7 +352,9 @@ class RetrieveRequest(BaseModel):
     speaker_id: str = "narrator"
     k: int = Field(default=DEFAULT_K, ge=1, le=12)
     spoilers: bool = False  # full-book mode (novels): reader allows spoilers; default stays spoiler-safe
-    history: list[ChatTurn] = Field(default_factory=list, max_length=8)  # earlier turns with this speaker (answer only)
+    history: list[ChatTurn] = Field(default_factory=list, max_length=8)  # earlier turns with this speaker
+    text_answer: bool = False  # B1 (retrieve): the Realtime answer is written as text and voiced by Higgs TTS: marker rule
+    web_search: bool = False   # B2 (retrieve): the session declared Boson's web_search tool (allowed only where it cannot spoil)
 
 
 @lru_cache(maxsize=1)
@@ -452,8 +454,9 @@ async def retrieve(req: RetrieveRequest, request: Request):
     # realtime (Boson) instructions must stay short: fewer passages and a smaller character cap than /api/answer
     out = await retrieval.aretrieve(book, _index_for(req.book_id), search, reader_para, min(req.k, REALTIME_K),
                                     spoilers=req.spoilers, max_chars=REALTIME_MAX_PASSAGE_CHARS, **_series_context(book))
-    out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"], spoilers=req.spoilers,
-                                             reply_language=multilingual.foreign_language(req.query), voice_emotion=True)
+    out["instructions"] = realtime_instructions(book, req.speaker_id, out["story_so_far"], out["passages"], req.query,
+                                                spoilers=req.spoilers, text_answer=req.text_answer, history=req.history,
+                                                web_search=req.web_search and websearch.allowed(book.kind, req.spoilers))
     if search != req.query:
         out["search_query"] = search  # what was searched, for debugging (the browser network panel)
     out["persona"] = speaker.persona if speaker else None

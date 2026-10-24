@@ -183,11 +183,23 @@ export type RetrieveResponse = {
   reader_para: number;
 };
 
-export async function fetchRetrieve(bookId: string, query: string, readerPara: number, speakerId: string, spoilers = false): Promise<RetrieveResponse> {
+/**
+ * Realtime answer options (B1, B2): `textAnswer` asks for instructions with the `[feeling]` marker rule (the answer is
+ * written as text and voiced by Higgs TTS); `webSearch` says the session declares Boson's web_search tool, so the
+ * instructions may say when to use it (the server still applies the textbook / spoilers rule); `history` is the chat so
+ * far with this speaker, which the model only sees inside the instructions.
+ */
+export type RetrieveOptions = { textAnswer?: boolean; webSearch?: boolean; history?: { role: "user" | "character"; text: string }[] };
+
+export async function fetchRetrieve(bookId: string, query: string, readerPara: number, speakerId: string, spoilers = false, opts: RetrieveOptions = {}): Promise<RetrieveResponse> {
   const res = await timedFetch("/api/retrieve", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId, ...(spoilers ? { spoilers: true } : {}) }),
+    body: JSON.stringify({
+      book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId, ...(spoilers ? { spoilers: true } : {}),
+      ...(opts.textAnswer ? { text_answer: true } : {}), ...(opts.webSearch ? { web_search: true } : {}),
+      ...(opts.history?.length ? { history: opts.history.slice(-8) } : {}),
+    }),
   }, 10000);
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
