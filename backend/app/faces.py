@@ -7,7 +7,9 @@ older voice -> face lookups (lip-sync, /api/voices/faces) are answered from the 
 import asyncio
 import base64
 import io
+import hashlib
 import json
+import logging
 import math
 import re
 import secrets
@@ -31,6 +33,7 @@ IDLE_SECONDS = 6.0
 APPROX_ANIMATE_COST_USD = 0.05  # script notes: one short TTS line + two avatar renders (~20 s video), "a few cents"
 
 _lock = threading.Lock()
+log = logging.getLogger(__name__)
 
 
 class FaceInputError(ValueError):
@@ -88,7 +91,18 @@ def new_id() -> str:
 
 
 def _migrate_legacy() -> None:
-    """Fold data/voice_faces.json (voice id -> file in portraits/voices/) into the library, once. Caller holds _lock."""
+    """Fold data/voice_faces.json (voice id -> file in portraits/voices/) into the library, once. Caller holds _lock.
+
+    Never raises: a corrupt or unwritable legacy file is logged and skipped so faces and lip-sync keep working.
+    Single instance (--max-instances 1), so no cross-process race; ids derive from the voice id, so a re-run
+    overwrites instead of duplicating."""
+    try:
+        _do_migrate_legacy()
+    except Exception:
+        log.exception("could not migrate voice_faces.json into the face library; skipping")
+
+
+def _do_migrate_legacy() -> None:
     legacy = settings.data_dir / "voice_faces.json"
     if not legacy.exists():
         return
@@ -101,7 +115,7 @@ def _migrate_legacy() -> None:
         src = _legacy_dir() / fname
         if voice in have or not src.is_file():
             continue
-        fid = new_id()
+        fid = "v" + hashlib.sha256(voice.encode()).hexdigest()[:16]
         face_dir().mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, face_dir() / f"{fid}{src.suffix}")
         for kind in LOOPS:
@@ -250,5 +264,12 @@ async def animate(client: BosonClient, fid: str) -> dict:
         jobs.append(_render(client, img, speech.content, "audio/mpeg", len(TALK_LINE) / 15, loop_path(fid, "talk")))
     if not loop_path(fid, "idle").exists():
         jobs.append(_render(client, img, near_silence(IDLE_SECONDS), "audio/wav", IDLE_SECONDS, loop_path(fid, "idle")))
-    await asyncio.gather(*jobs)
+    try:
+        async with asyncio.TaskGroup() as tg:  # first failure cancels the sibling render: nothing runs unawaited
+            for j in jobs:
+                tg.create_task(j)
+    except ExceptionGroup as eg:
+        for k in LOOPS:
+            loop_path(fid, k).with_suffix(".tmp").unlink(missing_ok=True)
+        raise eg.exceptions[0] from None
     return get_face(fid)

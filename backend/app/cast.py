@@ -4,6 +4,7 @@ Stored in data/books/<id>/cast_settings.json. A null voice means "the book's own
 narrator.voice); a null face means no face. One shared setting per book (single-user app, gated by the access code).
 """
 import json
+import uuid
 
 from pydantic import BaseModel
 
@@ -68,7 +69,7 @@ def save(book: Book, new: CastSettings) -> dict:
     main = list(dict.fromkeys(new.main if new.main is not None else _default_main(book)))
     out = CastSettings(main=main, narrator=new.narrator, characters=new.characters)
     p = _path(book.id)
-    tmp = p.with_name(p.name + ".tmp")
+    tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex}.tmp")  # unique: concurrent PUTs never share a temp file
     tmp.write_text(json.dumps(out.model_dump(), indent=1), encoding="utf-8")
     tmp.replace(p)
     return load(book)

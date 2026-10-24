@@ -622,10 +622,22 @@ def list_faces():
 
 
 @app.delete("/api/faces/{face_id}", dependencies=[Depends(require_access)])
-def delete_face(face_id: str):
-    if not faces.delete_face(_safe_face_id(face_id)):
+async def delete_face(face_id: str):
+    _safe_face_id(face_id)
+    lock = _face_locks.setdefault(face_id, asyncio.Lock())
+    try:
+        async with lock:  # waits for a running animate, so no loops are written after the delete
+            deleted = faces.delete_face(face_id)
+    finally:
+        _release_face_lock(face_id, lock)
+    if not deleted:
         raise HTTPException(404, "Face not found")
     return {"deleted": face_id}
+
+
+def _release_face_lock(face_id: str, lock: asyncio.Lock) -> None:
+    if not lock.locked() and _face_locks.get(face_id) is lock:
+        del _face_locks[face_id]
 
 
 @app.post("/api/faces/{face_id}/animate", dependencies=[Depends(require_access)])
@@ -635,17 +647,21 @@ async def animate_face(face_id: str, request: Request):
     if not faces.face_exists(face_id):
         raise HTTPException(404, "Face not found")
     lock = _face_locks.setdefault(face_id, asyncio.Lock())
-    async with lock:  # a double click waits, then finds the loops and spends nothing
-        if faces.needs_animation(face_id):
-            if not avatar_bucket.allow(client_ip(request)):
-                raise HTTPException(429, "Too many avatar renders; wait a moment.")
-            try:
-                face = await faces.animate(boson, face_id)
-            except (BosonError, RuntimeError) as e:
-                raise boson_http_error(e)
-            return {**face, "animated": True, "approx_cost_usd": faces.APPROX_ANIMATE_COST_USD}
-    _face_locks.pop(face_id, None)
-    return {**faces.get_face(face_id), "animated": False, "approx_cost_usd": 0}
+    try:
+        async with lock:  # a double click waits, then finds the loops and spends nothing
+            if not faces.face_exists(face_id):  # deleted while we waited
+                raise HTTPException(404, "Face not found")
+            if faces.needs_animation(face_id):
+                if not avatar_bucket.allow(client_ip(request)):
+                    raise HTTPException(429, "Too many avatar renders; wait a moment.")
+                try:
+                    face = await faces.animate(boson, face_id)
+                except (BosonError, RuntimeError) as e:
+                    raise boson_http_error(e)
+                return {**face, "animated": True, "approx_cost_usd": faces.APPROX_ANIMATE_COST_USD}
+            return {**faces.get_face(face_id), "animated": False, "approx_cost_usd": 0}
+    finally:
+        _release_face_lock(face_id, lock)
 
 
 # ---------- cast settings per book ----------

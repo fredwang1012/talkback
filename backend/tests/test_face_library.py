@@ -40,8 +40,10 @@ def lib(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     monkeypatch.setattr(settings, "boson_api_key", "k" * 20)
 
+    real_sleep = asyncio.sleep
+
     async def no_sleep(_):
-        return None
+        await real_sleep(0)  # no waiting, but still yields so cancellation and sibling tasks run
     monkeypatch.setattr(asyncio, "sleep", no_sleep)
     return TestClient(main.app), calls
 
@@ -82,7 +84,7 @@ def test_upload_rejects_bad_input(lib):
 
 def test_path_ids_are_validated(lib):
     client, calls = lib
-    assert client.delete("/api/faces/..%2Fx").status_code in (404, 405)
+    assert client.delete("/api/faces/bad.id").status_code == 404
     assert client.post("/api/faces/bad.id/animate").status_code == 404
     assert client.post("/api/faces/fnope/animate").status_code == 404
     assert calls == []
@@ -175,3 +177,85 @@ def test_library_endpoints_need_the_access_code(lib, monkeypatch):
     h = {"X-Talkback-Token": "s3cret"}
     assert client.get("/api/faces", headers=h).status_code == 200
     assert client.delete(f"/api/faces/{fid}", headers=h).status_code == 200
+
+
+def test_partial_failure_cancels_the_sibling_render_and_retry_recovers(lib, monkeypatch):
+    client, calls = lib
+    fid = upload(client).json()["id"]
+    st = {"posts": 0, "polls2": 0, "ok": False}
+
+    def handler(req: httpx.Request):
+        path = req.url.path
+        if path == "/v1/audio/speech":
+            return httpx.Response(200, json={"audio": "TVAz", "response_format": "mp3", "input": "x"})
+        if req.method == "POST" and path == "/v1/videos":
+            st["posts"] += 1
+            return httpx.Response(200, json={"id": f"video_{st['posts']}"})
+        if path.startswith("/v1/videos/") and path.endswith("/content"):
+            return httpx.Response(200, content=b"MP4DATA")
+        if path.startswith("/v1/videos/"):
+            vid = path.rsplit("/", 1)[1]
+            if st["ok"]:
+                return httpx.Response(200, json={"id": vid, "status": "completed"})
+            if vid == "video_1":  # talk render fails
+                return httpx.Response(200, json={"id": vid, "status": "failed", "error": "boom"})
+            st["polls2"] += 1  # idle render keeps "processing" until cancelled
+            return httpx.Response(200, json={"id": vid, "status": "processing"})
+        return httpx.Response(404, json={"error": {"type": "invalid_request_error", "message": "no"}})
+
+    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    assert client.post(f"/api/faces/{fid}/animate").status_code >= 500
+    polls = st["polls2"]
+    client.get("/api/faces")  # give the app loop time: a leaked sibling would keep polling
+    client.get("/api/faces")
+    assert st["polls2"] == polls, "the idle render was cancelled, not left running"
+    assert faces.get_face(fid)["talk"] is None and faces.get_face(fid)["idle"] is None
+    assert not list(faces.face_dir().glob("*.tmp")) and main._face_locks == {}
+    st["ok"] = True
+    posts = st["posts"]
+    body = client.post(f"/api/faces/{fid}/animate").json()
+    assert body["talk"] and body["idle"] and st["posts"] - posts == 2
+    assert client.post(f"/api/faces/{fid}/animate").json()["animated"] is False
+
+
+def test_corrupt_legacy_file_degrades_instead_of_failing(lib):
+    client, _ = lib
+    (settings.data_dir / "voice_faces.json").write_text("{not json", encoding="utf-8")
+    assert client.get("/api/faces").json() == []
+    assert client.get("/api/voices/faces").json() == {}
+    assert upload(client).status_code == 200
+
+
+def test_migrated_ids_are_derived_from_the_voice(lib):
+    client, _ = lib
+    d = settings.data_dir
+    (d / "portraits" / "voices").mkdir(parents=True)
+    (d / "portraits" / "voices" / "voice_abc.png").write_bytes(PNG)
+    legacy = d / "voice_faces.json"
+    legacy.write_text(json.dumps({"voice_abc": "voice_abc.png"}), encoding="utf-8")
+    first = client.get("/api/faces").json()[0]["id"]
+    assert first == client.get("/api/faces").json()[0]["id"]
+    assert first.startswith("v") and len(client.get("/api/faces").json()) == 1
+
+
+def test_delete_during_animate_leaves_no_orphans_and_locks_are_released(lib):
+    client, _ = lib
+    fid = upload(client).json()["id"]
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://t") as c:
+            return await asyncio.gather(c.post(f"/api/faces/{fid}/animate"), c.delete(f"/api/faces/{fid}"))
+
+    a, d = asyncio.run(go())
+    assert a.status_code in (200, 404) and d.status_code in (200, 404)
+    assert not list(faces.face_dir().glob(f"{fid}*")), "no orphan image or loops after delete"
+    assert main._face_locks == {}
+
+
+def test_locks_are_released_after_a_failed_animate(lib, monkeypatch):
+    client, _ = lib
+    fid = upload(client).json()["id"]
+    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(402, json={"error": {"type": "insufficient_quota", "message": "x"}}))))
+    assert client.post(f"/api/faces/{fid}/animate").status_code == 402
+    assert main._face_locks == {}
