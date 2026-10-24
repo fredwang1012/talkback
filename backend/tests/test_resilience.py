@@ -289,7 +289,7 @@ def test_index_failure_finishes_the_enrichment_with_basic_search(data_dir):
 
 def test_enrich_indexer_records_an_index_error_for_the_startup_retry(client, monkeypatch):  # noqa: F811
     book = make_book_on_disk(settings.data_dir)
-    ingest_upload.write_status(BID, "ready", index={"state": "done", "done": 3, "total": 3})
+    ingest_upload.write_status(BID, "ready", index={"state": "error", "done": 0, "total": 3})
     main._upload_status.clear()
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
     monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
@@ -305,9 +305,24 @@ def test_enrich_indexer_records_an_index_error_for_the_startup_retry(client, mon
     assert BID not in main._index_jobs
 
 
-def test_enrich_indexer_retries_a_failed_reindex(client, monkeypatch):  # noqa: F811
+def test_enrich_indexer_keeps_a_complete_index(client, monkeypatch):  # noqa: F811
+    """The upload indexed every chunk: no re-embed and rewrite just for the unused speaker field."""
     book = make_book_on_disk(settings.data_dir)
     ingest_upload.write_status(BID, "ready", index={"state": "done", "done": 3, "total": 3})
+    main._upload_status.clear()
+    monkeypatch.setattr(settings, "retrieval_backend", "vertex")
+    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+
+    async def must_not_run(*a, **k):
+        raise AssertionError("re-indexed a complete index")
+    monkeypatch.setattr("app.gcp.indexing.index_book", must_not_run)
+    asyncio.run(main._enrich_indexer(book))
+    assert ingest_upload.read_status(BID)["index"]["state"] == "done"
+
+
+def test_enrich_indexer_retries_a_failed_reindex(client, monkeypatch):  # noqa: F811
+    book = make_book_on_disk(settings.data_dir)
+    ingest_upload.write_status(BID, "ready", index={"state": "error", "done": 0, "total": 3})
     main._upload_status.clear()
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
     monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))

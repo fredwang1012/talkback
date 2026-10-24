@@ -732,8 +732,8 @@ async def _index_with_retries(book: Book, chunks, embedder, store, on_progress=N
         except Exception as e:
             if wait is None or book.id in _deleted:
                 raise
-            logging.getLogger(__name__).warning("vertex indexing attempt %d failed (%s); retrying in %.0f s",
-                                                attempt + 1, type(e).__name__, wait)
+            logging.getLogger(__name__).warning("vertex indexing attempt %d failed (%s %s); retrying in %.0f s",
+                                                attempt + 1, type(e).__name__, getattr(e, "status", ""), wait)
             await asyncio.sleep(wait)
             if book.id in _deleted:
                 return False
@@ -762,7 +762,7 @@ async def _index_in_background(book: Book, chunks) -> None:
         pass
     except Exception as e:  # the book stays readable and keeps the BM25 fallback
         if book_id not in _deleted:
-            logging.getLogger(__name__).warning("vertex indexing failed: %s", type(e).__name__)
+            logging.getLogger(__name__).warning("vertex indexing failed: %s %s", type(e).__name__, getattr(e, "status", ""))
             final = {"state": "error", "done": 0, "total": total, "message": INDEX_FAILED_MESSAGE}
     finally:
         _index_jobs.discard(book_id)
@@ -932,11 +932,18 @@ INDEX_FAILED_MESSAGE = "Search indexing failed; using basic search."
 
 
 async def _enrich_indexer(book: Book) -> None:
-    """Final stage: refresh the Vertex index with the speakers (the local index needs no change). A failure (after the
+    """Final stage: index the book in Vertex if the upload's own indexing did not finish (a complete index is kept as it
+    is; see below). The local index needs no change. A failure (after the
     store's and embedder's own retries) is recorded as index state "error", so retrieval falls back to BM25 and the
     next start retries it (_retry_failed_indexes); it is then raised for the pipeline, which finishes the book anyway."""
     if settings.retrieval_backend == "vertex":
         from .gcp.indexing import load_chunks
+        done = (_mem_index(book.id) or (ingest_upload.read_status(book.id) or {}).get("index") or {}).get("state") == "done"
+        if done:
+            # The upload already indexed every chunk. A re-index would only add the "speaker" field, which no search
+            # reads, at the price of re-embedding the book and rewriting every object (409 -> delete -> create), which
+            # under Vertex write limits kept failing with 429 and dropped finished books to basic search.
+            return
         embedder, store = _vertex_deps()
         chunks = await asyncio.to_thread(load_chunks, book)
         while book.id in _index_jobs:   # the upload's own indexing job is still queued or running: never overlap it
@@ -945,9 +952,12 @@ async def _enrich_indexer(book: Book) -> None:
         try:
             async with _index_slot():
                 await _index_with_retries(book, chunks, embedder, store)
+            if book.id not in _deleted:
+                _set_index(book.id, state="done", done=len(chunks), total=len(chunks))
         except Exception as e:
             if book.id not in _deleted:
-                logging.getLogger(__name__).warning("vertex re-indexing failed: %s", type(e).__name__)
+                logging.getLogger(__name__).warning("vertex re-indexing failed: %s %s", type(e).__name__,
+                                                    getattr(e, "status", ""))
                 _set_index(book.id, state="error", done=0, total=len(chunks), message=INDEX_FAILED_MESSAGE)
             raise
         finally:

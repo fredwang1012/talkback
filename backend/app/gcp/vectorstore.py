@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 
 BASE_URL = "https://vectorsearch.googleapis.com/v1"
 BATCH_SIZE = 1000
+UPSERT_409_TRIES = 4    # delete + re-create rounds for a batch whose objects already exist (a half-finished earlier run)
 MAX_RETRIES = 3
 DELETE_BATCH = 1000       # dataObjects:batchDelete takes at most 1000 DataObjects (Vector Search 2.0 REST reference)
 DELETE_CONCURRENCY = 4    # per-object fallback: few in flight (32 drew 429s on 3000-chunk books live)
@@ -126,8 +127,17 @@ class VectorStore:
                 for o in batch]}
             url = f"{self._base}/dataObjects:batchCreate"
             resp = await self._send("POST", url, body)
-            if resp.status_code == 409:
-                await self.delete([o["id"] for o in batch])
+            ids = [o["id"] for o in batch]
+            for attempt in range(UPSERT_409_TRIES):
+                if resp.status_code != 409:
+                    break
+                # Some objects exist already (an earlier run stopped part-way). Delete the batch, again for any ids
+                # Vertex refused (429s under load), give the deletes a moment to land, then create again.
+                refused = await self.delete(ids)
+                if refused:
+                    await self._sleep(2.0 * (attempt + 1))
+                    await self.delete(refused)
+                await self._sleep(1.0 * (attempt + 1))
                 resp = await self._send("POST", url, body)
             if not resp.is_success:
                 raise self._error(resp)
