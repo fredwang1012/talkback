@@ -107,6 +107,9 @@ class Narrator(BaseModel):
 class Summary(BaseModel):
     upto_para: int
     text: str
+    # Textbooks: the section (chapter or numbered subsection) this note summarises; upto_para is that section's last
+    # paragraph. Novel "story so far" notes leave it unset.
+    section_id: str | None = None
 
 
 class KindDetected(BaseModel):

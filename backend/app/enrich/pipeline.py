@@ -20,6 +20,7 @@ from . import minor as minor_mod
 from . import segment as seg_mod
 from . import spend
 from . import summaries as sum_mod
+from . import textbook as tb_mod
 from .llm import LLM, LLMRefusal, SpendLimit, effective_provider, estimate_usd, make_llm, no_llm_available
 
 log = logging.getLogger("talkback.enrich")
@@ -36,6 +37,13 @@ TOO_LONG = "This book is too long to process with characters; it will be read by
 BUDGET_USED = "Character processing is paused for now; this book will be read by the narrator."
 FAILED = "Character processing stopped early; the book is still readable with the narrator."
 FALLBACK_DONE = "Characters detected with a simple fallback (no LLM key configured). Add ANTHROPIC_API_KEY for full voices and recap."
+# textbooks: only recap notes (no characters, no dialogue split)
+TEXTBOOK_MESSAGE = "Writing study notes for the recap"
+TEXTBOOK_DONE = "Study notes for the recap are ready."
+TEXTBOOK_TOO_LONG = "This textbook is too long for recap notes; it can still be read and searched."
+TEXTBOOK_BUDGET_USED = "Recap notes are paused for now; the textbook can still be read and searched."
+TEXTBOOK_FAILED = "Recap notes stopped early; the textbook is still readable."
+TEXTBOOK_CONFIRM = "Study notes for the recap need processing."
 BOOK_CAP_MARGIN = 1.25  # a running job stops when its real spend passes the per-book cap by this factor
 ESTIMATE_MARGIN = 1.15
 
@@ -66,13 +74,18 @@ def estimate(book: Book, provider: str | None = None) -> float:
     return round(usd * ESTIMATE_MARGIN, 4)
 
 
-def check_caps(estimate_usd_: float) -> str | None:
+def check_caps(estimate_usd_: float, textbook: bool = False) -> str | None:
     """None when enrichment may start; else the plain message to show the reader."""
     if estimate_usd_ > settings.upload_book_cap_usd:
-        return TOO_LONG
+        return TEXTBOOK_TOO_LONG if textbook else TOO_LONG
     if spend.total_usd() + estimate_usd_ > settings.upload_total_cap_usd:
-        return BUDGET_USED
+        return TEXTBOOK_BUDGET_USED if textbook else BUDGET_USED
     return None
+
+
+def estimate_for(book: Book, provider: str | None = None) -> float:
+    """The estimate of whatever an upload of this kind runs: full enrichment (novel) or recap notes (textbook)."""
+    return tb_mod.plan(book, provider)[0] if book.kind == "textbook" else estimate(book, provider)
 
 
 class _Throttle:
@@ -99,10 +112,8 @@ def rebuild_chunks(book: Book) -> None:
         p.tts_chunks = chunk_paragraph(p, book)
 
 
-async def enrich_book(book_id: str, report: Report, *, llm: LLM | None = None, indexer: Indexer | None = None) -> bool:
-    """Run every stage on data/books/<id>/book.json. Returns True when all stages finished. Never raises."""
-    path = _book_path(book_id)
-    llm = llm or make_llm()
+def _meter(book_id: str, llm: LLM) -> None:
+    """Spend bookkeeping and the caps of a running upload job: SpendLimit past the total or the per-book cap."""
     cap = settings.upload_book_cap_usd * BOOK_CAP_MARGIN
 
     def on_usage(provider: str, model: str, n_in: int, n_out: int, usd: float) -> None:
@@ -115,10 +126,68 @@ async def enrich_book(book_id: str, report: Report, *, llm: LLM | None = None, i
             raise SpendLimit("book cap")
 
     llm.on_usage = on_usage
+
+
+async def enrich_book(book_id: str, report: Report, *, llm: LLM | None = None, indexer: Indexer | None = None) -> bool:
+    """Run every stage on data/books/<id>/book.json. Returns True when all stages finished. Never raises."""
+    path = _book_path(book_id)
+    llm = llm or make_llm()
+    _meter(book_id, llm)
     try:
         return await _run(book_id, path, report, llm, indexer)
     finally:
         await asyncio.shield(asyncio.to_thread(spend.flush))
+
+
+async def run_textbook_stage(book: Book, report: Report, llm: LLM, *, state: dict, include_subsections: bool = True,
+                             out: list | None = None) -> list:
+    """The textbook's only stage: recap notes (see textbook.py). Returns the notes; raises on failure / SpendLimit."""
+    stage = state["stage"] = "summaries"
+    report(status="running", stage=stage, progress=0.0, message=TEXTBOOK_MESSAGE)
+
+    last = 0.0
+
+    def progress(frac: float) -> None:  # at most every 0.5 s (and always the last)
+        nonlocal last
+        now = time.monotonic()
+        if frac >= 1.0 or now - last >= 0.5:
+            last = now
+            report(status="running", stage=stage, progress=round(min(frac, 1.0) * 0.98, 3), message=TEXTBOOK_MESSAGE)
+
+    return await tb_mod.build(book, llm, progress, include_subsections, out)
+
+
+async def enrich_textbook(book_id: str, report: Report, *, llm: LLM | None = None) -> bool:
+    """Recap notes for the textbook data/books/<id>/book.json, with the upload caps. Never raises. Notes written before
+    a stop or failure are kept."""
+    llm = llm or make_llm()
+    _meter(book_id, llm)
+    state = {"stage": "summaries"}
+    out: list = []
+    try:
+        book = Book.model_validate_json(_book_path(book_id).read_text(encoding="utf-8"))
+        _, subs = tb_mod.plan(book)
+        await run_textbook_stage(book, report, llm, state=state, include_subsections=subs, out=out)
+        if not await asyncio.to_thread(tb_mod.save_summaries, book_id, out):
+            report(status="error", stage="summaries", message=TEXTBOOK_FAILED)
+            return False
+        report(status="done", stage="done", progress=1.0, message=TEXTBOOK_DONE)
+        log.info("textbook notes for %s: %d notes, $%.4f in %d calls", book_id, len(out), llm.usd, llm.calls)
+        return True
+    except asyncio.CancelledError:
+        raise
+    except SpendLimit as e:
+        log.warning("textbook notes for %s stopped: %s", book_id, e)
+        msg = TEXTBOOK_BUDGET_USED if "budget" in str(e) else TEXTBOOK_TOO_LONG
+    except Exception as e:
+        log.warning("textbook notes for %s failed: %s", book_id, type(e).__name__)
+        msg = TEXTBOOK_FAILED
+    finally:
+        await asyncio.shield(asyncio.to_thread(spend.flush))
+    if out:
+        await asyncio.to_thread(tb_mod.save_summaries, book_id, list(out))
+    report(status="error", stage=state["stage"], message=msg)
+    return False
 
 
 async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save: Callable[[Book], Awaitable[None]] | None = None,

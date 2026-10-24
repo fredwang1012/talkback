@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -226,17 +226,19 @@ def get_book(book_id: str, accept_encoding: str = Header(default="")):
 
 
 @app.get("/api/books/{book_id}/recap", dependencies=[Depends(require_access)])
-def get_recap(book_id: str, para: int = 0, scope: recap.Scope | None = None):
+def get_recap(book_id: str, para: int = 0, scope: recap.Scope | None = None,
+              section: str | None = Query(None, max_length=80)):
     """Spoiler-safe "Previously..." for the reader's place: the latest stored summary written from text at or
     before `para` (never a later one), the chapter they are in, and the closing summaries of earlier books.
-    With `scope` (chapter | book | series, see recap.py) just that recap: {scope, upto_para, chapter, text}."""
+    With `scope` (chapter | book | series, see recap.py) just that recap: {scope, upto_para, chapter, text}; with
+    `section` too, that chapter's recap (a textbook: any section; a novel: only as far as the reader has read)."""
     users.guard_book(book_id)
     book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
     _, para = retrieval._clamp(book, para)
     if scope is not None:
-        return recap.scoped(book, para, scope)
+        return recap.scoped(book, para, scope, section)
     ok = [s for s in book.summaries if s.upto_para <= para]
     best = max(ok, key=lambda s: s.upto_para) if ok else None
     sections = [s for s in book.sections if s.start_para <= para]
@@ -711,6 +713,14 @@ async def _run_enrichment(book_id: str) -> None:
         _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
         async with _enrich_lock:
             book = books.load_book(book_id)
+            if book is not None and book.kind == "textbook":   # recap notes only (no characters, no re-index)
+                report = lambda **f: _set_enrich(book_id, summaries_only=True, **f)  # noqa: E731
+                if recap.textbook_notes(book):  # already written: nothing to pay for
+                    report(status="done", stage="done", progress=1.0, message=enrich_pipeline.TEXTBOOK_DONE)
+                    return
+                run = public_client.summarize_textbook if public_client.active() else enrich_pipeline.enrich_textbook
+                await run(book_id, report)
+                return
             if book is not None and book.characters:  # already enriched: nothing to pay for
                 _set_enrich(book_id, status="done", stage="done", progress=1.0,
                             message="Characters, recap and search are ready.")
@@ -723,16 +733,19 @@ async def _run_enrichment(book_id: str) -> None:
 
 
 def _decide_enrichment(book_id: str, book: Book) -> bool:
-    """Refuse (caps), wait for confirmation (testing mode) or mark as queued. True when the job should now run."""
-    est = enrich_pipeline.estimate(book)
-    reason = enrich_pipeline.check_caps(est)
+    """Refuse (caps), wait for confirmation (testing mode) or mark as queued. True when the job should now run.
+    A textbook gets only recap notes (enrich/textbook.py), with the same estimate-first caps."""
+    textbook = book.kind == "textbook"
+    flag = {"summaries_only": True} if textbook else {}
+    est = enrich_pipeline.estimate_for(book)
+    reason = enrich_pipeline.check_caps(est, textbook=textbook)
     if reason:
-        _set_enrich(book_id, status="refused", message=reason)
+        _set_enrich(book_id, status="refused", message=reason, **flag)
     elif settings.upload_confirm:
-        _set_enrich(book_id, status="awaiting_confirmation", estimate_usd=round(est, 2),
-                    message="Characters, voices and recap need processing.")
+        _set_enrich(book_id, status="awaiting_confirmation", estimate_usd=round(est, 2), **flag,
+                    message=enrich_pipeline.TEXTBOOK_CONFIRM if textbook else "Characters, voices and recap need processing.")
     else:
-        _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
+        _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start", **flag)
         return True
     return False
 
@@ -773,15 +786,16 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
         _start_equations(book_id, data)
     if ready is not None and settings.retrieval_backend == "vertex":
         await _index_in_background(ready, chunks)
-    if ready is not None and kind == "novel" and settings.upload_enrich and book_id not in _deleted:
-        current = books.load_book(book_id)   # the reader may have moved it to Textbooks (or deleted it) meanwhile
-        if current is None or current.kind != "novel":
+    if ready is not None and settings.upload_enrich and book_id not in _deleted:
+        current = books.load_book(book_id)   # the reader may have moved it to the other shelf (or deleted it) meanwhile
+        if current is None or current.kind != kind:
             return
         try:
             await _plan_enrichment(book_id, current)
         except Exception as e:  # the book stays readable with the narrator
             logging.getLogger(__name__).warning("enrichment planning failed: %s", type(e).__name__)
-            _set_enrich(book_id, status="error", message=enrich_pipeline.FAILED)
+            _set_enrich(book_id, status="error",
+                        message=enrich_pipeline.TEXTBOOK_FAILED if kind == "textbook" else enrich_pipeline.FAILED)
 
 
 async def _ingest_work(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str):
@@ -1004,11 +1018,13 @@ async def start_enrichment(book_id: str, background: BackgroundTasks):
     book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
-    reason = enrich_pipeline.check_caps(enrich_pipeline.estimate(book))  # caps are re-checked at start
+    textbook = book.kind == "textbook"
+    flag = {"summaries_only": True} if textbook else {}
+    reason = enrich_pipeline.check_caps(enrich_pipeline.estimate_for(book), textbook=textbook)  # re-checked at start
     if reason:
-        _set_enrich(book_id, status="refused", message=reason)
+        _set_enrich(book_id, status="refused", message=reason, **flag)
         return _upload_status[book_id]
-    _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
+    _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start", **flag)
     background.add_task(_run_enrichment, book_id)
     return _upload_status[book_id]
 
@@ -1022,7 +1038,8 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
     """Move an uploaded book between the Novels and Textbooks shelves.
 
     textbook -> novel starts enrichment (same caps and UPLOAD_CONFIRM behaviour as an upload) unless the book already
-    has its characters; novel -> textbook only changes the kind (the characters stay in the file, the UI ignores them).
+    has its characters; novel -> textbook keeps the characters in the file (the UI ignores them) and writes the
+    textbook recap notes (same caps) only when the book has no summaries at all.
     """
     users.guard_book(book_id)
     if not book_id.startswith("u-"):
@@ -1047,7 +1064,9 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
         await asyncio.to_thread(books.save_book, settings.data_dir / "books" / book_id / "book.json", book)
         _index_for.cache_clear()
         _set_status(book_id, "ready", kind=body.kind)
-        if body.kind == "novel" and settings.upload_enrich and not book.characters:
+        # a novel's own summaries are kept when it moves to Textbooks (recap then uses them as before)
+        needs = not book.characters if body.kind == "novel" else not book.summaries
+        if settings.upload_enrich and needs:
             if _decide_enrichment(book_id, book):  # sets status "running" (queued) before the claim is released
                 background.add_task(_run_enrichment, book_id)
         return _upload_status[book_id]

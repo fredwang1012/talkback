@@ -784,3 +784,32 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
 - Search: `multilingual.search_query` translates a non-English question to English with Gemini on Vertex (temperature 0, thinking off, 4 s timeout, 256-entry cache) before `/api/retrieve` and `/api/answer` search; `/api/retrieve` returns `search_query` when it differs. Without GCP_PROJECT, or on any failure, the original question is searched.
 - Why it matters: with BM25 alone (local, no e5 installed; also Vertex books while their index builds) a Spanish question finds nothing relevant. Alice: "¿Qué le pasa a Alicia cuando bebe de la botella?" returned ¶114-118 / 141-142 / 215-221 (unrelated); its English form returns ¶14-17 and ¶109-111 (the bottle scenes).
 - Not live-tested here (this machine has no GCP_PROJECT, and a Realtime check spends Boson credit). The badge (frontend/src/talk/language.ts) uses the same word lists; voice commands (#72 parseIntent) are still English only.
+
+## Textbook recap notes (2026-10-23)
+- Textbooks used to skip enrichment, so their Recap menu was empty. Now an uploaded textbook gets study-guide notes
+  (`backend/app/enrich/textbook.py`, Gemini "fast" tier): one per chapter (level-1 section) and per numbered
+  subsection (level 2; level-3 headings fold into their subsection). 3-6 sentences, key ideas, definitions and formulas
+  in words, only from the given text. A chapter with subsections is written from its opening text plus its
+  subsections' notes, so the book is read about once. Display equations are read as their spoken form / LaTeX.
+- Stored as ordinary `Summary` rows with a new optional `section_id`; `upto_para` = the section's last paragraph, so
+  each note is still derived only from text at or before `upto_para` (safe even if the book is moved to Novels).
+- Recap (`recap.py`): a textbook with section notes has no spoilers. "chapter" = the note of the chapter the reader is
+  in (menu label "This chapter"), `section=<id>` = any chapter / subsection wherever the reader is; "book" = the first
+  two sentences of each chapter's note up to the reader's chapter (300 words, latest kept). A textbook without
+  section notes and every novel keep the old rule; a novel's `section` recap still uses only `upto_para <= para`.
+  Voice/typed "summarize chapter 4" / "summarise section 4.2" -> `open_recap {chapter}` (frontend `tools.ts`); the
+  Realtime tool got an optional `chapter` argument. Novels refuse a chapter past the reader while spoilers are off.
+- Flow: same background job as novels (`main._run_enrichment` dispatches on kind; `_enrich_lock`), same estimate first,
+  per-book cap, total cap (data/usage/upload_spend.json), SpendLimit stop (notes written before a stop are kept), and
+  UPLOAD_CONFIRM. Status carries `summaries_only: true` with textbook wording. Subsections are left out only when the
+  full estimate is over the per-book cap. The save re-reads book.json under the equations lock (that job may write
+  LaTeX meanwhile). Moving a novel to Textbooks writes notes only when it has no summaries at all (its story notes are
+  kept); moving a textbook to Novels runs the novel enrichment as before.
+- Public service: `/api/public/enrich` accepts `kind: "textbook"` (sections carry `level`) and runs only the notes;
+  `public_client.summarize_textbook` keeps only notes for real sections, with `upto_para` reset to the section end.
+  An older deployed service answers 422 -> the textbook simply has no notes. Needs a redeploy of talkback-public.
+- Existing books: `scripts/summarize_textbook.py --book <id>` prints the estimate and caps; `--yes` runs it (refused
+  over a cap even with --yes). IR textbook (1.12M chars, 32 chapters + 118 subsections, 150 calls), computed offline
+  from the raw JSON: ~$0.33 with subsections, ~$0.16 chapters only (margin included; Gemini 2.5 Flash prices). On this
+  branch the IR book.json fails schema validation ('figure' paragraphs from the figures branch), so run the script
+  after that branch is merged. Not run against Gemini here (fake LLM only).

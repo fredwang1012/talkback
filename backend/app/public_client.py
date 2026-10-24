@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from . import books
 from .config import settings
 from .enrich import cast as cast_mod
-from .enrich import pipeline
+from .enrich import pipeline, textbook
 from .enrich.segment import SegItem, narrator_only, speaker_ids, validate_segments
 from .schema import Book, Character, Narrator, Summary
 
@@ -115,8 +115,12 @@ def _failure(r: httpx.Response) -> PublicFailure:
 # ---------- enrichment ----------
 
 def _payload(book: Book) -> dict:
-    return {"title": book.title, "author": book.author, "kind": "novel",
-            "sections": [{"id": s.id, "title": s.title, "start_para": s.start_para} for s in book.sections],
+    if book.kind == "textbook":   # recap notes only; the levels tell chapters from subsections
+        sections = [{"id": s.id, "title": s.title, "start_para": s.start_para, "level": max(1, min(s.level, 6))}
+                    for s in book.sections]
+    else:
+        sections = [{"id": s.id, "title": s.title, "start_para": s.start_para} for s in book.sections]
+    return {"title": book.title, "author": book.author, "kind": book.kind, "sections": sections,
             "paragraphs": [{"idx": p.idx, "section_id": p.section_id, "text": p.text} for p in book.paragraphs]}
 
 
@@ -268,6 +272,51 @@ async def enrich_book(book_id: str, report: Callable[..., None], *, indexer=None
         log.warning("public enrichment of %s failed: %s", book_id, type(e).__name__)
         report(status="error", stage="cast", message=pipeline.FAILED)
         return False
+
+
+def apply_textbook_result(book: Book, result: dict) -> None:
+    """Keep only notes for real sections, each ending where its section ends (the server is not trusted)."""
+    ends = {t.section_id: t.end for t in textbook.targets(book)}
+    out, seen = [], set()
+    for s in result.get("summaries") or []:
+        if not isinstance(s, dict) or not isinstance(s.get("text"), str) or not s["text"].strip():
+            continue
+        sid = s.get("section_id")
+        if sid not in ends or sid in seen:
+            continue
+        seen.add(sid)
+        out.append(Summary(upto_para=ends[sid], text=" ".join(s["text"].split())[:4000], section_id=sid))
+    book.summaries = sorted(out, key=lambda s: (s.upto_para, s.section_id or ""))
+
+
+async def summarize_textbook(book_id: str, report: Callable[..., None], *, client: httpx.AsyncClient | None = None,
+                             sleep: Callable[[float], Awaitable] = asyncio.sleep) -> bool:
+    """Textbook recap notes through the public API. On failure the textbook simply has no notes. Never raises."""
+    own = client is None
+    try:
+        book = Book.model_validate_json((settings.data_dir / "books" / book_id / "book.json").read_text(encoding="utf-8"))
+        client = client or httpx.AsyncClient(base_url=_base())
+        try:
+            report(status="running", stage="summaries", progress=0.0, message=pipeline.TEXTBOOK_MESSAGE)
+            result = await _remote_enrich(book, report, client, sleep)
+        finally:
+            if own:
+                await client.aclose()
+        apply_textbook_result(book, result)
+        if not await asyncio.to_thread(textbook.save_summaries, book_id, book.summaries):
+            raise ValueError("book gone or no longer a textbook")
+        report(status="done", stage="done", progress=1.0, message=pipeline.TEXTBOOK_DONE)
+        return True
+    except asyncio.CancelledError:
+        raise
+    except PublicFailure as e:
+        log.warning("public textbook notes for %s failed: %s %s", book_id, e.kind, e)
+        report(status="error", stage="summaries",
+               message=pipeline.TEXTBOOK_BUDGET_USED if e.kind == "limit" else pipeline.TEXTBOOK_FAILED)
+    except Exception as e:
+        log.warning("public textbook notes for %s failed: %s", book_id, type(e).__name__)
+        report(status="error", stage="summaries", message=pipeline.TEXTBOOK_FAILED)
+    return False
 
 
 # ---------- answers ----------
