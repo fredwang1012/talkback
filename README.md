@@ -199,8 +199,8 @@ Then pick it for the narrator in the Voices panel. The voice, face and loops sta
 Add a PDF or .txt from the library page. A **novel** can be read with the narrator right away; characters, voices and the
 recap follow in the background (about 3 to 5 minutes), with progress shown on the page. A **textbook** gets the narrator
 only. The kind defaults to **Auto-detect** (one cheap model call on a sample, a heuristic when that is unavailable);
-each uploaded book has a "Move to Textbooks / Novels" button. Optional `.env` settings: `UPLOAD_LLM=claude|gemini`,
-`LLM_PROVIDER=claude|gemini` (for the `preprocess/` scripts), `UPLOAD_CONFIRM=true` (show the cost estimate and ask
+each uploaded book has a "Move to Textbooks / Novels" button. Optional `.env` settings: `UPLOAD_LLM=gemini|claude`,
+`LLM_PROVIDER=gemini|claude` (for the `preprocess/` scripts; both default to gemini), `UPLOAD_CONFIRM=true` (show the cost estimate and ask
 first). A book that would cost more than $4 to process is read by the narrator only, and processing stops for good at $15
 total.
 

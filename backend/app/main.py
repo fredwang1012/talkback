@@ -831,7 +831,9 @@ def _set_enrich(book_id: str, **fields) -> None:
     _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", enrich=enrich, index=_mem_index(book_id), **extra)
 
 
-_enrich_lock = asyncio.Semaphore(max(1, settings.enrich_parallel))  # ENRICH_PARALLEL uploads at a time (rate limits)
+# ENRICH_PARALLEL uploads enriched at once (default 1000: no practical limit). Rate limits are handled by the shared
+# Gemini pacer (app/pacer.py) and UPLOAD_CONCURRENCY per book, not by this semaphore.
+_enrich_lock = asyncio.Semaphore(max(1, settings.enrich_parallel))
 
 
 INDEX_FAILED_MESSAGE = "Search indexing failed; using basic search."
@@ -996,8 +998,8 @@ async def _resume_one(book_id: str, ns: str) -> None:
 
 
 async def _resume_enrichments() -> None:
-    """Startup: restart the enrichment of uploads that a restart interrupted. Same caps and the same single
-    enrichment slot as a fresh job; stages already saved are not paid for again. With PER_USER on, the owner comes
+    """Startup: restart the enrichment of uploads that a restart interrupted. Same caps and the same enrichment
+    semaphore (ENRICH_PARALLEL) as a fresh job; stages already saved are not paid for again. With PER_USER on, the owner comes
     from the book's owner marker; when it cannot be determined the book is left retryable instead of run. Never raises."""
     try:
         todo = await asyncio.to_thread(_stale_enrichments)
@@ -1030,7 +1032,7 @@ async def _resume_enrichments() -> None:
                 continue
             _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start", **flag,
                         enrich_retries=tries + 1)
-            jobs.append(asyncio.create_task(_resume_one(book_id, ns)))   # the enrichment lock lets one run at a time
+            jobs.append(asyncio.create_task(_resume_one(book_id, ns)))   # up to ENRICH_PARALLEL run at once (_enrich_lock)
         _resume_tasks.update(jobs)
         for t in jobs:
             t.add_done_callback(_resume_tasks.discard)
@@ -1065,8 +1067,9 @@ async def _plan_enrichment(book_id: str, book: Book) -> None:
 
 async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str, token: int,
                   hash_key: tuple[str, str] | None = None) -> None:
-    """Background ingest: CPU work in a thread, then publish book.json (readable, local BM25 retrieval), then (vertex
-    only) index the chunks in the background with progress in status.json["index"].
+    """Background ingest: CPU work in a thread, then publish book.json (readable, local BM25 retrieval), then index the
+    chunks in the background with progress in status.json["index"]: Vertex (awaited before enrichment), or local e5
+    embeddings (RETRIEVAL_BACKEND=local, not awaited; _embed_locally).
 
     book.json is written after the CPU work, so a processing or failed upload is never listed or readable; a Vertex
     indexing failure keeps the book readable. Never raises. A novel is then enriched (cast, dialogue, summaries) while it is already readable with the narrator.
@@ -1404,7 +1407,8 @@ async def _reread_as_textbook(book: Book) -> tuple[Book | None, bytes | None]:
 
 async def _reindex_moved_book(book: Book, background: BackgroundTasks) -> None:
     """Retrieval index for a book whose text was re-read, as an upload builds it: the local chunks always, then (vertex)
-    the old text's leftover datapoints removed and the new chunks embedded in the background."""
+    the old text's leftover datapoints removed and the new chunks embedded in the background, or (local) the new
+    chunks embedded with e5 in the background."""
     def local():
         stale: list[str] = []
         if settings.retrieval_backend == "vertex":

@@ -31,7 +31,7 @@ with its roles, bucket `gs://frederick-talkback-data`.
      `gcloud storage cp data/portraits/<file> gs://frederick-talkback-data/portraits/`;
    - builds `us-central1-docker.pkg.dev/frederick-talkback/talkback/api:<git short sha>` with Cloud Build;
    - deploys service `talkback` with `RETRIEVAL_BACKEND=vertex`, the secrets as `BOSON_API_KEY`, `ANTHROPIC_API_KEY` and
-     `TALKBACK_ACCESS_TOKEN`, the env vars `UPLOAD_LLM=claude`, `UPLOAD_ENRICH=true`, `UPLOAD_CONFIRM=false`,
+     `TALKBACK_ACCESS_TOKEN`, the env vars `UPLOAD_LLM=gemini`, `UPLOAD_ENRICH=true`, `UPLOAD_CONFIRM=false`,
      `UPLOAD_BOOK_CAP_USD=4`, `UPLOAD_TOTAL_CAP_USD=15` and `USAGE_LOG_FILE=false` (usage lines go to Cloud Logging
      only; appending to `usage.jsonl` on the gcsfuse mount rewrites the whole object each time), and the bucket mounted at `/app/data` (the whole data dir).
 3. Health check path: `/api/health`.

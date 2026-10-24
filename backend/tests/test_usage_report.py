@@ -128,6 +128,7 @@ def test_llm_records_real_calls_only(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(llm, "CACHE", tmp_path / "llmcache")
     llm.CACHE.mkdir()
+    monkeypatch.setenv("LLM_PROVIDER", "claude")   # the Claude path (the default is gemini)
     fake = FakeAnthropic()
     monkeypatch.setattr(llm, "client", lambda: fake)
     a = asyncio.run(llm.call_structured("claude-haiku-5-5", "sys", "user", Out))

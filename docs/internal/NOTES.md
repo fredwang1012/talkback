@@ -1078,7 +1078,8 @@ Fixes:
 - Mic hold (TalkClient.setMicHold, driven by TalkController.updateMicHold): while the character speaks and
   MIC_HOLD_TAIL_MS (600) after, no mic audio goes to the server; the held audio is dropped, except on a barge-in.
 - Barge-in in server mode comes from the local strict gate (HANDS_FREE_OVER_SPEECH, now 250 ms) with a threshold
-  relative to the echo: max(0.10, 2.5 x median mic level over the last 2 s of playback; createEchoFloor; the first
+  relative to the echo: max(0.10, 2.5 x median mic level over the last 2 s of playback (since #159: max(0.04, 1 x);
+  see "Barge-in thresholds" below); createEchoFloor; the first
   300 ms always count, later only readings under the bar, so the reader's speech never raises it). On it: cut now
   (flush + cancel/truncate), release the hold with ~300 ms pre-roll, the server's speech_started continues the turn; if
   the server never reports speech within BARGE_CONFIRM_MS (2.5 s) the turn ends quietly. The local gate mode uses the
@@ -1184,6 +1185,7 @@ was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-
 - Not changed, for a person to check: the "interrupted" label on an answer whose full text is on screen but whose
   voice is still queued (text streams ahead of TTS; speaking then is a real barge-in), and the barge-in bar relative to
   the speaker echo (max(0.10, 2.5 x echo median) can be out of reach of a normal voice on a laptop mic with speakers).
+  Addressed by #159 (max(0.04, 1 x echo median)), see "Barge-in thresholds" below.
 
 ## Upload enrichment resilience to transient failures (fix/enrich-resilience, 2026-10-24)
 - Seen on Windows with Gemini on Vertex: `enrichment ... failed in summaries: PermissionError at books.py _replace`
@@ -1280,3 +1282,11 @@ was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-
 - Higgs Avatar (docs.boson.ai/pricing, 2026-10-24): 640x640 $0.09/min, 640x480 and 480x640 $0.07/min. We stream
   640x640, so $0.09 everywhere: frontend spend.ts (already), scripts/usage.py (was $0.08) and prerender_avatar.py's
   docstring (its constant was already 0.09). Boson TTS: $0.015 per 1K characters (unchanged).
+
+## Barge-in thresholds now shipped (#159, 2026-10-24)
+- `frontend/src/talk/handsFree.ts`: `HANDS_FREE_OVER_SPEECH` = 0.04 RMS for 250 ms (700 ms silence ends the turn) and
+  `ECHO_RATIO` = 1, so a barge-in over the character needs max(0.04, 1 x the echo median of the last 2 s of playback).
+  Was 0.10 and 2.5 x (the sections above that quote those values describe the earlier state). The idle profile
+  `HANDS_FREE` is unchanged (0.04 for 150 ms).
+- Trade-off, covered by frontend/test/handsFreeEcho.test.ts: a quiet echo never interrupts, but an echo over 0.04
+  sustained for 250 ms (loud laptop speakers, no headphones) can barge in. Not re-checked live with speakers here.

@@ -235,7 +235,7 @@ UsageHook = Callable[[str, str, int, int, float], None]  # provider, model, in_t
 class LLM:
     """Provider switch with a concurrency limit, usage metering and automatic Claude -> Gemini fallback."""
 
-    def __init__(self, primary: str = "claude", providers: dict[str, Provider] | None = None, *,
+    def __init__(self, primary: str = "gemini", providers: dict[str, Provider] | None = None, *,
                  concurrency: int | None = None, on_usage: UsageHook | None = None, fallback: bool = True):
         self.providers: dict[str, Provider] = providers if providers is not None else {}
         self.active = primary

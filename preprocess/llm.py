@@ -42,8 +42,9 @@ LLMRefusal = app_llm.LLMRefusal
 
 
 def provider() -> str:
-    """LLM_PROVIDER=claude|gemini (default claude), read at call time. gemini = Gemini 2.5 Flash on Vertex."""
-    name = os.environ.get("LLM_PROVIDER", "claude").strip().lower() or "claude"
+    """LLM_PROVIDER=gemini|claude (default gemini: no Claude key is configured), read at call time. gemini = the
+    enrichment Gemini model on Vertex (ENRICH_GEMINI_MODEL, else GEMINI_MODEL)."""
+    name = os.environ.get("LLM_PROVIDER", "gemini").strip().lower() or "gemini"
     if name not in ("claude", "gemini"):
         sys.exit(f"LLM_PROVIDER must be claude or gemini, not {name!r}")
     return name

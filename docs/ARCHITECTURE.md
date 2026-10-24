@@ -89,15 +89,16 @@ speakers when `RETRIEVAL_BACKEND=vertex`). Typical time is 3 to 5 minutes for a 
 - **Status** (`GET /api/books/{id}/status`): `{status: "ready", enrich: {status, stage, progress 0..1, message, estimate_usd?}}`.
   `enrich.status` is `awaiting_confirmation | running | done | refused | error`; `stage` is
   `queued | cast | segment | summaries | index | done`. A failed or refused enrichment leaves the book readable with the
-  narrator and a plain message. A server restart mid-job reports "interrupted".
-- **LLM provider** (`app/enrich/llm.py`): `UPLOAD_LLM=claude|gemini` (default claude; developer-only). Gemini is 2.5 Flash on
-  Vertex with JSON output. With Claude, `insufficient_quota`, billing, HTTP 402 or "credit balance too low" switches
+  narrator and a plain message; the owner can retry it (a refused book runs only once the caps allow it). A server restart mid-job reports "interrupted".
+- **LLM provider** (`app/enrich/llm.py`): `UPLOAD_LLM=gemini|claude` (default gemini; developer-only). Gemini runs on
+  Vertex with JSON output (`ENRICH_GEMINI_MODEL`, else `GEMINI_MODEL`). With Claude, `insufficient_quota`, billing, HTTP 402 or "credit balance too low" switches
   the rest of the job to Gemini (logged). `preprocess/` scripts use the same code with `LLM_PROVIDER=claude|gemini`.
 - **Cost controls**: an estimate from text length per provider; a book estimated above $4 is refused ("This book is too
   long to process with characters; it will be read by the narrator."); real spend from usage tokens is added to
   `data/usage/upload_spend.json` (atomic) and everything stops at $15 cumulative. `UPLOAD_CONFIRM=true` (testing mode)
   sets `awaiting_confirmation` with `estimate_usd` and waits for `POST /api/books/{id}/enrich` (access-gated); the default
-  starts straight away with no cost UI. One enrichment runs at a time.
+  starts straight away with no cost UI. Up to `ENRICH_PARALLEL` uploads (default 1000) are enriched at once; the shared
+  Gemini pacer (`app/pacer.py`) bounds the calls.
 - **Kind detection** (`app/enrich/detect.py`): upload `kind=auto` (default) classifies the extracted text with one
   fast-tier call on ~3,000 chars from the start, middle and end (`{kind, confidence}`), counted in the upload spend; on
   failure, when `UPLOAD_ENRICH=false` or the budget is used up, a heuristic decides (dialogue-quote ratio, Figure/Table/
