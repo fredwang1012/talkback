@@ -15,7 +15,7 @@ Standing rule: do **not** use the Anthropic key until told (user instruction, 20
 - [ ] A 5-30 s recording of your voice plus its exact transcript, for the voice-clone test.
 
 ## 1b. GCP backend (see docs/GCP_PLAN.md)
-- G1 `gcloud auth application-default login` (local Vertex calls).
+- ~~G1~~ done 2026-10-17.
 - G2 service account `talkback-api` + roles: IAM grants were refused by Claude's permission check; commands are in the plan.
 - G3 hard $50 stop (billing-disable function) needs your approval; alerts exist now.
 - G4 Boson key into Secret Manager.
