@@ -39,7 +39,7 @@ describe("tool declarations", () => {
   it("declares only client function tools: never Boson's server-side web_search (spoilers)", () => {
     expect(TOOL_DEFS.every((t) => t.type === "function")).toBe(true);
     expect(TOOL_DEFS.map((t) => t.name)).toEqual([
-      "jump_to", "read_chapter", "resume_reading", "pause_reading", "set_voice_mode", "set_narrator", "set_speed", "open_recap", "bookmark", "show_cast"]);
+      "jump_to", "read_chapter", "resume_reading", "pause_reading", "set_voice_mode", "set_narrator", "set_speed", "open_recap", "bookmark", "show_cast", "go_back"]);
     expect(JSON.stringify(TOOL_DEFS)).not.toContain("web_search");
   });
 });

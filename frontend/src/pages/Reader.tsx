@@ -214,7 +214,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const toolDeps = useRef<{ ctx: () => ToolContext; act: ToolActions } | null>(null);
   toolDeps.current = book ? {
     ctx: () => ({
-      bookId: book.id, sections: book.sections, paragraphs: book.paragraphs, characters: book.characters, chunks,
+      bookId: book.id, kind: book.kind, sections: book.sections, paragraphs: book.paragraphs, characters: book.characters, chunks,
       index: indexRef.current, readerPara: readerPara(chunks, indexRef.current), spoilers: spoilers && book.kind === "novel",
       playing: engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current,
       speed, speeds: SPEEDS, voiceMode: voiceMode(cast), narrator: narratorGender(cast), inSeries: !!book.series,
@@ -249,6 +249,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     voiceFor: talkVoiceFor,
     narratorVoice: audioAvailable ? narratorVoice : null,
     tools: toolRunner,
+    bookKind: book?.kind,
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
       currentIndex: () => indexRef.current,

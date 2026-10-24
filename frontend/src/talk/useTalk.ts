@@ -15,7 +15,7 @@ import { createSentenceSpeaker, type Clip } from "./sentencePlayer";
 import { createReplayPlayer, createReplayStore, runPcm, runSentences, type ReplayItem } from "./replay";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
 import { TalkController, type Latency, type ReaderControl, type TalkState } from "./TalkController";
-import type { ToolRunner } from "./tools";
+import { toolDefsFor, type BookKind, type ToolRunner } from "./tools";
 
 /** Gemini (via /api/answer) writes the answer and Boson TTS speaks it only when the server says so; else Realtime answers itself. */
 export const answersViaGemini = (health: Health | null): boolean => health?.answer_backend === "gemini";
@@ -69,11 +69,13 @@ type Args = {
   spoilers?: boolean; // full-book mode: the reader allows spoilers (novels only)
   talkback?: boolean; // the dedicated conversation view is open: a mic tap never toggles reading
   narratorVoice?: string | null; // reads recaps aloud in the chat
+  /** Picks the tools declared to the Realtime session: a textbook gets section / topic tools and no cast (tools.ts). */
+  bookKind?: BookKind;
   tools?: ToolRunner; // the reader tools the character may call (#72): jump, read chapter, pause/resume, voices, speed, recap, bookmark, cast
 };
 
 /** Owns the Talk session for the reader screen. The real mic, speaker and socket are created once per book. */
-export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, faceIdFor = () => null, narratorFaceId = () => null, spoilers = false, talkback = false, narratorVoice = null, tools }: Args): TalkUi {
+export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, faceIdFor = () => null, narratorFaceId = () => null, spoilers = false, talkback = false, narratorVoice = null, tools, bookKind }: Args): TalkUi {
   const [state, setState] = useState<TalkState>("reading");
   const [caption, setCaption] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -153,6 +155,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     if (!enabled) return;
     const client = new TalkClient({
       tokenProvider: fetchRealtimeKey,
+      tools: toolDefsFor(bookKind),
       createPlayer: (onSpeaking) => new RingPlayer(onSpeaking) as unknown as PlayerLike,
       createMic: (onChunk, onLevel) => new MicCapture(onChunk, onLevel) as unknown as MicLike,
       onLevel: (rms) => { setLevel(rms); talk?.noteLevel(rms); },
@@ -240,7 +243,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     }, setReplayingId, (e) => setToast(e instanceof Error ? e.message : String(e)));
     return () => {
       replayer.current?.stop(); replayer.current = null; narration.current?.reset(); gate.reset(); sync?.leave(); talk?.dispose(); client.close(); controller.current = null; clientRef.current = null; setState("reading"); setSpeaking(false); setHandsFreeState(false); };
-  }, [bookId, enabled, viaGemini]);
+  }, [bookId, enabled, viaGemini, bookKind]);
 
   useEffect(() => { controller.current?.setAutoResume(autoResume); }, [autoResume, enabled]);
   useEffect(() => { controller.current?.setTalkback(talkback); }, [talkback, enabled]);
