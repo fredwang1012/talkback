@@ -3,7 +3,7 @@ import { describeClose, functionCallOutput, historyItem, inputAudioAppend, trunc
 import type { SessionEvent, TalkSession, ToolCall, ToolResult } from "./TalkController";
 import { TOOL_DEFS } from "./tools";
 
-const WS_URL = "wss://api.boson.ai/v1/realtime?model=higgs-realtime";
+const WS_URL = "wss://api.boson.ai/v1/realtime?model=higgs-realtime-1.5-preview";
 const OPEN = 1; // WebSocket.OPEN, spelled out so tests need no global WebSocket
 /**
  * Hands-free pre-roll (#114): how much mic audio from before the voice gate opened is sent first. The gate reports
@@ -130,7 +130,7 @@ export function sessionConfig(voice: string, tools: readonly unknown[] = TOOL_DE
     type: "session.update",
     session: {
       type: "realtime",
-      model: "higgs-realtime",
+      model: "higgs-realtime-1.5-preview",
       instructions: SESSION_INSTRUCTIONS,
       output_modalities: ["audio"],
       tools, // client function tools only: the model asks, the browser acts (see tools.ts)
