@@ -1,6 +1,6 @@
 """Gemini on Vertex AI: stream an answer and yield it sentence by sentence."""
 import re
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 from google import genai
 from google.genai import types
@@ -27,7 +27,9 @@ class GeminiAnswerer:
         self.client = client or genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gcp_region)
         self.model = model or settings.gemini_model
 
-    async def stream_sentences(self, system: str, user: str) -> AsyncIterator[str]:
+    async def stream_sentences(self, system: str, user: str,
+                               on_usage: Callable[[int, int], None] | None = None) -> AsyncIterator[str]:
+        """Yield the answer sentence by sentence. `on_usage(prompt_tokens, output_tokens)` is called once at the end."""
         config = types.GenerateContentConfig(
             system_instruction=system,
             max_output_tokens=700,
@@ -48,6 +50,8 @@ class GeminiAnswerer:
             if buf.strip():
                 yield buf.strip()
         finally:
+            if meta is not None and on_usage is not None:
+                on_usage(meta.prompt_token_count or 0, meta.candidates_token_count or 0)
             if meta is not None:  # also runs when the consumer abandons the stream
                 usage.record(
                     "llm",

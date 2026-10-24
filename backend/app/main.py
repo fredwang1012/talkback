@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import books, cast, faces, ingest_upload, retrieval, tts_cache, voices
+from . import books, cast, faces, ingest_upload, public_client, retrieval, tts_cache, voices
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
@@ -26,7 +26,7 @@ from .enrich import pipeline as enrich_pipeline
 from .enrich.detect import detect_kind
 from .gcp import usage
 from .personas import build_answer_prompt, build_instructions
-from .ratelimit import TokenBucket
+from .ratelimit import TokenBucket, client_ip
 from .schema import Book
 from .uploadlimit import UploadSizeLimit
 
@@ -80,16 +80,6 @@ answer_bucket = TokenBucket(capacity=20, per_seconds=60)  # every /api/answer ca
 retrieve_bucket = TokenBucket(capacity=30, per_seconds=60)  # vertex retrieval spends embedding + search credit
 
 
-def client_ip(request: Request) -> str:
-    """Peer address. With TRUST_PROXY (Cloud Run is the only ingress) use the right-most X-Forwarded-For entry:
-    the front end appends the real client there, while anything to its left is client-supplied and spoofable."""
-    if settings.trust_proxy:
-        parts = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
-        if parts:
-            return parts[-1]
-    return request.client.host if request.client else "unknown"
-
-
 def require_access(x_talkback_token: str | None = Header(default=None)) -> None:
     """Opt-in gate for endpoints that spend Boson credit: set TALKBACK_ACCESS_TOKEN for any public deployment."""
     expected = settings.access_token
@@ -110,10 +100,22 @@ def boson_http_error(e: BosonError | RuntimeError) -> HTTPException:
     return HTTPException(502, f"Boson error ({e.type}): {e.message}")
 
 
+def _public_answers() -> bool:
+    """Typed/Gemini answers go through the public API: it is configured and this machine has no LLM of its own."""
+    return settings.answer_backend is None and settings.retrieval_backend != "vertex" and public_client.active()
+
+
+def answer_backend() -> str:
+    """"gemini" when /api/answer writes the answers (locally, or through the public API while it answers), else "realtime"."""
+    if _public_answers() and public_client.answers_available():
+        return "gemini"
+    return settings.effective_answer_backend
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "boson_key_set": bool(settings.boson_api_key), "access_required": bool(settings.access_token),
-            "answer_backend": settings.effective_answer_backend}
+            "answer_backend": answer_backend()}
 
 
 @app.get("/api/books")
@@ -312,12 +314,15 @@ def _line(obj: dict) -> str:
 async def answer(req: RetrieveRequest, request: Request):
     if not answer_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many questions; wait a moment.")
-    book, _, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
+    book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
     t0 = time.monotonic()
     out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, spoilers=req.spoilers,
                                     **_series_context(book))
     t_retrieved = time.monotonic()
     retrieve_ms = int((t_retrieved - t0) * 1000)
+    if _public_answers():  # passages above are already spoiler-filtered here; the service only writes the answer
+        return StreamingResponse(_public_answer_stream(book, speaker, req, out, retrieve_ms, t_retrieved),
+                                 media_type="application/x-ndjson")
     system, user = build_answer_prompt(book, req.speaker_id, out["story_so_far"], out["passages"], req.query,
                                         spoilers=req.spoilers)
 
@@ -336,6 +341,25 @@ async def answer(req: RetrieveRequest, request: Request):
                      "first_sentence_ms": first_ms if first_ms is not None else 0})
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+async def _public_answer_stream(book: Book, speaker, req: RetrieveRequest, out: dict, retrieve_ms: int, t_retrieved: float):
+    first_ms = None
+    payload = public_client.answer_payload(book, speaker, req.speaker_id, out, req.query, req.spoilers)
+    try:
+        async for msg in public_client.stream_answer(payload):
+            if first_ms is None:
+                first_ms = int((time.monotonic() - t_retrieved) * 1000)
+            yield _line({"type": "sentence", "text": msg["text"]})
+    except public_client.PublicFailure as e:
+        logging.getLogger(__name__).warning("public answer failed: %s", e.kind)
+        if e.kind != "limit":
+            public_client.mark_unavailable()  # health then reports "realtime" and the page answers through Realtime
+        yield _line({"type": "error", "message": public_client.ANSWER_LIMIT if e.kind == "limit"
+                     else public_client.ANSWER_UNAVAILABLE})
+        return
+    yield _line({"type": "done", "passages": len(out["passages"]), "retrieve_ms": retrieve_ms,
+                 "first_sentence_ms": first_ms if first_ms is not None else 0})
 
 
 class SpeakRequest(BaseModel):
@@ -444,7 +468,8 @@ async def _run_enrichment(book_id: str) -> None:
                 _set_enrich(book_id, status="done", stage="done", progress=1.0,
                             message="Characters, recap and search are ready.")
                 return
-            await enrich_pipeline.enrich_book(book_id, lambda **f: _set_enrich(book_id, **f), indexer=_enrich_indexer)
+            run = public_client.enrich_book if public_client.active() else enrich_pipeline.enrich_book
+            await run(book_id, lambda **f: _set_enrich(book_id, **f), indexer=_enrich_indexer)
     finally:
         _enrich_jobs.discard(book_id)
         _index_for.cache_clear()
@@ -937,3 +962,7 @@ def put_cast(book_id: str, body: cast.CastSettings):
 _dist = settings.data_dir.parent / "frontend" / "dist"
 if _dist.is_dir():  # registered last so every /api, /media and /portraits route wins
     app.mount("/", StaticFiles(directory=_dist, html=True), name="frontend")
+
+
+if settings.public_api:  # PUBLIC_API=true through any entry point: expose only the public processing API
+    from .public_api import app  # noqa: E402,F811

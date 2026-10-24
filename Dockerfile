@@ -19,4 +19,4 @@ ENV DATA_DIR=/app/data PORT=8000
 EXPOSE 8000
 # No uvicorn proxy-header flags: they would trust a client-supplied leftmost X-Forwarded-For. The app reads the
 # right-most entry itself when TRUST_PROXY=true (set on Cloud Run). --no-sync skips the env check for fast cold starts.
-CMD ["sh", "-c", "uv run --frozen --no-dev --no-sync --project backend uvicorn --app-dir backend app.main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "uv run --frozen --no-dev --no-sync --project backend uvicorn --app-dir backend app.asgi:app --host 0.0.0.0 --port ${PORT}"]
