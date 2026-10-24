@@ -6,7 +6,8 @@ Pipeline (brief section 8, item 8):
 1. Sonnet writes questions at random reader positions: half answerable from the text already read, half that can only
    be answered from text AFTER the reader's position (e.g. "How does the story end?").
 2. Each question goes through the real /api/retrieve endpoint (in-process) to get the real Talk prompt.
-3. The prompt is answered by Sonnet as a stand-in for Higgs Realtime (the brief allows this proxy).
+3. The question is answered by the real answer path (/api/answer: Gemini) when the server is set up for it,
+   else by Sonnet as a stand-in (--answer sonnet).
 4. Opus judges: did the answer leak future information? Did it answer earlier questions correctly?
 Also checked deterministically, with no LLM: every retrieved passage must end at or before the reader's paragraph.
 Target: 0 leaks. Report -> data/eval/<book>-spoilers.md, summary appended to NOTES.md with --notes.
@@ -94,25 +95,40 @@ def sample_positions(book: Book, count: int, seed: int = 7) -> list[int]:
     return sorted(rng.randrange(lo, hi) for _ in range(count))
 
 
+READ_WINDOW = 20000    # characters of read text shown to the question writer (just before the reader's position)
+UNREAD_WINDOW = 30000  # characters of unread text right after it
+ENDING_CHARS = 8000    # plus the book's last pages, so "how does it end?" questions have their key fact
+
+
 def read_and_unread(book: Book, reader_para: int) -> tuple[str, str]:
     read = "\n\n".join(p.text for p in book.paragraphs[: reader_para + 1])
     unread = "\n\n".join(p.text for p in book.paragraphs[reader_para + 1:])
     return read, unread
 
 
+def question_context(book: Book, reader_para: int) -> tuple[str, str]:
+    """Bounded read/unread text for the question writer (a whole novel per position would cost dollars each)."""
+    read, unread = read_and_unread(book, reader_para)
+    near = unread[:UNREAD_WINDOW]
+    ending = unread[-ENDING_CHARS:] if len(unread) > UNREAD_WINDOW + ENDING_CHARS else ""
+    return read[-READ_WINDOW:], near + (f"\n\n[...]\n\n{ending}" if ending else "")
+
+
 def structural_leak(passages: list[dict], reader_para: int) -> bool:
-    """Deterministic check: a passage ending after the reader's paragraph is a leak, whatever the LLM says."""
-    return any(p["para_end"] > reader_para for p in passages)
+    """Deterministic check: a passage of THIS book ending after the reader's paragraph is a leak, whatever the LLM
+    says. Passages marked with "book" come from earlier books of the series, which the reader has finished."""
+    return any(p["para_end"] > reader_para for p in passages if not p.get("book"))
 
 
 CallFn = Callable[..., Awaitable[BaseModel]]
 RetrieveFn = Callable[[str, int, str], dict]
+AnswerFn = Callable[[str, int, str], str]
 
 
 async def generate_cases(book: Book, positions: list[int], call: CallFn) -> list[Case]:
     async def one(pos: int) -> list[Case]:
-        read, unread = read_and_unread(book, pos)
-        user = f'Story: "{book.title}"\n\n### Read text\n{read}\n\n### Unread text\n{unread}'
+        read, unread = question_context(book, pos)
+        user = f'Story: "{book.title}"\n\n### Read text (most recent part)\n{read}\n\n### Unread text\n{unread}'
         batch = await call(GEN_MODEL, GEN_SYSTEM, user, QuestionBatch, max_tokens=1500, effort="low")
         return [Case(question=q, reader_para=pos, speaker="narrator") for q in batch.questions]
 
@@ -127,11 +143,14 @@ def pick_speakers(book: Book, cases: list[Case], seed: int = 11) -> None:
         c.speaker = rng.choice(["narrator", *met])
 
 
-async def run_case(book: Book, case: Case, retrieve: RetrieveFn, call: CallFn) -> Case:
+async def run_case(book: Book, case: Case, retrieve: RetrieveFn, call: CallFn, answer: AnswerFn | None = None) -> Case:
     out = retrieve(case.question.question, case.reader_para, case.speaker)
     case.passages, case.instructions = out["passages"], out["instructions"]
     case.structural_leak = structural_leak(case.passages, case.reader_para)
-    case.answer = (await call(ANSWER_MODEL, case.instructions, case.question.question, Answer, max_tokens=400, effort="low")).answer
+    if answer is not None:  # the real answer path (Gemini through /api/answer)
+        case.answer = await asyncio.to_thread(answer, case.question.question, case.reader_para, case.speaker)
+    else:
+        case.answer = (await call(ANSWER_MODEL, case.instructions, case.question.question, Answer, max_tokens=400, effort="low")).answer
     read, unread = read_and_unread(book, case.reader_para)
     user = (f"### Read text\n{read[-6000:]}\n\n### Unread text\n{unread[:12000]}\n\n"
             f"### Question ({case.question.kind})\n{case.question.question}\nKey fact: {case.question.key_fact}\n\n"
@@ -161,7 +180,7 @@ def render_report(book: Book, cases: list[Case], stats: dict) -> str:
         f"- Questions: {stats['questions']} at {len({c.reader_para for c in cases})} reader positions",
         f"- **Leaks (Opus judge): {stats['llm_leaks']}**; passages beyond the reader's paragraph: {stats['structural_leaks']}",
         f"- Earlier-text accuracy: {'n/a' if acc is None else f'{acc:.0%}'}; future questions declined or stayed in bounds: {stats['future_handled']:.0%}",
-        f"- Models: questions {GEN_MODEL}, answers {ANSWER_MODEL} (proxy for Higgs Realtime), judge {JUDGE_MODEL}",
+        f"- Models: questions {GEN_MODEL}, answers {stats.get('answer_model', ANSWER_MODEL)}, judge {JUDGE_MODEL}",
         "",
     ]
     bad = [c for c in cases if c.structural_leak or (c.verdict and c.verdict.leaked_future_info)]
@@ -180,7 +199,7 @@ def estimate(book: Book, positions: int) -> float:
 
     text_chars = sum(len(p.text) for p in book.paragraphs)
     n = positions * PER_POSITION
-    gen = llm.estimate_cost(GEN_MODEL, text_chars + 800, 300, calls=positions)
+    gen = llm.estimate_cost(GEN_MODEL, min(text_chars, READ_WINDOW + UNREAD_WINDOW + ENDING_CHARS) + 800, 300, calls=positions)
     answer = llm.estimate_cost(ANSWER_MODEL, 6000, 120, calls=n)
     judge = llm.estimate_cost(JUDGE_MODEL, 9000 + 2000, 80, calls=n)
     return gen + answer + judge
@@ -202,6 +221,25 @@ def api_retrieve(book_id: str) -> RetrieveFn:
     return call
 
 
+def api_answer(book_id: str) -> AnswerFn:
+    """The real /api/answer endpoint (retrieval + Gemini), called in-process; returns the spoken answer text."""
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+
+    def call(query: str, reader_para: int, speaker: str) -> str:
+        r = client.post("/api/answer", json={"book_id": book_id, "query": query, "reader_para": reader_para, "speaker_id": speaker})
+        r.raise_for_status()
+        lines = [json.loads(x) for x in r.text.splitlines() if x.strip()]
+        return " ".join(x["text"] for x in lines if x["type"] == "sentence")
+
+    return call
+
+
 async def main() -> None:
     import llm
 
@@ -211,6 +249,8 @@ async def main() -> None:
     ap.add_argument("--yes", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="print the cost estimate and stop")
     ap.add_argument("--notes", action="store_true", help="append the summary to NOTES.md")
+    ap.add_argument("--answer", choices=["auto", "gemini", "sonnet"], default="auto",
+                    help="who answers: the real /api/answer path (gemini) or a Sonnet stand-in; auto = gemini when the server uses it")
     args = ap.parse_args()
     book = Book.model_validate_json((ROOT / "data/books" / args.book / "book.json").read_text(encoding="utf-8"))
     if book.kind != "novel":
@@ -227,16 +267,21 @@ async def main() -> None:
         sys.exit("estimate > $5; rerun with --yes")
 
     retrieve = api_retrieve(args.book)
+    from app.config import settings
+    use_gemini = args.answer == "gemini" or (args.answer == "auto" and settings.effective_answer_backend == "gemini")
+    answer = api_answer(args.book) if use_gemini else None
+    print(f"answers from: {'Gemini via /api/answer' if use_gemini else ANSWER_MODEL}")
     cases = await generate_cases(book, positions, llm.call_structured)
     pick_speakers(book, cases)
     sem = asyncio.Semaphore(6)
 
     async def guarded(c: Case) -> Case:
         async with sem:
-            return await run_case(book, c, lambda q, p, s: retrieve(q, p, s), llm.call_structured)
+            return await run_case(book, c, lambda q, p, s: retrieve(q, p, s), llm.call_structured, answer)
 
     cases = await asyncio.gather(*(guarded(c) for c in cases))
     stats = summarize(cases)
+    stats["answer_model"] = "Gemini via /api/answer" if use_gemini else ANSWER_MODEL
     report = render_report(book, cases, stats)
     out = ROOT / "data/eval" / f"{args.book}-spoilers.md"
     out.parent.mkdir(parents=True, exist_ok=True)

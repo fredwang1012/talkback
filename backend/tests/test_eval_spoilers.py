@@ -96,3 +96,21 @@ def test_report_lists_a_flagged_leak():
     assert stats["llm_leaks"] == 1
     report = render_report(book, [leaky], stats)
     assert "Leaks to review" in report and "Who did it?" in report and "named X" in report
+
+
+def test_earlier_book_passages_are_not_structural_leaks():
+    from eval_spoilers import structural_leak
+    assert not structural_leak([{"para_start": 500, "para_end": 900, "text": "x", "book": "Book 1"}], 10)
+    assert structural_leak([{"para_start": 5, "para_end": 11, "text": "x"}], 10)
+
+
+def test_question_context_is_bounded_and_includes_the_ending():
+    from eval_spoilers import ENDING_CHARS, READ_WINDOW, UNREAD_WINDOW, question_context
+    from app.schema import Book, Paragraph, Section
+    paras = [Paragraph(idx=i, section_id="s1", text=f"p{i} " + "x" * 995) for i in range(200)]
+    paras[-1].text = "THE ENDING " + "y" * 900
+    book = Book(id="b", title="T", author="A", kind="novel", license="x", sections=[Section(id="s1", title="", start_para=0)],
+                paragraphs=paras)
+    read, unread = question_context(book, 30)
+    assert len(read) <= READ_WINDOW and "p30 " in read and "p31 " not in read
+    assert len(unread) <= UNREAD_WINDOW + ENDING_CHARS + 20 and "p31 " in unread and "THE ENDING" in unread
