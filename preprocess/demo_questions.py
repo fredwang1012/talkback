@@ -5,7 +5,7 @@ Usage: uv run --project backend python preprocess/demo_questions.py [--book hp3-
 Input to the model is ONLY the latest summary at or before the position plus the earlier books' closing summaries
 (books.series_recap), so "already read" answers stay consistent with what the reader has seen. For future questions
 the model writes the question only, never the spoiler answer (the schema has no answer field for them).
-Writes data/demo/questions.json and docs/DEMO.md.
+Writes data/demo/questions.json and data/demo/DEMO.md.
 """
 import argparse
 import asyncio
@@ -188,8 +188,8 @@ async def main() -> None:
         out = [e for e in json.loads(existing.read_text(encoding="utf-8"))
                if not e["book_id"].startswith("hp") and e["book_id"] not in generated] + out
     (llm.ROOT / "data/demo/questions.json").write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8")
-    (llm.ROOT / "docs/DEMO.md").write_text(build_docs(out), encoding="utf-8")
-    print("wrote data/demo/questions.json and docs/DEMO.md")
+    (llm.ROOT / "data/demo/DEMO.md").write_text(build_docs(out), encoding="utf-8")
+    print("wrote data/demo/questions.json and data/demo/DEMO.md")
     llm.print_usage()
 
 

@@ -2,7 +2,7 @@
 
 Needs BOSON_API_KEY, one portrait at data/portraits/<book>/<speaker>.png|jpg|webp, and one cached TTS clip.
 Usage: uv run --project backend python scripts/probe_avatar.py --portrait path/to/portrait.png
-Cost: one short clip, a few cents. Records the findings in docs/internal/NOTES.md.
+Cost: one short clip, a few cents. Records the findings in data/eval/NOTES.md.
 """
 import argparse
 import asyncio

@@ -29,9 +29,9 @@ with its roles, bucket `gs://frederick-talkback-data`.
    - deploys service `talkback` with `RETRIEVAL_BACKEND=vertex`, the secret as `BOSON_API_KEY`, the env vars
      `UPLOAD_LLM=gemini`, `ENRICH_GEMINI_MODEL=gemini-2.5-flash-lite` (book processing; answers stay on
      `gemini-2.5-flash`), `UPLOAD_ENRICH=true`, `UPLOAD_CONFIRM=false`, `UPLOAD_BOOK_CAP_USD` and `UPLOAD_TOTAL_CAP_USD`
-     (default 1000 in the script: the caps are lifted for the hackathon; export lower values, e.g. 4 and 15 as in the
+    (default 1000 in the script; export lower values, e.g. 4 and 15 as in the
      code, to restore them), `GROUNDED_DAILY_CAP` (default 100000 in the script, 100 in code), `USAGE_LOG_FILE=false`
-     (usage lines go to Cloud Logging only; appending to `usage.jsonl` on the gcsfuse mount rewrites the whole object
+    (usage lines go to Cloud Logging only; appending to `usage.jsonl` on the gcsfuse mount rewrites the whole object
      each time), the per-account settings below, the bucket mounted at `/app/data` (the whole data dir), and
      `--no-allow-unauthenticated --iap` (Google sign-in, see Access control).
 3. Health check path: `/api/health`.
@@ -66,7 +66,7 @@ deployed UI is same-origin, so the script leaves it at the default; add origins 
 - `TALKBACK_ACCESS_TOKEN` must be set for any public deployment. Without it the paid endpoints (speech, answers, upload)
   are open to anyone.
 - `GET /api/books/{id}` returns the full text of any book, including uploaded ones, to anyone who can reach the service
-  (it is not behind the access code). Do not upload copyrighted books to a public deployment.
+ (it is not behind the access code). Do not upload copyrighted books to a public deployment.
 
 ### Cost guardrails
 
@@ -80,7 +80,7 @@ deployed UI is same-origin, so the script leaves it at the default; add origins 
 - Set a monthly spend cap in the Boson workspace and a budget alert on the GCP project.
 - Keep IAP on (or the access token set on another host). Rate limits (token mint 10/min, TTS cache misses 120/min,
   clone 5/min, answer 20/min) are per account or per IP.
-- The in-app upload caps are lifted to $1000 by the hackathon deploy, so the Boson workspace cap and the GCP budget
+- The in-app upload caps are lifted to $1000 by the deploy script, so the Boson workspace cap and the GCP budget
   hard stop (`infra/budget_stop`) are the real limits there. Export lower `UPLOAD_*_CAP_USD` values before deploying
   to restore them.
 - Demo mode (`?demo=1`) serves pre-rendered audio only and never calls Boson for speech.
@@ -110,7 +110,7 @@ The deploy script sets `PER_USER=true`, `IAP_AUDIENCE=/projects/<PROJECT_NUMBER>
   audience above. The plain `x-goog-authenticated-user-email` header is ignored. No IAP header at all (for example when the
   gate is switched off for a demo) means the shared anonymous namespace `public`; a header that fails verification gets 401.
   The server refuses to start with `PER_USER=true` and no `IAP_AUDIENCE`. Lip-sync clips are per account too
-  (`data/users/<hash>/lipsync/`, served at `/media/avatar/` only to their owner).
+ (`data/users/<hash>/lipsync/`, served at `/media/avatar/` only to their owner).
 - Per account, under `data/users/<sha256(email)[:16]>/` (anonymous: `data/users/public/`): `voices.json`, `faces.json`,
   `faces/` (served only to their owner at `/portraits/faces/...`), `cast/<book>.json`. Uploaded books stay in
   `data/books/u-*` with an `owner.txt` holding the owner's namespace; other accounts get 404 for them. Built-in books are shared,
@@ -138,7 +138,7 @@ memory for 30 minutes, never logs request bodies (they may contain book text), a
 the local app sends already spoiler-filtered passages.
 
 Limits, all enforced by the service. The dollar figures below are the code defaults; `deploy_public_api.sh` sets
-every `PUBLIC_*_CAP_USD` to 1000 for the hackathon unless you export lower values (e.g. 1.5/10/2/2) before deploying:
+every `PUBLIC_*_CAP_USD` to 1000 unless you export lower values (e.g. 1.5/10/2/2) before deploying:
 - Per book: estimate at most $1.5 (`PUBLIC_BOOK_CAP_USD`); a running job also stops at 1.25 times that.
 - Cumulative enrichment spend at most $10 (`PUBLIC_TOTAL_CAP_USD`, persisted). Admission counts the unspent estimates of
   running jobs, so concurrent jobs cannot overshoot it.

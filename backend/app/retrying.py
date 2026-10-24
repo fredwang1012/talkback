@@ -3,7 +3,7 @@ Vector Search over httpx / google-genai).
 
 Transient: network errors (httpx ReadError / ConnectError / RemoteProtocolError / timeouts, reset connections), rate
 limits (429) and server errors (5xx). Never retried: quota exhaustion (insufficient_quota, billing), auth (401/403) and
-every other client error, as CLAUDE.md's error-branching rule says. Logs name only the exception type and HTTP status (a
+every other client error. Logs name only the exception type and HTTP status (a
 message may quote book text or a host). Gemini calls add the shared adaptive limit of app/pacer.py on top."""
 import asyncio
 import logging
