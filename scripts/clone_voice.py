@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
-from app import voices  # noqa: E402
+from app import faces, voices  # noqa: E402
 from app.boson import BosonClient  # noqa: E402
 from app.config import settings  # noqa: E402
 
@@ -57,7 +57,7 @@ async def main() -> None:
         voices.save_voice(args.name, voice_id)
         print(f"cloned {args.name!r}: {voice_id}")
     if args.face:
-        print("face:", voices.save_face(voice_id, square_face(Path(args.face)), "png"))
+        print("face:", faces.create_face(square_face(Path(args.face)), args.name, voice=voice_id)["image"])
 
 
 if __name__ == "__main__":

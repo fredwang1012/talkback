@@ -2,7 +2,7 @@
 import httpx
 from fastapi.testclient import TestClient
 
-from app import main, voices
+from app import faces, main, voices
 from app.boson import BosonClient
 from app.config import settings
 from app.ratelimit import TokenBucket
@@ -16,11 +16,19 @@ def test_clone_with_face_is_listed_with_its_loops(env):  # noqa: F811
     client, _ = env
     r = client.post("/api/voices/clone", data={"transcript": "hello there", "name": "me", "consent": "true"},
                     files={"audio": ("a.wav", silent_wav(4), "audio/wav"), "face": ("me.png", PNG, "image/png")})
-    assert r.status_code == 200 and r.json()["face"].startswith("/portraits/voices/")
-    faces = client.get("/api/voices/faces").json()
-    assert faces == {"voice_abc": {"image": r.json()["face"], "talk": None, "idle": None}}
-    voices.loop_path("voice_abc", "talk").write_bytes(b"mp4")
+    assert r.status_code == 200 and r.json()["face"].startswith("/portraits/faces/")
+    listed = client.get("/api/voices/faces").json()
+    assert listed == {"voice_abc": {"image": r.json()["face"], "talk": None, "idle": None}}
+    fid = client.get("/api/faces").json()[0]["id"]
+    faces.loop_path(fid, "talk").write_bytes(b"mp4")
     assert client.get("/api/voices/faces").json()["voice_abc"]["talk"].endswith("-talk.mp4")
+
+
+def test_clone_rejects_a_fake_png_before_calling_boson(env):  # noqa: F811
+    client, calls = env
+    r = client.post("/api/voices/clone", data={"transcript": "hello there", "name": "me", "consent": "true"},
+                    files={"audio": ("a.wav", silent_wav(4), "audio/wav"), "face": ("me.png", b"MZ not a png", "image/png")})
+    assert r.status_code == 400 and calls["n"] == 0
 
 
 def test_clone_rejects_a_non_image_face_before_calling_boson(env):  # noqa: F811
@@ -30,21 +38,12 @@ def test_clone_rejects_a_non_image_face_before_calling_boson(env):  # noqa: F811
     assert r.status_code == 400 and calls["n"] == 0
 
 
-def test_save_face_only_for_registered_voices(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "data_dir", tmp_path)
-    try:
-        voices.save_face("voice_nobody", PNG, "png")
-        raise AssertionError("expected VoiceInputError")
-    except voices.VoiceInputError:
-        pass
-
-
 def lipsync_env(tmp_path, monkeypatch, video_status="completed"):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "access_token", "")
     monkeypatch.setattr(main, "avatar_bucket", TokenBucket(1000, 60))
     voices.save_voice("me", "voice_abc")
-    voices.save_face("voice_abc", PNG, "png")
+    faces.create_face(PNG, "me", voice="voice_abc")
     (tmp_path / "cache" / "tts").mkdir(parents=True)
     (tmp_path / "cache" / "tts" / f"{KEY}.mp3").write_bytes(b"ID3" + b"\0" * 32000)
     calls = []

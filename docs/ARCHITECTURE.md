@@ -12,7 +12,7 @@ talking to, and the reading picks up where it stopped.
 | Backend (FastAPI, Python 3.12) | localhost:8000, or Cloud Run service `talkback` (us-central1) | every API below; holds all keys; enforces the spoiler rule |
 | Book data | `data/books/<id>/book.json` (+ `index/chunks.json`); on Cloud Run the bucket `gs://frederick-talkback-data` is mounted at `/app/data` | paragraphs, chapters, cast, segments, TTS chunks, summaries |
 | Audio cache | `data/cache/tts/<sha256>.mp3` + `.json` (word timestamps), served at `/media/tts/` | every Boson TTS clip is made once |
-| Faces | `data/portraits/voices/<voice>.png`, `-talk.mp4`, `-idle.mp4`; lip-synced clips in `data/cache/avatar/talk/` (`/media/avatar/`) | the cloned narrator's face |
+| Faces | `data/faces.json` + `data/portraits/faces/<id>.png`, `-talk.mp4`, `-idle.mp4`; lip-synced clips in `data/cache/avatar/talk/` (`/media/avatar/`) | the face library (see Faces and cast settings) |
 | Spend log | `data/cache/usage.jsonl` (never served); `scripts/usage.py` prints the report | every paid call: Gemini, embeddings, Claude, Boson |
 
 ## External services
@@ -55,6 +55,19 @@ talking to, and the reading picks up where it stopped.
 to the paragraph text for highlighting. Voice choices (e.g. the cloned narrator) are stored per series in the
 browser, so one choice covers all seven books. Audio is made on demand; nothing is pre-rendered (the series is
 ~6 M characters).
+
+## Faces and cast settings
+
+- **Face library** (`app/faces.py`): `POST /api/faces` (multipart `image`, `name`; PNG/JPEG/WebP by magic bytes, <= 5 MB),
+  `GET /api/faces`, `DELETE /api/faces/{id}`. Ids are random. A face is a still portrait until the user clicks
+  "Animate": `POST /api/faces/{id}/animate` renders the talk and idle loops with Boson Avatar (a few cents; idempotent,
+  one render per face at a time, rate-limited with the lip-sync bucket). Faces made with a voice clone carry that
+  voice id, so lip-sync and `/api/voices/faces` read from the same list; the old `data/voice_faces.json` is migrated
+  into the library on first access.
+- **Cast settings** (`app/cast.py`): `GET/PUT /api/books/{id}/cast` stores `main` (character ids), the narrator's and
+  each character's `{voice, face}` in `data/books/<id>/cast_settings.json` (atomic write). `null` means the book's own
+  voice / no face. `/api/tts` resolves a chunk's voice as request override, then the cast voice for its speaker, then
+  the book's voice. Every endpoint above is gated by the access code.
 
 ## Retrieval sizes
 
@@ -99,5 +112,5 @@ browser, so one choice covers all seven books. Audio is made on demand; nothing 
 - Keys never reach the browser. On a public deployment, `TALKBACK_ACCESS_TOKEN` gates every endpoint that spends
   money and the full-text book endpoint (copyrighted text).
 - Per-IP rate limits on answers, retrieval, TTS cache misses, lip-sync renders, uploads and clones.
-- The cloned voice and face (`data/voices.json`, `data/voice_faces.json`, `data/portraits/`) and the books
+- The cloned voice and face (`data/voices.json`, `data/faces.json`, `data/portraits/`) and the books
   (`data/books/hp*`) are gitignored. The deploy script syncs `data/books` to the private bucket but never portraits.

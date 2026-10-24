@@ -49,6 +49,7 @@ class Character(BaseModel):
     voice_tags: str = ""
     persona: str
     portrait: str | None = None
+    main: bool | None = None  # None = main character; uploaded novels mark minor speakers False
 
 
 class Narrator(BaseModel):
