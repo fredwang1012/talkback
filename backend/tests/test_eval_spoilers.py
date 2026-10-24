@@ -124,7 +124,7 @@ def test_judge_prompts_differ_by_mode_and_full_mode_gives_future_ground_truth():
     sys_safe, user_safe = build_judge_prompt(book, fut, "safe")
     sys_full, user_full = build_judge_prompt(book, fut, "full")
     assert sys_safe == JUDGE_SYSTEM and sys_full == FULL_JUDGE_SYSTEM
-    assert "### Unread text" in user_safe and "Later text (excerpt)" in user_full
+    assert "### Later text (not read yet)" in user_safe and "Later text (excerpt)" in user_full
     assert "marker30" in user_full and "KEYFACT-END" in user_full and "It ends well." in user_full
     earlier = Case(question=Question(question="q", kind="earlier", key_fact="K"), reader_para=10, speaker="narrator", answer="a")
     assert "Later text" not in build_judge_prompt(book, earlier, "full")[1]
@@ -163,3 +163,55 @@ def test_safe_mode_detail_and_default_judge_is_sonnet():
     c = Case(question=Question(question="q", kind="earlier", key_fact="k"), reader_para=5, speaker="narrator",
              verdict=Verdict(leaked_future_info=False, answered_correctly=True, detail=1, reason="r"))
     assert summarize([c])["avg_detail_earlier"] == 1
+
+
+def test_judge_context_has_summary_recap_short_read_tail_and_later_text():
+    from eval_spoilers import LATER_FULL_END, LATER_FULL_NEAR, LATER_SAFE, READ_TAIL, build_judge_prompt, story_so_far
+    from app.schema import Summary
+    paras = [Paragraph(idx=i, section_id="s1", text=f"p{i} " + "x" * 996) for i in range(100)]
+    book = Book(id="b", title="T", author="A", kind="novel", license="x", sections=[Section(id="s1", title="", start_para=0)],
+                paragraphs=paras, summaries=[Summary(upto_para=20, text="EARLY-SUMMARY"), Summary(upto_para=80, text="LATE-SUMMARY")])
+    assert "EARLY-SUMMARY" in story_so_far(book, 30) and "LATE-SUMMARY" not in story_so_far(book, 30)
+    q = Question(question="q?", kind="future", key_fact="KEY")
+    case = Case(question=q, reader_para=30, speaker="narrator", answer="ANS",
+                passages=[{"para_start": 1, "para_end": 2, "text": "PASSAGE-TEXT"}])
+    _, safe = build_judge_prompt(book, case, "safe")
+    assert "EARLY-SUMMARY" in safe and "LATE-SUMMARY" not in safe and "KEY" in safe and "ANS" in safe
+    assert "PASSAGE-TEXT" not in safe  # logged only, not shown, so before/after use the same judge context
+    assert len(safe) < 2000 + READ_TAIL + LATER_SAFE + 200
+    assert "p31 " in safe and "p30 " in safe and "p20 " not in safe  # tail starts well after p20 (4k chars)
+    _, full = build_judge_prompt(book, case, "full")
+    assert len(full) < 2000 + READ_TAIL + LATER_FULL_NEAR + LATER_FULL_END + 400
+    assert "p99 " in full  # ending
+    assert "PASSAGE-TEXT" in build_judge_prompt(book, case, "safe", include_passages=True)[1]
+
+
+def test_rejudge_loads_saved_answers_and_judges_without_answering(tmp_path):
+    import json
+    from eval_spoilers import judge_case, load_saved_cases, results_json
+    book = make_book()
+    done = Case(question=Question(question="q", kind="earlier", key_fact="k"), reader_para=10, speaker="narrator",
+                answer="saved answer", structural_leak=False,
+                passages=[{"para_start": 1, "para_end": 2, "text": "T", "book": None}],
+                verdict=Verdict(leaked_future_info=True, answered_correctly=False, detail=1, reason="old"))
+    (tmp_path / "b-safe.json").write_text(results_json([done], {}), encoding="utf-8")
+    assert json.loads((tmp_path / "b-safe.json").read_text())["cases"][0]["passages"][0]["text"] == "T"  # logged for inspection
+    cases = load_saved_cases(tmp_path, "b", "safe")
+    assert len(cases) == 1 and cases[0].answer == "saved answer" and cases[0].verdict is None
+    seen = []
+
+    async def fake(model, system, user, schema, **kw):
+        seen.append((schema, user))
+        return Verdict(leaked_future_info=False, answered_correctly=True, detail=3, reason="new")
+
+    out = run(judge_case(book, cases[0], fake, "safe", "judge-x"))
+    assert out.verdict.reason == "new" and len(seen) == 1 and "saved answer" in seen[0][1]
+
+
+def test_estimate_counts_real_prompt_chars_including_later_text():
+    from eval_spoilers import estimate
+    book = make_book()
+    cases = [Case(question=Question(question="q", kind=k, key_fact="K"), reader_para=10, speaker="narrator") for k in ("earlier", "future")]
+    usd_safe, chars_safe = estimate(book, cases, ("safe",))
+    usd_both, chars_both = estimate(book, cases, ("safe", "full"))
+    assert chars_safe > 0 and chars_both > chars_safe and usd_both > usd_safe > 0

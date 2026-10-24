@@ -30,7 +30,7 @@ class GeminiAnswerer:
     async def stream_sentences(self, system: str, user: str) -> AsyncIterator[str]:
         config = types.GenerateContentConfig(
             system_instruction=system,
-            max_output_tokens=300,
+            max_output_tokens=700,
             thinking_config=types.ThinkingConfig(thinking_budget=0),
         )
         buf = ""

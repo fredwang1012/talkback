@@ -121,14 +121,12 @@ Cloud Run instance warm only during the demo.
       ```
       (`roles/vectorsearch.admin` is the expected role name; check with
       `gcloud iam roles list --filter="name:vectorsearch"` if it fails.)
-- [~] **G3** Hard stop at $50: the budget publishes to Pub/Sub topic `budget-alerts`; the Cloud Run
-      function `budget-stop` (code in `infra/budget_stop/`, service account `budget-stop@`) unlinks billing
-      when cost >= budget. Deployed in DRY_RUN mode. Remaining (you, the permission check blocks Claude):
-      ```bash
-      gcloud projects add-iam-policy-binding frederick-talkback         --member=serviceAccount:budget-stop@frederick-talkback.iam.gserviceaccount.com --role=roles/billing.projectManager
-      gcloud pubsub topics publish budget-alerts --project frederick-talkback         --message='{"costAmount":51,"budgetAmount":50,"currencyCode":"CAD"}'   # dry run: logs "would disable billing"
-      gcloud run services update budget-stop --region us-central1 --project frederick-talkback --update-env-vars DRY_RUN=false
-      ```
+- [x] **G3** Hard stop at $50 (armed 2026-10-20): the budget publishes to Pub/Sub topic `budget-alerts`; the Cloud Run
+      function `budget-stop` (code in `infra/budget_stop/`, service account `budget-stop@` with
+      `roles/billing.projectManager` + `roles/browser`, the latter needed to read billing info) unlinks billing
+      when cost >= budget. Dry run verified, then DRY_RUN=false. Do NOT publish a test message now: it would
+      really disable billing. Undo: `gcloud billing projects link frederick-talkback --billing-account=<id>`;
+      back to dry run: `gcloud run services update budget-stop --region us-central1 --project frederick-talkback --update-env-vars DRY_RUN=true`.
 - [x] **G4** Secret Manager: `boson-api-key` (from `.env`) and `talkback-access-token` (the code is in the
       gitignored `.talkback-access-code`).
 

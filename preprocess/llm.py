@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 from app.config import settings  # noqa: E402
 from app.gcp import usage as usage_log  # noqa: E402
+from app.enrich import llm as app_llm  # noqa: E402
 
 CACHE = ROOT / "data" / "cache" / "llm"
 CACHE.mkdir(parents=True, exist_ok=True)
@@ -37,8 +38,32 @@ _sem = asyncio.Semaphore(int(os.environ.get("LLM_CONCURRENCY", "8")))
 usage = {"calls": 0, "cached": 0, "in": 0, "out": 0, "usd": 0.0}
 
 
-class LLMRefusal(Exception):
-    pass
+LLMRefusal = app_llm.LLMRefusal
+
+
+def provider() -> str:
+    """LLM_PROVIDER=claude|gemini (default claude), read at call time. gemini = Gemini 2.5 Flash on Vertex."""
+    name = os.environ.get("LLM_PROVIDER", "claude").strip().lower() or "claude"
+    if name not in ("claude", "gemini"):
+        sys.exit(f"LLM_PROVIDER must be claude or gemini, not {name!r}")
+    return name
+
+
+_gemini: "app_llm.LLM | None" = None
+
+
+def _on_gemini_usage(_provider: str, _model: str, n_in: int, n_out: int, usd: float) -> None:
+    usage["calls"] += 1
+    usage["in"] += n_in
+    usage["out"] += n_out
+    usage["usd"] += usd
+
+
+def gemini() -> "app_llm.LLM":
+    global _gemini
+    if _gemini is None:
+        _gemini = app_llm.LLM("gemini", concurrency=1000, on_usage=_on_gemini_usage, fallback=False)  # _sem limits
+    return _gemini
 
 
 def client() -> AsyncAnthropic:
@@ -51,7 +76,10 @@ def client() -> AsyncAnthropic:
 
 
 def estimate_cost(model: str, input_chars: int, expected_output_tokens: int, calls: int = 1) -> float:
-    pin, pout = PRICES[model]
+    if provider() == "gemini":
+        pin, pout = app_llm.PRICES["gemini"]["fast" if "haiku" in model else "smart"]
+    else:
+        pin, pout = PRICES[model]
     return calls * (input_chars / 4 * pin + expected_output_tokens * pout) / 1e6
 
 
@@ -62,11 +90,20 @@ def strict_schema(schema_model: type[BaseModel]) -> dict:
 async def call_structured(model: str, system: str, user: str, schema_model: type[T], *,
                           max_tokens: int = 8000, effort: str = "low") -> T:
     schema = strict_schema(schema_model)
-    key = hashlib.sha256(json.dumps([model, system, user, schema, effort, max_tokens], sort_keys=True).encode()).hexdigest()
+    prov = provider()
+    parts = [model, system, user, schema, effort, max_tokens] + ([prov] if prov != "claude" else [])  # claude keys unchanged
+    key = hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
     path = CACHE / f"{key}.json"
     if path.exists():
         usage["cached"] += 1
         return schema_model.model_validate_json(path.read_text(encoding="utf-8"))
+
+    if prov == "gemini":  # same prompts and schemas, Gemini 2.5 Flash; `model` only picks the tier
+        tier = "fast" if "haiku" in model else "smart"
+        async with _sem:
+            result = await gemini().complete_json(system, user, schema_model, tier, max_tokens=max_tokens, effort=effort)
+        path.write_text(result.model_dump_json(), encoding="utf-8")
+        return result
 
     async with _sem:
         resp = await client().messages.create(

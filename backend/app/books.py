@@ -1,5 +1,6 @@
 """Read books produced by the preprocess pipeline from data/books/<id>/book.json."""
 import re
+import time
 
 from .config import settings
 from .schema import Book
@@ -47,16 +48,39 @@ def load_book(book_id: str) -> Book | None:
     return book
 
 
+SERIES_TTL = 60.0  # seconds; the index is also dropped when the books dir changes or a book is saved
+_series_index: tuple[float, tuple, list[tuple[str, str, int]]] | None = None  # (built_at, dir mtime, entries)
+
+
+def _series_entries() -> list[tuple[str, str, int]]:
+    """(book id, series, series_index) of every book in a series. Cached so a question does not glob+parse every book."""
+    global _series_index
+    try:
+        stamp = (str(_books_dir()), _books_dir().stat().st_mtime_ns)
+    except OSError:
+        stamp = (str(_books_dir()), 0)
+    now = time.monotonic()
+    if _series_index and now - _series_index[0] < SERIES_TTL and _series_index[1] == stamp:
+        return _series_index[2]
+    entries = []
+    for path in _books_dir().glob("*/book.json"):
+        other = load_book(path.parent.name)
+        if other and other.series and other.series_index is not None:
+            entries.append((path.parent.name, other.series, other.series_index))
+    _series_index = (now, stamp, entries)
+    return entries
+
+
 def earlier_in_series(book: Book) -> list[Book]:
     """Books of the same series that come before `book`, in series order (all already read by its reader)."""
     if not book.series or book.series_index is None:
         return []
     out = []
-    for path in _books_dir().glob("*/book.json"):
-        other = load_book(path.parent.name)
-        if other and other.series == book.series and other.series_index is not None \
-                and other.series_index < book.series_index:
-            out.append(other)
+    for bid, series, idx in _series_entries():
+        if series == book.series and idx < book.series_index:
+            other = load_book(bid)
+            if other:
+                out.append(other)
     return sorted(out, key=lambda b: b.series_index)
 
 
@@ -79,6 +103,7 @@ def list_books() -> list[dict]:
             continue
         out.append({
             "id": book.id, "title": book.title, "author": book.author, "kind": book.kind,
+            "kind_detected": book.kind_detected.model_dump() if book.kind_detected else None,
             "license": book.license, "attribution": book.attribution,
             "paragraphs": len(book.paragraphs), "sections": len(book.sections),
             "characters": len(book.characters), "cover": portrait_url(book.id, "cover"),
@@ -92,3 +117,5 @@ def save_book(path, book: Book) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(book.model_dump_json(indent=1), encoding="utf-8")
     tmp.replace(path)
+    global _series_index
+    _series_index = None

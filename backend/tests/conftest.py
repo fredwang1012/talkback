@@ -23,6 +23,7 @@ def _never_write_real_usage_log(monkeypatch, tmp_path_factory):
         return Path(settings.data_dir) / "cache" / "usage.jsonl"
 
     monkeypatch.setattr(usage, "_log_path", log_path)
+    monkeypatch.setattr(usage, "_offload", False)
 
 
 @pytest.fixture(autouse=True)
@@ -30,3 +31,10 @@ def _local_backends_unless_a_test_says_otherwise(monkeypatch):
     """Tests never reach Google Cloud because of a developer's .env (RETRIEVAL_BACKEND=vertex)."""
     monkeypatch.setattr(settings, "retrieval_backend", "local")
     monkeypatch.setattr(settings, "answer_backend", None, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_llm_enrichment_unless_a_test_says_otherwise(monkeypatch, tmp_path_factory):
+    """Uploaded novels are enriched by an LLM; tests never reach one (or write the real spend file) by accident."""
+    monkeypatch.setattr(settings, "upload_enrich", False, raising=False)
+    monkeypatch.setattr(settings, "upload_confirm", False, raising=False)

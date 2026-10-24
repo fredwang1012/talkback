@@ -64,11 +64,18 @@ class Summary(BaseModel):
     text: str
 
 
+class KindDetected(BaseModel):
+    kind: Literal["novel", "textbook"]
+    confidence: float
+    method: str
+
+
 class Book(BaseModel):
     id: str
     title: str
     author: str
     kind: Literal["novel", "textbook"]
+    kind_detected: KindDetected | None = None  # set for uploads whose kind was auto-detected
     license: str
     attribution: str | None = None
     sections: list[Section]

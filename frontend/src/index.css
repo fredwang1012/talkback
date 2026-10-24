@@ -63,6 +63,26 @@ button:disabled { cursor: not-allowed; }
 .shelf { display: grid; grid-template-columns: 1.35fr 1fr; gap: 28px; margin-top: 64px; align-items: stretch; }
 @media (max-width: 760px) { .shelf { grid-template-columns: 1fr; } }
 
+.shelf-section { margin-top: 56px; }
+.shelf-section + .shelf-section { margin-top: 48px; }
+.shelf-heading { font-family: var(--font-title); font-weight: 400; font-size: 2rem; margin: 0 0 4px; }
+.shelf-empty { margin: 16px 0 0; color: var(--ink-soft); }
+.series-group { margin-top: 28px; }
+.series-heading { font-family: var(--font-book); font-style: italic; font-weight: 400; font-size: 1.25rem; color: var(--ink-soft); margin: 0 0 14px; }
+.shelf-section .shelf { margin-top: 20px; }
+.series-group .shelf { margin-top: 0; }
+.volume-wrap { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.volume-wrap .volume { flex: 1; }
+.volume-move {
+  align-self: flex-start; padding: 8px 14px; min-height: 40px; cursor: pointer;
+  font: inherit; font-size: 0.9rem; color: var(--ink-soft);
+  background: transparent; border: 1px solid var(--brass-soft); border-radius: var(--radius);
+}
+.volume-move:hover:not(:disabled) { border-color: var(--brass); color: var(--ink); }
+.volume-move:disabled { opacity: 0.6; cursor: default; }
+.volume-note { color: var(--ink-soft); font-size: 0.9rem; display: flex; flex-direction: column; gap: 6px; }
+.volume-note progress { width: 100%; }
+
 .volume {
   position: relative;
   display: flex; flex-direction: column; justify-content: space-between;
@@ -77,7 +97,7 @@ button:disabled { cursor: not-allowed; }
   transition: transform 160ms ease, border-color 160ms ease;
 }
 .volume:hover:not(.volume-closed) { transform: translateY(-3px); border-color: var(--brass); }
-.volume h2 { font-family: var(--font-title); font-weight: 400; font-size: 2.3rem; line-height: 1.05; margin: 0 0 8px; }
+.volume h2, .volume h3 { font-family: var(--font-title); font-weight: 400; font-size: 2.3rem; line-height: 1.05; margin: 0 0 8px; }
 .volume .by { font-family: var(--font-book); font-style: italic; color: var(--ink-soft); margin: 0; }
 .volume .facts { margin: 0; padding: 0; list-style: none; color: var(--ink-soft); font-size: 0.92rem; line-height: 1.7; }
 .volume .open { margin-top: 18px; font-weight: 600; color: var(--brass); }
@@ -99,6 +119,9 @@ button:disabled { cursor: not-allowed; }
 }
 .add-book-go:disabled { opacity: 0.6; }
 .add-book-status { min-height: 1.5em; margin-top: 12px; color: var(--ink-soft); }
+.add-book-status progress { display: block; width: 100%; margin-top: 6px; }
+.add-book-confirm { margin-top: 12px; }
+.add-book-confirm p { margin: 0 0 10px; color: var(--ink-soft); }
 .add-book-error { margin: 12px 0 0; color: var(--seal-bright); }
 .add-book-note { margin: 12px 0 0; color: var(--ink-faint); font-size: 0.85rem; }
 .licence { margin-top: 56px; color: var(--ink-faint); font-size: 0.85rem; line-height: 1.6; max-width: 70ch; }

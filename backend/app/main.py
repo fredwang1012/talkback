@@ -22,6 +22,8 @@ from . import books, cast, faces, ingest_upload, retrieval, tts_cache, voices
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
+from .enrich import pipeline as enrich_pipeline
+from .enrich.detect import detect_kind
 from .gcp import usage
 from .personas import build_answer_prompt, build_instructions
 from .ratelimit import TokenBucket
@@ -403,25 +405,94 @@ class IngestGuard:
 _ingest_guard = IngestGuard()
 
 
-def _set_status(book_id: str, status: str, message: str | None = None) -> None:
-    _upload_status[book_id] = ingest_upload.write_status(book_id, status, message)
+def _set_status(book_id: str, status: str, message: str | None = None, **kind_info) -> None:
+    _upload_status[book_id] = ingest_upload.write_status(book_id, status, message, **kind_info)
+
+
+def _set_enrich(book_id: str, **fields) -> None:
+    """Record the novel enrichment sub-status next to the (ready) ingest status."""
+    enrich = {k: v for k, v in fields.items() if v is not None}
+    _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", enrich=enrich)
+
+
+_enrich_lock = asyncio.Lock()  # one enrichment at a time (cost control and rate limits)
+
+
+async def _enrich_indexer(book: Book) -> None:
+    """Final stage: refresh the Vertex index with the speakers (the local index needs no change)."""
+    if settings.retrieval_backend == "vertex":
+        from .gcp.indexing import index_book, load_chunks
+        embedder, store = _vertex_deps()
+        await index_book(book, await asyncio.to_thread(load_chunks, book), embedder, store)
+
+
+_enrich_jobs: set[str] = set()   # books with an enrichment job queued or running
+_kind_claims: set[str] = set()   # books whose kind change is being handled (check-and-claim, see change_kind)
+
+
+async def _run_enrichment(book_id: str) -> None:
+    if book_id in _enrich_jobs:  # defence in depth: never two paid jobs for one book
+        return
+    _enrich_jobs.add(book_id)
+    try:
+        _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
+        async with _enrich_lock:
+            book = books.load_book(book_id)
+            if book is not None and book.characters:  # already enriched: nothing to pay for
+                _set_enrich(book_id, status="done", stage="done", progress=1.0,
+                            message="Characters, recap and search are ready.")
+                return
+            await enrich_pipeline.enrich_book(book_id, lambda **f: _set_enrich(book_id, **f), indexer=_enrich_indexer)
+    finally:
+        _enrich_jobs.discard(book_id)
+        _index_for.cache_clear()
+
+
+def _decide_enrichment(book_id: str, book: Book) -> bool:
+    """Refuse (caps), wait for confirmation (testing mode) or mark as queued. True when the job should now run."""
+    est = enrich_pipeline.estimate(book)
+    reason = enrich_pipeline.check_caps(est)
+    if reason:
+        _set_enrich(book_id, status="refused", message=reason)
+    elif settings.upload_confirm:
+        _set_enrich(book_id, status="awaiting_confirmation", estimate_usd=round(est, 2),
+                    message="Characters, voices and recap need processing.")
+    else:
+        _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
+        return True
+    return False
+
+
+async def _plan_enrichment(book_id: str, book: Book) -> None:
+    """After the text ingest of a novel: refuse (caps), wait for confirmation (testing mode) or start."""
+    if _decide_enrichment(book_id, book):
+        await _run_enrichment(book_id)
 
 
 async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str, token: int) -> None:
     """Background ingest: CPU work in a thread, then (vertex only) index the chunks, then publish book.json.
 
     book.json is written last, so a processing or failed upload is never listed or readable. Never raises.
+    A novel is then enriched (cast, dialogue, summaries) while it is already readable with the narrator.
     """
     _ingest_guard.mark_started(token)
+    ready: Book | None = None
     try:
-        book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext)
+        raw, detected = None, None
+        if kind == "auto":  # decide novel or textbook from the extracted text
+            raw = await asyncio.to_thread(ingest_upload.extract_text, data, ext)
+            kind, confidence, method = await detect_kind(raw, book_id=book_id)
+            detected = {"kind": kind, "confidence": confidence, "method": method}
+        book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext,
+                                               raw, detected)
         if settings.retrieval_backend == "vertex":
             from .gcp.indexing import index_book
             embedder, store = _vertex_deps()
             await index_book(book, chunks, embedder, store)
         await asyncio.to_thread(ingest_upload.publish_book, book)
         _index_for.cache_clear()
-        _set_status(book_id, "ready")
+        _set_status(book_id, "ready", **({"kind": kind, "kind_detected": detected} if detected else {}))
+        ready = book
     except Exception as e:
         ingest_upload.discard_book(book_id)
         if isinstance(e, ingest_upload.UploadError):
@@ -431,13 +502,19 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
             _set_status(book_id, "error", "The file could not be processed.")
     finally:
         _ingest_guard.release(token)
+    if ready is not None and kind == "novel" and settings.upload_enrich:
+        try:
+            await _plan_enrichment(book_id, ready)
+        except Exception as e:  # the book stays readable with the narrator
+            logging.getLogger(__name__).warning("enrichment planning failed: %s", type(e).__name__)
+            _set_enrich(book_id, status="error", message=enrich_pipeline.FAILED)
 
 
 @app.post("/api/books/upload", status_code=202, dependencies=[Depends(require_access)])
 async def upload_book(request: Request, background: BackgroundTasks, file: UploadFile = File(...),
                       title: str = Form(..., min_length=1, max_length=120),
                       author: str = Form("", max_length=120),
-                      kind: Literal["novel", "textbook"] = Form(...)):
+                      kind: Literal["auto", "novel", "textbook"] = Form("auto")):
     if not upload_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many uploads; wait a moment.")
     token = _ingest_guard.acquire()  # no await between the check and the hold
@@ -474,9 +551,70 @@ def book_status(book_id: str):
         st = ingest_upload.read_status(book_id)
         if st and st.get("status") == "processing":  # not in memory: the server restarted mid-ingest
             st = {"status": "error", "message": "Processing was interrupted; please upload again."}
+        elif st and (st.get("enrich") or {}).get("status") == "running":  # restarted mid-enrichment
+            st = {"status": "ready", "enrich": {"status": "error", "stage": st["enrich"].get("stage"),
+                  "message": "Character processing was interrupted; the book is still readable with the narrator."}}
     if st is None:
         raise HTTPException(404, "Book not found")
     return st
+
+
+@app.post("/api/books/{book_id}/enrich", status_code=202, dependencies=[Depends(require_access)])
+async def start_enrichment(book_id: str, background: BackgroundTasks):
+    """Testing mode (UPLOAD_CONFIRM): start the character processing the reader just confirmed."""
+    st = book_status(book_id)
+    if (st.get("enrich") or {}).get("status") != "awaiting_confirmation":
+        raise HTTPException(409, "This book is not waiting for confirmation.")
+    book = books.load_book(book_id)
+    if book is None:
+        raise HTTPException(404, "Book not found")
+    reason = enrich_pipeline.check_caps(enrich_pipeline.estimate(book))  # caps are re-checked at start
+    if reason:
+        _set_enrich(book_id, status="refused", message=reason)
+        return _upload_status[book_id]
+    _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
+    background.add_task(_run_enrichment, book_id)
+    return _upload_status[book_id]
+
+
+class KindBody(BaseModel):
+    kind: Literal["novel", "textbook"]
+
+
+@app.post("/api/books/{book_id}/kind", status_code=202, dependencies=[Depends(require_access)])
+async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks):
+    """Move an uploaded book between the Novels and Textbooks shelves.
+
+    textbook -> novel starts enrichment (same caps and UPLOAD_CONFIRM behaviour as an upload) unless the book already
+    has its characters; novel -> textbook only changes the kind (the characters stay in the file, the UI ignores them).
+    """
+    if not book_id.startswith("u-"):
+        raise HTTPException(403, "Only books you uploaded can be moved.")
+    book = books.load_book(book_id)
+    if book is None:
+        raise HTTPException(404, "Book not found")
+    try:
+        st = book_status(book_id)
+    except HTTPException:  # an upload from before status files
+        st = {"status": "ready"}
+    # Check and claim in one synchronous block (no await before the claim): concurrent requests cannot both pass.
+    if (st.get("enrich") or {}).get("status") == "running" or book_id in _enrich_jobs or book_id in _kind_claims:
+        raise HTTPException(409, "This book is still being processed; try again when it finishes.")
+    if book.kind == body.kind:
+        return st
+    _kind_claims.add(book_id)
+    try:
+        book = book.model_copy(deep=True)  # load_book's result is cached and must not be mutated
+        book.kind = body.kind
+        await asyncio.to_thread(books.save_book, settings.data_dir / "books" / book_id / "book.json", book)
+        _index_for.cache_clear()
+        _set_status(book_id, "ready", kind=body.kind)
+        if body.kind == "novel" and settings.upload_enrich and not book.characters:
+            if _decide_enrichment(book_id, book):  # sets status "running" (queued) before the claim is released
+                background.add_task(_run_enrichment, book_id)
+        return _upload_status[book_id]
+    finally:
+        _kind_claims.discard(book_id)
 
 
 # ---------- avatars (stretch) ----------
@@ -524,24 +662,27 @@ async def lipsync(req: LipSyncRequest, request: Request):
     key = f"{m.group(1)}-{hashlib.sha256(face.read_bytes()).hexdigest()[:16]}"
     clip = _lipsync_dir() / f"{key}.mp4"
     lock = _avatar_locks.setdefault(key, asyncio.Lock())
-    async with lock:
-        if not clip.is_file():
-            if not avatar_bucket.allow(client_ip(request)):
-                raise HTTPException(429, "Too many lip-sync renders; wait a moment.")
-            data = audio.read_bytes()
-            try:
-                vid = await boson.create_video(base64.b64encode(face.read_bytes()).decode(), base64.b64encode(data).decode(),
-                                               image_mime=faces.FACE_EXTS[face.suffix.lstrip(".").lower()],
-                                               seconds=len(data) / 16000)  # 128 kbit/s mp3
-                await boson.wait_video(vid, interval=1, timeout=120)
-                video = await boson.download_video(vid)
-            except (BosonError, RuntimeError) as e:
-                raise boson_http_error(e)
-            clip.parent.mkdir(parents=True, exist_ok=True)
-            tmp = clip.with_suffix(".tmp")
-            tmp.write_bytes(video)
-            tmp.replace(clip)
-    _avatar_locks.pop(key, None)
+    try:
+        async with lock:
+            if not clip.is_file():
+                if not avatar_bucket.allow(client_ip(request)):
+                    raise HTTPException(429, "Too many lip-sync renders; wait a moment.")
+                data = audio.read_bytes()
+                try:
+                    vid = await boson.create_video(base64.b64encode(face.read_bytes()).decode(), base64.b64encode(data).decode(),
+                                                   image_mime=faces.FACE_EXTS[face.suffix.lstrip(".").lower()],
+                                                   seconds=len(data) / 16000)  # 128 kbit/s mp3
+                    await boson.wait_video(vid, interval=1, timeout=120)
+                    video = await boson.download_video(vid)
+                except (BosonError, RuntimeError) as e:
+                    raise boson_http_error(e)
+                clip.parent.mkdir(parents=True, exist_ok=True)
+                tmp = clip.with_suffix(".tmp")
+                tmp.write_bytes(video)
+                tmp.replace(clip)
+    finally:
+        if not lock.locked() and _avatar_locks.get(key) is lock:
+            del _avatar_locks[key]
     return {"video_url": f"/media/avatar/{clip.name}"}
 
 

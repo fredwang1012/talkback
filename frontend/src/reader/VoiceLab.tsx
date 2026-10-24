@@ -18,6 +18,10 @@ type Props = {
   onStyle: (s: ReadingStyle) => void;
   cloned: Record<string, string>; // name -> voice id of the visitor's cloned voices
   onCloned: Dispatch<SetStateAction<Record<string, string>>>;
+  animating: Set<string>; // animation state is owned by the reader so it survives closing this panel
+  setAnimating: Dispatch<SetStateAction<Set<string>>>;
+  animErrors: Record<string, string>;
+  setAnimErrors: Dispatch<SetStateAction<Record<string, string>>>;
   faces: Face[];
   onFaces: Dispatch<SetStateAction<Face[]>>;
   onFacesChanged: () => void; // a face was deleted: the cast may have lost a reference
@@ -27,7 +31,7 @@ type Props = {
 };
 
 /** Cast panel (a voice per speaker) and Voice lab (clone your own voice, with consent). */
-export default function VoiceLab({ book, cast, onCast, castError, style, onStyle, cloned, onCloned, faces, onFaces, onFacesChanged, onPreview, audioAvailable, onClose }: Props) {
+export default function VoiceLab({ book, cast, onCast, castError, style, onStyle, cloned, onCloned, animating, setAnimating, animErrors, setAnimErrors, faces, onFaces, onFacesChanged, onPreview, audioAvailable, onClose }: Props) {
   const [transcript, setTranscript] = useState(SCRIPT);
   const [name, setName] = useState("");
   const [consent, setConsent] = useState(false);
@@ -41,8 +45,6 @@ export default function VoiceLab({ book, cast, onCast, castError, style, onStyle
   const [faceFile, setFaceFile] = useState<File | null>(null);
   const [faceBusy, setFaceBusy] = useState(false);
   const [faceMsg, setFaceMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
-  const [animating, setAnimating] = useState<Set<string>>(new Set());
-  const [animErrors, setAnimErrors] = useState<Record<string, string>>({});
 
   async function startRecording() {
     setStatus(null);

@@ -182,3 +182,23 @@ def test_pdf_joins_paragraph_across_pages():
     second = "continues at the top of the next page and ends here."
     text = ingest_upload.pdf_to_text(make_pdf([[PARA_A, first], [second, PARA_B]]))
     assert any(first in p and second in p for p in text.split("\n\n"))
+
+
+def test_estimate_prices_gemini_when_claude_has_no_key(monkeypatch):
+    from app.config import settings
+    from app.enrich import llm as enrich_llm, pipeline
+    from app.schema import Book
+    book = Book(id="b", title="b", author="a", paragraphs=[], sections=[], characters=[], kind="novel", license="x")
+    monkeypatch.setattr(settings, "upload_llm", "claude")
+    monkeypatch.setattr(settings, "anthropic_api_key", "")
+    seen = []
+    real = pipeline.estimate_usd
+    monkeypatch.setattr(pipeline, "estimate_usd", lambda prov, *a: (seen.append(prov), real(prov, *a))[1])
+    assert enrich_llm.effective_provider() == "gemini"
+    pipeline.estimate(book)
+    assert set(seen) == {"gemini"}
+    seen.clear()
+    monkeypatch.setattr(settings, "anthropic_api_key", "k")
+    assert enrich_llm.effective_provider() == "claude"
+    pipeline.estimate(book)
+    assert set(seen) == {"claude"}

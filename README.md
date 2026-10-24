@@ -29,7 +29,8 @@ Copy `.env.example` to `.env` (gitignored) and fill it in:
 | Variable | Needed for |
 | --- | --- |
 | `BOSON_API_KEY` | Audio, Talk mode, voice cloning. Never reaches the browser; the server mints short-lived keys. |
-| `ANTHROPIC_API_KEY` | Offline preprocessing only (cast, segments, summaries). Not used at runtime. |
+| `ANTHROPIC_API_KEY` | Preprocessing and, when `UPLOAD_LLM=claude`, character processing of uploaded novels (falls back to Gemini when unset). |
+| `USAGE_LOG_FILE` | Default `true`: append billable calls to `data/cache/usage.jsonl`. The Cloud Run deploy sets `false` (Cloud Logging only). |
 | `BOSON_BASE_URL` | Defaults to `https://api.boson.ai`. |
 | `TALKBACK_ACCESS_TOKEN` | Optional. For public deployments: voices then need an access code typed into the page. |
 
@@ -84,6 +85,18 @@ cd frontend && npm run dev          # http://localhost:5173
 
 Without `BOSON_API_KEY` the reader works silently (play moves at an estimated reading pace). Add the key and restart the
 backend to get audio and Talk mode.
+
+## Uploading your own books
+
+Add a PDF or .txt from the library page. A **novel** can be read with the narrator right away; characters, voices and the
+recap follow in the background (about 3 to 5 minutes), with progress shown on the page. A **textbook** gets the narrator
+only. The kind defaults to **Auto-detect** (one cheap model call on a sample, a heuristic when that is unavailable);
+the library shows **Novels** (series grouped) and **Textbooks** shelves, and each uploaded book has a "Move to
+Textbooks / Novels" button (moving a textbook to Novels starts the character processing). Settings in `.env` (all optional): `UPLOAD_LLM=claude|gemini` (which model does the work; Claude falls back to
+Gemini automatically when its credit runs out), `LLM_PROVIDER=claude|gemini` (the same switch for the `preprocess/`
+scripts), `UPLOAD_CONFIRM=true` (testing mode: show the cost estimate and ask before processing). A book that would cost
+more than $4 to process is read by the narrator only, and processing stops for good at $15 total. See
+`docs/ARCHITECTURE.md`.
 
 ## The 90-second demo
 

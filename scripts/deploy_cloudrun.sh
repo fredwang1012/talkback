@@ -31,13 +31,16 @@ if [[ "${YES}" -ne 1 ]]; then
   cat <<EOF
 This script deploys Talkback to Cloud Run. Nothing has been done yet. It will:
   1. Refuse to continue if the git tree is dirty (unless --allow-dirty), so the image tag matches the code.
-  2. Check that the Secret Manager secrets boson-api-key and talkback-access-token exist (stops with the create command if not).
+  2. Check that the Secret Manager secrets boson-api-key, anthropic-api-key and talkback-access-token exist (stops with the create command if not).
   3. Sync public book data to gs://${BUCKET}:
-       data/books     -> gs://${BUCKET}/books      (skipping u-* user uploads)
+       data/books     -> gs://${BUCKET}/books      (skipping u-* user uploads and cast_settings.json,
+                                                      so settings saved on the live site are never overwritten)
      Portraits, data/uploads and data/samples are never synced. Nothing is deleted from the bucket.
   4. gcloud builds submit --tag ${IMAGE}
   5. gcloud run deploy ${SERVICE} in ${REGION} as ${SA}
-       RETRIEVAL_BACKEND=vertex, TRUST_PROXY=true, bucket mounted at /app/data, min 0 / max 1 instance, no CPU throttling, 1Gi, 1 CPU,
+       RETRIEVAL_BACKEND=vertex, TRUST_PROXY=true, UPLOAD_LLM=claude, UPLOAD_ENRICH=true, UPLOAD_CONFIRM=false,
+       UPLOAD_BOOK_CAP_USD=4, UPLOAD_TOTAL_CAP_USD=15, USAGE_LOG_FILE=false (usage goes to Cloud Logging only),
+       secrets BOSON_API_KEY, ANTHROPIC_API_KEY, TALKBACK_ACCESS_TOKEN, bucket mounted at /app/data, min 0 / max 1 instance, no CPU throttling, 1Gi, 1 CPU,
        300 s timeout, --allow-unauthenticated (paid endpoints are gated by the TALKBACK_ACCESS_TOKEN secret)
 Re-run with --yes to proceed.
 EOF
@@ -58,6 +61,11 @@ if ! gcloud secrets describe boson-api-key --project "${PROJECT}" >/dev/null 2>&
   echo "Secret boson-api-key does not exist. Create it (with BOSON_API_KEY set in your shell, not echoed):"
   echo "  printf %s \"\$BOSON_API_KEY\" | gcloud secrets create boson-api-key --data-file=- --project ${PROJECT}"
 fi
+if ! gcloud secrets describe anthropic-api-key --project "${PROJECT}" >/dev/null 2>&1; then
+  missing=1
+  echo "Secret anthropic-api-key does not exist. Create it (with ANTHROPIC_API_KEY set in your shell, not echoed):"
+  echo "  printf %s \"\$ANTHROPIC_API_KEY\" | gcloud secrets create anthropic-api-key --data-file=- --project ${PROJECT}"
+fi
 if ! gcloud secrets describe talkback-access-token --project "${PROJECT}" >/dev/null 2>&1; then
   missing=1
   echo "Secret talkback-access-token does not exist. The service is public, so paid endpoints need this gate."
@@ -71,9 +79,10 @@ if [[ "${missing}" -ne 0 ]]; then
 fi
 
 # 3. Sync public data. The whole data/ dir is the bucket mount on Cloud Run.
-#    --exclude is a regex on the path relative to the source. No --delete-unmatched-destination-objects:
+#    --exclude is one regex on the path relative to the source: u-* uploads, and cast_settings.json at any depth
+#    (settings saved on the live site must survive a deploy). No --delete-unmatched-destination-objects:
 #    the bucket also holds books uploaded through the deployed app.
-gcloud storage rsync --recursive --exclude='^u-.*' "data/books" "gs://${BUCKET}/books"
+gcloud storage rsync --recursive --exclude='^u-.*' --exclude='.*cast_settings[.]json$' "data/books" "gs://${BUCKET}/books"
 # Portraits are not synced (per-person folders are personal); upload them by hand if wanted, see docs/DEPLOY.md.
 
 # 3. Build.
@@ -85,8 +94,8 @@ gcloud run deploy "${SERVICE}" \
   --region "${REGION}" \
   --image "${IMAGE}" \
   --service-account "${SA}" \
-  --set-env-vars "RETRIEVAL_BACKEND=vertex,TRUST_PROXY=true,GCP_PROJECT=${PROJECT},GCP_REGION=${REGION},CORS_ORIGINS=http://localhost:5173" \
-  --set-secrets "BOSON_API_KEY=boson-api-key:latest,TALKBACK_ACCESS_TOKEN=talkback-access-token:latest" \
+  --set-env-vars "RETRIEVAL_BACKEND=vertex,TRUST_PROXY=true,GCP_PROJECT=${PROJECT},GCP_REGION=${REGION},CORS_ORIGINS=http://localhost:5173,UPLOAD_LLM=claude,UPLOAD_ENRICH=true,UPLOAD_CONFIRM=false,UPLOAD_BOOK_CAP_USD=4,UPLOAD_TOTAL_CAP_USD=15,USAGE_LOG_FILE=false" \
+  --set-secrets "BOSON_API_KEY=boson-api-key:latest,ANTHROPIC_API_KEY=anthropic-api-key:latest,TALKBACK_ACCESS_TOKEN=talkback-access-token:latest" \
   --execution-environment gen2 \
   --add-volume "name=data,type=cloud-storage,bucket=${BUCKET}" \
   --add-volume-mount "volume=data,mount-path=/app/data" \
