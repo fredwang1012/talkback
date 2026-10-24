@@ -404,7 +404,9 @@ export class TalkController {
     if (turn !== this.turn) return;
     const t0 = this.d.now();
     this.d.session.commit();
-    const transcript = await this.waitTranscript();
+    // push-to-talk and the local gate keep the full window: a long question can take its time to transcribe (#141);
+    // FAST_FAIL_MS is for server turns only (armSrv)
+    const transcript = await this.waitFor((e) => e.type === "transcript", this.d.transcriptTimeoutMs);
     if (turn !== this.turn) return;
     const query = transcript && transcript.type === "transcript" ? transcript.text.trim() : "";
     this.latency = { commitToTranscriptMs: this.d.now() - t0 };
@@ -413,17 +415,6 @@ export class TalkController {
     this.noteQuestion(query);
 
     await this.answerQuery(turn, query);
-  }
-
-  /**
-   * The transcript of the turn just committed (#135): the server's `committed` arrives at once, and the transcript
-   * 0.15-0.4 s later or never (Boson sends no `.failed`), so after a commit only FAST_FAIL_MS is waited. Without a
-   * committed event (older servers) the full window applies.
-   */
-  private async waitTranscript(): Promise<SessionEvent | null> {
-    const first = await this.waitFor((e) => e.type === "transcript" || e.type === "committed", this.d.transcriptTimeoutMs);
-    if (first?.type !== "committed") return first;
-    return this.waitFor((e) => e.type === "transcript", FAST_FAIL_MS);
   }
 
   /** Nothing usable was heard: say so now, and drop a language hint that may be the cause (#135). */

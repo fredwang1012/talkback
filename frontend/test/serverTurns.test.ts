@@ -486,7 +486,7 @@ describe("TalkController on Boson turn detection (#135)", () => {
     expect(talk.serverTurnsActive).toBe(false);
   });
 
-  it("push-to-talk: fast failure 1.5 s after the server committed with no transcript", async () => {
+  it("push-to-talk keeps the full transcript window after committed (a long question is not cut at 1.5 s)", async () => {
     const l = loop();
     await l.talk.pttDown();
     await settle();
@@ -497,7 +497,24 @@ describe("TalkController on Boson turn detection (#135)", () => {
     expect(l.ws().types()).toContain("input_audio_buffer.commit");
     expect(td(l.ws())).toBeNull();
     l.ws().recv({ type: "input_audio_buffer.committed", item_id: "u1" });
-    await l.advance(FAST_FAIL_MS + 50);
+    await l.advance(FAST_FAIL_MS + 1000);
+    expect(l.toasts).toEqual([]); // still waiting: the fast failure is for server turns only
+    l.ws().recv({ type: "conversation.item.input_audio_transcription.completed", item_id: "u1", transcript: "A long question?" });
+    await settle();
+    await up;
+    expect(l.asked).toEqual(["A long question?"]);
+  });
+
+  it("push-to-talk without any transcript still fails after the full window", async () => {
+    const l = loop();
+    await l.talk.pttDown();
+    await settle();
+    l.ws().open();
+    await l.advance(600);
+    const up = l.talk.pttUp();
+    await settle();
+    l.ws().recv({ type: "input_audio_buffer.committed", item_id: "u1" });
+    await l.advance(6100);
     await up;
     expect(l.toasts).toEqual(["I didn't catch that. Try again."]);
   });
@@ -517,3 +534,4 @@ describe("TalkController on Boson turn detection (#135)", () => {
     expect(l.ws().sent.at(-1)).toEqual({ type: "session.update", session: { audio: { input: { transcription: { model: "higgs-stt-3.1", language: null } } } } });
   });
 });
+
