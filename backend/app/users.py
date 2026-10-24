@@ -175,6 +175,11 @@ async def bind_identity(request: Request) -> None:
     ident = await identify_async(request.headers)
     request.state.identity = ident
     _current.set(ident)
+    if settings.per_user:   # the live deploy: who signed in and what they use (app/activity.py)
+        from . import activity
+        from .ratelimit import client_ip
+        who = ident.email or f"ip:{client_ip(request)}"
+        activity.note(who, request.method, activity.route_of(request))
 
 
 def current() -> Identity:

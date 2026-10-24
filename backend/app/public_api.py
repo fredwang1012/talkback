@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Literal
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
@@ -668,7 +668,15 @@ class BodyLimit:
             await _reply(send, 413, "The request is too large.")
 
 
-app = FastAPI(title="Talkback public API", docs_url=None, redoc_url=None, openapi_url=None)
+async def _note_activity(request: Request) -> None:
+    """Who uses the public API (by client IP; it has no accounts): see app/activity.py."""
+    from . import activity
+    from .ratelimit import client_ip
+    activity.note(f"ip:{client_ip(request)}", request.method, activity.route_of(request))
+
+
+app = FastAPI(title="Talkback public API", docs_url=None, redoc_url=None, openapi_url=None,
+              dependencies=[Depends(_note_activity)])
 app.add_middleware(BodyLimit)
 
 
