@@ -190,7 +190,36 @@ export type ToolOutcome = {
   pause?: boolean;
   /** The Gemini path (no Realtime model to read `output`): the question to answer aloud instead of ending the turn silently (<= 500 chars). */
   ask?: string;
+  /** quiz_me: the talk loop enters quiz mode with this section (see `quizTurnInstructions`). */
+  quiz?: Quiz;
 };
+
+/** A quiz in progress (quiz_me): the section and its text, kept by the talk loop for the next turns. */
+export type Quiz = { title: string; text: string };
+export const QUIZ_QUESTIONS = 3;
+
+/** What the reader says that ends a quiz early: stop / cancel / "keep reading", or any command (navigation and the rest). */
+export function endsQuiz(text: string): boolean {
+  const i = parseIntent(text);
+  if (i) return i.name !== "quiz_me";
+  const t = norm(text).replace(/[,;:!?.]+/g, " ").replace(/\s+/g, " ").trim();
+  return /^(?:(?:ok|okay|no|please|let's|lets) )*(?:stop|cancel|quit|end|enough|skip|no more)(?: (?:the|this))?(?: (?:quiz|questions|it))?(?: please| now)?$/.test(t)
+    || /^(?:i'?m done|that's enough|thats enough|no more questions)$/.test(t);
+}
+
+/** The quiz part of the instructions for the reader's answer to question `n` (Realtime: added to the grounding). */
+export function quizTurnInstructions(q: Quiz, n: number): string {
+  const next = n < QUIZ_QUESTIONS
+    ? `Then ask question ${n + 1}: one short question on the text, and wait for the answer.`
+    : `That was the last question: give the final score out of ${QUIZ_QUESTIONS} (count your right/wrong gradings above) and offer to keep reading.`;
+  return `QUIZ MODE on "${q.title}": the reader just answered question ${n} of ${QUIZ_QUESTIONS}. Say right or wrong with a one-line explanation from the text. ${next} Keep it short; no markdown.\nQuiz text:\n${q.text}`;
+}
+
+/** The Gemini path: the reader's answer, wrapped with the quiz progress (the earlier turns are in the chat history). <= 500 chars. */
+export function quizGeminiQuery(q: Quiz, n: number, answer: string): string {
+  const next = n < QUIZ_QUESTIONS ? `then ask question ${n + 1}, one short question, and wait.` : `then give my final score out of ${QUIZ_QUESTIONS} and offer to keep reading.`;
+  return `Quiz on "${clip(q.title, 80)}", question ${n} of ${QUIZ_QUESTIONS}. My answer: "${clip(answer, 200)}". Say right or wrong in one line, ${next}`;
+}
 
 export type ToolRunner = (name: string, args: Record<string, unknown>) => ToolOutcome;
 
@@ -436,7 +465,7 @@ export function runTool(name: string, args: Record<string, unknown>, ctx: ToolCo
       if (!text.trim()) return refuse(`${sec.title} has no text to quiz on. Say so briefly.`);
       act.pause();
       return {
-        ok: true, pause: true, chip: `Quiz: ${sec.title}`,
+        ok: true, pause: true, chip: `Quiz: ${sec.title}`, quiz: { title: sec.title, text },
         output: `Quiz on "${sec.title}"; reading stays paused. Ask 3 short questions on the text below, one at a time. After each spoken answer say right or wrong with a one-line explanation. Then give the score and offer to keep reading.\nText:\n${text}`,
         ask: `Quiz me on "${clip(sec.title, 120)}": ask me one short question about it, then wait for my answer. After I answer, say right or wrong in one line and ask the next; after 3 questions give my score.`,
       };

@@ -9,7 +9,7 @@ import { micErrorMessage } from "../audio/mediaErrors";
 import type { SentenceSpeaker } from "./sentencePlayer";
 import type { TimingEvent } from "./speechGate";
 import { HANDS_FREE_OVER_SPEECH, createVoiceGate } from "./handsFree";
-import { parseIntent, type ToolOutcome, type ToolRunner } from "./tools";
+import { QUIZ_QUESTIONS, endsQuiz, parseIntent, quizGeminiQuery, quizTurnInstructions, type Quiz, type ToolOutcome, type ToolRunner } from "./tools";
 
 /** How many queued sentences are synthesised ahead of the one being spoken. */
 export const PREFETCH_DEPTH = 3;
@@ -117,6 +117,8 @@ export class TalkController {
   private resumeIndex: number | null = null;
   private wasPlayingBeforePress = false;
   private pressedAt = 0;
+  /** A quiz in progress (quiz_me): the next turns carry its rules and text until the last answer is graded, or it is ended. */
+  private quiz: (Quiz & { answered: number }) | null = null;
   private turn = 0; // bumped whenever a turn is abandoned, so stale async work is ignored
   private resumeTimer: ReturnType<typeof setTimeout> | null = null;
   private waiters: { predicate: (e: SessionEvent) => boolean; resolve: (e: SessionEvent | null) => void }[] = [];
@@ -193,10 +195,11 @@ export class TalkController {
 
   private talkback = false;
   /** In the Talkback view a short tap on the mic never starts or stops the story; it just cancels the question. */
-  setTalkback(v: boolean): void { this.talkback = v; }
+  setTalkback(v: boolean): void { if (v !== this.talkback) this.quiz = null; this.talkback = v; }
 
   /** Picking someone else to talk to; applied to the session voice before the next question. */
   async setSpeaker(id: string): Promise<void> {
+    if (id !== this.speakerId) this.quiz = null; // a quiz belongs to the one who asked it
     this.speakerId = id;
     try { await this.d.session.setVoice(this.d.voiceFor(id)); } catch { /* the next ensureOpen reconnects with the right voice */ }
   }
@@ -207,6 +210,7 @@ export class TalkController {
   }
 
   dispose(): void {
+    this.quiz = null;
     this.off();
     this.clearResumeTimer();
     this.cancelAnswer();
@@ -364,9 +368,20 @@ export class TalkController {
   }
 
   /** `typed`: the question is text, so the Realtime model must be given it as an item (#97); spoken audio is already the user item. */
+  /** The quiz part of this turn (and the answer it grades), or null when no quiz runs. Ends the quiz on its last answer or on a stop / command. */
+  private quizTurn(query: string): { quiz: Quiz; n: number } | null {
+    const q = this.quiz;
+    if (!q) return null;
+    if (endsQuiz(query)) { this.quiz = null; return null; }
+    const n = ++q.answered;
+    if (n >= QUIZ_QUESTIONS) this.quiz = null; // graded and scored in this answer
+    return { quiz: q, n };
+  }
+
   private async answerQuery(turn: number, query: string, typed = false): Promise<void> {
     this.set("retrieving");
     const r0 = this.d.now();
+    const quiz = this.quizTurn(query);
     if (this.d.answer && this.d.speaker) {
       // Gemini writes the answer (no Realtime, so no function calling): a plain spoken command is acted on here instead
       const intent = this.d.tools ? parseIntent(query) : null;
@@ -379,7 +394,7 @@ export class TalkController {
         this.endTurn();
         return;
       }
-      void this.streamAndSpeak(turn, query, r0);
+      void this.streamAndSpeak(turn, quiz ? quizGeminiQuery(quiz.quiz, quiz.n, query) : query, r0);
       return;
     }
     let instructions: string;
@@ -397,6 +412,7 @@ export class TalkController {
 
     this.set("answering");
     const a0 = this.d.now();
+    if (quiz) instructions = `${instructions}\n\n${quizTurnInstructions(quiz.quiz, quiz.n)}`;
     this.d.session.respond(instructions, typed ? query : undefined);
     void this.awaitAnswer(turn, a0); // key release returns now; the answer is handled in the background
   }
@@ -547,6 +563,7 @@ export class TalkController {
     let outcome: ToolOutcome;
     try { outcome = (this.d.tools as ToolRunner)(name, args); } catch (e) { outcome = { ok: false, output: `The tool failed: ${e instanceof Error ? e.message : String(e)}`, chip: null }; }
     if (outcome.chip) this.d.onToolRun?.(outcome.chip);
+    this.quiz = outcome.ok && outcome.quiz ? { ...outcome.quiz, answered: 0 } : null; // quiz_me starts one; any other tool ends it
     if (!outcome.ok) return outcome;
     if (outcome.moveTo !== undefined) this.resumeIndex = outcome.moveTo; // reading goes on there, if it goes on at all
     if (outcome.play) { this.resumeIndex ??= this.d.reader.currentIndex(); this.wasPlayingBeforePress = true; this.forceResume = true; }
