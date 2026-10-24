@@ -147,13 +147,26 @@ def test_orphan_retry_clears_what_vertex_accepts(tmp_path, monkeypatch):
     assert orphans.load() == [] and not (tmp_path / "cache" / "vertex_orphans.json.tmp").exists()
 
 
-def test_orphan_list_is_bounded(tmp_path, monkeypatch):
+def test_orphan_list_never_drops_ids_past_the_soft_limit(tmp_path, monkeypatch, caplog):
     from app.gcp import orphans
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(orphans, "MAX_IDS", 5)
     orphans.add([f"a__{i}" for i in range(4)])
-    orphans.add([f"b__{i}" for i in range(4)])
-    assert orphans.load() == ["a__3", "b__0", "b__1", "b__2", "b__3"]   # the newest are kept
+    with caplog.at_level("WARNING"):
+        orphans.add([f"b__{i}" for i in range(4)])
+    assert len(orphans.load()) == 8   # every id is a datapoint that still holds book text: none is dropped
+    assert "falling behind" in caplog.text
+
+
+def test_refused_ids_rotate_to_the_end_so_they_cannot_block_the_rest(tmp_path, monkeypatch):
+    from app.gcp import orphans
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    orphans.add(["stuck__1", "stuck__2", "ok__1", "ok__2"])
+    store = FakeStore(refuse=["stuck__1", "stuck__2"])
+    asyncio.run(orphans.retry(store, limit=2))
+    assert orphans.load() == ["ok__1", "ok__2", "stuck__1", "stuck__2"]
+    asyncio.run(orphans.retry(FakeStore(), limit=2))
+    assert orphans.load() == ["stuck__1", "stuck__2"]   # the others got their turn
 
 
 def test_orphan_retry_paces_itself_and_takes_a_bounded_batch(tmp_path, monkeypatch):

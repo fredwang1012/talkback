@@ -5,9 +5,11 @@ the book's files go at once. Leftover datapoints are harmless for correctness: e
 the query filter (vectorstore.spoiler_filter) and in VertexIndex._eligible's post-filter, and book ids are never reused,
 so a deleted book's chunks can never be returned. They only cost index space until the retry removes them.
 
-The list is global server state (ids only, no book text), written atomically under a lock and bounded to MAX_IDS (the
-newest kept). retry_forever runs once shortly after startup and then every INTERVAL_S, LIMIT ids per pass, and never
-raises; VectorStore.delete paces its own requests.
+The list is global server state (ids only; the datapoints themselves hold book text, so an id is never dropped until
+Vertex confirms the delete). It is written atomically under a lock. Ids Vertex still refuses move to the end of the list,
+so a few permanently refused ids can never block the rest. Past MAX_IDS a warning is logged on every add, but nothing is
+dropped. retry_forever runs once shortly after startup and then every INTERVAL_S, LIMIT ids per pass, and never raises;
+VectorStore.delete paces its own requests.
 """
 import asyncio
 import json
@@ -61,17 +63,19 @@ def add(ids: list[str]) -> None:
             cur = _read()
             seen = set(cur)
             cur += [i for i in dict.fromkeys(ids) if i not in seen]
-            if len(cur) > MAX_IDS:
-                log.warning("vertex orphan list full: dropping %d oldest id(s)", len(cur) - MAX_IDS)
-                cur = cur[-MAX_IDS:]
+            if len(cur) > MAX_IDS:   # never drop: each id is a datapoint that still holds book text
+                log.warning("vertex orphan list has %d ids (over %d): search cleanup is falling behind", len(cur), MAX_IDS)
             _write(cur)
     except OSError as e:
         log.warning("could not save vertex orphans: %s", type(e).__name__)
 
 
-def _remove(done: set[str]) -> None:
+def _settle(done: set[str], refused: list[str]) -> None:
+    """Drop the ids Vertex confirmed; move the ones it refused again to the end so the next pass tries others first."""
     with _lock:
-        _write([i for i in _read() if i not in done])
+        again = set(refused)
+        rest = [i for i in _read() if i not in done and i not in again]
+        _write(rest + [i for i in refused if i not in done])
 
 
 async def retry(store: Any, limit: int = LIMIT) -> None:
@@ -81,8 +85,8 @@ async def retry(store: Any, limit: int = LIMIT) -> None:
         if not ids:
             return
         batch = ids[:limit]
-        refused = set(await store.delete(batch) or [])
-        await asyncio.to_thread(_remove, set(batch) - refused)
+        refused = [i for i in (await store.delete(batch) or []) if i in set(batch)]
+        await asyncio.to_thread(_settle, set(batch) - set(refused), refused)
         log.info("vertex orphan cleanup: %d removed, %d left", len(batch) - len(refused), len(ids) - len(batch) + len(refused))
     except Exception as e:
         log.warning("vertex orphan cleanup failed: %s", type(e).__name__)
