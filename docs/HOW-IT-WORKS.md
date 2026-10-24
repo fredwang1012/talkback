@@ -716,9 +716,9 @@ never trusted to the client or the model.
    - **Local** (`RETRIEVAL_BACKEND=local`): `retrieval.Index` = BM25 (`rank_bm25.BM25Okapi` over `context_blurb + text`)
      plus, when `index/embeddings.npy` exists, multilingual-e5-small cosine: `score = 0.6 × cosine + 0.4 × min-max BM25`.
      Eligible chunks get +0.05 when within 15 paragraphs of the reader (`RECENCY_BOOST`). Top k returned in book order.
-     **Uploaded books have no embeddings file** (`process_upload` saves `embeddings=None`), and the repository ships
-     none for the sample books either, so a local run is BM25-only unless you build embeddings offline with the `embed`
-     extra (`preprocess/index.py`).
+     With the optional `embed` extra, a background job builds e5 embeddings locally (uploads after publishing; built-in
+     books and older uploads at startup), saved as `index/embeddings.npy` (gitignored); without it, a local run is
+     BM25-only.
    - **Vertex** (`RETRIEVAL_BACKEND=vertex`, when the book's index state is "done"): `gcp/vertex_index.VertexIndex.asearch`
      runs text search (started first, needs no embedding) and vector search (`gemini-embedding-001` RETRIEVAL_QUERY) in
      parallel with the same `spoiler_filter` (`book_id == X and para_end <= reader_para`, or `$in` earlier series
@@ -1273,10 +1273,9 @@ translation/detect/describe/face -> local heuristics or nothing. "Busy" (429) wa
 These are the real limitations of the current code. The full list of gaps, with issue numbers, is at the end of
 [FEATURES.md](FEATURES.md#known-gaps--not-built).
 
-1. **Local search for uploads is keyword-only.** Without Google Cloud, retrieval is BM25 (section 11): uploads get no
-   embeddings at runtime, and none ship for the sample books. Answers stay spoiler-safe, but a question phrased very
-   differently from the book can miss the right passage. Local embeddings for uploads are being added. With
-   `RETRIEVAL_BACKEND=vertex`, search is hybrid (vector + full text).
+1. **Meaning-based local search is optional.** Without Google Cloud, retrieval is BM25 (section 11) unless the `embed`
+   extra is installed (`uv sync --extra embed`); then e5 embeddings are built locally in the background and search is
+   hybrid. With `RETRIEVAL_BACKEND=vertex`, search is hybrid (vector + full text).
 2. **Reading position is per browser.** It is kept in localStorage (`talkback:pos:<bookId>`, section 7), so it does not
    follow you to another browser or device.
 3. **Uploads must be in English** (#140). Sentence splitting, number normalization, delivery rules, heading detection

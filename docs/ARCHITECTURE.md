@@ -178,9 +178,10 @@ reachable (then Gemini on that service writes it). `per_user=false`, `usage_log_
 Gemini features are off unless the public API client is active. `.env.example` sets only `BOSON_API_KEY` and
 `PUBLIC_API_URL`; every other setting is listed there commented out.
 
-Local search is keyword search (BM25) for every book: the repository ships no embedding files, and uploads get none at
-runtime yet. The hybrid BM25 + e5 path is used only when `index/embeddings.npy` exists (built offline with the `embed`
-extra by `preprocess/index.py`).
+Local search is keyword search (BM25) by default. With the optional `embed` extra installed (`uv sync --extra embed`),
+the server builds multilingual-e5 embeddings in the background, one book at a time: new uploads right after they are
+published, and at startup any built-in book or older upload without `index/embeddings.npy` (gitignored). Search is
+then hybrid BM25 + e5.
 
 ## 3. Backend module map
 
