@@ -5,7 +5,7 @@ project id `frederick-talkback`, the bucket `frederick-talkback-data` and the se
 GCP resources and are baked into `scripts/deploy_cloudrun.sh` as constants; substitute your own project, region and bucket
 (edit the constants at the top of the script) before deploying anywhere else.
 
-One container serves everything: the FastAPI API, cached audio (`/media`), portraits, and the built frontend (the
+One container serves everything (entry point `app.asgi:app`, which also selects the public processing API below when `PUBLIC_API=true`): the FastAPI API, cached audio (`/media`), portraits, and the built frontend (the
 backend mounts `frontend/dist` at `/` when it exists). Same origin, so the browser needs no CORS setup.
 
 Status: the Dockerfile and `scripts/deploy_cloudrun.sh` are written but **not built or run yet**. Treat the first
@@ -97,3 +97,59 @@ Google-managed client cannot be used). The old `TALKBACK_ACCESS_TOKEN` code is n
 - The OAuth client JSON lives in the gitignored `.iap-client.json`; the client needs the redirect URI
   `https://iap.googleapis.com/v1/oauth/clientIds/<CLIENT_ID>:handleRedirect`.
 - Turn the gate off (e.g. for a public demo): `gcloud beta run services update talkback --region us-central1 --project frederick-talkback --no-iap` and add `allUsers` as `roles/run.invoker`; on again with `--iap` and remove `allUsers`.
+
+## Public processing API (`talkback-public`)
+
+A second, much smaller Cloud Run service from the same image. It lets a fresh clone that has only a `BOSON_API_KEY` get
+full upload processing (main characters, dialogue split, recap notes) and Gemini-written typed answers, on the author's
+GCP project. With `PUBLIC_API=true` the container (entry point `app.asgi:app`) serves **only** `GET /api/health`,
+`POST /api/public/enrich` (+ `GET /api/public/enrich/{job_id}` to poll), and `POST /api/public/answer`. Every other path
+is 404: no frontend, no media, no portraits, no book data. It uses Gemini only (`UPLOAD_LLM=gemini`), holds results in
+memory for 30 minutes, never logs request bodies (they may contain book text), and never decides what a reader may see:
+the local app sends already spoiler-filtered passages.
+
+Limits, all enforced by the service: per-book estimate at most $4 (`PUBLIC_BOOK_CAP_USD`), cumulative enrichment spend at
+most $10 (`PUBLIC_TOTAL_CAP_USD`, persisted), Gemini answers at most $2 per UTC day (`PUBLIC_ANSWER_DAILY_CAP_USD`,
+persisted), 3 books per IP per hour, 20 answers per IP per minute, 3 MB of book text (6,000 paragraphs), two jobs at a
+time. A cap answers `402` and a rate limit `429`, each with `{"detail", "code"}`. Raise or lower a cap by redeploying with
+a different env value (the persisted counters live in the bucket's `usage/` folder; delete the file to reset them).
+
+### One-time setup
+
+```
+gcloud iam service-accounts create talkback-public --display-name "Talkback public API" --project frederick-talkback
+gcloud projects add-iam-policy-binding frederick-talkback --member serviceAccount:talkback-public@frederick-talkback.iam.gserviceaccount.com --role roles/aiplatform.user
+gcloud storage buckets create gs://frederick-talkback-public --project frederick-talkback --location us-central1 --uniform-bucket-level-access
+gcloud storage buckets add-iam-policy-binding gs://frederick-talkback-public --member serviceAccount:talkback-public@frederick-talkback.iam.gserviceaccount.com --role roles/storage.objectAdmin
+```
+
+The service account has no other role: no Secret Manager, no access to the `talkback` data bucket. The service holds no secrets.
+
+### Deploy (ships CLOSED)
+
+`scripts/deploy_public_api.sh` prints its plan; `scripts/deploy_public_api.sh --yes` builds the image if this commit has none,
+deploys `talkback-public` with `--no-allow-unauthenticated` (min 0 / max 1 instance, no CPU throttling so a job keeps
+running between polls, 120 s request timeout) and prints the service URL. A closed service answers `403` to everyone
+without a Google identity token, which the local app treats as "processing service unavailable". Put the printed URL in
+`.env.example` as `PUBLIC_API_URL`.
+
+### Open and close it
+
+```
+# open: anyone can call it (the caps above bound the spend)
+gcloud run services add-iam-policy-binding talkback-public --project frederick-talkback --region us-central1 --member=allUsers --role=roles/run.invoker
+# close it again
+gcloud run services remove-iam-policy-binding talkback-public --project frederick-talkback --region us-central1 --member=allUsers --role=roles/run.invoker
+```
+
+Check from a shell: `curl -s -o /dev/null -w "%{http_code}\n" <URL>/api/health` is `403` when closed, `200` when open.
+Closing is the kill switch; deleting the service removes it entirely. Set a GCP budget alert on the project as well.
+
+### How the local app uses it
+
+`PUBLIC_API_URL` (set in `.env.example`, empty in code) is used only when the machine has no LLM of its own (no
+`ANTHROPIC_API_KEY`, no usable GCP credentials). Upload processing then runs through the service and fills the existing
+progress status; if the service is closed, unreachable or capped, the upload falls back to the simple local cast with a
+message saying which. `/api/answer` retrieves and spoiler-filters locally, then asks the service only to write the answer;
+`/api/health` reports `answer_backend: "gemini"` while the service answers its health check (probed at most once a minute)
+and `"realtime"` otherwise, so typed questions fall back to Boson Realtime when it is closed.
