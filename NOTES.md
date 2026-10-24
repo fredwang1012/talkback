@@ -9,3 +9,10 @@
 
 ## API probe results
 Pending: needs BOSON_API_KEY (probes a–f in brief §9 M0).
+
+## 2026-10-15 — M2/M3/M4 built against fakes (no Boson/Anthropic calls made)
+- Retrieval: hybrid = 0.6 cosine(e5) + 0.4 min-max BM25, +0.05 recency boost, always adds the last 2 paragraphs up to and including `reader_para`. Spoiler rule is paragraph-granular (`para_end <= reader_para`), so the *rest of the paragraph currently being read* can appear in a passage. Accepted per brief; revisit if the eval finds leaks.
+- Chunk offsets: timestamps are aligned to `paragraph.text[char_start:char_end]`; numbers spoken as words (1888 -> "eighteen eighty-eight") map back onto the digits.
+- Found by tests: ReaderEngine's prefetch pruning paused the *current* chunk's audio; fixed by pruning only outside [current, current+3].
+- Found by tests: `pttUp()` must return once `response.create` is sent, not wait for the answer's first audio.
+- Index build downloads multilingual-e5-small (~470 MB) on first run; loads in ~17 s.

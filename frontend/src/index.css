@@ -118,6 +118,7 @@ button:disabled { cursor: not-allowed; }
   box-shadow: 0 0 0 3px var(--brass-soft);
   -webkit-box-decoration-break: clone; box-decoration-break: clone;
 }
+.para .sentence .word { background: var(--brass); color: var(--ground); border-radius: 2px; padding: 0 1px; }
 .para .gap { white-space: pre-wrap; }
 
 .stage {

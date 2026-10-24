@@ -58,3 +58,20 @@ async function getJson<T>(url: string): Promise<T> {
 export const fetchBooks = () => getJson<BookSummary[]>("/api/books");
 export const fetchBook = (id: string) => getJson<Book>(`/api/books/${encodeURIComponent(id)}`);
 export const fetchHealth = () => getJson<Health>("/api/health");
+
+export type WordTiming = { start: number; end: number; char_start: number; char_end: number };
+export type TtsResponse = { chunk_id: string; voice: string; audio_url: string; timestamps: WordTiming[] | null; cached: boolean };
+
+/** Throws an Error carrying the server's readable message (e.g. a missing key or a billing refusal). */
+export async function fetchTts(bookId: string, chunkId: string, voiceOverride?: string): Promise<TtsResponse> {
+  const res = await fetch("/api/tts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ book_id: bookId, chunk_id: chunkId, voice_override: voiceOverride ?? null }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    throw new Error(detail ?? `Audio request failed (${res.status})`);
+  }
+  return res.json() as Promise<TtsResponse>;
+}

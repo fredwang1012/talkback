@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchBook, fetchHealth, type Book, type Health } from "../api";
+import { fetchBook, fetchHealth, fetchTts, type Book, type Health } from "../api";
 import BookText from "../reader/BookText";
 import PlayerBar from "../reader/PlayerBar";
+import { ReaderEngine, type AudioLike } from "../reader/ReaderEngine";
 import Stage from "../reader/Stage";
 import {
   clampIndex, flattenChunks, loadPosition, readerPara, savePosition, silentDurationMs,
@@ -19,7 +20,11 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [fullCast, setFullCast] = useState(true);
   const [autoResume, setAutoResume] = useState(true);
   const [speakerId, setSpeakerId] = useState("narrator");
+  const [word, setWord] = useState<{ charStart: number; charEnd: number } | null>(null);
+  const [audioError, setAudioError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const lastManualScroll = useRef(0);
+  const engineRef = useRef<ReaderEngine | null>(null);
 
   useEffect(() => {
     fetchBook(bookId).then((b) => {
@@ -32,19 +37,57 @@ export default function Reader({ bookId }: { bookId: string }) {
   const chunks = useMemo(() => (book ? flattenChunks(book) : []), [book]);
   const para = readerPara(chunks, index);
   const last = chunks.length - 1;
+  const audioAvailable = health?.boson_key_set === true;
 
-  const go = useCallback((i: number) => setIndex(clampIndex(i, chunks.length)), [chunks.length]);
-  const step = useCallback((d: number) => setIndex((cur) => clampIndex(cur + d, chunks.length)), [chunks.length]);
+  // Real audio engine, only when the server has a Boson key. Otherwise the silent preview below is used.
+  useEffect(() => {
+    if (!book || !audioAvailable || chunks.length === 0) return;
+    const engine = new ReaderEngine(chunks, {
+      fetchTts: (chunk, voice) => fetchTts(book.id, chunk.id, voice),
+      createAudio: (url) => new Audio(url) as unknown as AudioLike, // the engine only assigns a plain onended callback
+    }, loadPosition(book.id, chunks.length));
+    engineRef.current = engine;
+    const off = engine.on((s) => {
+      setIndex(s.index);
+      setPlaying(s.state === "playing" || s.state === "loading");
+      setLoading(s.state === "loading");
+      setAudioError(s.state === "error" ? s.error : null);
+    });
+    let raf = 0;
+    const tick = () => {
+      const w = engine.activeWord();
+      setWord((cur) => (cur?.charStart === w?.charStart && cur?.charEnd === w?.charEnd ? cur : w));
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => { cancelAnimationFrame(raf); off(); engine.dispose(); engineRef.current = null; setWord(null); };
+  }, [book, chunks, audioAvailable]);
+
+  useEffect(() => { engineRef.current?.setSpeed(speed); }, [speed, audioAvailable, book]);
+  useEffect(() => {
+    engineRef.current?.setNarratorOnly(fullCast ? null : (book?.narrator?.voice ?? null));
+  }, [fullCast, book, audioAvailable]);
+
+  const seek = useCallback((i: number) => {
+    const next = clampIndex(i, chunks.length);
+    if (engineRef.current) engineRef.current.seek(next);
+    else setIndex(next);
+  }, [chunks.length]);
+  const step = useCallback((d: number) => seek(index + d), [seek, index]);
+  const toggle = useCallback(() => {
+    if (engineRef.current) engineRef.current.toggle();
+    else setPlaying((p) => !p);
+  }, []);
 
   useEffect(() => { if (book) savePosition(book.id, index); }, [book, index]);
 
   // Silent preview: advance at an estimated reading pace until real audio exists.
   useEffect(() => {
-    if (!playing || chunks.length === 0) return;
+    if (audioAvailable || !playing || chunks.length === 0) return;
     if (index >= last) { setPlaying(false); return; }
-    const t = window.setTimeout(() => step(1), silentDurationMs(chunks[index], speed));
+    const t = window.setTimeout(() => setIndex((i) => clampIndex(i + 1, chunks.length)), silentDurationMs(chunks[index], speed));
     return () => window.clearTimeout(t);
-  }, [playing, index, speed, chunks, last, step]);
+  }, [audioAvailable, playing, index, speed, chunks, last]);
 
   // Keep the active sentence in view, unless the reader scrolled by hand in the last 5 seconds.
   useEffect(() => {
@@ -66,13 +109,13 @@ export default function Reader({ bookId }: { bookId: string }) {
       if (["SELECT", "INPUT", "TEXTAREA"].includes(t.tagName) || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "ArrowRight") { lastManualScroll.current = 0; step(1); }
       else if (e.key === "ArrowLeft") { lastManualScroll.current = 0; step(-1); }
-      else if (e.key === "k") setPlaying((p) => !p);
+      else if (e.key === "k") toggle();
       else if (e.key === "]") setSpeed((s) => SPEEDS[Math.min(SPEEDS.indexOf(s) + 1, SPEEDS.length - 1)]);
       else if (e.key === "[") setSpeed((s) => SPEEDS[Math.max(SPEEDS.indexOf(s) - 1, 0)]);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [step]);
+  }, [step, toggle]);
 
   if (error) return <p className="state-line" role="alert">Could not load this book ({error}). <a href="#/">Back to the library</a></p>;
   if (!book) return <p className="state-line">Turning to your page…</p>;
@@ -85,12 +128,13 @@ export default function Reader({ bookId }: { bookId: string }) {
             <a href="#/">All books</a>
             <span>{book.author}</span>
           </nav>
-          <BookText book={book} chunks={chunks} index={index} onPick={(i) => { lastManualScroll.current = Date.now(); go(i); }} />
+          <BookText book={book} chunks={chunks} index={index} word={word}
+                    onPick={(i) => { lastManualScroll.current = Date.now(); seek(i); }} />
         </div>
         <Stage book={book} para={para} speakerId={speakerId} onSpeaker={setSpeakerId} health={health} />
       </div>
       <PlayerBar
-        playing={playing} onToggle={() => setPlaying((p) => !p)}
+        playing={playing} loading={loading} onToggle={toggle}
         onPrev={() => { lastManualScroll.current = 0; step(-1); }} onNext={() => { lastManualScroll.current = 0; step(1); }}
         speed={speed} speeds={SPEEDS} onSpeed={setSpeed}
         fullCast={fullCast} onFullCast={setFullCast}
@@ -98,6 +142,7 @@ export default function Reader({ bookId }: { bookId: string }) {
         para={para} totalParas={book.paragraphs.length}
         atStart={index === 0} atEnd={index >= last}
         hasCast={book.characters.length > 0}
+        audioAvailable={audioAvailable} audioError={audioError}
       />
     </>
   );

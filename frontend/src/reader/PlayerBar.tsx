@@ -4,6 +4,7 @@ type Props = {
   fullCast: boolean; onFullCast: (v: boolean) => void;
   autoResume: boolean; onAutoResume: (v: boolean) => void;
   para: number; totalParas: number; atStart: boolean; atEnd: boolean; hasCast: boolean;
+  loading?: boolean; audioAvailable: boolean; audioError: string | null;
 };
 
 const Icon = ({ d }: { d: string }) => (
@@ -17,7 +18,7 @@ export default function PlayerBar(p: Props) {
         <button className="icon-btn" onClick={p.onPrev} disabled={p.atStart} aria-label="Previous sentence (left arrow)">
           <Icon d="M6 5h2v14H6zM20 5v14L9.5 12z" />
         </button>
-        <button className="icon-btn primary" onClick={p.onToggle} disabled={p.atEnd && !p.playing} aria-label={p.playing ? "Pause (k)" : "Play silently (k)"}>
+        <button className="icon-btn primary" onClick={p.onToggle} disabled={p.atEnd && !p.playing} aria-label={p.playing ? "Pause (k)" : p.audioAvailable ? "Play (k)" : "Play silently (k)"} aria-busy={p.loading}>
           <Icon d={p.playing ? "M6 5h4v14H6zM14 5h4v14h-4z" : "M8 5v14l11-7z"} />
         </button>
         <button className="icon-btn" onClick={p.onNext} disabled={p.atEnd} aria-label="Next sentence (right arrow)">
@@ -39,7 +40,13 @@ export default function PlayerBar(p: Props) {
         Auto-resume
       </label>
       <span className="pos">¶ {p.para + 1} / {p.totalParas}</span>
-      <p className="note">No audio yet: play moves through the text at an estimated reading pace. Voices need the Boson API key.</p>
+      <p className="note" role={p.audioError ? "alert" : undefined}>
+        {p.audioError
+          ? `Audio problem: ${p.audioError}`
+          : p.audioAvailable
+            ? p.loading ? "Preparing audio…" : "Reading aloud. Click a sentence to jump."
+            : "No audio yet: play moves through the text at an estimated reading pace. Voices need the Boson API key."}
+      </p>
     </footer>
   );
 }
