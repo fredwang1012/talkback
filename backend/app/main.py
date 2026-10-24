@@ -220,6 +220,21 @@ def restore_book(book_id: str):
 _book_bodies: dict[str, tuple[Book, bytes, bytes]] = {}  # book id -> (book object, json, gzipped json)
 
 
+_FIGURE_NAME = re.compile(r"^fig-\d{1,4}\.png$")
+
+
+@app.get("/api/books/{book_id}/figures/{name}", dependencies=[Depends(require_access)])
+def get_figure(book_id: str, name: str):
+    """A textbook figure (#40), gated like the book itself: the same access code and per-account visibility."""
+    if not books._ID.match(book_id) or not _FIGURE_NAME.match(name):  # both come from the URL: no path walking
+        raise HTTPException(404, "Figure not found")
+    users.guard_book(book_id)
+    path = ingest_upload.figures_dir(book_id) / name
+    if not path.is_file():
+        raise HTTPException(404, "Figure not found")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
+
+
 @app.get("/api/books/{book_id}", response_model=Book, dependencies=[Depends(require_access)])
 def get_book(book_id: str, accept_encoding: str = Header(default="")):
     """The full book. Gated like the paid endpoints: a public deployment must not hand out a copyrighted text.
@@ -937,7 +952,7 @@ async def _ingest_work(book_id: str, title: str, author: str, kind: str, data: b
     _set_status(book_id, "processing", "Reading the PDF" if ext == ".pdf" else "Reading the text")
     raw, detected = None, None
     if kind == "auto":  # decide novel or textbook from the extracted text
-        raw = await asyncio.to_thread(ingest_upload.extract_text, data, ext)
+        raw = await asyncio.to_thread(ingest_upload.extract_text, data, ext, ingest_upload.figures_dir(book_id))
         kind, confidence, method = await detect_kind(ingest_upload.plain_text(raw), book_id=book_id)
         detected = {"kind": kind, "confidence": confidence, "method": method}
     book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext,

@@ -7,7 +7,9 @@ PDF extraction heuristics (deliberately simple), working on text lines with thei
   sentence AND there is a paragraph signal: the next line is indented, there is a vertical gap larger than normal
   line spacing, or the previous line is clearly shorter than the page's text width (short last line);
 - a block that is a single short heading line ("Chapter 3", "12 The Wedding", "CHAPTER ONE") stands on its own;
-- a line ending in a hyphen right after a letter and followed by a lowercase letter is de-hyphenated ("exam-" + "ple").
+- a line ending in a hyphen right after a letter and followed by a lowercase letter is de-hyphenated ("exam-" + "ple");
+- a captioned figure ("Figure 2.10 ...") and everything between it and the nearest prose is cropped to a PNG and
+  becomes a figure paragraph (its caption), never body text (#40, see _take_figures).
 Limits: pages, extracted characters and paragraph length are capped (see constants).
 """
 import hashlib
@@ -24,7 +26,7 @@ from typing import NamedTuple
 
 from . import retrieval
 from .config import settings
-from .parsing import CODE_MARK, EQ_MARK, EQ_SEP, HEADING_MARK, inline_marker, parse, strip_inline
+from .parsing import CODE_MARK, EQ_MARK, EQ_SEP, FIGURE_MARK, HEADING_MARK, inline_marker, parse, strip_inline
 from .schema import Book, Narrator, Paragraph, Section
 from .ttschunks import BookIndex, chunk_paragraph, rechunk_book, sentence_spans, split_long
 
@@ -123,22 +125,39 @@ def _starts_paragraph(prev: Line, cur: Line) -> bool:
 
 
 def merge_lines(lines: list[Line]) -> list[str]:
-    """Group consecutive lines into paragraphs (linear: each paragraph's parts are joined once)."""
+    """Group consecutive lines into paragraphs (linear: each paragraph's parts are joined once).
+
+    A figure (FIGURE_MARK line) is a paragraph of its own; one met mid-sentence (it sits at the top of the page a
+    sentence runs on to) is placed after the paragraph it interrupts, so the sentence stays whole."""
     paras: list[str] = []
     parts: list[str] = []
+    held: list[str] = []
     prev: Line | None = None
-    for ln in lines:
-        if prev is not None and _starts_paragraph(prev, ln):
+
+    def flush() -> None:
+        if parts:
             paras.append(" ".join(parts))
-            parts = []
+            parts.clear()
+        paras.extend(held)
+        held.clear()
+
+    for ln in lines:
+        if ln.text.startswith(FIGURE_MARK):
+            if parts and prev is not None and not _SENTENCE_END.search(prev.text):
+                held.append(ln.text)
+            else:
+                flush()
+                paras.append(ln.text)
+            continue
+        if prev is not None and _starts_paragraph(prev, ln):
+            flush()
         if parts and parts[-1].endswith("-") and len(parts[-1]) > 1 and parts[-1][-2].isalpha() \
                 and ln.text[:1].islower():
             parts[-1] = parts[-1][:-1] + (ln.marked or ln.text)  # de-hyphenate "exam-" + "ple"
         else:
             parts.append(ln.marked or ln.text)
         prev = ln
-    if parts:
-        paras.append(" ".join(parts))
+    flush()
     return paras
 
 
@@ -686,13 +705,22 @@ TABLE_RUN = 3          # this many numeric-only lines in a row are table cells
 COLUMN_GAP = 20.0      # points: a block must clear the page middle by this much to belong to one column
 
 
-def _reading_order(blocks: list[list[tuple]], width: float) -> list[list[tuple]]:
-    """Reorder blocks of a clearly two-column page: left column, then right, between full-width blocks."""
+def _column_blocks(blocks: list[list[tuple]], width: float) -> tuple[list, list] | None:
+    """(left column blocks, right column blocks) of a clearly two-column page, else None."""
     mid = width / 2
     left = [b for b in blocks if max(ln[3] for ln in b) < mid + COLUMN_GAP / 2]
     right = [b for b in blocks if min(ln[1] for ln in b) > mid - COLUMN_GAP / 2]
     if len(left) < 2 or len(right) < 2 or len(left) + len(right) < len(blocks) * 0.8:
+        return None
+    return left, right
+
+
+def _reading_order(blocks: list[list[tuple]], width: float) -> list[list[tuple]]:
+    """Reorder blocks of a clearly two-column page: left column, then right, between full-width blocks."""
+    cols = _column_blocks(blocks, width)
+    if cols is None:
         return blocks
+    left, right = cols
     out: list[list[tuple]] = []
     band_l: list[list[tuple]] = []
     band_r: list[list[tuple]] = []
@@ -963,6 +991,179 @@ def _in_figure(blk: list[tuple], figures: list[tuple]) -> bool:
     return any(_overlaps(f, ln[1:5]) for f in figures for ln in blk)
 
 
+# ---- figures shown in the reader (#40) ----
+# A figure is found from its caption: "Figure 2.10 ..." set small or bold, and everything between it and the nearest
+# prose above it (else below it) is the figure. That finds figures built from text, rules and tiny images (the IR
+# textbook's matrices and posting lists have no vector drawings at all) as well as embedded images and diagrams.
+_FIGURE_CAPTION = re.compile(r"^(?:figure|fig\.)\s+\d+(?:[.-]\d+)*\b", re.I)
+_FIGURE_LABEL = re.compile(r"^((?:figure|fig\.)\s+\d+(?:[.-]\d+)*)\.?\s*[:|–—]?\s*", re.I)
+PROSE_WIDTH = 0.6        # a body line at least this share of the column wide, starting at its left edge (or
+PROSE_WORDS = 5          # indented) and reaching its right edge, with at least this many words, is prose
+PROSE_INDENT = 20.0      # points: a paragraph indent (and the shift between odd and even pages)
+PROSE_EDGE = 8.0         # points short of the right edge that still count as reaching it
+COLUMN_PROSE = 5         # a page with this many wordy body lines in each half is set in two columns
+FIGURE_PAD = 4.0         # points around a figure's content in the crop (box borders, braces)
+FIGURE_MIN_HEIGHT = 12.0  # points: a smaller region is no figure (a caption with nothing next to it)
+FIGURE_DPI = 150
+FIGURE_MAX_PX = 2000     # longest side of a figure image; a huge page is rendered at a lower resolution
+MAX_FIGURES = 500        # per book: past this, captions are dropped as before
+
+
+def figures_dir(book_id: str) -> Path:
+    return settings.data_dir / "books" / book_id / "figures"
+
+
+def _captions(blocks: list[list[tuple]], body: float) -> list[tuple[int, int, int]]:
+    """(block, first line, end line) of each figure caption: a line starting "Figure N" (after any marker such as ◮)
+    set smaller than the body or bold, plus the small lines close below it that continue it."""
+    out = []
+    for bi, blk in enumerate(blocks):
+        i = 0
+        while i < len(blk):
+            ln = blk[i]
+            if (ln[5] <= body * 0.95 or ln[6]) and _FIGURE_CAPTION.match(_LEADING_SYMBOLS.sub("", ln[0])):
+                j = i + 1
+                while j < len(blk) and blk[j][5] <= body * 0.95 and blk[j][2] - blk[j - 1][4] < 1.5 * (blk[j][4] - blk[j][2]):
+                    j += 1
+                out.append((bi, i, j))
+                i = j
+            else:
+                i += 1
+    return out
+
+
+def _caption_text(lines: list[tuple]) -> str:
+    """'◮Figure 1.3 The two parts ...' -> 'Figure 1.3: The two parts ...' (read aloud as written)."""
+    text = re.sub(r"\s+", " ", _LEADING_SYMBOLS.sub("", " ".join(ln[0] for ln in lines))).strip()
+    return _FIGURE_LABEL.sub(lambda m: m.group(1) + ": ", text, count=1).rstrip(": ")
+
+
+def _text_column(pages: list[list[list[tuple]]], body: float) -> tuple[float, float] | None:
+    """(left, right) edge of the body text column over the whole document: a page that is mostly figure says
+    nothing about it, so it is never measured per page."""
+    lines = [ln for blocks in pages for blk in blocks for ln in blk if body and ln[5] >= body * 0.95
+             and not ln[0].startswith(EQ_MARK) and len(ln[0].split()) >= PROSE_WORDS]  # an equation line is no prose
+    if len(lines) < 3:
+        return None
+    return sorted(ln[1] for ln in lines)[len(lines) // 5], sorted(ln[3] for ln in lines)[len(lines) * 9 // 10]
+
+
+def _two_column_prose(blocks: list[list[tuple]], body: float, width: float) -> bool:
+    """Prose on both sides of the page middle (a figure of many small cells is not two columns)."""
+    mid = width / 2
+    wordy = [ln for blk in blocks for ln in blk
+             if ln[5] >= body * 0.95 and not ln[0].startswith(EQ_MARK) and len(ln[0].split()) >= PROSE_WORDS]
+    return sum(ln[3] < mid + COLUMN_GAP / 2 for ln in wordy) >= COLUMN_PROSE \
+        and sum(ln[1] > mid - COLUMN_GAP / 2 for ln in wordy) >= COLUMN_PROSE
+
+
+def _take_figures(blocks: list[list[tuple]], rects: list[tuple], page_box: tuple, body: float,
+                  column: tuple[float, float] | None, render) -> list[list[tuple]]:
+    """Replace each captioned figure of a page (its caption and the text, rules and images making it up) with one
+    FIGURE_MARK line where the figure starts. `render(rect)` saves the crop and returns its file name, or None: the
+    figure's text is dropped either way (it is never body text), only a rendered figure gets a paragraph.
+    Two-column pages are left alone (their column is not the document's): captions are dropped as before."""
+    if not blocks or not body or column is None or _two_column_prose(blocks, body, page_box[2] - page_box[0]):
+        return blocks
+    caps = _captions(blocks, body)
+    if not caps:
+        return blocks
+    left, right = column
+    width = max(right - left, 1.0)
+    page_area = (page_box[2] - page_box[0]) * (page_box[3] - page_box[1])
+
+    def prose(ln) -> bool:
+        return ln[5] >= body * 0.95 and not ln[0].startswith(EQ_MARK) and ln[1] <= left + PROSE_INDENT and ln[3] >= right - PROSE_EDGE \
+            and ln[3] - ln[1] >= PROSE_WIDTH * width and len(ln[0].split()) >= PROSE_WORDS
+
+    cap_lines = {(bi, li) for bi, i, j in caps for li in range(i, j)}
+    # a block with a prose line is a paragraph: its short last line ("observation and experiment.") is prose too
+    prose_blocks = {bi for bi, blk in enumerate(blocks) if any(prose(ln) for li, ln in enumerate(blk) if (bi, li) not in cap_lines)}
+    taken: set[tuple[int, int]] = set()
+    marks: dict[int, list[list[tuple]]] = {}
+    every = [(bi, li, ln) for bi, blk in enumerate(blocks) for li, ln in enumerate(blk)]
+    for bi, i, j in sorted(caps, key=lambda c: blocks[c[0]][c[1]][2]):
+        cap = blocks[bi][i:j]
+        cy0, cy1 = min(ln[2] for ln in cap), max(ln[4] for ln in cap)
+        free = [(b, l, ln) for b, l, ln in every if (b, l) not in taken and (b, l) not in cap_lines]
+        content: list[tuple[int, int, tuple]] = []
+        parts: list[tuple] = []  # rules, boxes and pictures in the figure's band
+        for side in ("above", "below"):
+            above = side == "above"
+            near = sorted(((b, l, ln) for b, l, ln in free if (ln[4] <= cy0 + 1 if above else ln[2] >= cy1 - 1)),
+                          key=lambda t: -t[2][4] if above else t[2][2])
+            edge = page_box[1] if above else page_box[3]  # the prose the walk stops at, else the page edge
+            for b, l, ln in near:
+                # below a caption only labels, cells or a picture can be its figure: any sentence is body text
+                if b in prose_blocks or prose(ln) or (not above and ln[5] >= body * 0.95 and len(ln[0].split()) >= PROSE_WORDS):
+                    edge = ln[4] if above else ln[2]
+                    break
+                content.append((b, l, ln))
+            band0, band1 = (edge - 1, cy0 + 1) if above else (cy1 - 1, edge + 1)
+            parts = [r for r in rects if r[1] >= band0 and r[3] <= band1
+                     and (r[2] - r[0]) * (r[3] - r[1]) <= FIGURE_MAX_AREA * page_area]
+            picture = any(r[2] - r[0] >= THIN and r[3] - r[1] >= THIN for r in parts)
+            if content or picture:
+                break
+            parts = []
+        if not content and not parts:
+            continue  # a caption with nothing next to it: _clean_layout drops it as before
+        boxes = [ln[1:5] for _, _, ln in content] + [tuple(r) for r in parts]
+        x0, y0 = min(b[0] for b in boxes), min(b[1] for b in boxes)
+        x1, y1 = max(b[2] for b in boxes), max(b[3] for b in boxes)
+        box = (max(page_box[0], x0 - FIGURE_PAD), max(page_box[1], y0 - FIGURE_PAD),
+               min(page_box[2], x1 + FIGURE_PAD), min(page_box[3], y1 + FIGURE_PAD))
+        if box[3] - box[1] < FIGURE_MIN_HEIGHT or box[2] <= box[0]:
+            continue
+        taken.update((b, l) for b, l, _ in content)
+        taken.update((bi, li) for li in range(i, j))
+        name = render(box)
+        if name:
+            first = min(b for b, _, _ in content + [(bi, i, None)])
+            marks.setdefault(first, []).append(
+                [(FIGURE_MARK + name + "\n" + _caption_text(cap), box[0], box[1], box[2], box[3], body, False, False)])
+    out: list[list[tuple]] = []
+    for bi, blk in enumerate(blocks):
+        out.extend(marks.get(bi, []))
+        rest = [ln for li, ln in enumerate(blk) if (bi, li) not in taken]
+        if rest:
+            out.append(rest)
+    return out
+
+
+class _FigureRenderer:
+    """Crops figure regions out of the PDF into PNGs named fig-1.png, fig-2.png, ... (at most MAX_FIGURES)."""
+
+    def __init__(self, data: bytes, out_dir: Path | None):
+        self.out_dir, self.count, self.doc = out_dir, 0, None
+        if out_dir is not None:
+            import pymupdf
+            self.doc = pymupdf.open(stream=data, filetype="pdf")
+
+    def page(self, pno: int):
+        return lambda box: self.render(pno, box)
+
+    def render(self, pno: int, box: tuple) -> str | None:
+        if self.doc is None or self.count >= MAX_FIGURES:
+            return None
+        import pymupdf
+        w, h = box[2] - box[0], box[3] - box[1]
+        zoom = min(FIGURE_DPI / 72, FIGURE_MAX_PX / max(w, h, 1.0))
+        try:
+            pix = self.doc[pno].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=pymupdf.Rect(box), alpha=False)
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            name = f"fig-{self.count + 1}.png"
+            pix.save(self.out_dir / name)
+        except Exception:  # an unrenderable region: the figure is skipped, the text is still read
+            return None
+        self.count += 1
+        return name
+
+    def close(self) -> None:
+        if self.doc is not None:
+            self.doc.close()
+
+
 def _heading_candidate(blk: list[tuple], body: float) -> tuple[str, bool] | None:
     """(text, found by font alone) when the block looks like a heading: the regex, or large / bold short text.
 
@@ -971,7 +1172,7 @@ def _heading_candidate(blk: list[tuple], body: float) -> tuple[str, bool] | None
     if len(blk) > 2:
         return None
     text = " ".join(ln[0] for ln in blk)
-    if _FRONT_MATTER.search(text) or text.startswith((CODE_MARK, EQ_MARK)):
+    if _FRONT_MATTER.search(text) or text.startswith((CODE_MARK, EQ_MARK, FIGURE_MARK)):
         return None
     size = max(ln[5] for ln in blk)
     if _is_heading(text):
@@ -1021,7 +1222,7 @@ def _mark_headings(blocks: list[list[tuple]], body: float, figures: list[tuple] 
         if i - 1 in drop:
             continue
         if cand is None:
-            out.append([ln[:7] + (ln[0].startswith((CODE_MARK, EQ_MARK)),) for ln in blk])  # listings, equations stand alone
+            out.append([ln[:7] + (ln[0].startswith((CODE_MARK, EQ_MARK, FIGURE_MARK)),) for ln in blk])  # listings, equations, figures stand alone
             continue
         text, by_font = cand
         nxt = cands[i] if i < len(blocks) and i not in drop else None
@@ -1131,8 +1332,11 @@ def _drop_running_headers(pages: list[list[list[tuple]]], body: float) -> list[l
     return out
 
 
-def pdf_to_text(data: bytes) -> str:
-    """Extract paragraph-separated text from PDF bytes. Raises UploadError if the PDF is unreadable or has no text."""
+def pdf_to_text(data: bytes, figures_out: Path | None = None) -> str:
+    """Extract paragraph-separated text from PDF bytes. Raises UploadError if the PDF is unreadable or has no text.
+
+    With `figures_out`, captioned figures are cropped into PNGs there and become FIGURE_MARK paragraphs (#40);
+    without it their text is still left out of the body text."""
     import pymupdf
     try:
         doc = pymupdf.open(stream=data, filetype="pdf")
@@ -1146,6 +1350,8 @@ def pdf_to_text(data: bytes) -> str:
         total = 0
         sizes: Counter = Counter()  # font size -> characters, to find the body size
         figures: list[list[tuple]] = []  # page -> labelled figure regions (see _figure_regions)
+        page_rects: list[list[tuple]] = []  # page -> images (rules too) and labelled figure regions: figure parts
+        page_boxes: list[tuple] = []
         inline: dict[tuple, str] = {}  # (page, x0, y0, text) of a prose line -> its text with inline formulas marked
         for page in doc:
             blocks = []
@@ -1193,6 +1399,8 @@ def pdf_to_text(data: bytes) -> str:
             pages.append(blocks)
             widths.append(page.rect.width)
             figures.append(_page_figures(doc, page, blocks, rects))
+            page_rects.append(rects + figures[-1])
+            page_boxes.append(tuple(page.rect))
 
     def key(block):
         return _norm_key(" ".join(ln[0] for ln in block))
@@ -1223,10 +1431,19 @@ def pdf_to_text(data: bytes) -> str:
     pages = [strip_noise(blocks) for blocks in pages]
     pages = _drop_running_headers(pages, body)
     all_lines: list[Line] = []
-    for pno, blocks in enumerate(pages):
-        if _is_toc_page(blocks):
-            continue
-        blocks = _mark_code(_drop_contents(_clean_layout(_reading_order(blocks, widths[pno]), body)))
+    column = _text_column(pages, body)
+    renderer = _FigureRenderer(data, figures_out)
+    try:
+        laid_out = []
+        for pno, blocks in enumerate(pages):
+            # figures first: a table of bare numbers would otherwise make its whole page look like a contents page
+            blocks = _take_figures(blocks, page_rects[pno], page_boxes[pno], body, column, renderer.page(pno))
+            if _is_toc_page(blocks):
+                continue
+            laid_out.append((pno, _mark_code(_drop_contents(_clean_layout(_reading_order(blocks, widths[pno]), body)))))
+    finally:
+        renderer.close()
+    for pno, blocks in laid_out:
         flat = [ln for blk in blocks for ln in blk]
         if not flat:
             continue
@@ -1246,9 +1463,9 @@ def pdf_to_text(data: bytes) -> str:
     return text
 
 
-def extract_text(data: bytes, ext: str) -> str:
+def extract_text(data: bytes, ext: str, figures_out: Path | None = None) -> str:
     if ext == ".pdf":
-        return pdf_to_text(data)
+        return pdf_to_text(data, figures_out)
     text = data.decode("utf-8-sig", errors="replace")
     if len(text) > MAX_CHARS:
         raise UploadError("The document has too much text (5 million characters maximum).")
@@ -1295,7 +1512,7 @@ def _cap_paragraphs(sections: list[Section], paragraphs: list[Paragraph]) -> lis
             inline = [m.model_copy(update={"start": m.start - s, "end": m.end - s})
                       for m in p.inline_math if s <= m.start and m.end <= e]
             out.append(Paragraph(idx=len(out), section_id=p.section_id, text=p.text[s:e], kind=p.kind, math=p.math,
-                                 inline_math=inline))
+                                 inline_math=inline, figure=p.figure))
     for s in sections:
         s.start_para = new_start.get(s.start_para, len(out))
     return out
@@ -1314,9 +1531,9 @@ def section_level(title: str) -> int:
 def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_detected: dict | None = None) -> Book:
     sections, paragraphs = parse(raw, None, None, HEADING_REGEX)
     paragraphs = _cap_paragraphs(sections, paragraphs)
-    if kind != "textbook":  # only textbooks skip listings and set equations; elsewhere they are just text to read
+    if kind != "textbook":  # only textbooks skip listings, set equations and show figures; elsewhere they are just text
         for p in paragraphs:
-            p.kind = p.math = None
+            p.kind = p.math = p.figure = None
             p.inline_math = []
     if kind == "textbook":  # novels keep a flat chapter list
         for sec in sections:
@@ -1358,7 +1575,9 @@ def process_upload(book_id: str, title: str, author: str, kind: str, data: bytes
     Writes the retrieval chunks but NOT book.json: call `publish_book` once everything else (indexing) succeeded,
     so a half-processed upload is never listed or readable.
     """
-    book = build_book(book_id, title, author, kind, raw if raw is not None else extract_text(data, ext), kind_detected)
+    if raw is None:
+        raw = extract_text(data, ext, figures_dir(book_id))
+    book = build_book(book_id, title, author, kind, raw, kind_detected)
     chunks = retrieval.make_chunks(book)
     retrieval.save_index(settings.data_dir / "books" / book_id / "index", chunks, None)
     return book, chunks
@@ -1573,6 +1792,7 @@ def discard_book(book_id: str) -> None:
     """Remove everything but status.json after a failed ingest."""
     d = settings.data_dir / "books" / book_id
     shutil.rmtree(d / "index", ignore_errors=True)
+    shutil.rmtree(d / "figures", ignore_errors=True)
     for name in ("book.json", "book.json.tmp"):
         (d / name).unlink(missing_ok=True)
     for tmp in d.glob("book.json.*.tmp"):   # books.save_book's per-call temp files (only left by a crash)
