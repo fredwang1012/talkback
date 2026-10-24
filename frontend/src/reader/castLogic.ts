@@ -1,16 +1,29 @@
-import { saveCast, type AnimatedFace, type Book, type Cast, type Face } from "../api";
+import { saveCast, type AnimatedFace, type Assignment, type Book, type Cast, type Face, type Gender } from "../api";
 
 /** Voice presets the server knows (kept in step with backend/app/voices.py). */
 export const PRESETS = ["chloe", "eleanor", "jake", "marcus", "nora", "oliver"];
 const FALLBACK_VOICE = "marcus";
 
+/** Gender and a one-line description of each preset (from the casting prompt, backend/app/enrich/cast.py). */
+export const VOICE_INFO: Record<string, { gender: Gender; blurb: string }> = {
+  chloe: { gender: "female", blurb: "Friendly and clear" },
+  eleanor: { gender: "female", blurb: "Calm and professional" },
+  nora: { gender: "female", blurb: "Calm, a storyteller" },
+  jake: { gender: "male", blurb: "Energetic and dramatic" },
+  marcus: { gender: "male", blurb: "Enthusiastic, a professor" },
+  oliver: { gender: "male", blurb: "Calm and thoughtful" },
+};
+/** The short line every voice preview speaks: one fixed text per voice, so it is synthesised once and then cached. */
+export const PREVIEW_LINE = "Hello. This is how I sound when I read this book to you.";
+/** Two-voice defaults when the server sent none (backend cast.DEFAULT_SLOT_VOICES). */
+const DEFAULT_SLOTS: Record<Gender, string> = { male: "jake", female: "chloe" };
+const STAND_INS: Record<string, Gender> = { minor_m: "male", minor_f: "female" }; // backend enrich/minor.py
+
 // ---------- per-book choices kept in the browser ----------
 
-export type ReadingStyle = { mode: "one" | "cast"; voice: string | null; face: string | null };
 /** voice: null = Auto. face: null = Auto, "none" = no face, else a face id. */
 export type TalkChoice = { voice: string | null; face: string | null };
 
-const styleKey = (bookId: string) => `talkback:style:${bookId}`;
 const talkKey = (bookId: string) => `talkback:talk:${bookId}`;
 
 function readJson(key: string): Record<string, unknown> | null {
@@ -24,12 +37,6 @@ function writeJson(key: string, value: unknown): void {
 }
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
 
-export function loadStyle(bookId: string): ReadingStyle {
-  const o = readJson(styleKey(bookId));
-  return { mode: o?.mode === "one" ? "one" : "cast", voice: str(o?.voice), face: str(o?.face) };
-}
-export const saveStyle = (bookId: string, s: ReadingStyle) => writeJson(styleKey(bookId), s);
-
 export function loadTalkChoice(bookId: string): TalkChoice {
   const o = readJson(talkKey(bookId));
   return { voice: str(o?.voice), face: str(o?.face) };
@@ -37,12 +44,10 @@ export function loadTalkChoice(bookId: string): TalkChoice {
 export const saveTalkChoice = (bookId: string, c: TalkChoice) => writeJson(talkKey(bookId), c);
 
 /** After a voice or face is deleted, browser-side choices that pointed at it fall back to Auto (null). */
-export function dropReferences(style: ReadingStyle, talk: TalkChoice, gone: { voice?: string; face?: string }) {
-  const v = (x: string | null) => (gone.voice && x === gone.voice ? null : x);
-  const f = (x: string | null) => (gone.face && x === gone.face ? null : x);
+export function dropReferences(talk: TalkChoice, gone: { voice?: string; face?: string }): TalkChoice {
   return {
-    style: { ...style, voice: v(style.voice), face: f(style.face) },
-    talk: { voice: v(talk.voice), face: f(talk.face) },
+    voice: gone.voice && talk.voice === gone.voice ? null : talk.voice,
+    face: gone.face && talk.face === gone.face ? null : talk.face,
   };
 }
 
@@ -55,23 +60,65 @@ export function bookVoice(book: Book, id: string): string {
   return (id === "narrator" ? book.narrator?.voice : book.characters.find((c) => c.id === id)?.voice) ?? FALLBACK_VOICE;
 }
 
-/** The reading-cast voice: the cast setting, else the book default. */
+export const isNovel = (book: Book) => book.kind === "novel";
+
+// ---------- two voices (novels, the default): a male and a female voice, each with a face ----------
+
+/** Novels read in two voices unless the reader switched to Full cast; textbooks always have one voice. */
+export const twoVoices = (book: Book, cast: Cast) => isNovel(book) && (cast.mode ?? "two") === "two";
+
+/** Which of the two voices narrates: the reader's pick, else the gender of the book's narrator voice. */
+export function narratorGender(cast: Cast): Gender {
+  return cast.narrator_gender ?? cast.defaults?.narrator_gender ?? "male";
+}
+
+/** A speaker's gender: the reader's override, else the inferred one; unknown speakers read in the narrator's voice. */
+export function speakerGender(cast: Cast, id: string): Gender {
+  if (id === "narrator") return narratorGender(cast);
+  return STAND_INS[id] ?? cast.genders?.[id] ?? cast.auto_genders?.[id] ?? narratorGender(cast);
+}
+
+export function slotVoice(cast: Cast, g: Gender): string {
+  return cast[g]?.voice ?? cast.defaults?.[g] ?? DEFAULT_SLOTS[g];
+}
+export const slotFace = (cast: Cast, g: Gender): string | null => cast[g]?.face ?? null;
+
+/** The reading-cast voice: two-voice mode's voice for the speaker's gender; in Full cast the setting, else the book's. */
 export function castVoice(book: Book, cast: Cast, id: string): string {
+  if (twoVoices(book, cast)) return slotVoice(cast, speakerGender(cast, id));
   const a = id === "narrator" ? cast.narrator : cast.characters[id];
   return a?.voice ?? bookVoice(book, id);
 }
-export function castFace(cast: Cast, id: string): string | null {
+export function castFace(book: Book, cast: Cast, id: string): string | null {
+  if (twoVoices(book, cast)) return slotFace(cast, speakerGender(cast, id));
   return (id === "narrator" ? cast.narrator : cast.characters[id])?.face ?? null;
 }
 
-export const isNovel = (book: Book) => book.kind === "novel";
-/** Textbooks have only a narrator, so they behave as Full cast with one row (no toggle). */
-export const effectiveMode = (book: Book, style: ReadingStyle) => (isNovel(book) ? style.mode : "cast");
+/** `cast` with one of the two voices changed (voice and/or face). */
+export function withSlot(cast: Cast, g: Gender, patch: Partial<Assignment>): Cast {
+  return { ...cast, [g]: { voice: null, face: null, ...cast[g], ...patch } };
+}
+/** `cast` with a character's gender overridden, or back to the inferred one (null). */
+export function withGender(cast: Cast, id: string, g: Gender | null): Cast {
+  const { [id]: _old, ...rest } = cast.genders ?? {};
+  void _old;
+  return { ...cast, genders: g ? { ...rest, [id]: g } : rest };
+}
 
-/** The voice_override sent with every chunk in One voice mode; null (send nothing) in Full cast and for textbooks. */
-export function oneVoiceOverride(book: Book, cast: Cast, style: ReadingStyle): string | null {
-  if (effectiveMode(book, style) !== "one") return null;
-  return style.voice ?? castVoice(book, cast, "narrator");
+/** Speakers whose gender the reader may override: every character except the generic stand-ins. */
+export function genderRows(book: Book, cast: Cast): { id: string; name: string; auto: Gender | null; override: Gender | null }[] {
+  return book.characters.filter((c) => !(c.id in STAND_INS))
+    .map((c) => ({ id: c.id, name: c.name, auto: cast.auto_genders?.[c.id] ?? null, override: cast.genders?.[c.id] ?? null }));
+}
+
+/** Roving focus in a radio group: the option index an arrow / Home / End key moves to, or null for other keys. */
+export function radioKeyTarget(key: string, index: number, count: number): number | null {
+  if (count <= 0) return null;
+  if (key === "ArrowRight" || key === "ArrowDown") return (index + 1) % count;
+  if (key === "ArrowLeft" || key === "ArrowUp") return (index - 1 + count) % count;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  return null;
 }
 
 /** Rows of the Full cast table: the narrator, then every main character (novels only; textbooks have just the narrator). */
@@ -81,20 +128,19 @@ export function castRows(book: Book, cast: Cast): { id: string; name: string }[]
 }
 
 /** Id of the face to show while a chunk by `speaker` is read, or null. */
-export function readingFaceId(book: Book, cast: Cast, style: ReadingStyle, speaker: string): string | null {
-  if (effectiveMode(book, style) === "one") return style.face;
-  return castFace(cast, isNovel(book) ? speaker : "narrator");
+export function readingFaceId(book: Book, cast: Cast, speaker: string): string | null {
+  return castFace(book, cast, isNovel(book) ? speaker : "narrator");
 }
 
 export function talkVoice(book: Book, cast: Cast, choice: TalkChoice, id: string): string {
   return choice.voice ?? castVoice(book, cast, id);
 }
 
-/** Auto = the character's cast face, else the face bound to the voice (a clone made with a face). */
-export function talkFaceId(cast: Cast, choice: TalkChoice, id: string, voice: string, faces: Face[]): string | null {
+/** Auto = the character's cast face (in two-voice mode: the face of its voice), else the face bound to the voice. */
+export function talkFaceId(book: Book, cast: Cast, choice: TalkChoice, id: string, voice: string, faces: Face[]): string | null {
   if (choice.face === "none") return null;
   if (choice.face) return choice.face;
-  return castFace(cast, id) ?? faces.find((f) => f.voice === voice)?.id ?? null;
+  return castFace(book, cast, id) ?? faces.find((f) => f.voice === voice)?.id ?? null;
 }
 
 // ---------- saving ----------

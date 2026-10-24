@@ -168,11 +168,8 @@ describe("deleting voices and faces", () => {
   });
 
   it("drops browser-side choices that pointed at the deleted voice or face", () => {
-    const r = dropReferences({ mode: "one", voice: "v1", face: "f1" }, { voice: "v1", face: "none" }, { voice: "v1" });
-    expect(r.style).toEqual({ mode: "one", voice: null, face: "f1" });
-    expect(r.talk).toEqual({ voice: null, face: "none" });
-    const g = dropReferences({ mode: "cast", voice: "v2", face: "f1" }, { voice: "v2", face: "f1" }, { face: "f1" });
-    expect(g.style.face).toBeNull(); expect(g.talk.face).toBeNull(); expect(g.style.voice).toBe("v2");
+    expect(dropReferences({ voice: "v1", face: "none" }, { voice: "v1" })).toEqual({ voice: null, face: "none" });
+    expect(dropReferences({ voice: "v2", face: "f1" }, { face: "f1" })).toEqual({ voice: "v2", face: null });
   });
 });
 

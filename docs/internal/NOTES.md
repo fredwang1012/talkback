@@ -574,3 +574,9 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   minute of reading; cached clips (any line read with lip-sync before, same voice) are free. The session estimate in the
   debug drawer counts fresh renders (spend.addAvatar) from the chunk's text length.
 - Not measured live: the real gap between chunks and Boson's behaviour with two streams in flight for minutes at a time.
+
+## Two voices per novel (#85, #86), 2026-10-23
+- Novels now default to cast mode "two": every speaker (main cast and the minor_m/minor_f stand-ins) reads in a male or a female voice by gender; the narrator uses the one the reader picks. Resolved at TTS time (backend/app/cast.py voice_for/tags_for, frontend castLogic.castVoice), stored per user in the cast settings; book.json is untouched, "Full cast" mode restores the per-character voices.
+- Gender (backend/app/genders.py, free, offline): title/noun in the name, first-name list, tag pronouns (attribute.infer_genders, >=3 and 85%), then the cast preset's gender. All 40 characters of the five classics and the 47 of HP1 + HP5 come out right (it also fixes Fred in A Christmas Carol and Mole, both cast with a female preset). Unknown -> narrator's voice.
+- Character pitch/speed tags are dropped in two-voice mode, so character lines are new TTS cache keys: the first read of a book in two-voice mode re-synthesises its dialogue (narration keeps its cache because the narrator's slot defaults to the book's narrator voice). Demo mode (cached_only) needs a prerender in two-voice mode or Full cast.
+- Minor pass on the classics, dry run only (not applied): Alice 205, Carol 119, Peter Pan 140, Willows 45, Oz 101 uncast lines would get a stand-in (610 total: 561 male, 49 female).

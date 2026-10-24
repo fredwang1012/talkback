@@ -9,8 +9,12 @@ from app.ratelimit import TokenBucket
 from tests.test_api import env  # noqa: F401  (fixture)
 
 PNG = b"\x89PNG\r\n\x1a\nfake"
-EMPTY = {"main": ["harry", "king"], "narrator": {"voice": None, "tags": None, "face": None},
-         "characters": {"harry": {"voice": None, "tags": None, "face": None}, "king": {"voice": None, "tags": None, "face": None}}}
+NONE = {"voice": None, "tags": None, "face": None}
+TWO = {"mode": "two", "male": NONE, "female": NONE, "narrator_gender": None, "genders": {},
+       "auto_genders": {"harry": "male", "king": "male"},
+       "defaults": {"male": "default", "female": "chloe", "narrator_gender": "male"}}  # the demo book has no narrator
+EMPTY = {"main": ["harry", "king"], "narrator": NONE,
+         "characters": {"harry": NONE, "king": NONE}, **TWO}
 
 
 def test_defaults_for_a_book_without_settings(env):  # noqa: F811
@@ -32,12 +36,12 @@ def test_put_persists_and_round_trips(env):  # noqa: F811
     fid = faces.create_face(PNG, "Ana")["id"]
     (settings.data_dir / "voices.json").write_text(json.dumps({"me": "voice_abc"}), encoding="utf-8")
     body = {"main": ["king"], "narrator": {"voice": "nora", "face": fid},
-            "characters": {"king": {"voice": "voice_abc", "face": None}}}
+            "characters": {"king": {"voice": "voice_abc", "face": None}}, "mode": "cast"}
     r = client.put("/api/books/demo/cast", json=body)
     assert r.status_code == 200
     expect = {"main": ["king"], "narrator": {"voice": "nora", "tags": None, "face": fid},
               "characters": {"harry": {"voice": None, "tags": None, "face": None},
-                                "king": {"voice": "voice_abc", "tags": None, "face": None}}}
+                                "king": {"voice": "voice_abc", "tags": None, "face": None}}, **TWO, "mode": "cast"}
     assert r.json() == expect
     assert client.get("/api/books/demo/cast").json() == expect
     d = settings.data_dir / "books" / "demo"
@@ -53,7 +57,13 @@ def test_put_rejects_bad_values_and_changes_nothing(env):  # noqa: F811
                  {"characters": {"harry": {"voice": "voice_made_up"}}},
                  {"narrator": {"face": "fdeadbeef"}},
                  {"narrator": {"face": "../etc"}},
-                 {"narrator": "nora"}):
+                 {"narrator": "nora"},
+                 {"mode": "three"},
+                 {"male": {"voice": "not-a-voice"}},
+                 {"female": {"face": "fdeadbeef"}},
+                 {"narrator_gender": "other"},
+                 {"genders": {"ghost": "male"}},
+                 {"genders": {"harry": "robot"}}):
         assert client.put("/api/books/demo/cast", json=body).status_code in (400, 422), body
     assert client.get("/api/books/demo/cast").json() == EMPTY
     assert not (settings.data_dir / "books" / "demo" / "cast_settings.json").exists()
@@ -71,19 +81,20 @@ def test_main_defaults_skip_characters_marked_minor(env):  # noqa: F811
 
 def test_tts_uses_the_cast_voice_unless_overridden(env, monkeypatch):  # noqa: F811
     client, _ = env
+    client.put("/api/books/demo/cast", json={"mode": "cast"})
     assert client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0"}).json()["voice"] == "marcus"
-    client.put("/api/books/demo/cast", json={"narrator": {"voice": "nora"}})
+    client.put("/api/books/demo/cast", json={"mode": "cast", "narrator": {"voice": "nora"}})
     assert client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0"}).json()["voice"] == "nora"
     r = client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "voice_override": "jake"})
     assert r.json()["voice"] == "jake"
-    client.put("/api/books/demo/cast", json={"narrator": {"voice": None}})
+    client.put("/api/books/demo/cast", json={"mode": "cast", "narrator": {"voice": None}})
     assert client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0"}).json()["voice"] == "marcus"
 
 
 def test_a_cast_voice_that_was_removed_falls_back_to_the_book_voice(env):  # noqa: F811
     book = cast.Book.model_validate_json((settings.data_dir / "books" / "demo" / "book.json").read_text(encoding="utf-8"))
     (settings.data_dir / "books" / "demo" / "cast_settings.json").write_text(
-        json.dumps({"narrator": {"voice": "voice_gone"}}), encoding="utf-8")
+        json.dumps({"mode": "cast", "narrator": {"voice": "voice_gone"}}), encoding="utf-8")
     assert cast.voice_for(book, "narrator") is None
 
 

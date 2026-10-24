@@ -123,7 +123,7 @@ def test_tts_applies_the_cast_pitch_tag_override(env, monkeypatch):  # noqa: F81
                                            "char_start": 0, "char_end": 9}]
     p.write_text(json.dumps(book), encoding="utf-8")
     main._index_for.cache_clear()
-    assert client.put("/api/books/demo/cast", json={"characters": {"harry": {"tags": "<|prosody:speed_slow|>"}}}).status_code == 200
+    assert client.put("/api/books/demo/cast", json={"mode": "cast", "characters": {"harry": {"tags": "<|prosody:speed_slow|>"}}}).status_code == 200
     assert client.get("/api/books/demo/cast").json()["characters"]["harry"]["tags"] == "<|prosody:speed_slow|>"
     assert client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p1c0"}).status_code == 200
     assert sent[-1] == "<|prosody:speed_slow|>He smiled."

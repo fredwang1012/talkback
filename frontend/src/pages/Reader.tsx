@@ -2,12 +2,12 @@ import { isAutoplayBlock } from "../audio/mediaErrors";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getAccessToken, setAccessToken } from "../accessToken";
 import {
-  avatarUrl, fetchAvatars, fetchBook, fetchCast, fetchFaces, fetchHealth, fetchTts, fetchVoices,
+  avatarUrl, fetchAvatars, fetchBook, fetchCast, fetchFaces, fetchHealth, fetchTts, fetchVoices, speak,
   type Book, type Cast, type Face, type Health,
 } from "../api";
 import {
-  PRESETS, castVoice, dropReferences, createCastSaver, emptyCast, isNovel, loadStyle, loadTalkChoice, migrateOldOverrides,
-  oneVoiceOverride, readingFaceId, saveStyle, saveTalkChoice, talkFaceId, talkVoice, type ReadingStyle, type TalkChoice,
+  PRESETS, PREVIEW_LINE, castVoice, dropReferences, createCastSaver, emptyCast, isNovel, loadTalkChoice, migrateOldOverrides,
+  readingFaceId, saveTalkChoice, talkFaceId, talkVoice, type TalkChoice,
 } from "../reader/castLogic";
 import { DEMO_SPEAKER, DEMO_START_PARA, firstChunkAtOrAfter, isDemo } from "../demo";
 import BookText from "../reader/BookText";
@@ -65,9 +65,8 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [castError, setCastError] = useState<string | null>(null);
   const [faces, setFaces] = useState<Face[]>([]);
   const [cloned, setCloned] = useState<Record<string, string>>({});
-  const [style, setStyle] = useState<ReadingStyle>(() => loadStyle(bookId));
   const [talkChoice, setTalkChoice] = useState<TalkChoice>(() => loadTalkChoice(bookId));
-  useEffect(() => { setStyle(loadStyle(bookId)); setTalkChoice(loadTalkChoice(bookId)); }, [bookId]);
+  useEffect(() => { setTalkChoice(loadTalkChoice(bookId)); }, [bookId]);
   const [lipSync, setLipSync] = useState(() => { try { return localStorage.getItem("talkback:lipsync") === "1"; } catch { return false; } });
   // read-mode lip-sync (#80): off by default (it costs Boson credit); the face's clip video is driven by its own sync
   const [readLipSync, setReadLipSync] = useState(() => { try { return localStorage.getItem("talkback:readlipsync") === "1"; } catch { return false; } });
@@ -167,19 +166,18 @@ export default function Reader({ bookId }: { bookId: string }) {
   }, [book, chunks, audioAvailable, demo]);
 
 
-  const oneVoice = book ? oneVoiceOverride(book, cast, style) : null;
   const readingVoiceFor = (id: string) => (book ? castVoice(book, cast, id) : "marcus");
   const talkVoiceFor = (id: string) => (book ? talkVoice(book, cast, talkChoice, id) : "marcus");
   const faceById = (id: string | null) => (id ? faces.find((f) => f.id === id) : undefined);
   const talkFaceFor = (id: string) =>
-    book ? faceById(talkFaceId(cast, talkChoice, id, talkVoiceFor(id), faces)) : undefined;
-  const narratorVoice = book ? oneVoice ?? castVoice(book, cast, "narrator") : null;
+    book ? faceById(talkFaceId(book, cast, talkChoice, id, talkVoiceFor(id), faces)) : undefined;
+  const narratorVoice = book ? castVoice(book, cast, "narrator") : null;
   const current = chunks[index];
-  // read mode: who reads a chunk, by the reader's own voice -> face resolution (the cast / one-voice style); a speaker
+  // read mode: who reads a chunk, by the reader's own voice -> face resolution (two voices or full cast); a speaker
   // without a face is read by the narrator's face (reader/readLipSync)
   const readFaces: ReadFaces = {
-    faceFor: (s) => (book ? faceById(readingFaceId(book, cast, style, s)) ?? null : null),
-    voiceFor: (s) => (book ? oneVoice ?? castVoice(book, cast, isNovel(book) ? s : "narrator") : "marcus"),
+    faceFor: (s) => (book ? faceById(readingFaceId(book, cast, s)) ?? null : null),
+    voiceFor: (s) => (book ? castVoice(book, cast, isNovel(book) ? s : "narrator") : "marcus"),
   };
   const latestFaces = useRef(readFaces);
   latestFaces.current = readFaces;
@@ -207,7 +205,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const voiceOptions = useMemo(
     () => [...PRESETS.map((v) => ({ value: v, label: v })), ...Object.entries(cloned).map(([n, v]) => ({ value: v, label: `${n} (cloned)` }))],
     [cloned]);
-  const lipSyncFace = faceById(book ? talkFaceId(cast, talkChoice, speakerId, talkVoiceFor(speakerId), faces) : null);
+  const lipSyncFace = faceById(book ? talkFaceId(book, cast, talkChoice, speakerId, talkVoiceFor(speakerId), faces) : null);
   const lipSyncable = !!lipSyncFace && lipSyncFace.voice === talkVoiceFor(speakerId);
 
   // Talk mode: push-to-talk questions, answered from what has been read so far (needs the Boson key).
@@ -259,9 +257,6 @@ export default function Reader({ bookId }: { bookId: string }) {
   }, [audioAvailable, pttDown, pttUp]);
 
   useEffect(() => { engineRef.current?.setSpeed(speed); }, [speed, audioAvailable, book]);
-  useEffect(() => {
-    engineRef.current?.setNarratorOnly(oneVoice);
-  }, [oneVoice, audioAvailable]);
   // a changed cast applies at once, from the local copy (the save runs in the background)
   useEffect(() => {
     engineRef.current?.setVoiceResolver(book && castLoaded
@@ -329,16 +324,14 @@ export default function Reader({ bookId }: { bookId: string }) {
     () => createCastSaver(bookId, () => setCastError(null), setCastError),
     [bookId]);
   const changeCast = (next: Cast) => { castEdited.current = true; setCastLoaded(true); setCast(next); setCastError(null); void saver(next); };
-  const changeStyle = (next: ReadingStyle) => { setStyle(next); saveStyle(bookId, next); };
   const changeTalk = (next: TalkChoice) => { setTalkChoice(next); saveTalkChoice(bookId, next); };
   const reloadCast = () => { void saver.flush().then(() => fetchCast(bookId)).then((c) => { setCast(c); }).catch(() => {}); };
   const reloadFaces = () => { fetchFaces().then(setFaces).catch(() => {}); fetchVoices().then(setCloned).catch(() => {}); };
-  const preview = async (speaker: string, voice: string) => {
-    const chunk = chunks.find((c) => c.speaker === speaker) ?? chunks[0];
-    if (!chunk) return;
+  // one short fixed line per voice through the TTS cache: only the first preview of a voice costs anything
+  const preview = async (voice: string) => {
     try {
-      const r = await fetchTts(bookId, chunk.id, voice);
-      if (!r.cached) spend.addTts(chunk.tts_text.length);
+      const r = await speak(PREVIEW_LINE, voice);
+      if (!r.cached) spend.addTts(PREVIEW_LINE.length);
       await new Audio(r.audio_url).play();
     } catch (e) {
       if (isAutoplayBlock(e)) setAudioNotice("Tap the preview button again to hear the voice. Your browser needs a fresh click.");
@@ -409,12 +402,11 @@ export default function Reader({ bookId }: { bookId: string }) {
         )}
       </div>
       {labOpen && (
-        <VoiceLab book={book} cast={cast} onCast={changeCast} castError={castError} style={style} onStyle={changeStyle}
+        <VoiceLab book={book} cast={cast} onCast={changeCast} castError={castError}
                   cloned={cloned} onCloned={setCloned} animating={animating} setAnimating={setAnimating} animErrors={animErrors} setAnimErrors={setAnimErrors} faces={faces} onFaces={setFaces}
                   onFacesChanged={() => { reloadFaces(); reloadCast(); }}
                   onRemoved={(gone) => {
-                    const next = dropReferences(style, talkChoice, gone);
-                    changeStyle(next.style); changeTalk(next.talk);
+                    changeTalk(dropReferences(talkChoice, gone));
                   }}
                   onPreview={preview} audioAvailable={audioAvailable} onClose={() => setLabOpen(false)} />
       )}
