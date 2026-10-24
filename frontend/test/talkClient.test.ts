@@ -332,3 +332,18 @@ describe("TalkClient voice changes", () => {
 
 beforeEach(() => { /* real timers: the client only uses short waits in tests */ });
 afterEach(() => vi.restoreAllMocks());
+
+describe("TalkClient reply audio capture", () => {
+  it("hands every PCM chunk to onAudioChunk, flagging the first of a response", async () => {
+    const got: [string, boolean][] = [];
+    const h = setup({ onAudioChunk: (b: string, first: boolean) => got.push([b, first]) });
+    const p = h.client.ensureOpen("marcus");
+    await flush();
+    h.sockets[0].open();
+    await p;
+    h.sockets[0].recv({ type: "response.created", response: {} });
+    h.sockets[0].recv({ type: "response.output_audio.delta", item_id: "i", delta: "AAA" });
+    h.sockets[0].recv({ type: "response.output_audio.delta", item_id: "i", delta: "BBB" });
+    expect(got).toEqual([["AAA", true], ["BBB", false]]);
+  });
+});

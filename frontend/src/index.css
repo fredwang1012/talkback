@@ -645,3 +645,5 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
   .series-books { padding-left: 0; border-left: 0; }
   .add-dialog .add-book { padding: var(--s5) var(--s4); }
 }
+.replay-btn { margin-top: 6px; min-width: 32px; min-height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--brass-soft); background: transparent; color: var(--brass); cursor: pointer; font-size: 0.8rem; }
+.replay-btn:hover, .replay-btn[aria-pressed="true"] { background: var(--brass-soft); }

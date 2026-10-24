@@ -93,6 +93,23 @@ describe("TalkbackView", () => {
     expect(talk.clearMessages).toHaveBeenCalled();
   });
 
+  it("shows a labelled replay button only on finished replies that can be replayed", () => {
+    const replay = vi.fn();
+    const messages = [
+      { id: 1, role: "user", speakerId: "narrator", text: "hi" },
+      { id: 2, role: "character", speakerId: "narrator", text: "Hello." },
+      { id: 3, role: "character", speakerId: "narrator", text: "Old.", },
+    ] as TalkUi["messages"];
+    view(novel, fakeTalk({ messages, replayable: new Set([2]), replayingId: null, replay }));
+    const btns = host.querySelectorAll<HTMLButtonElement>(".replay-btn");
+    expect(btns).toHaveLength(1);
+    expect(btns[0].getAttribute("aria-label")).toBe("Play Narrator's reply again");
+    act(() => btns[0].click());
+    expect(replay).toHaveBeenCalledWith(2);
+    view(novel, fakeTalk({ messages, replayable: new Set([2]), replayingId: 2, replay }));
+    expect(host.querySelector(".replay-btn")!.getAttribute("aria-label")).toBe("Pause Narrator's reply again");
+  });
+
   it("hold-to-talk with the keyboard presses and releases", () => {
     const talk = fakeTalk();
     view(novel, talk);

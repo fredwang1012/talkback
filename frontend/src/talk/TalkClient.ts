@@ -39,6 +39,8 @@ export interface TalkClientDeps {
   /** Receives base64 PCM16 chunks (~100 ms) and a level for the meter. */
   createMic: (onChunk: (b64: string) => void, onLevel?: (rms: number) => void) => MicLike;
   onLevel?: (rms: number) => void;
+  /** Every base64 PCM chunk of the reply; `first` is true for the first chunk of a response (reply replay keeps them). */
+  onAudioChunk?: (b64: string, first: boolean) => void;
   onLog?: (dir: "send" | "recv" | "info", type: string, raw: unknown) => void;
   cancelWaitMs?: number;
   voiceChangeWaitMs?: number;
@@ -283,6 +285,7 @@ export class TalkClient implements TalkSession {
         if (typeof evt.delta === "string" && evt.delta) {
           if (typeof evt.item_id === "string") this.assistantItemId = evt.item_id;
           this.player.enqueueBase64(evt.delta);
+          this.d.onAudioChunk?.(evt.delta, !this.audioStarted);
           if (!this.audioStarted) { this.audioStarted = true; this.emit({ type: "audio-start" }); }
         }
         break;

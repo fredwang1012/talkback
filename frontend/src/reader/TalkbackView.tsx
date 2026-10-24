@@ -149,6 +149,13 @@ export default function TalkbackView({
                   {m.via === "typed" && m.role === "user" && <small> typed</small>}
                 </span>
                 <p>{m.text || (m.pending ? "…" : "")}</p>
+                {m.role === "character" && !m.pending && talk.replayable?.has(m.id) && (
+                  <button type="button" className="replay-btn" aria-pressed={talk.replayingId === m.id}
+                          aria-label={`${talk.replayingId === m.id ? "Pause" : "Play"} ${speakerName(book, m.speakerId)}'s reply again`}
+                          onClick={() => talk.replay(m.id)}>
+                    {talk.replayingId === m.id ? "❚❚" : "▶"}
+                  </button>
+                )}
               </div>
             ))}
           </div>
