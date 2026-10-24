@@ -342,6 +342,10 @@ export class TalkClient implements TalkSession {
   /** Remove an item from the server's conversation (#135: a turn that was only the character's echo). */
   deleteItem(itemId: string): void { this.send({ type: "conversation.item.delete", item_id: itemId }); }
 
+  /** Empty the server's input audio buffer: a server-detected turn is over (live, the server never clears it itself,
+   * and transcribes every turn with all the audio since the last clear). */
+  clearInput(): void { this.send({ type: "input_audio_buffer.clear" }); }
+
   /** The transcription language hint (ISO 639-1, or null for none) (#135); sent at once when a session is open. */
   setLanguageHint(code: string | null): void {
     if (code === this.language) return;

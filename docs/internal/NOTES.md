@@ -1157,3 +1157,29 @@ Fixes:
 - Served by GET /api/books/<id>/figures/fig-N.png with the book's gate (access code + guard_book); the reader fetches it with the access header into an object URL. "Read captions" (player bar, textbooks with figures) skips caption chunks in continuous reading and prefetch without changing the chunk list, so saved positions stay valid.
 - Only new uploads get figures (a figure adds a paragraph); re-upload older textbooks. Tables ("Table N") are still dropped as before.
 - Text markers from pdf_to_text to parse(): \x01 heading, \x02 code listing, \x03 + \x04 display equation (#41), \x05 + \x06 inline formula (main), \x07 figure. Each feature needs its own: #40 first used \x03 (taken by #41), then \x05 (taken by inline formulas, whose parser also strips stray \x05 / \x06). A test with a figure and an equation on one page guards it.
+
+## Hands-free: questions accumulated, every answer "interrupted", stuck turns (fix/handsfree-transcripts, 2026-10-24)
+User report (textbook, Tutor, Gemini answers): each hands-free question contained all the earlier ones ("Hey, what is
+Boolean retrieval? Hey, I don't understand anything. Yes, see, okay."), so retrieval and answers drifted; every answer
+was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-to-talk and typed questions were fine.
+- Live probe (`scripts/probe_realtime_turns.py`, capture `scripts/captures/realtime_semantic_turns.json`, < 1 cent):
+  five TTS utterances streamed in real time under `semantic_vad` + `create_response: false`, no response.create in
+  between (the Gemini path never sends one). **The server never clears the input audio buffer**: every committed turn
+  carried the SAME item_id (`1a91cb05`, five times) and its transcript was all the audio since the session start:
+  "What is Boolean retrieval?", "What is Boolean retrieval? I don't understand anything.", ... A 3 s gap with no
+  audio (the mic hold), an assistant text item (`conversation.item.create`) and deleting the item changed nothing;
+  `input_audio_buffer.clear` did: the next transcript was only the new utterance.
+- Consequences in our code: (1) the query sent to retrieval/Gemini was the cumulative transcript; (2) the echo guard
+  keyed echo turns by item_id, so one stray speech_started while the character spoke marked THE id and every later
+  real transcript was ignored ("I didn't catch that" after 2.5-5 s, then the local-gate fallback, which the hands-free
+  toggle never undid); (3) `conversation.item.delete` of an "echo" item deleted the real question's item.
+- Fixes (TalkController, TalkClient): `TalkSession.clearInput` sends `input_audio_buffer.clear`; it is sent when a
+  server turn finishes (finishSrv, after the transcript is taken, also for dropped/empty turns), on a committed event
+  outside a turn (echo, noise while the character speaks or thinks), and when a half-heard turn is abandoned (typed
+  question, Stop). Echo is no longer tracked by item id (ignored by state; nothing deleted). Within one turn, a
+  transcript that repeats the earlier one (the server splitting a question re-transcribes the whole buffer) replaces it
+  (`mergeTranscript`), a transcript of only new words is still appended. Turning hands-free on again resets the
+  local-gate fallback. Push-to-talk never clears (only a tap discards, as before).
+- Not changed, for a person to check: the "interrupted" label on an answer whose full text is on screen but whose
+  voice is still queued (text streams ahead of TTS; speaking then is a real barge-in), and the barge-in bar relative to
+  the speaker echo (max(0.10, 2.5 x echo median) can be out of reach of a normal voice on a laptop mic with speakers).

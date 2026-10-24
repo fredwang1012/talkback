@@ -403,7 +403,7 @@ describe("TalkController on Boson turn detection (#135)", () => {
     expect(l.heard).toEqual(["A girl"]);
   });
 
-  it("echo guard: speech_started over the character without clear local speech is ignored and its turn deleted", async () => {
+  it("echo guard: speech_started over the character without clear local speech is ignored and its audio cleared from the buffer", async () => {
     const l = loop();
     await handsFreeOn(l);
     await speakTurn(l, "Who is Alice?");
@@ -415,7 +415,7 @@ describe("TalkController on Boson turn detection (#135)", () => {
     l.ws().recv({ type: "input_audio_buffer.speech_stopped", item_id: "echo1" });
     l.ws().recv({ type: "input_audio_buffer.committed", item_id: "echo1" });
     await settle();
-    expect(l.ws().sent.at(-1)).toEqual({ type: "conversation.item.delete", item_id: "echo1" });
+    expect(l.ws().sent.at(-1)).toEqual({ type: "input_audio_buffer.clear" }); // not deleted by item id: live the id is shared with the real question
     l.ws().recv({ type: "conversation.item.input_audio_transcription.completed", item_id: "echo1", transcript: "A girl who" });
     await l.advance(2000);
     expect(l.asked).toEqual(["Who is Alice?"]);

@@ -172,7 +172,10 @@ describe("echo: the server never hears the character", () => {
     await characterSpeaks(l);
     await serverTurn(l, "echo1", "A girl who fell", 400, 0.06);
     await l.advance(5000);
-    expect(l.ws().sent).toContainEqual({ type: "conversation.item.delete", item_id: "echo1" });
+    // live, every committed turn carries the same item id, so the echo is not deleted by id (that would remove the real
+    // question's item): the buffer is cleared, so its audio never leads the next question
+    expect(l.ws().types()).toContain("input_audio_buffer.clear");
+    expect(l.ws().sent).not.toContainEqual({ type: "conversation.item.delete", item_id: "echo1" });
     expect(l.talk.state).toBe("answering");
     expect(l.toasts).toEqual([]);
     expect(l.bubbles()).toHaveLength(2); // no question was made of the echo
