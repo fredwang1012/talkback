@@ -310,6 +310,14 @@ describe("explain_here", () => {
     expect(runTool("explain_here", {}, ctx({ readerPara: 27, index: 54 }), a).output).toContain("A union B"); // on the equation itself
     expect(runTool("explain_here", { what: "equation" }, ctx(), a).ok).toBe(false); // none nearby
   });
+  it("a novel with spoilers off never explains an equation or figure past the reader; a textbook may look just ahead", () => {
+    const { a } = acts();
+    // the figure is at 24, the equation at 27: from 25 only the figure is behind; the equation is one paragraph ahead
+    expect(runTool("explain_here", { what: "equation" }, ctx({ readerPara: 25, index: 50 }), a).output).toContain("A union B");
+    expect(runTool("explain_here", { what: "equation" }, ctx({ kind: "novel", readerPara: 25, index: 50 }), a).ok).toBe(false);
+    expect(runTool("explain_here", { what: "figure" }, ctx({ kind: "novel", readerPara: 23, index: 46 }), a).ok).toBe(false);
+    expect(runTool("explain_here", { what: "equation" }, ctx({ kind: "novel", spoilers: true, readerPara: 25, index: 50 }), a).ok).toBe(true);
+  });
 });
 
 describe("parseIntent: quiz and explain", () => {

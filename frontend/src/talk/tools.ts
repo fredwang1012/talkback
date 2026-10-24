@@ -477,8 +477,10 @@ export function runTool(name: string, args: Record<string, unknown>, ctx: ToolCo
       let target: Para | undefined = cur;
       if (what !== "paragraph") {
         const kind = what === "equation" ? "math" : "figure";
-        // the nearest one just read (or on screen just after): a few paragraphs back first, then one or two ahead
-        const near = ctx.paragraphs.filter((p) => p.kind === kind && p.idx >= ctx.readerPara - 6 && p.idx <= ctx.readerPara + 2);
+        // the nearest one just read (or on screen just after): a few paragraphs back first, then one or two ahead; a novel
+        // with spoilers off never looks past the reader
+        const ahead = unlimited(ctx) ? 2 : 0;
+        const near = ctx.paragraphs.filter((p) => p.kind === kind && p.idx >= ctx.readerPara - 6 && p.idx <= ctx.readerPara + ahead);
         target = near.filter((p) => p.idx <= ctx.readerPara).at(-1) ?? near[0];
         if (!target) return refuse(`There is no ${what} near here. Say so briefly.`);
       }
