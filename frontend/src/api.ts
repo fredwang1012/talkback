@@ -486,9 +486,16 @@ export async function fetchBookStatus(id: string): Promise<BookStatus> {
   const res = await timedFetch(`/api/books/${encodeURIComponent(id)}/status`, { headers: authHeaders() });
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
-    throw new Error(detail ?? `Status check failed (${res.status})`);
+    throw Object.assign(new Error(detail ?? `Status check failed (${res.status})`), { status: res.status });
   }
   return res.json() as Promise<BookStatus>;
+}
+
+/** The backend is restarting or briefly unreachable (proxy 502/503/504, or no response at all): keep waiting. */
+export const UNREACHABLE_GRACE_MS = 60_000;
+export function isUnreachable(e: unknown): boolean {
+  const status = (e as { status?: number })?.status;
+  return status === undefined ? !(e instanceof Error && /taking too long/.test(e.message)) : [502, 503, 504].includes(status);
 }
 
 /**
@@ -502,14 +509,19 @@ async function pollStatus(
 ): Promise<BookStatus | null> {
   const deadline = Date.now() + maxMs;
   let failures = 0;
+  let unreachableSince: number | null = null;
   while (!signal?.aborted) {
     let s: BookStatus | undefined;
     try {
       s = await fetchBookStatus(id);
       failures = 0;
+      unreachableSince = null;
     } catch (e) {
       if (signal?.aborted) return null;
-      if (++failures > 3) throw e; // tolerate up to 3 failed calls in a row
+      if (isUnreachable(e)) {   // a backend restart: wait it out instead of giving up after a few seconds
+        unreachableSince ??= Date.now();
+        if (Date.now() - unreachableSince > UNREACHABLE_GRACE_MS) throw e;
+      } else if (++failures > 3) throw e; // tolerate up to 3 failed calls in a row
     }
     if (signal?.aborted) return null;
     if (s) {
