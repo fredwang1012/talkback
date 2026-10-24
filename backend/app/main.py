@@ -151,13 +151,37 @@ class RetrieveRequest(BaseModel):
     k: int = Field(default=4, ge=1, le=8)
 
 
+@lru_cache(maxsize=1)
+def _vertex_deps():
+    """Shared embedder + vector store, built on first use (no network at import or construction of the index)."""
+    from .gcp.embed import GeminiEmbedder
+    from .gcp.vectorstore import VectorStore
+    return GeminiEmbedder(), VectorStore(settings.vs_collection_path)
+
+
 @lru_cache(maxsize=8)
 def _index_for(book_id: str) -> retrieval.Index:
     book = books.load_book(book_id)
+    if settings.retrieval_backend == "vertex":
+        from .gcp.vertex_index import VertexIndex
+        return VertexIndex(book, _LazyEmbedder(), _LazyStore())
     index_dir = settings.data_dir / "books" / book_id / "index"
     if (index_dir / "chunks.json").exists():
         return retrieval.Index.load(index_dir, embedder=_embedder())
     return retrieval.Index(retrieval.make_chunks(book))  # BM25-only until the index is built
+
+
+class _LazyEmbedder:
+    def embed_query(self, text: str):
+        return _vertex_deps()[0].embed_query(text)
+
+
+class _LazyStore:
+    async def vector_search(self, *a, **kw):
+        return await _vertex_deps()[1].vector_search(*a, **kw)
+
+    async def text_search(self, *a, **kw):
+        return await _vertex_deps()[1].text_search(*a, **kw)
 
 
 @lru_cache(maxsize=1)
@@ -170,7 +194,7 @@ def _embedder():
 
 
 @app.post("/api/retrieve")
-def retrieve(req: RetrieveRequest):
+async def retrieve(req: RetrieveRequest):
     book = books.load_book(req.book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
@@ -180,7 +204,7 @@ def retrieve(req: RetrieveRequest):
     speaker = next((c for c in book.characters if c.id == req.speaker_id), None)
     if speaker and book.kind == "novel" and speaker.first_para > reader_para:
         raise HTTPException(403, f"{speaker.name} has not appeared yet at this point in the story.")  # server-side gate
-    out = retrieval.retrieve(book, _index_for(req.book_id), req.query, reader_para, req.k)
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k)
     out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"])
     out["persona"] = speaker.persona if speaker else None
     return out
