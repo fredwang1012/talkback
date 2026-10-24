@@ -21,7 +21,7 @@ from typing import NamedTuple
 
 from . import retrieval
 from .config import settings
-from .parsing import parse
+from .parsing import HEADING_MARK, parse
 from .schema import Book, Narrator, Paragraph, Section
 from .ttschunks import chunk_paragraph, sentence_spans, split_long
 
@@ -36,9 +36,16 @@ LICENSE = "Uploaded by the user"
 # or "12 The Wedding" (number then capitalised title without sentence punctuation).
 _NUMBER_WORDS = (r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|"
                  r"seventeen|eighteen|nineteen|twenty\S*|thirty\S*|forty\S*|fifty\S*|hundred")
-HEADING_REGEX = (r"^(?=.{1,69}\Z)(?:(?i:(?:chapter|part|book|section)\s+(?:\d+|[ivxlc]+|" + _NUMBER_WORDS + r")\b[^,]*(?<!-))"
-                 r"|[IVXLC]+\.|\d{1,3}\s+[A-Z][^.!?]*)\Z")
+HEADING_REGEX = (r"^(?=.{1,69}\Z)(?:(?i:(?:chapter|part|book|section|unit)\s+(?:\d+|[ivxlc]+|" + _NUMBER_WORDS
+                 + r")\b[^,]*(?<!-))"
+                 r"|[IVXLC]+\.|\d{1,3}\s+[A-Z][^.!?]*|\d{1,2}\.\d{1,2}(?:\.\d{1,2})?\s+[A-Z][^.!?]*"
+                 r"|\x01.+)\Z")  # \x01: a heading found by font size alone (see parsing.HEADING_MARK)
 _HEADING = re.compile(HEADING_REGEX)
+_BARE_LABEL = re.compile(r"^(?i:chapter|part|book|section|unit)\s+(?:\d+|[ivxlc]+|" + _NUMBER_WORDS + r")\s*$", re.I)
+_CONTENTS = re.compile(r"^(?:table of\s+)?contents$", re.I)
+HEADING_BIG = 1.15     # a short line this much larger than the body text is a heading
+HEADING_BOLD = 1.05    # ... or bold and slightly larger
+TOC_RUN = 4            # this many headings in a row is a table of contents, not chapters
 
 _PAGE_NUMBER = re.compile(r"^\W*(?:page\s+)?(?:\d{1,5}|[ivxlc]{1,7})\W*$", re.IGNORECASE)
 _SENTENCE_END = re.compile(r"""[.!?]["'”’)\]]*$""")
@@ -122,6 +129,111 @@ def merge_lines(lines: list[Line]) -> list[str]:
     return paras
 
 
+def _font_info(spans: list[dict]) -> tuple[float, bool]:
+    """(largest font size rounded to 0.5pt, whether all the text is bold) of a line's spans."""
+    real = [s for s in spans if s["text"].strip()] or spans
+    size = round(max((s["size"] for s in real), default=0.0) * 2) / 2
+    bold = bool(real) and all(s["flags"] & 16 or "bold" in s["font"].lower() for s in real)
+    return size, bold
+
+
+def _has_dot_leader(text: str) -> bool:
+    """A TOC line: dots (a leader) followed by a page number. Linear: only the line's tail is looked at."""
+    if len(text) > 300:
+        return False
+    t = text.rstrip()
+    digits = len(t) - len(t.rstrip("0123456789"))
+    if not 1 <= digits <= 4:
+        return False
+    return t[:-digits].rstrip()[-12:].replace(" ", "").endswith("...")
+
+
+def _drop_contents(blocks: list[list[tuple]]) -> list[list[tuple]]:
+    """Drop table-of-contents furniture: a 'Contents' title and lines ending in dot leaders plus a page number."""
+    out = []
+    for blk in blocks:
+        if len(blk) == 1 and _CONTENTS.match(blk[0][0]):
+            continue
+        blk = [ln for ln in blk if not _has_dot_leader(ln[0])]
+        if blk:
+            out.append(blk)
+    return out
+
+
+def _split_by_size(blocks: list[list[tuple]]) -> list[list[tuple]]:
+    """Start a new block wherever the font size jumps (a heading set tight against body text)."""
+    out = []
+    for blk in blocks:
+        cur = [blk[0]]
+        for ln in blk[1:]:
+            if abs(ln[5] - cur[-1][5]) > 0.15 * max(ln[5], 1):
+                out.append(cur)
+                cur = []
+            cur.append(ln)
+        out.append(cur)
+    return out
+
+
+def _heading_candidate(blk: list[tuple], body: float) -> tuple[str, bool] | None:
+    """(text, found by font alone) when the block looks like a heading: the regex, or large / bold short text."""
+    if len(blk) > 2:
+        return None
+    text = " ".join(ln[0] for ln in blk)
+    if _is_heading(text):
+        return text, False
+    if len(text) > 68 or len(text) < 2 or not any(c.isalpha() for c in text) or re.search(r"[.!?,;:]$", text):
+        return None
+    size = max(ln[5] for ln in blk)
+    if body and (size >= body * HEADING_BIG or (all(ln[6] for ln in blk) and size >= body * HEADING_BOLD)):
+        return text, True
+    return None
+
+
+def _mark_headings(blocks: list[list[tuple]], body: float) -> list[list[tuple]]:
+    """Return the page's blocks with each heading turned into one standalone line (flag at index 7).
+
+    A run of TOC_RUN or more heading blocks in a row (or a block of that many heading lines) is a table of
+    contents and is dropped. A bare "CHAPTER 8" / "Unit 2" is joined with the heading block right after it.
+    """
+    blocks = _split_by_size(blocks)
+    cands = [_heading_candidate(b, body) for b in blocks]
+    for i, b in enumerate(blocks):  # one block of many heading-like lines
+        if len(b) >= TOC_RUN and all(_is_heading(ln[0]) for ln in b):
+            cands[i] = ("", False)
+    drop: set[int] = set()
+    i = 0
+    while i < len(blocks):
+        if cands[i] is None:
+            i += 1
+            continue
+        j = i
+        while j < len(blocks) and cands[j] is not None:
+            j += 1
+        if j - i >= TOC_RUN or any(cands[k] == ("", False) for k in range(i, j)):
+            drop.update(range(i, j))
+        i = j
+    out: list[list[tuple]] = []
+    i = 0
+    while i < len(blocks):
+        blk, cand = blocks[i], cands[i]
+        i += 1
+        if i - 1 in drop:
+            continue
+        if cand is None:
+            out.append([ln[:7] + (False,) for ln in blk])
+            continue
+        text, by_font = cand
+        nxt = cands[i] if i < len(blocks) and i not in drop else None
+        if _BARE_LABEL.match(text) and nxt is not None and not _BARE_LABEL.match(nxt[0]):
+            text, by_font = text + " " + nxt[0], by_font or nxt[1]
+            blk = blk + blocks[i]
+            i += 1
+        first, last = blk[0], blk[-1]
+        mark = HEADING_MARK if by_font and not _is_heading(text) else ""
+        out.append([(mark + text, first[1], first[2], max(ln[3] for ln in blk), last[4], first[5], first[6], True)])
+    return out
+
+
 def pdf_to_text(data: bytes) -> str:
     """Extract paragraph-separated text from PDF bytes. Raises UploadError if the PDF is unreadable or has no text."""
     import pymupdf
@@ -134,6 +246,7 @@ def pdf_to_text(data: bytes) -> str:
             raise UploadError(f"The PDF has too many pages ({MAX_PAGES} maximum).")
         pages: list[list[list[tuple]]] = []  # page -> blocks -> lines (text, x0, y0, x1, y1)
         total = 0
+        sizes: Counter = Counter()  # font size -> characters, to find the body size
         for page in doc:
             blocks = []
             for b in page.get_text("dict")["blocks"]:
@@ -144,7 +257,9 @@ def pdf_to_text(data: bytes) -> str:
                     t = "".join(s["text"] for s in ln["spans"]).translate(_LIGATURES).strip()
                     if t:
                         x0, y0, x1, y1 = ln["bbox"]
-                        lines.append((t, x0, y0, x1, y1))
+                        size, bold = _font_info(ln["spans"])
+                        sizes[size] += len(t)
+                        lines.append((t, x0, y0, x1, y1, size, bold))
                         total += len(t) + 1
                         if total > MAX_CHARS:  # checked per line so extraction stops as soon as the cap is crossed
                             raise UploadError("The document has too much text (5 million characters maximum).")
@@ -164,21 +279,23 @@ def pdf_to_text(data: bytes) -> str:
     def is_noise(block) -> bool:
         return key(block) in repeated or bool(_PAGE_NUMBER.match(" ".join(ln[0] for ln in block)))
 
+    body = sizes.most_common(1)[0][0] if sizes else 0.0
     all_lines: list[Line] = []
     for pno, blocks in enumerate(pages):
         if blocks and is_noise(blocks[0]):
             blocks = blocks[1:]
         if blocks and is_noise(blocks[-1]):
             blocks = blocks[:-1]
+        blocks = _drop_contents(blocks)
         flat = [ln for blk in blocks for ln in blk]
         if not flat:
             continue
         x0s = sorted(ln[1] for ln in flat)
         x1s = sorted(ln[3] for ln in flat)
         left, right = x0s[len(x0s) // 5], x1s[len(x1s) * 9 // 10]
-        for blk in blocks:
-            alone = len(blk) == 1 and _is_heading(blk[0][0])
-            for t, x0, y0, x1, y1 in blk:
+        for blk in _mark_headings(blocks, body):
+            alone = len(blk) == 1 and blk[0][7]
+            for t, x0, y0, x1, y1, _size, _bold, _h in blk:
                 all_lines.append(Line(t, x0, x1, y0, y1, left, right, pno, alone))
 
     text = "\n\n".join(merge_lines(all_lines))
