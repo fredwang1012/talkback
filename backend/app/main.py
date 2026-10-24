@@ -715,6 +715,7 @@ def _index_progress(book_id: str, done: int, total: int) -> None:
 # published, so without a limit many uploads could each start a paid embedding job at once) and one book never has
 # two jobs (no duplicate paid indexing).
 _index_jobs: set[str] = set()
+INDEX_RETRY_WAITS_S = (30.0, 90.0)   # a failed indexing run (often Vertex 429s while big deletes run) is retried after these
 
 
 async def _index_in_background(book: Book, chunks) -> None:
@@ -732,8 +733,21 @@ async def _index_in_background(book: Book, chunks) -> None:
             _set_index(book_id, state="running", done=0, total=total)
             embedder, store = _vertex_deps()
             from .gcp.indexing import index_book
-            await index_book(book, chunks, embedder, store,
-                             on_progress=lambda done, tot: _index_progress(book_id, done, tot))
+            for attempt, wait in enumerate((*INDEX_RETRY_WAITS_S, None)):
+                try:   # re-running is safe: batchCreate replaces objects that already exist (409 -> delete + create)
+                    await index_book(book, chunks, embedder, store,
+                                     on_progress=lambda done, tot: _index_progress(book_id, done, tot))
+                    break
+                except _BookDeleted:
+                    raise
+                except Exception as e:
+                    if wait is None or book_id in _deleted:
+                        raise
+                    logging.getLogger(__name__).warning("vertex indexing attempt %d failed (%s); retrying in %.0f s",
+                                                        attempt + 1, type(e).__name__, wait)
+                    await asyncio.sleep(wait)
+                    if book_id in _deleted:
+                        return
         final = {"state": "done", "done": total, "total": total}
     except _BookDeleted:
         pass
@@ -1619,7 +1633,11 @@ async def delete_book(book_id: str, background: BackgroundTasks):
     # A resume needs the persisted tombstone (or this process's record of a failed delete). A folder without book.json
     # and without a tombstone is an upload still being ingested: never delete that from under its job.
     resuming = (book_dir / "deleting.json").is_file() or book_id in _delete_status
-    if _book_busy(book_id) or not (resuming or (book_dir / "book.json").is_file()):
+    # ...unless the server restarted mid-ingest: status.json still says "processing" but no job here owns the book
+    # (the library shows it as interrupted), so nothing will ever finish it and it must stay deletable.
+    interrupted = (book_id not in _upload_status and not _book_busy(book_id)
+                   and (ingest_upload.read_status(book_id) or {}).get("status") == "processing")
+    if _book_busy(book_id) or not (resuming or interrupted or (book_dir / "book.json").is_file()):
         raise HTTPException(409, "This book is still being processed; try again when it finishes.")
     # Claim synchronously (no await since the checks): blocks a concurrent kind change / enrichment / second delete.
     _kind_claims.add(book_id)

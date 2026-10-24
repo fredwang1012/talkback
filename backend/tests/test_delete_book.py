@@ -251,11 +251,20 @@ def test_an_upload_still_being_ingested_is_never_resume_deleted(client, tmp_path
     main._upload_status[bid] = {"status": "processing"}
     try:
         assert client.delete(f"/api/books/{bid}").status_code == 409
-        main._upload_status.pop(bid)   # even with no in-memory status (no tombstone, no book.json): refused
-        assert client.delete(f"/api/books/{bid}").status_code == 409
         assert d.is_dir() and (d / "status.json").exists()
     finally:
         main._upload_status.pop(bid, None)
+
+
+def test_an_upload_interrupted_by_a_restart_can_be_deleted(client, tmp_path):
+    """status.json still says processing but no job in this process owns it (server restarted mid-ingest): the
+    library shows it as interrupted and nothing will ever finish it, so a delete must remove it, not 409 forever."""
+    bid = "u-interrupted-0000abcd"
+    d = tmp_path / "books" / bid
+    d.mkdir(parents=True)
+    (d / "status.json").write_text('{"status": "processing", "message": "Reading the PDF"}')
+    assert client.delete(f"/api/books/{bid}").status_code == 202
+    assert not d.exists()
 
 
 def test_a_failed_local_delete_leaves_a_tombstone_and_resumes(client, tmp_path, monkeypatch):

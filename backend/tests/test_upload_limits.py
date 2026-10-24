@@ -357,3 +357,19 @@ def test_absurdly_long_content_length_is_400(client, monkeypatch):
     monkeypatch.setattr(main, "upload_bucket", BoomBucket())
     headers = [("content-type", "multipart/form-data; boundary=b"), ("content-length", "9" * 13)]
     assert asyncio.run(drive(headers, [b"--b--"]))[0] == 400
+
+
+def test_vertex_indexing_is_retried_after_a_failure(client, monkeypatch):
+    calls = []
+
+    async def flaky_index(book, chunks, embedder, store, on_progress=None):
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("429 from Vertex")
+
+    monkeypatch.setattr("app.gcp.indexing.index_book", flaky_index)
+    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(main.settings, "retrieval_backend", "vertex")
+    book_id = post(client, "b.txt", b"One paragraph.\n\nTwo.").json()["book_id"]
+    st = client.get(f"/api/books/{book_id}/status").json()
+    assert len(calls) == 3 and st["index"]["state"] == "done"
