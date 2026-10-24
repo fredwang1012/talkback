@@ -8,20 +8,16 @@ GCP resources and are baked into `scripts/deploy_cloudrun.sh` as constants; subs
 One container serves everything (entry point `app.asgi:app`, which also selects the public processing API below when `PUBLIC_API=true`): the FastAPI API, cached audio (`/media`), portraits, and the built frontend (the
 backend mounts `frontend/dist` at `/` when it exists). Same origin, so the browser needs no CORS setup.
 
-Status: the Dockerfile and `scripts/deploy_cloudrun.sh` are written but **not built or run yet**. Treat the first
-build and deploy as part of the work.
+Status: both services (`talkback` and `talkback-public`) are built and deployed with these scripts.
 
 ## Cloud Run (GCP project `frederick-talkback`, region `us-central1`)
 
 Already in place: Artifact Registry repo `talkback`, service account `talkback-api@frederick-talkback.iam.gserviceaccount.com`
 with its roles, bucket `gs://frederick-talkback-data`.
 
-1. Create the three secrets (once). The script checks for them and stops, printing these commands, if any is missing:
+1. Create the one secret (once). The script checks for it and stops, printing this command, if it is missing:
    ```
    printf %s "$BOSON_API_KEY" | gcloud secrets create boson-api-key --data-file=- --project frederick-talkback
-   printf %s "$ANTHROPIC_API_KEY" | gcloud secrets create anthropic-api-key --data-file=- --project frederick-talkback
-   export TALKBACK_ACCESS_TOKEN=$(openssl rand -hex 16)
-   printf %s "$TALKBACK_ACCESS_TOKEN" | gcloud secrets create talkback-access-token --data-file=- --project frederick-talkback
    ```
 2. `scripts/deploy_cloudrun.sh` prints its plan and does nothing; `scripts/deploy_cloudrun.sh --yes` runs it:
    - refuses a dirty git tree unless `--allow-dirty` is passed;
@@ -30,19 +26,24 @@ with its roles, bucket `gs://frederick-talkback-data`.
      uploaded via the deployed app). Portraits are personal: upload any you want public by hand, e.g.
      `gcloud storage cp data/portraits/<file> gs://frederick-talkback-data/portraits/`;
    - builds `us-central1-docker.pkg.dev/frederick-talkback/talkback/api:<git short sha>` with Cloud Build;
-   - deploys service `talkback` with `RETRIEVAL_BACKEND=vertex`, the secrets as `BOSON_API_KEY`, `ANTHROPIC_API_KEY` and
-     `TALKBACK_ACCESS_TOKEN`, the env vars `UPLOAD_LLM=claude`, `UPLOAD_ENRICH=true`, `UPLOAD_CONFIRM=false`,
-     `UPLOAD_BOOK_CAP_USD=4`, `UPLOAD_TOTAL_CAP_USD=15` and `USAGE_LOG_FILE=false` (usage lines go to Cloud Logging
-     only; appending to `usage.jsonl` on the gcsfuse mount rewrites the whole object each time), and the bucket mounted at `/app/data` (the whole data dir).
+   - deploys service `talkback` with `RETRIEVAL_BACKEND=vertex`, the secret as `BOSON_API_KEY`, the env vars
+     `UPLOAD_LLM=gemini`, `ENRICH_GEMINI_MODEL=gemini-2.5-flash-lite` (book processing; answers stay on
+     `gemini-2.5-flash`), `UPLOAD_ENRICH=true`, `UPLOAD_CONFIRM=false`, `UPLOAD_BOOK_CAP_USD` and `UPLOAD_TOTAL_CAP_USD`
+     (default 1000 in the script: the caps are lifted for the hackathon; export lower values, e.g. 4 and 15 as in the
+     code, to restore them), `GROUNDED_DAILY_CAP` (default 100000 in the script, 100 in code), `USAGE_LOG_FILE=false`
+     (usage lines go to Cloud Logging only; appending to `usage.jsonl` on the gcsfuse mount rewrites the whole object
+     each time), the per-account settings below, the bucket mounted at `/app/data` (the whole data dir), and
+     `--no-allow-unauthenticated --iap` (Google sign-in, see Access control).
 3. Health check path: `/api/health`.
 
 The image contains no `data/`, `.env`, logs, `node_modules` or `.venv` (see `.dockerignore`) and no torch: the `embed`
 extra is not installed because Vertex AI does the embedding and search.
 
-### Access token
+### Access token (for other public deployments)
 
-The service is public (`--allow-unauthenticated`), so endpoints that spend credit (voices, `/api/answer`, cloning,
-upload) require header `X-Talkback-Token` matching the `TALKBACK_ACCESS_TOKEN` secret. Visitors type the code into the
+The deployed `talkback` service does not use this: it is private behind IAP (see Access control below). For a
+deployment that is open to everyone (`--allow-unauthenticated`), set `TALKBACK_ACCESS_TOKEN`: endpoints that spend
+credit (voices, `/api/answer`, cloning, upload) then require header `X-Talkback-Token` matching it. Visitors type the code into the
 page. Share the code only with people you want spending your credit. The setting reads the env var
 `TALKBACK_ACCESS_TOKEN` (plain `ACCESS_TOKEN` also works).
 
@@ -53,7 +54,7 @@ bucket. The service sets `TRUST_PROXY=true`, and `client_ip` then uses the **rig
 which is the one Cloud Run's front end appends. Entries to its left are client-supplied and ignored, so spoofing the
 header does not dodge the limits. uvicorn's `--proxy-headers` is deliberately not used (it trusts the leftmost entry).
 Only set `TRUST_PROXY` when a trusted proxy is the sole ingress. Buckets keep at most 10,000 keys (oldest evicted).
-`/api/retrieve` is gated by the access token and limited to 30/min per IP because it calls paid Vertex services.
+`/api/retrieve` is gated by the access token (when set) and limited to 30/min per IP because it calls paid Vertex services.
 
 ### CORS
 
@@ -70,15 +71,18 @@ deployed UI is same-origin, so the script leaves it at the default; add origins 
 ### Cost guardrails
 
 - `--min-instances 0`: no cost when idle (cold start applies).
-- `--max-instances 1`: upload status, the one-ingest-at-a-time guard and the rate-limit buckets live in process memory, so
+- `--max-instances 1`: upload status, the ingest queue and the rate-limit buckets live in process memory, so
   a second instance would split them (a status poll could hit an instance that does not know the upload). Keep it at 1.
 - `--no-cpu-throttling`: PDF ingest runs in a background task after the `202` response; with the default request-only CPU
   the instance would be starved once the response is sent. The cost: an instance is billed for CPU while it is warm,
   not just while serving requests. With min-instances 0 it still idles out and stops billing.
 - `--memory 1Gi --cpu 1 --timeout 300`.
 - Set a monthly spend cap in the Boson workspace and a budget alert on the GCP project.
-- Keep the access token set. Rate limits (token mint 10/min, TTS cache misses 120/min, clone 5/min, answer 20/min) are
-  per IP.
+- Keep IAP on (or the access token set on another host). Rate limits (token mint 10/min, TTS cache misses 120/min,
+  clone 5/min, answer 20/min) are per account or per IP.
+- The in-app upload caps are lifted to $1000 by the hackathon deploy, so the Boson workspace cap and the GCP budget
+  hard stop (`infra/budget_stop`) are the real limits there. Export lower `UPLOAD_*_CAP_USD` values before deploying
+  to restore them.
 - Demo mode (`?demo=1`) serves pre-rendered audio only and never calls Boson for speech.
 
 ## Other hosts (Railway, Fly, Render)
@@ -99,8 +103,8 @@ Google-managed client cannot be used). The old `TALKBACK_ACCESS_TOKEN` code is n
 - Turn the gate off (e.g. for a public demo): `gcloud beta run services update talkback --region us-central1 --project frederick-talkback --no-iap` and add `allUsers` as `roles/run.invoker`; on again with `--iap` and remove `allUsers`.
 
 ## Per-account data (`PER_USER`)
-The deploy script sets `PER_USER=true`, `IAP_AUDIENCE=/projects/272822965835/locations/us-central1/services/talkback`,
-`OWNER_EMAILS=fredwang1012@gmail.com` and `OWNER_ONLY_BOOKS=hp*`. Local runs leave `PER_USER` unset and keep one shared
+The deploy script sets `PER_USER=true`, `IAP_AUDIENCE=/projects/<PROJECT_NUMBER>/locations/us-central1/services/talkback`,
+`OWNER_EMAILS` (the owner's account, a constant at the top of the script) and `OWNER_ONLY_BOOKS=hp*`. Local runs leave `PER_USER` unset and keep one shared
 `data/` namespace exactly as before.
 - The user is the email in the IAP JWT (`x-goog-iap-jwt-assertion`), verified against Google's IAP public keys and the
   audience above. The plain `x-goog-authenticated-user-email` header is ignored. No IAP header at all (for example when the
@@ -129,11 +133,12 @@ GCP project. With `PUBLIC_API=true` the container (entry point `app.asgi:app`) s
 calls `POST /api/public/translate` (a non-English question, translated for search), `/api/public/detect` (novel or
 textbook), `/api/public/describe` (title and author for the Add book form) and `/api/public/faces/detect` (face box for
 the crop), and textbook equation readings: `POST /api/public/equations` (a ticket: estimate first) then
-`POST /api/public/equations/{ticket}` (at most 24 cropped PNGs per request). Every other path is 404: no frontend, no media, no portraits, no book data. It uses Gemini only (`UPLOAD_LLM=gemini`), holds results in
+`POST /api/public/equations/{ticket}` (at most 24 cropped PNGs per request). Every other path is 404: no frontend, no media, no portraits, no book data. It uses Gemini only (`UPLOAD_LLM=gemini`, book processing on `ENRICH_GEMINI_MODEL=gemini-2.5-flash-lite`), holds results in
 memory for 30 minutes, never logs request bodies (they may contain book text), and never decides what a reader may see:
 the local app sends already spoiler-filtered passages.
 
-Limits, all enforced by the service:
+Limits, all enforced by the service. The dollar figures below are the code defaults; `deploy_public_api.sh` sets
+every `PUBLIC_*_CAP_USD` to 1000 for the hackathon unless you export lower values (e.g. 1.5/10/2/2) before deploying:
 - Per book: estimate at most $1.5 (`PUBLIC_BOOK_CAP_USD`); a running job also stops at 1.25 times that.
 - Cumulative enrichment spend at most $10 (`PUBLIC_TOTAL_CAP_USD`, persisted). Admission counts the unspent estimates of
   running jobs, so concurrent jobs cannot overshoot it.
