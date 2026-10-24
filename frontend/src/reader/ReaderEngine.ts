@@ -1,4 +1,5 @@
 import { isAutoplayBlock, TAP_TO_PLAY } from "../audio/mediaErrors";
+import { prefetchEnd } from "./prefetch";
 import type { FlatChunk } from "./position";
 
 export type WordTiming = { start: number; end: number; char_start: number; char_end: number };
@@ -14,6 +15,7 @@ export interface AudioLike {
   onended: (() => void) | null;
   play(): Promise<void>;
   pause(): void;
+  load?(): void;
 }
 
 export type EngineState = "idle" | "loading" | "playing" | "paused" | "ended" | "error";
@@ -27,11 +29,9 @@ export type EngineDeps = {
 type Loaded = { audio: AudioLike; timestamps: WordTiming[] | null };
 type Entry = { promise: Promise<Loaded>; resolved: boolean };
 
-const PREFETCH = 3;
-
 /**
  * Plays a book chunk by chunk. One audio element per chunk (preservesPitch, so speed changes keep the voice),
- * the next PREFETCH chunks are fetched ahead, and a seek cancels everything outside the new window.
+ * the next few chunks (see prefetch.ts) are fetched ahead, across paragraph and section boundaries, and a seek cancels everything outside the new window.
  */
 export class ReaderEngine {
   private state: EngineState = "idle";
@@ -82,6 +82,7 @@ export class ReaderEngine {
       entry.promise = this.deps.fetchTts(chunk, this.narratorOnlyVoice ?? undefined).then((r) => {
         const audio = this.deps.createAudio(r.audio_url);
         audio.preload = "auto";
+        audio.load?.(); // start downloading the audio now so the chunk is buffered when its turn comes
         audio.preservesPitch = true;
         audio.playbackRate = this.speed;
         entry.resolved = true;
@@ -94,11 +95,12 @@ export class ReaderEngine {
     return e;
   }
 
-  /** Fetch the window [current, current + PREFETCH] and drop everything outside it (stale after a seek). */
+  /** Fetch the window [current, prefetchEnd] and drop everything outside it (stale after a seek). */
   private prefetchFrom(i: number): void {
-    for (let n = i; n <= Math.min(i + PREFETCH, this.chunks.length - 1); n++) this.entry(n).promise.catch(() => {});
+    const end = prefetchEnd(this.chunks, i);
+    for (let n = i; n <= end; n++) this.entry(n).promise.catch(() => {});
     for (const [k, e] of this.entries) {
-      if (k < i || k > i + PREFETCH) {
+      if (k < i || k > end) {
         e.promise.then((l) => l.audio.pause()).catch(() => {});
         this.entries.delete(k);
       }
@@ -116,6 +118,7 @@ export class ReaderEngine {
   private async startChunk(i: number): Promise<void> {
     const gen = ++this.gen;
     const entry = this.entry(i);
+    this.prefetchFrom(i); // request the lookahead now, in parallel with the first chunk, not after it starts
     if (!entry.resolved && this.state !== "playing") this.set("loading");
     else this.emit();
     try {
