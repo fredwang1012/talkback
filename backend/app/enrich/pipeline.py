@@ -51,6 +51,7 @@ TEXTBOOK_TOO_LONG = "This textbook is too long for recap notes; it can still be 
 TEXTBOOK_BUDGET_USED = "Recap notes are paused for now; the textbook can still be read and searched."
 TEXTBOOK_FAILED = "Recap notes stopped early; the textbook is still readable."
 TEXTBOOK_CONFIRM = "Study notes for the recap need processing."
+FLUSH_NEAR = 0.75      # past this share of a cap the spend is flushed after every call
 BOOK_CAP_MARGIN = 1.25  # a running job stops when its real spend passes the per-book cap by this factor
 ESTIMATE_MARGIN = 1.15
 CAST_OUT_TOKENS = 3000 + cast_mod.SERIES_OUT_TOKENS  # the cast answer: characters, voices, series
@@ -129,7 +130,9 @@ def _meter(book_id: str, llm: LLM) -> None:
 
     def on_usage(provider: str, model: str, n_in: int, n_out: int, usd: float) -> None:
         total = spend.add(book_id, provider, usd, flush_now=False)  # file writes happen off the loop (see flush)
-        if llm.calls % 25 == 0:
+        # near a cap every call reaches disk: a crash then cannot lose spend and let a resume overshoot the cap
+        near = spend.book_usd(book_id) >= cap * FLUSH_NEAR or total >= settings.upload_total_cap_usd * FLUSH_NEAR
+        if near or llm.calls % 25 == 0:
             asyncio.get_running_loop().create_task(asyncio.to_thread(spend.flush))
         if total >= settings.upload_total_cap_usd:
             raise SpendLimit("upload budget used")

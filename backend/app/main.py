@@ -733,6 +733,7 @@ async def _enrich_indexer(book: Book) -> None:
 
 
 MAX_ENRICH_RETRIES = 3          # user retries per book (persisted in status.json as enrich_retries)
+TOO_MANY_TRIES = "Character processing has failed several times; the book stays readable with the narrator."
 ENRICH_OFF = "Character processing is turned off on this server; the book stays readable with the narrator."
 _enrich_jobs: set[str] = set()   # books with an enrichment job queued or running
 _kind_claims: set[str] = set()   # books whose kind change is being handled (check-and-claim, see change_kind)
@@ -817,11 +818,17 @@ async def _resume_enrichments() -> None:
                     continue
             textbook = book.kind == "textbook"
             flag = {"summaries_only": True} if textbook else {}
+            # a resume is an attempt, counted BEFORE it runs: a book that kills the process is not resumed forever
+            tries = int((await asyncio.to_thread(ingest_upload.read_status, book_id) or {}).get("enrich_retries") or 0)
+            if tries >= MAX_ENRICH_RETRIES:
+                _set_enrich(book_id, status="error", message=TOO_MANY_TRIES, **flag)
+                continue
             reason = enrich_pipeline.check_caps(enrich_pipeline.estimate_for(book), textbook=textbook, book_id=book_id)
             if reason:
                 _set_enrich(book_id, status="refused", message=reason, **flag)
                 continue
-            _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start", **flag)
+            _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start", **flag,
+                        enrich_retries=tries + 1)
             jobs.append(asyncio.create_task(_resume_one(book_id, ns)))   # the enrichment lock lets one run at a time
         _resume_tasks.update(jobs)
         for t in jobs:
@@ -1143,7 +1150,7 @@ async def start_enrichment(book_id: str, background: BackgroundTasks):
         raise HTTPException(409, ENRICH_OFF)
     retries = int(st.get("enrich_retries") or 0)
     if retry and retries >= MAX_ENRICH_RETRIES:
-        raise HTTPException(409, "Character processing has failed several times; the book stays readable with the narrator.")
+        raise HTTPException(409, TOO_MANY_TRIES)
     book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
