@@ -25,7 +25,7 @@ def lines(r):
 
 
 def post(client, **kw):
-    body = {"book_id": "demo", "query": "What happened?", "reader_para": 1, "speaker_id": "holmes"}
+    body = {"book_id": "demo", "query": "What happened?", "reader_para": 1, "speaker_id": "harry"}
     body.update(kw)
     return client.post("/api/answer", json=body)
 
@@ -113,8 +113,8 @@ def test_answer_error_before_first_sentence(env, monkeypatch):
 
 
 def test_build_answer_prompt_reuses_template_wording():
-    system, user = build_answer_prompt(book_with_chunk(), "holmes", "", [], "Why?")
-    assert "Speak as Holmes" in system and "spoken" in system and user == "Why?"
+    system, user = build_answer_prompt(book_with_chunk(), "harry", "", [], "Why?")
+    assert "Speak as Harry" in system and "spoken" in system and user == "Why?"
 
 
 def test_speak_rejects_unknown_voice_and_bad_text(env):

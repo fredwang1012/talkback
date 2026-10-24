@@ -16,7 +16,7 @@ I. TITLE ONE
 
 I.
 
-To Holmes she is always _the_ woman. I have
+To Harry she is always _the_ woman. I have
 seldom heard him.
 
 “Yes,” said he. ‘Quite so.’
@@ -37,7 +37,7 @@ def test_parse_sections_and_paragraphs():
     assert [s.title for s in sections] == ["I.", "II."]
     assert [s.start_para for s in sections] == [0, 2]
     assert [p.text for p in paras] == [
-        "To Holmes she is always the woman. I have seldom heard him.",
+        "To Harry she is always the woman. I have seldom heard him.",
         "\"Yes,\" said he. 'Quite so.'",
         "Second section text.",
     ]

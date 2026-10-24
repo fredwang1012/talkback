@@ -124,10 +124,9 @@ def test_recent_passage_bounds():
     assert recent_passage(book, 9) == {"para_start": 8, "para_end": 9, "text": book.paragraphs[8].text + "\n" + book.paragraphs[9].text}
 
 
-@pytest.mark.skipif(not (ROOT / "data/books/scandal-in-bohemia/book.json").exists(), reason="book not ingested")
-@given(reader=st.integers(0, 258), q=st.sampled_from(["Who is the King?", "How does the story end?", "Irene Adler photograph"]))
+@given(reader=st.integers(0, 258), q=st.sampled_from(["Who is the stranger?", "How does the story end?", "secretword7 lantern"]))
 @hsettings(max_examples=60, deadline=None)
-def test_spoiler_invariant_on_real_book(reader, q):
-    book = Book.model_validate_json((ROOT / "data/books/scandal-in-bohemia/book.json").read_text(encoding="utf-8"))
+def test_spoiler_invariant_on_long_synthetic_book(reader, q):
+    book = make_book(259)
     out = retrieve(book, Index(make_chunks(book)), q, reader)
     assert all(p["para_end"] <= reader for p in out["passages"])

@@ -42,7 +42,7 @@ function setup(opts: { playing?: boolean; retrieve?: () => Promise<{ instruction
   const talk = new TalkController({
     session, reader,
     retrieve: async (...args) => { retrieved.push(args); return opts.retrieve ? opts.retrieve() : { instructions: "INSTR" }; },
-    voiceFor: (id) => (id === "holmes" ? "oliver" : "marcus"),
+    voiceFor: (id) => (id === "harry" ? "oliver" : "marcus"),
     onState: (s) => states.push(s), onToast: (m) => toasts.push(m), onLatency: (l) => latencies.push(l),
   });
   return { session, reader, talk, states, toasts, latencies, retrieved };
@@ -266,7 +266,7 @@ describe("TalkController core loop", () => {
 
   it("speaker switch changes the voice used for the session", async () => {
     const h = setup();
-    await h.talk.setSpeaker("holmes");
+    await h.talk.setSpeaker("harry");
     expect(h.session.calls).toContain("voice:oliver");
     await h.talk.pttDown();
     expect(h.session.calls).toContain("open:oliver");

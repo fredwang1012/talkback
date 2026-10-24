@@ -21,7 +21,7 @@ describe("detectLanguage", () => {
   });
 
   it("defaults unknown Latin text to English only when it has some length", () => {
-    expect(detectLanguage("Holmes Watson Baker")?.code).toBe("en");
+    expect(detectLanguage("Harry Pell Baker")?.code).toBe("en");
     expect(detectLanguage("xyz")).toBeNull();
   });
 });

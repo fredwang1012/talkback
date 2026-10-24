@@ -28,14 +28,11 @@ scripts/captures/*.log
 # Personal / copyrighted material: never commit
 data/uploads/
 data/books/u-*/
+data/books/hp*/
 data/portraits/*
 !data/portraits/.gitkeep
 data/raw/*
 !data/raw/.gitkeep
-!data/raw/sherlock.txt
-!data/raw/sherlock.meta.yaml
-!data/raw/biology2e_ch8.meta.yaml
-!data/raw/biology2e_ch8.txt
 data/samples/
 data/voices.json
 logs/

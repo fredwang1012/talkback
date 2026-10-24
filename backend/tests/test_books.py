@@ -39,18 +39,18 @@ def test_portraits_and_cover_are_picked_up_when_the_files_exist(client, tmp_path
     d = tmp_path / "books" / "demo"
     book = Book.model_validate_json((d / "book.json").read_text(encoding="utf-8"))
     from app.schema import Character, Narrator
-    book.characters = [Character(id="holmes", name="Holmes", first_para=0, voice="oliver", persona="x"),
-                       Character(id="watson", name="Watson", first_para=0, voice="marcus", persona="y")]
+    book.characters = [Character(id="harry", name="Harry", first_para=0, voice="oliver", persona="x"),
+                       Character(id="pell", name="Pell", first_para=0, voice="marcus", persona="y")]
     book.narrator = Narrator(voice="marcus")
     (d / "book.json").write_text(book.model_dump_json(), encoding="utf-8")
     pdir = tmp_path / "portraits" / "demo"
     pdir.mkdir(parents=True)
-    (pdir / "holmes.png").write_bytes(b"png")
+    (pdir / "harry.png").write_bytes(b"png")
     (pdir / "narrator.webp").write_bytes(b"webp")
     (pdir / "cover.jpg").write_bytes(b"jpg")
     got = client.get("/api/books/demo").json()
     by_id = {c["id"]: c["portrait"] for c in got["characters"]}
-    assert by_id == {"holmes": "/portraits/demo/holmes.png", "watson": None}
+    assert by_id == {"harry": "/portraits/demo/harry.png", "pell": None}
     assert got["narrator"]["portrait"] == "/portraits/demo/narrator.webp"
     assert client.get("/api/books").json()[0]["cover"] == "/portraits/demo/cover.jpg"
 

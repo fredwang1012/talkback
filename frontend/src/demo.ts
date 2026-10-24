@@ -1,8 +1,9 @@
 import type { FlatChunk } from "./reader/position";
 
-/** Demo mode (?demo=1): Sherlock just after Holmes reads the King's letter, pre-rendered audio only, Holmes pinned. */
-export const DEMO_START_PARA = 22;
-export const DEMO_SPEAKER = "holmes";
+/** Demo mode (?demo=1): Harry Potter book 1 at a preset position, pre-rendered audio only, Hagrid pinned. */
+export const DEMO_BOOK = "hp1-sorcerers-stone";
+export const DEMO_START_PARA = 300; // set after ingest
+export const DEMO_SPEAKER = "hagrid";
 
 export function isDemo(search: string = window.location.search): boolean {
   return new URLSearchParams(search).get("demo") === "1";

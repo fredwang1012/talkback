@@ -33,11 +33,11 @@ describe("position helpers", () => {
 
   it("locks characters who first appear after the reader's paragraph", () => {
     const chars = [
-      { id: "holmes", first_para: 0 }, { id: "king", first_para: 40 }, { id: "irene", first_para: 41 },
+      { id: "harry", first_para: 0 }, { id: "king", first_para: 40 }, { id: "ivy", first_para: 41 },
     ] as Character[];
     const { met, locked } = splitCharacters(chars, 40);
-    expect(met.map((c) => c.id)).toEqual(["holmes", "king"]);
-    expect(locked.map((c) => c.id)).toEqual(["irene"]);
+    expect(met.map((c) => c.id)).toEqual(["harry", "king"]);
+    expect(locked.map((c) => c.id)).toEqual(["ivy"]);
   });
 
   it("estimates a minimum silent duration and scales with speed", () => {

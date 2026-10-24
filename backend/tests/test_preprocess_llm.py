@@ -12,16 +12,16 @@ from summaries import SummaryResult, build_summaries, prefix_text, summary_point
 
 from app.schema import Book, Character, Narrator, Paragraph, Section  # noqa: E402
 
-TEXT = '"Well?" said Holmes. "I see nothing," I answered.'
-SPEAKERS = {"holmes", "watson", "narrator"}
+TEXT = '"Well?" said Harry. "I see nothing," I answered.'
+SPEAKERS = {"harry", "pell", "narrator"}
 
 
 def item(speaker, text, emotion=None):
     return SegItem(speaker=speaker, text=text, emotion=emotion)
 
 
-GOOD = [item("holmes", '"Well?"', "contemplation"), item("narrator", "said Holmes."),
-        item("watson", '"I see nothing,"', "helplessness"), item("narrator", "I answered.")]
+GOOD = [item("harry", '"Well?"', "contemplation"), item("narrator", "said Harry."),
+        item("pell", '"I see nothing,"', "helplessness"), item("narrator", "I answered.")]
 
 
 def make_book(kind="novel", n=25, cast=True) -> Book:
@@ -31,9 +31,9 @@ def make_book(kind="novel", n=25, cast=True) -> Book:
         id="b", title="T", author="A", kind=kind, license="x",
         sections=[Section(id="s1", title="I.", start_para=0), Section(id="s2", title="II.", start_para=12)],
         paragraphs=paras,
-        characters=[Character(id="holmes", name="Sherlock Holmes", aliases=["Holmes"], first_para=0, voice="oliver", persona="x"),
-                    Character(id="watson", name="Dr. Watson", aliases=["Watson"], first_para=0, voice="marcus", persona="y")] if cast else [],
-        narrator=Narrator(voice="marcus", is_character="watson") if cast else None,
+        characters=[Character(id="harry", name="Harry Quill", aliases=["Harry"], first_para=0, voice="oliver", persona="x"),
+                    Character(id="pell", name="Dr. Pell", aliases=["Pell"], first_para=0, voice="marcus", persona="y")] if cast else [],
+        narrator=Narrator(voice="marcus", is_character="pell") if cast else None,
     )
 
 
@@ -45,14 +45,14 @@ def run(coro):
 
 def test_valid_tiling_is_accepted_and_keeps_emotions():
     segs = validate_segments(TEXT, GOOD, SPEAKERS)
-    assert [s.speaker for s in segs] == ["holmes", "narrator", "watson", "narrator"]
+    assert [s.speaker for s in segs] == ["harry", "narrator", "pell", "narrator"]
     assert segs[0].emotion == "contemplation" and segs[1].emotion is None
 
 
 @pytest.mark.parametrize("name,items", [
     ("dropped text", GOOD[:2] + GOOD[3:]),
     ("reordered", [GOOD[1], GOOD[0], GOOD[2], GOOD[3]]),
-    ("reworded", [item("holmes", '"Well, then?"'), *GOOD[1:]]),
+    ("reworded", [item("harry", '"Well, then?"'), *GOOD[1:]]),
     ("trailing text missing", GOOD[:3]),
     ("empty segment", [*GOOD, item("narrator", "   ")]),
     ("nothing", []),
@@ -68,14 +68,14 @@ def test_unknown_speaker_becomes_narrator_rather_than_failing():
 
 def test_whitespace_differences_are_tolerated():
     p = 'He said:\n  "Yes."'
-    assert validate_segments(p, [item("narrator", "He said:"), item("holmes", '"Yes."')], SPEAKERS) is not None
+    assert validate_segments(p, [item("narrator", "He said:"), item("harry", '"Yes."')], SPEAKERS) is not None
 
 
 def test_validated_segments_always_chunk_without_error():
     book = make_book()
     p = Paragraph(idx=0, section_id="s1", text=TEXT, segments=validate_segments(TEXT, GOOD, SPEAKERS))
     chunks = chunk_paragraph(p, book)
-    assert [c.speaker for c in chunks] == ["holmes", "narrator", "watson", "narrator"]
+    assert [c.speaker for c in chunks] == ["harry", "narrator", "pell", "narrator"]
     assert chunks[0].voice == "oliver" and "<|emotion:contemplation|>" in chunks[0].tts_text
 
 
@@ -142,7 +142,7 @@ def test_prompt_contains_cast_and_only_previous_paragraphs():
     book = make_book()
     p = book.paragraphs[10]
     user = build_user(book, p)
-    assert 'id "holmes"' in user and "first-person narrator" in user
+    assert 'id "harry"' in user and "first-person narrator" in user
     assert "futuretoken9" in user and "futuretoken7" in user and "futuretoken6" not in user  # exactly 3 before
     assert "futuretoken11" not in user  # never later text
 

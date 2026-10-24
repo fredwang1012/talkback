@@ -1,6 +1,6 @@
 """chunk_tts (no LLM): split each paragraph's segments into TTS chunks <= 280 chars on sentence boundaries.
 
-Usage: uv run --project backend python preprocess/chunk_tts.py --book scandal-in-bohemia
+Usage: uv run --project backend python preprocess/chunk_tts.py --book hp1-sorcerers-stone
 Idempotent: always recomputes tts_chunks from paragraph text, segments, characters and narrator.
 
 Each chunk records char_start/char_end offsets into paragraph.text (for highlighting) and a tts_text made of

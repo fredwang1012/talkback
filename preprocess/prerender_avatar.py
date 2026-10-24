@@ -1,6 +1,6 @@
 """prerender_avatar (M9, stretch): talking-head clips for a stretch of the story, driven by the already-cached TTS audio.
 
-Usage: uv run --project backend python preprocess/prerender_avatar.py --book scandal-in-bohemia --from-para 22 --to-para 40 [--yes]
+Usage: uv run --project backend python preprocess/prerender_avatar.py --book hp1-sorcerers-stone --from-para 22 --to-para 40 [--yes]
 Needs: portraits at data/portraits/<book>/<speaker>.png|jpg|webp (original art only), pre-rendered TTS audio
 (run prerender_tts.py first) and the Boson key. Chunks of speakers without a portrait are skipped.
 Output: data/cache/avatar/<book>/<chunk_id>.mp4, served by /api/avatar/<chunk_id>?book=<book>.

@@ -17,18 +17,18 @@ REAL_KEY = "real-secret-key-123"
 
 
 def book_with_chunk():
-    text = "It was in March, 1888, that Holmes spoke. He smiled."
+    text = "It was in March, 1888, that Harry spoke. He smiled."
     return Book(
         id="demo", title="Demo", author="A", kind="novel", license="PD",
         sections=[Section(id="s1", title="I.", start_para=0)],
         paragraphs=[
             Paragraph(idx=0, section_id="s1", text=text, tts_chunks=[
                 TtsChunk(id="p0c0", speaker="narrator", voice="marcus",
-                         tts_text="It was in March, eighteen eighty-eight, that Holmes spoke.", char_start=0, char_end=40)]),
+                         tts_text="It was in March, eighteen eighty-eight, that Harry spoke.", char_start=0, char_end=40)]),
             Paragraph(idx=1, section_id="s1", text="He smiled and left."),
             Paragraph(idx=2, section_id="s1", text="Later the King arrived."),
         ],
-        characters=[Character(id="holmes", name="Holmes", first_para=0, voice="oliver", persona="Precise."),
+        characters=[Character(id="harry", name="Harry", first_para=0, voice="oliver", persona="Precise."),
                     Character(id="king", name="The King", first_para=2, voice="jake", persona="Proud.")],
     )
 
@@ -123,12 +123,12 @@ def test_cache_key_is_stable_and_sensitive():
 
 def test_retrieve_never_returns_future_paragraphs(env):
     client, _ = env
-    r = client.post("/api/retrieve", json={"book_id": "demo", "query": "King arrived", "reader_para": 1, "speaker_id": "holmes"})
+    r = client.post("/api/retrieve", json={"book_id": "demo", "query": "King arrived", "reader_para": 1, "speaker_id": "harry"})
     assert r.status_code == 200
     body = r.json()
     assert all(p["para_end"] <= 1 for p in body["passages"])
     assert "Later the King arrived" not in body["instructions"]
-    assert "Holmes" in body["instructions"] and body["persona"] == "Precise."
+    assert "Harry" in body["instructions"] and body["persona"] == "Precise."
 
 
 def test_retrieve_refuses_a_character_not_yet_met(env):
@@ -173,14 +173,14 @@ def test_clone_success_is_stored(env):
 
 
 def test_align_handles_numbers_tags_and_null():
-    plain = "It was in March, 1888, that Holmes spoke."
+    plain = "It was in March, 1888, that Harry spoke."
     words = [{"word": w, "start": i * 0.3, "end": i * 0.3 + 0.25} for i, w in enumerate(
-        "It was in March eighteen eighty-eight that Holmes spoke".split())]
+        "It was in March eighteen eighty-eight that Harry spoke".split())]
     out = align_timestamps(words, plain)
     assert len(out) == len(words)
     assert plain[out[0]["char_start"]:out[0]["char_end"]] == "It"
     assert plain[out[4]["char_start"]:out[4]["char_end"]] == "1888,"  # spoken number maps onto the digits
-    assert plain[out[7]["char_start"]:out[7]["char_end"]] == "Holmes"
+    assert plain[out[7]["char_start"]:out[7]["char_end"]] == "Harry"
     assert all(a["char_start"] <= b["char_start"] for a, b in zip(out, out[1:])), "highlighting never moves backwards"
     assert align_timestamps(None, plain) is None and align_timestamps([], plain) is None
     tagged = [{"word": "<|emotion:anger|>", "start": 0, "end": 0}] + words[:2]
@@ -274,16 +274,16 @@ def test_health_tells_the_ui_when_an_access_code_is_needed_without_leaking_it(en
 
 def test_align_tag_residue_merged_into_first_word():
     # Real Boson output (probe 2026-10-17): delivery tags arrive glued onto the first spoken word.
-    plain = "To Sherlock Holmes she is always the woman."
+    plain = "To Harry Quill she is always the woman."
     words = [{"word": w, "start": i * 0.3, "end": i * 0.3 + 0.25} for i, w in enumerate(
-        ["emotioncontemplationprosodypitchlowTo", "Sherlock", "Holmes", "she", "is", "always", "the", "woman"])]
+        ["emotioncontemplationprosodypitchlowTo", "Harry", "Quill", "she", "is", "always", "the", "woman"])]
     out = align_timestamps(words, plain)
     assert [plain[o["char_start"]:o["char_end"]] for o in out] == plain.rstrip(".").split() [:-1] + ["woman."]
 
 
 def test_retrieve_is_gated_and_rate_limited(env, monkeypatch):
     client, _ = env
-    body = {"book_id": "demo", "query": "King", "reader_para": 1, "speaker_id": "holmes"}
+    body = {"book_id": "demo", "query": "King", "reader_para": 1, "speaker_id": "harry"}
     monkeypatch.setattr(settings, "access_token", "letmein")
     assert client.post("/api/retrieve", json=body).status_code == 401
     h = {"X-Talkback-Token": "letmein"}

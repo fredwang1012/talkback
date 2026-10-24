@@ -13,7 +13,7 @@ import websockets
 from _common import BosonClient, CAPTURES, flush_notes, note, strip_audio
 
 URL = "wss://api.boson.ai/v1/realtime"
-QUESTION = "Holmes, what do you make of this visitor who came to your door tonight?"
+QUESTION = "Harry, what do you make of this visitor who came to your door tonight?"
 CHUNK = 24000 * 2 // 10  # 100 ms of PCM16 @ 24 kHz
 
 

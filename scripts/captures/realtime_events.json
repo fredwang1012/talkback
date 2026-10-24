@@ -71,7 +71,7 @@
   "type": "conversation.item.input_audio_transcription.completed",
   "item_id": "55ad514a",
   "content_index": 0,
-  "transcript": "Holmes, what do you make of this visitor who came to your door tonight?"
+  "transcript": "Harry, what do you make of this visitor who came to your door tonight?"
  },
  {
   "event_id": "a10d9657-19c5-4a1f-8c1a-10ceaa39dae0",

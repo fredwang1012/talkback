@@ -17,7 +17,7 @@ Expected spend for the test round is a few dollars:
 | Item | Rough cost |
 |---|---|
 | Gemini 2.5 Flash answers (~1k tokens in, ~150 out) | ~$0.0007 per question |
-| gemini-embedding-001, whole Sherlock story (~10k words) | < $0.01 |
+| gemini-embedding-001, one short novel chapter set (~10k words) | < $0.01 |
 | Vector Search 2.0 collection, KNN, usage-based | pennies at this size |
 | Cloud Run, scale to zero | free tier covers a demo |
 | Cloud Storage, a few hundred MB | < $0.05/month |
@@ -54,7 +54,7 @@ Cloud Run min-instances left on for days, the RAG Engine LLM parser on large PDF
      `{"$and":[{"book_id":{"$eq":B}},{"para_end":{"$lte":P}}]}`.
      This keeps today's paragraph-level rule; chapter-level gating would be weaker.
    - Hybrid: vector search plus text search, merged with Reciprocal Rank Fusion, so names
-     like "Irene Adler" match exactly.
+     like "Hagrid" match exactly.
    - We embed ourselves with `gemini-embedding-001` (768-d, verified working) instead of
      auto-embeddings, because filtered vector search is the documented path.
    - Not chosen: RAG Engine (fixed-size chunks with no idea of paragraphs, so spoiler gating

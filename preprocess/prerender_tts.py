@@ -1,6 +1,6 @@
 """prerender_tts: synthesise every TTS chunk of a book into the disk cache so reading (and the demo) needs no live calls.
 
-Usage: uv run --project backend python preprocess/prerender_tts.py --book scandal-in-bohemia [--yes] [--limit N]
+Usage: uv run --project backend python preprocess/prerender_tts.py --book hp1-sorcerers-stone [--yes] [--limit N]
 Spends Boson credit ($0.015 per 1K characters). Prints the estimate first and asks for confirmation above $5.
 Cache hits are free, so it is safe to rerun after an interruption. Concurrency 4, with the client's backoff on rate limits.
 """

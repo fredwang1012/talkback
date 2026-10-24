@@ -10,8 +10,8 @@ Standing rule: do **not** use the Anthropic key until told (user instruction, 20
 - [ ] OK to spend Anthropic credit (unblocks section 2; estimated a few dollars of the $100).
 - [ ] Set a monthly spend cap in the Boson workspace.
 - [ ] Review the cast after `cast.py` runs (voices, personas, `first_para`). `run_all.py --anthropic` pauses for this.
-- [ ] OpenStax Biology 2e ch. 8 text pasted into `data/raw/biology2e_ch8.txt` (the fetch tool refused to return it verbatim). The meta file and pipeline are ready.
-- [ ] Original-art portraits (Holmes, Watson/narrator, the King, Irene Adler, a tutor): drop into `data/portraits/scandal-in-bohemia/<character-id>.png` (also `narrator`, `cover`). Without them the UI shows initials.
+- [ ] Harry Potter PDF at `data/uploads/harry-potter-collection.pdf` (gitignored); the ingest builds the 7 books from it.
+- [ ] Original-art portraits (Harry, Hagrid, Hermione, a narrator, ...): drop into `data/portraits/hp1-sorcerers-stone/<character-id>.png` (also `narrator`, `cover`). Without them the UI shows initials.
 - [ ] A 5-30 s recording of your voice plus its exact transcript, for the voice-clone test.
 
 ## 1b. GCP backend (see docs/GCP_PLAN.md)
@@ -27,12 +27,12 @@ Standing rule: do **not** use the Anthropic key until told (user instruction, 20
 - [ ] `summaries.py` (Sonnet 5.5, under $1).
 - [ ] `index.py --blurbs` (optional).
 - [ ] `eval_spoilers.py` (dry run says about $2.3 for 100 questions; target 0 leaks; appends to NOTES.md).
-- [ ] Textbook emphasis picks: `segment.py --book biology-2e-ch8 --emphasis` (optional).
+- [ ] Emphasis picks (optional): `segment.py --book hp1-sorcerers-stone --emphasis`.
 
 ## 3. Needs the Boson key (probes and prerender written; nothing has hit the live API)
 `python scripts/run_all.py` runs these in order:
 - [x] The four probes ran 2026-10-17 (results in NOTES.md): STT 0.66-0.89 s, first answer audio 0.66-0.72 s; `berlinda` does not exist (other 7 voices OK); tags arrive glued to the first timestamp word (alignment handles it, test added); timestamps `null` for one word and French; voice clone id field is `voice_id`, idempotent; mid-session voice change acked; `response.cancel` after a commit error gave no `response.done` within 10 s. Listen to `scripts/captures/realtime_answer_{oliver,nora}.wav` to confirm the voice changed.
-- [ ] `prerender_tts.py` for Sherlock (~365 chunks, ~$0.69; **waiting on your OK**, interrupted by a PC crash before it started) and, once the text exists, Biology.
+- [ ] `prerender_tts.py` for the Harry Potter books (**waiting on your OK**; check the estimate first).
 - [ ] Listen: M3 acceptance (no gaps over 150 ms, highlight tracks words).
 - [ ] M4 acceptance: 10 live Talk cycles, latency under 2 s first audio, logged to NOTES.md.
 - [ ] M7: five multilingual questions (zh/es/fr) answered in kind. Retrieval already verified offline.
@@ -41,7 +41,7 @@ Standing rule: do **not** use the Anthropic key until told (user instruction, 20
 - [ ] M10: the 90-second demo three times from a cold start.
 
 ## 4. Built without a key (do not redo)
-- [x] M1 ingest (Sherlock 259 paragraphs), chunker (365 chunks), retrieval index (129 chunks + e5 embeddings).
+- [x] M1 ingest, chunker and retrieval index built on earlier sample books (since removed; the app now contains only the Harry Potter series).
 - [x] M2 backend: books, TTS cache + timestamp alignment, token mint, retrieve with spoiler gating + property tests, voice allowlist, rate limits, optional access code, clone consent gate, startup warm-up.
 - [x] M3 ReaderEngine, M4 TalkController (state machine, tap vs hold, barge-in, auto-resume, 10 cycles) + TalkClient (manual turns, close-code handling, **1013 backoff with a fresh key per retry**).
 - [x] M5 server-side character gating; **`eval_spoilers.py`** (fake-tested; real run needs the Anthropic key).

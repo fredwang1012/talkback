@@ -214,10 +214,10 @@ describe("TalkClient turns", () => {
     const s = await open(h);
     s.recv({ type: "conversation.item.input_audio_transcription.completed", transcript: "who is she?" });
     expect(h.events).toContainEqual({ type: "transcript", text: "who is she?" });
-    h.client.respond("You are Holmes.");
+    h.client.respond("You are Harry.");
     const rc = s.sent.at(-1)!;
     expect(rc.type).toBe("response.create");
-    expect(rc.response.instructions).toBe("You are Holmes.");
+    expect(rc.response.instructions).toBe("You are Harry.");
   });
 
   it("plays audio, emits audio-start once, captions, and drains when playback ends", async () => {

@@ -1,6 +1,6 @@
 """eval_spoilers (M5): does Talk mode ever leak what the reader has not read yet?
 
-Usage: uv run --project backend python preprocess/eval_spoilers.py --book scandal-in-bohemia [--n 100] [--yes] [--notes]
+Usage: uv run --project backend python preprocess/eval_spoilers.py --book hp1-sorcerers-stone [--n 100] [--yes] [--notes]
 
 Pipeline (brief section 8, item 8):
 1. Sonnet writes questions at random reader positions: half answerable from the text already read, half that can only

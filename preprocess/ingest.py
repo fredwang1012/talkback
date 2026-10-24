@@ -1,6 +1,6 @@
 """ingest: data/raw/<name>.txt + <name>.meta.yaml -> data/books/<book_id>/book.json (paragraphs + sections only).
 
-Usage: uv run --project backend python preprocess/ingest.py --book scandal-in-bohemia
+Usage: uv run --project backend python preprocess/ingest.py --book hp1-sorcerers-stone
 Idempotent. Running later stages (cast, segment, ...) fills in the rest of book.json; re-running ingest
 keeps existing characters/narrator/summaries/segments only if paragraph text is unchanged.
 
