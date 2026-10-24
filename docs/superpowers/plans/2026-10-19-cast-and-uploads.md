@@ -30,3 +30,7 @@ Spec: this file (user request 2026-10-19, rulings below). Subagents: Sonnet 5.5 
 5. **Final review** (Sonnet), fixes, push.
 
 The answer-quality work (bigger chunks, k=8, prompts, re-index) and its after-eval run separately and land before task 3.
+
+## Task 5: Talkback mode + remembered access code (user, 2026-10-20)
+- A dedicated conversation mode, "Talkback", toggled with Read | Talkback at the top of the reader (T key). Reading pauses; the book text column is replaced by a conversation view: large face of the selected character (loops / lip-sync / still), character dropdown (one at a time; met-only unless spoilers on), Voice Auto/choose, Avatar Auto/choose, Spoilers toggle (content only), chat transcript (you / character bubbles, kept per book for the session), hold-to-talk mic button (and spacebar) plus a text box, "You're at <chapter>" badge, "Back to reading" resumes at the same sentence. Textbooks: narrator only. Mobile layout.
+- Access code: "Remember on this device" (localStorage, default on) with a "Forget code" control; never in the bundle or URL.

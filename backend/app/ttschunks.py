@@ -1,6 +1,7 @@
 """Split paragraphs into Boson TTS chunks (<= 280 chars, sentence-aligned). Shared by preprocess/chunk_tts.py and uploads."""
 import re
 
+from .delivery import apply_styles, with_laughter
 from .schema import Book, Paragraph, Segment, TtsChunk
 from .textnorm import normalize_for_tts
 
@@ -63,15 +64,19 @@ def split_long(text: str, base: int, limit: int = MAX_CHARS) -> list[tuple[int, 
     return out
 
 
-def build_tts_text(spoken: str, voice_tags: str, emotion: str | None) -> str:
-    tags = voice_tags + (f"<|emotion:{emotion}|>" if emotion else "")
-    return tags + normalize_for_tts(spoken)
+def build_tts_text(spoken: str, voice_tags: str, emotion: str | None, style: str | None = None,
+                   sfx: bool = False) -> str:
+    """[voice prosody tags][style][emotion][spoken text, with a laughter sfx before laughter onomatopoeia if sfx]."""
+    tags = voice_tags + (f"<|style:{style}|>" if style else "") + (f"<|emotion:{emotion}|>" if emotion else "")
+    text = normalize_for_tts(spoken)
+    return tags + (with_laughter(text) if sfx else text)
 
 
 def chunk_paragraph(p: Paragraph, book: Book) -> list[TtsChunk]:
     narrator_voice = book.narrator.voice if book.narrator else DEFAULT_VOICE
     chars = {c.id: c for c in book.characters}
     segments = p.segments or [Segment(speaker="narrator", text=p.text)]
+    apply_styles(segments)  # rule-based whispering/shouting; keeps a style the enrich LLM already set
     chunks: list[TtsChunk] = []
     cursor = 0
     for seg in segments:
@@ -103,6 +108,6 @@ def chunk_paragraph(p: Paragraph, book: Book) -> list[TtsChunk]:
             spoken = p.text[s:e]
             chunks.append(TtsChunk(
                 id=f"p{p.idx}c{len(chunks)}", speaker=seg.speaker if seg.speaker in chars else "narrator",
-                voice=voice, tts_text=build_tts_text(spoken, tags, seg.emotion),
+                voice=voice, tts_text=build_tts_text(spoken, tags, seg.emotion, seg.style, sfx=seg.speaker in chars),
                 char_start=s, char_end=e))
     return chunks

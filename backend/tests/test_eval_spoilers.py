@@ -88,6 +88,17 @@ def test_full_flow_with_fake_models_counts_leaks_and_accuracy():
     assert "No leaks." in render_report(book, done, stats)
 
 
+def test_pick_speakers_skips_non_main_characters():
+    book = make_book()
+    for ch in book.characters:
+        ch.main = False
+    book.characters[0].main = None
+    cases = [Case(question=Question(question="q", kind="earlier", key_fact="k"), reader_para=999, speaker="narrator") for _ in range(40)]
+    pick_speakers(book, cases)
+    allowed = {"narrator", book.characters[0].id}
+    assert {c.speaker for c in cases} <= allowed
+
+
 def test_report_lists_a_flagged_leak():
     book = make_book()
     leaky = Case(question=Question(question="Who did it?", kind="future", key_fact="X"), reader_para=5, speaker="narrator",

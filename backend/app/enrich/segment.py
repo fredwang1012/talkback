@@ -22,6 +22,7 @@ Emotion = Literal[
     "contemplation", "confusion", "surprise", "awe", "longing", "anger", "fear", "disgust", "bitterness",
     "sadness", "shame", "helplessness",
 ]
+Style = Literal["whispering", "shouting"]
 assert set(Emotion.__args__) == set(EMOTIONS)  # type: ignore[attr-defined]  # keep in step with the app schema
 
 
@@ -31,6 +32,7 @@ class SegItem(BaseModel):
     speaker: str
     text: str
     emotion: Emotion | None
+    style: Style | None = None
 
 
 class SegResult(BaseModel):
@@ -46,6 +48,7 @@ Rules:
 - Everything else belongs to "narrator": description, thoughts, and speech tags such as "said Hagrid" or "I answered".
 - Start a new segment whenever the speaker changes. If a quote is interrupted by a speech tag and then continues, that is three segments.
 - emotion: choose at most one of the allowed values per segment, only when the text clearly expresses it; otherwise null. Narration is usually null.
+- style: for a character's speech only, "whispering" if the text says it is whispered, hissed, murmured or muttered, "shouting" if it is shouted, yelled, bellowed, roared or screamed (or written in capitals); otherwise null. Narration is always null.
 - Use only speaker ids from the cast list, plus "narrator"."""
 
 
@@ -96,7 +99,7 @@ def validate_segments(paragraph: str, items: list[SegItem], speakers: set[str]) 
                 return None
             prev = out[-1] if out else None
             if prev is not None and prev.text[:1] in _QUOTES and prev.text[-1:] not in _QUOTES:
-                out[-1] = Segment(speaker=prev.speaker, text=prev.text + gap, emotion=prev.emotion)  # closing mark
+                out[-1] = Segment(speaker=prev.speaker, text=prev.text + gap, emotion=prev.emotion, style=prev.style)  # closing mark
             else:
                 text = gap + text  # opening mark (kept adjacent: the gap sat right before the text)
         cursor = at + len(it.text.strip())
@@ -105,12 +108,13 @@ def validate_segments(paragraph: str, items: list[SegItem], speakers: set[str]) 
             if tail in _QUOTES and tail:
                 text, cursor = text + tail, cursor + 1
         speaker = it.speaker if it.speaker in speakers else "narrator"
-        out.append(Segment(speaker=speaker, text=text, emotion=it.emotion))
+        out.append(Segment(speaker=speaker, text=text, emotion=it.emotion,
+                           style=it.style if speaker != "narrator" else None))
     rest = paragraph[cursor:].strip()
     if rest:
         if _is_quotes(rest) and out:
             last = out[-1]
-            out[-1] = Segment(speaker=last.speaker, text=last.text + rest, emotion=last.emotion)
+            out[-1] = Segment(speaker=last.speaker, text=last.text + rest, emotion=last.emotion, style=last.style)
         else:
             return None
     return out

@@ -117,6 +117,10 @@ export class TalkController {
 
   setAutoResume(v: boolean): void { this.autoResume = v; }
 
+  private talkback = false;
+  /** In the Talkback view a short tap on the mic never starts or stops the story; it just cancels the question. */
+  setTalkback(v: boolean): void { this.talkback = v; }
+
   /** Picking someone else to talk to; applied to the session voice before the next question. */
   async setSpeaker(id: string): Promise<void> {
     this.speakerId = id;
@@ -172,6 +176,7 @@ export class TalkController {
 
     if (held < this.d.tapMs) { // a tap toggles play/pause instead of asking a question
       await this.d.session.stopMic(true);
+      if (this.talkback) { this.resumeIndex = null; this.set("talk-idle"); return; }
       const wasPlaying = this.wasPlayingBeforePress;
       const index = this.resumeIndex;
       this.resumeIndex = null;
@@ -191,6 +196,51 @@ export class TalkController {
     this.latency = { commitToTranscriptMs: this.d.now() - t0 };
     if (query) this.d.onTranscript?.(query);
 
+    await this.answerQuery(turn, query);
+  }
+
+  /** A typed question: the same turn as a spoken one, without the mic. */
+  async ask(text: string): Promise<void> {
+    const query = text.trim();
+    if (!query) return;
+    this.clearResumeTimer();
+    const turn = ++this.turn;
+    const wasAnswering = this._state === "answering";
+    const wasBusy = ["transcribing", "retrieving"].includes(this._state);
+    const viaAnswer = this.run !== null;
+    this.cancelAnswer();
+    if (this.resumeIndex === null) {
+      this.wasPlayingBeforePress = this.d.reader.isPlaying();
+      this.resumeIndex = this.d.reader.currentIndex();
+    }
+    if (this.d.reader.isPlaying()) this.d.reader.pause();
+    this.d.onCaption?.("", false);
+    this.latency = {};
+    this.d.onTranscript?.(query);
+    this.set("retrieving");
+    if ((wasAnswering || wasBusy) && !viaAnswer) {
+      try { await this.d.session.interrupt(); } catch { /* nothing to cancel is fine */ }
+    }
+    if (turn !== this.turn) return;
+    if (!(this.d.answer && this.d.speaker)) {
+      try { await this.d.session.ensureOpen(this.d.voiceFor(this.speakerId)); } catch (e) { this.fail(turn, e); return; }
+      if (turn !== this.turn) return;
+    }
+    await this.answerQuery(turn, query);
+  }
+
+  /** Stop speaking and drop the current answer (Stop button). */
+  async stop(): Promise<void> {
+    const viaAnswer = this.run !== null;
+    this.cancelAnswer();
+    this.turn++;
+    if (!viaAnswer && ["answering", "retrieving", "transcribing"].includes(this._state)) {
+      try { await this.d.session.interrupt(); } catch { /* nothing to cancel is fine */ }
+    }
+    this.backToReading();
+  }
+
+  private async answerQuery(turn: number, query: string): Promise<void> {
     this.set("retrieving");
     const r0 = this.d.now();
     if (this.d.answer && this.d.speaker) {

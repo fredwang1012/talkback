@@ -14,11 +14,14 @@ import PlayerBar from "../reader/PlayerBar";
 import RecapPanel from "../reader/RecapPanel";
 import { ReaderEngine, type AudioLike } from "../reader/ReaderEngine";
 import Stage from "../reader/Stage";
+import { toggleMode, validSpeaker } from "../reader/talkbackLogic";
+import TalkbackView, { ModeToggle } from "../reader/TalkbackView";
 import { loadSpoilers, saveSpoilers } from "../reader/spoilers";
 import VoiceLab from "../reader/VoiceLab";
 import { spend, type SpendSnapshot } from "../spend";
 import { useTalk } from "../talk/useTalk";
 import { DebugDrawer } from "../ui/DebugDrawer";
+import { debugEnabled } from "../ui/debugFlag";
 import {
   clampIndex, flattenChunks, loadPosition, readerPara, savePosition, silentDurationMs,
 } from "../reader/position";
@@ -36,11 +39,13 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [speakerId, setSpeakerId] = useState("narrator");
   const [avatars, setAvatars] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<"read" | "talk">("read");
+  const stopTalkRef = useRef<() => void>(() => {});
   const [word, setWord] = useState<{ charStart: number; charEnd: number } | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const demo = useMemo(() => isDemo(), []);
   const [code, setCode] = useState(getAccessToken());
+  const [remember, setRemember] = useState(true);
   const [labOpen, setLabOpen] = useState(false);
   const [recapOpen, setRecapOpen] = useState(false);
   const [cast, setCast] = useState<Cast>(emptyCast);
@@ -147,6 +152,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     canLipSync: (voice) => { const f = talkFaceFor(speakerId); return !!f && f.voice === voice; },
     lipSync,
     spoilers: spoilers && book?.kind === "novel",
+    talkback: mode === "talk",
     voiceFor: talkVoiceFor,
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
@@ -161,6 +167,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     },
   });
   const { pttDown, pttUp } = talk;
+  stopTalkRef.current = talk.stop;
 
   // Hold Space to talk (works while reading, to interrupt).
   useEffect(() => {
@@ -193,6 +200,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const changeMode = useCallback((m: "read" | "talk") => {
     setMode(m);
     if (m === "talk") { if (engineRef.current) engineRef.current.pause(); else setPlaying(false); }
+    else stopTalkRef.current(); // leaving Talkback silences the character; the reading position is untouched
   }, []);
 
   const seek = useCallback((i: number) => {
@@ -237,7 +245,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       if (e.key === "ArrowRight") { lastManualScroll.current = 0; step(1); }
       else if (e.key === "ArrowLeft") { lastManualScroll.current = 0; step(-1); }
       else if (e.key === "k") toggle();
-      else if (e.key === "t" && audioAvailable) changeMode(mode === "read" ? "talk" : "read");
+      else if (e.key === "t" && audioAvailable) changeMode(toggleMode(mode));
       else if (e.key === "]") setSpeed((s) => SPEEDS[Math.min(SPEEDS.indexOf(s) + 1, SPEEDS.length - 1)]);
       else if (e.key === "[") setSpeed((s) => SPEEDS[Math.max(SPEEDS.indexOf(s) - 1, 0)]);
     };
@@ -263,18 +271,25 @@ export default function Reader({ bookId }: { bookId: string }) {
     } catch (e) { setAudioError(e instanceof Error ? e.message : String(e)); }
   };
 
+  useEffect(() => {
+    if (!book) return;
+    const ok = validSpeaker(book, para, spoilers, speakerId);
+    if (ok !== speakerId) setSpeakerId(ok);
+  }, [book, para, spoilers, speakerId]);
+
   if (error && error.includes(": 401")) {
     return (
       <form className="code-form state-line" onSubmit={(e) => {
         e.preventDefault();
         const v = new FormData(e.currentTarget).get("code");
-        if (typeof v === "string" && v.trim()) { setAccessToken(v.trim()); setCode(v.trim()); window.location.reload(); }
+        if (typeof v === "string" && v.trim()) { setAccessToken(v.trim(), remember); setCode(v.trim()); window.location.reload(); }
       }}>
         <label htmlFor="book-code">This server needs an access code to open books</label>
         <div>
           <input id="book-code" name="code" type="password" autoComplete="off" />
           <button type="submit">Open the book</button>
         </div>
+        <label className="remember"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> Remember on this device</label>
       </form>
     );
   }
@@ -283,26 +298,38 @@ export default function Reader({ bookId }: { bookId: string }) {
 
   return (
     <>
-      <div className="reader">
+      <div className={`reader${mode === "talk" ? " talkback-mode" : ""}`}>
         <div className="pages">
           <nav className="topbar">
             <a href="#/">All books</a>
             <span>{book.author}</span>
+            <ModeToggle mode={mode} onMode={changeMode} talkAvailable={audioAvailable} />
           </nav>
-          <BookText book={book} chunks={chunks} index={index} word={word}
-                    onPick={(i) => { lastManualScroll.current = Date.now(); seek(i); }} />
+          {mode === "talk" ? (
+            <TalkbackView book={book} para={para} speakerId={speakerId} onSpeaker={setSpeakerId}
+                          pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
+                          talk={talk} faces={faces} faceFor={talkFaceFor} autoVoiceFor={readingVoiceFor}
+                          choice={talkChoice} onChoice={changeTalk} voices={voiceOptions}
+                          spoilers={spoilers} onSpoilers={(on) => { setSpoilers(on); saveSpoilers(bookId, on); }}
+                          lipSyncable={lipSyncable} lipSync={lipSync}
+                          onLipSync={(on) => { setLipSync(on); try { localStorage.setItem("talkback:lipsync", on ? "1" : "0"); } catch { /* storage blocked */ } }}
+                          portrait={book.characters.find((c) => c.id === speakerId)?.portrait ?? book.narrator?.portrait ?? null}
+                          onBack={() => changeMode("read")} onRecap={() => setRecapOpen(true)} onVoices={() => setLabOpen(true)} />
+          ) : (
+            <BookText book={book} chunks={chunks} index={index} word={word}
+                      onPick={(i) => { lastManualScroll.current = Date.now(); seek(i); }} />
+          )}
         </div>
-        <Stage book={book} para={para} speakerId={speakerId} onSpeaker={setSpeakerId} health={health}
-               talk={talk} audioAvailable={audioAvailable}
-               avatarSrc={chunks[index] && avatars.has(chunks[index].id) ? avatarUrl(book.id, chunks[index].id) : null}
-               avatarPlaying={playing && !loading} mode={mode} onMode={changeMode}
-               pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
-               needsCode={needsCode} onCode={(c) => { setAccessToken(c); setCode(c); }} onOpenLab={() => setLabOpen(true)}
-               faces={faces} voiceFor={talkVoiceFor} autoVoiceFor={readingVoiceFor} faceFor={talkFaceFor}
-               readingFace={mode === "read" ? readingFace : null} lipSyncable={lipSyncable}
-               choice={talkChoice} onChoice={changeTalk} voices={voiceOptions}
-               spoilers={spoilers} onSpoilers={(on) => { setSpoilers(on); saveSpoilers(bookId, on); }}
-               lipSync={lipSync} onLipSync={(on) => { setLipSync(on); try { localStorage.setItem("talkback:lipsync", on ? "1" : "0"); } catch { /* storage blocked */ } }} />
+        {mode === "read" && (
+          <Stage book={book} para={para} speakerId={speakerId} onSpeaker={setSpeakerId} health={health}
+                 talk={talk} audioAvailable={audioAvailable}
+                 avatarSrc={chunks[index] && avatars.has(chunks[index].id) ? avatarUrl(book.id, chunks[index].id) : null}
+                 avatarPlaying={playing && !loading} onMode={changeMode}
+                 pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
+                 needsCode={needsCode} onCode={(c, rem) => { setAccessToken(c, rem); setCode(c); }} onOpenLab={() => setLabOpen(true)}
+                 faceFor={talkFaceFor}
+                 readingFace={readingFace} spoilers={spoilers} />
+        )}
       </div>
       {labOpen && (
         <VoiceLab book={book} cast={cast} onCast={changeCast} castError={castError} style={style} onStyle={changeStyle}
@@ -314,8 +341,8 @@ export default function Reader({ bookId }: { bookId: string }) {
         <RecapPanel bookId={book.id} para={para} voice={audioAvailable ? narratorVoice : null}
                     onClose={() => setRecapOpen(false)} />
       )}
-      <DebugDrawer entries={talk.logs} spend={spendNow} />
-      <PlayerBar
+      {debugEnabled() && <DebugDrawer entries={talk.logs} spend={spendNow} />}
+      {mode === "read" && <PlayerBar
         playing={playing} loading={loading} onToggle={toggle} onRecap={() => setRecapOpen(true)}
         onPrev={() => { lastManualScroll.current = 0; step(-1); }} onNext={() => { lastManualScroll.current = 0; step(1); }}
         speed={speed} speeds={SPEEDS} onSpeed={setSpeed}
@@ -325,7 +352,7 @@ export default function Reader({ bookId }: { bookId: string }) {
         atStart={index === 0} atEnd={index >= last}
         hasCast={book.characters.length > 0}
         audioAvailable={audioAvailable} audioError={audioError}
-      />
+      />}
     </>
   );
 }

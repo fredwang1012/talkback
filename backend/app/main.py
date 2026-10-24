@@ -7,7 +7,7 @@ import logging
 import re
 import secrets
 import time
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -275,6 +275,8 @@ def _resolve_talk(book_id: str, speaker_id: str, reader_para: int, spoilers: boo
         raise HTTPException(404, "Unknown speaker")
     reader_para = min(reader_para, len(book.paragraphs) - 1)
     speaker = next((c for c in book.characters if c.id == speaker_id), None)
+    if speaker and speaker.main is False:
+        raise HTTPException(403, f"{speaker.name} is not a main character, so you cannot talk to them.")
     if speaker and book.kind == "novel" and not spoilers and speaker.first_para > reader_para:
         raise HTTPException(403, f"{speaker.name} has not appeared yet at this point in the story.")  # server-side gate
     return book, speaker, reader_para
@@ -637,12 +639,47 @@ def list_avatars(book_id: str):
 
 _TTS_URL = re.compile(r"^/media/tts/([0-9a-f]{64})\.mp3$")
 avatar_bucket = TokenBucket(capacity=12, per_seconds=60)  # every render spends Boson avatar credit
-_avatar_locks: dict[str, asyncio.Lock] = {}
+_avatar_locks: dict[str, list] = {}  # key -> [lock, holders + waiters]; dropped only when nobody uses it
+
+
+async def _acquire_avatar_key(key: str) -> None:
+    """Take the per-key render lock. The count covers waiters too, so the entry is never replaced under them."""
+    entry = _avatar_locks.setdefault(key, [asyncio.Lock(), 0])
+    entry[1] += 1
+    try:
+        await entry[0].acquire()
+    except BaseException:
+        _drop_avatar_ref(key, entry)
+        raise
+
+
+def _release_avatar_key(key: str) -> None:
+    entry = _avatar_locks[key]
+    entry[0].release()
+    _drop_avatar_ref(key, entry)
+
+
+def _drop_avatar_ref(key: str, entry: list) -> None:
+    entry[1] -= 1
+    if entry[1] <= 0 and _avatar_locks.get(key) is entry:
+        del _avatar_locks[key]
 
 
 class LipSyncRequest(BaseModel):
     audio_url: str = Field(max_length=120)
     voice: str = Field(max_length=120)
+
+
+def _lipsync_inputs(req: LipSyncRequest) -> tuple[Path, Path, str]:
+    """Validate a lip-sync request: (cached TTS file, face image, cache key). Raises 400/404."""
+    m = _TTS_URL.match(req.audio_url)
+    face = faces.voice_face_path(req.voice) if voices.is_known_voice(req.voice) else None
+    if not m or face is None:
+        raise HTTPException(400, "Lip-sync needs audio from /api/speak and a voice that has a face.")
+    audio = settings.data_dir / "cache" / "tts" / f"{m.group(1)}.mp3"
+    if not audio.is_file():
+        raise HTTPException(404, "That audio is not cached.")
+    return audio, face, f"{m.group(1)}-{hashlib.sha256(face.read_bytes()).hexdigest()[:16]}"
 
 
 @app.post("/api/avatar/talk", dependencies=[Depends(require_access)])
@@ -652,38 +689,107 @@ async def lipsync(req: LipSyncRequest, request: Request):
     Only audio this server synthesised (/media/tts/<key>.mp3) and only voices with a face are accepted; clips are
     cached by audio key, so the same sentence never renders twice.
     """
-    m = _TTS_URL.match(req.audio_url)
-    face = faces.voice_face_path(req.voice) if voices.is_known_voice(req.voice) else None
-    if not m or face is None:
-        raise HTTPException(400, "Lip-sync needs audio from /api/speak and a voice that has a face.")
-    audio = settings.data_dir / "cache" / "tts" / f"{m.group(1)}.mp3"
-    if not audio.is_file():
-        raise HTTPException(404, "That audio is not cached.")
-    key = f"{m.group(1)}-{hashlib.sha256(face.read_bytes()).hexdigest()[:16]}"
+    audio, face, key = _lipsync_inputs(req)
     clip = _lipsync_dir() / f"{key}.mp4"
-    lock = _avatar_locks.setdefault(key, asyncio.Lock())
+    await _acquire_avatar_key(key)
     try:
-        async with lock:
-            if not clip.is_file():
-                if not avatar_bucket.allow(client_ip(request)):
-                    raise HTTPException(429, "Too many lip-sync renders; wait a moment.")
-                data = audio.read_bytes()
-                try:
-                    vid = await boson.create_video(base64.b64encode(face.read_bytes()).decode(), base64.b64encode(data).decode(),
-                                                   image_mime=faces.FACE_EXTS[face.suffix.lstrip(".").lower()],
-                                                   seconds=len(data) / 16000)  # 128 kbit/s mp3
-                    await boson.wait_video(vid, interval=1, timeout=120)
-                    video = await boson.download_video(vid)
-                except (BosonError, RuntimeError) as e:
-                    raise boson_http_error(e)
-                clip.parent.mkdir(parents=True, exist_ok=True)
-                tmp = clip.with_suffix(".tmp")
-                tmp.write_bytes(video)
-                tmp.replace(clip)
+        if not clip.is_file():
+            if not avatar_bucket.allow(client_ip(request)):
+                raise HTTPException(429, "Too many lip-sync renders; wait a moment.")
+            data = audio.read_bytes()
+            try:
+                vid = await boson.create_video(base64.b64encode(face.read_bytes()).decode(), base64.b64encode(data).decode(),
+                                               image_mime=faces.FACE_EXTS[face.suffix.lstrip(".").lower()],
+                                               seconds=len(data) / 16000)  # 128 kbit/s mp3
+                await boson.wait_video(vid, interval=1, timeout=120)
+                video = await boson.download_video(vid)
+            except (BosonError, RuntimeError) as e:
+                raise boson_http_error(e)
+            clip.parent.mkdir(parents=True, exist_ok=True)
+            tmp = clip.with_name(f"{clip.stem}.{secrets.token_hex(6)}.tmp")
+            tmp.write_bytes(video)
+            tmp.replace(clip)
     finally:
-        if not lock.locked() and _avatar_locks.get(key) is lock:
-            del _avatar_locks[key]
+        _release_avatar_key(key)
     return {"video_url": f"/media/avatar/{clip.name}"}
+
+
+STREAM_MAX_BYTES = 40 * 1024 * 1024
+STREAM_MAX_SECONDS = 150
+
+
+@app.post("/api/avatar/stream", dependencies=[Depends(require_access)])
+async def lipsync_stream(req: LipSyncRequest, request: Request):
+    """Streaming lip-sync: proxies Boson's fragmented-MP4 stream so playback starts at the first frames.
+
+    A clip that is already cached answers with JSON {"video_url"} instead (the client plays that file). Otherwise the
+    bytes are forwarded as they arrive and teed to a temp file that joins the cache only if the stream completes.
+    """
+    audio, face, key = _lipsync_inputs(req)
+    clip = _lipsync_dir() / f"{key}.mp4"
+    if clip.is_file():
+        return {"video_url": f"/media/avatar/{clip.name}"}
+    await _acquire_avatar_key(key)
+    handed_off = False  # the response body owns the lock from the moment it is returned
+    stack = AsyncExitStack()
+    try:
+        if clip.is_file():  # another request finished it while we waited
+            return {"video_url": f"/media/avatar/{clip.name}"}
+        if not avatar_bucket.allow(client_ip(request)):
+            raise HTTPException(429, "Too many lip-sync renders; wait a moment.")
+        data = audio.read_bytes()
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(STREAM_MAX_SECONDS):
+                _vid, chunks = await stack.enter_async_context(boson.stream_video(
+                    base64.b64encode(face.read_bytes()).decode(), base64.b64encode(data).decode(),
+                    image_mime=faces.FACE_EXTS[face.suffix.lstrip(".").lower()], seconds=len(data) / 16000))
+        except (BosonError, RuntimeError) as e:
+            raise boson_http_error(e)
+        except TimeoutError:
+            raise HTTPException(504, "Boson took too long to start the avatar stream.")
+
+        async def body():
+            tmp = clip.with_name(f"{clip.stem}.{secrets.token_hex(6)}.stream.tmp")  # unique per request
+            ok = False
+            total = 0
+            try:
+                clip.parent.mkdir(parents=True, exist_ok=True)
+                it = chunks.__aiter__()
+                with tmp.open("wb") as f:
+                    while True:
+                        remaining = started + STREAM_MAX_SECONDS - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("avatar stream exceeded its time budget")
+                        try:
+                            async with asyncio.timeout(remaining):  # a stalled upstream never yields: bound the wait
+                                chunk = await it.__anext__()
+                        except StopAsyncIteration:
+                            break
+                        total += len(chunk)
+                        if total > STREAM_MAX_BYTES:
+                            raise RuntimeError("avatar stream exceeded its size budget")
+                        f.write(chunk)
+                        yield chunk
+                ok = total > 0
+            finally:  # also runs on client disconnect (GeneratorExit / cancellation)
+                try:
+                    await stack.aclose()
+                except BaseException:
+                    ok = False
+                if ok:
+                    tmp.replace(clip)
+                else:
+                    tmp.unlink(missing_ok=True)
+                _release_avatar_key(key)
+
+        resp = StreamingResponse(body(), media_type="video/mp4", headers={"Cache-Control": "no-store"})
+        handed_off = True
+        return resp
+    finally:
+        if not handed_off:
+            await stack.aclose()
+            _release_avatar_key(key)
 
 
 @app.get("/api/avatar/{chunk_id}")

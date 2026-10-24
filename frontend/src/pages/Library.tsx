@@ -3,6 +3,7 @@ import {
   changeKind, fetchBooks, MAX_UPLOAD_BYTES, pollBookStatus, pollEnrichment, startEnrichment, uploadBook,
   type BookStatus, type BookSummary, type UploadKind,
 } from "../api";
+import { clearAccessToken, getAccessToken } from "../accessToken";
 import { canMove, groupShelves, kindLabel, moveLabel, moveTarget, seriesTitle } from "../shelves";
 
 type UploadState =
@@ -205,6 +206,7 @@ export default function Library() {
   const [error, setError] = useState<string | null>(null);
   const [notes, setNotes] = useState<Record<string, MoveNote>>({});
   const [moving, setMoving] = useState(false);
+  const [hasCode, setHasCode] = useState(() => getAccessToken() !== "");
   const abortRef = useRef<AbortController | null>(null);
 
   const load = () => fetchBooks().then(setBooks).catch((e: Error) => setError(e.message));
@@ -310,6 +312,11 @@ export default function Library() {
       <p className="licence">
         The Harry Potter series is read from your own copy. It is never committed to git; an online copy of this app needs an access code to open the books.
       </p>
+      {hasCode && (
+        <p className="forget-code">
+          <button className="link-btn" onClick={() => { clearAccessToken(); setHasCode(false); }}>Forget access code on this device</button>
+        </p>
+      )}
     </main>
   );
 }

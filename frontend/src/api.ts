@@ -25,6 +25,7 @@ export type Character = {
   voice_tags: string;
   persona: string;
   portrait: string | null;
+  main?: boolean | null; // false = a minor speaker: read aloud, but not someone to talk to
 };
 export type Book = {
   id: string;
@@ -356,6 +357,15 @@ export async function lipSync(audioUrl: string, voice: string): Promise<string> 
   }
   return ((await res.json()) as { video_url: string }).video_url;
 }
+
+/** Streaming lip-sync: the response is fragmented MP4 as it renders, or JSON {video_url} when the clip is cached. */
+export const lipSyncStream = (audioUrl: string, voice: string, signal: AbortSignal): Promise<Response> =>
+  fetch("/api/avatar/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ audio_url: audioUrl, voice }),
+    signal,
+  });
 
 /** Chunk ids that have a pre-rendered avatar clip (stretch feature). Empty when there are none or the call fails. */
 export async function fetchAvatars(bookId: string): Promise<string[]> {

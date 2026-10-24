@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .boson import BosonClient
 from .config import settings
+from .delivery import strip_tag_residue
 from .gcp import usage
 from .textnorm import normalize_for_tts
 
@@ -52,7 +53,9 @@ def align_timestamps(words: list[dict] | None, plain: str) -> list[dict] | None:
         text = w["word"]
         if _TAG.fullmatch(text.strip()) or not _norm(text):
             continue  # delivery tags and bare punctuation are not words
-        target = _norm(_TAG.sub("", text))
+        target = _norm(strip_tag_residue(_TAG.sub("", text)))
+        if not target:
+            continue  # nothing but tag residue (e.g. 'stylewhispering')
         matched = None
         for j in range(cur, min(cur + 4, len(tokens))):
             joined = ""
