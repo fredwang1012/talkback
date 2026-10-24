@@ -20,6 +20,7 @@ from app import retrieval  # noqa: E402
 from app.ingest_upload import _LIGATURES, _PAGE_NUMBER, Line, _cap_paragraphs, merge_lines  # noqa: E402
 from app.parsing import normalize  # noqa: E402
 from app.schema import Book, Narrator, Paragraph, Section  # noqa: E402
+from app.books import save_book  # noqa: E402
 from app.ttschunks import chunk_paragraph  # noqa: E402
 
 SERIES = "harry-potter"
@@ -136,7 +137,7 @@ def main() -> None:
         book = build(doc, spec)
         d = ROOT / "data" / "books" / book.id
         d.mkdir(parents=True, exist_ok=True)
-        (d / "book.json").write_text(book.model_dump_json(indent=1), encoding="utf-8")
+        save_book((d / "book.json"), book)
         retrieval.save_index(d / "index", retrieval.make_chunks(book), None)
         words = sum(len(p.text.split()) for p in book.paragraphs)
         print(f"{book.id}: {len(book.sections)} chapters, {len(book.paragraphs)} paragraphs, {words} words, "

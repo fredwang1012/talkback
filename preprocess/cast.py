@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import llm  # noqa: E402
 from app.schema import Book, Character, Narrator  # noqa: E402
+from app.books import save_book  # noqa: E402
 
 MODEL = "claude-sonnet-5-5"
 VOICES = ("chloe", "eleanor", "jake", "marcus", "nora", "oliver")
@@ -175,7 +176,7 @@ async def cast_series(series: str, yes: bool) -> None:
     result = await llm.call_structured(MODEL, SERIES_SYSTEM, user, CastResult, max_tokens=12000, effort="medium")
     apply_series_cast(books, result)
     for b in books:
-        (llm.ROOT / "data/books" / b.id / "book.json").write_text(b.model_dump_json(indent=1), encoding="utf-8")
+        save_book((llm.ROOT / "data/books" / b.id / "book.json"), b)
         print(f"{b.id}: {len(b.characters)} characters, new this book: "
               f"{[c.id for c in b.characters if c.first_para > 0]}")
     for c in result.characters:
@@ -198,7 +199,7 @@ async def main() -> None:
     book = Book.model_validate_json(path.read_text(encoding="utf-8"))
     if book.kind == "textbook":
         cast_textbook(book)
-        path.write_text(book.model_dump_json(indent=1), encoding="utf-8")
+        save_book(path, book)
         print(f"Textbook: no characters; narrator/tutor voice={TUTOR_VOICE}. No LLM call made.")
         return
 
@@ -224,7 +225,7 @@ async def main() -> None:
     narrator_voice = next((c.voice for c in chars if c.id == is_char), result.narrator_voice)
     book.characters = chars
     book.narrator = Narrator(voice=narrator_voice, is_character=is_char)
-    path.write_text(book.model_dump_json(indent=1), encoding="utf-8")
+    save_book(path, book)
 
     print(f"\nNarrator: voice={book.narrator.voice}, is_character={book.narrator.is_character}")
     for c in chars:

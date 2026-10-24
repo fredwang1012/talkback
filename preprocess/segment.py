@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from app.schema import EMOTIONS, Book, Paragraph, Segment  # noqa: E402
+from app.books import save_book  # noqa: E402
 
 MODEL = "claude-haiku-5-5"
 Emotion = Literal[
@@ -237,7 +238,7 @@ async def main() -> None:
             for p in book.paragraphs:
                 p.segments = narrator_only(p.text)
             print("textbook: one narrator segment per paragraph (use --emphasis for awe/enthusiasm picks)")
-        path.write_text(book.model_dump_json(indent=1), encoding="utf-8")
+        save_book(path, book)
         print("Next: rerun chunk_tts.py.")
         return
     await segment_novels(llm, args.book, args.yes)
@@ -277,7 +278,7 @@ async def segment_novels(llm, book_ids: list[str], yes: bool) -> None:
             segs, how = done.get(p.idx) or (narrator_only(p.text), "skipped")
             p.segments = segs
             counts[how] = counts.get(how, 0) + 1
-        path.write_text(book.model_dump_json(indent=1), encoding="utf-8")
+        save_book(path, book)
         llm_total = sum(counts.get(k, 0) for k in ("llm", "retry", "fallback"))
         ok_rate = (counts.get("llm", 0) + counts.get("retry", 0)) / llm_total if llm_total else 1.0
         print(f"{book.id}: {counts}; verbatim check passed for {ok_rate:.1%} of LLM paragraphs (target >= 95%)")

@@ -85,3 +85,10 @@ def list_books() -> list[dict]:
             "series": book.series, "series_index": book.series_index,
         })
     return sorted(out, key=lambda b: (b["series"] or "", b["series_index"] or 0, b["id"]))
+
+
+def save_book(path, book: Book) -> None:
+    """Write book.json atomically (temp file + rename) so a running server never reads a half-written book."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(book.model_dump_json(indent=1), encoding="utf-8")
+    tmp.replace(path)
