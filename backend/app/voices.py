@@ -3,6 +3,7 @@ import io
 import json
 import wave
 
+from . import users
 from .config import settings
 
 PRESET_VOICES = frozenset({"default", "chloe", "eleanor", "jake", "marcus", "nora", "oliver"})
@@ -38,7 +39,7 @@ def validate_clone_request(audio: bytes, transcript: str, name: str, consent: st
 
 
 def _store():
-    return settings.data_dir / "voices.json"
+    return users.voices_json()
 
 
 def load_voices() -> dict[str, str]:
@@ -49,6 +50,7 @@ def load_voices() -> dict[str, str]:
 def save_voice(name: str, voice_id: str) -> None:
     voices = load_voices()
     voices[name] = voice_id
+    _store().parent.mkdir(parents=True, exist_ok=True)
     _store().write_text(json.dumps(voices, indent=1), encoding="utf-8")
 
 

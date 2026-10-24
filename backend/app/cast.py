@@ -9,7 +9,7 @@ import uuid
 from pydantic import BaseModel
 
 from . import faces, voices
-from .config import settings
+from . import users
 from .schema import Book
 
 
@@ -29,7 +29,7 @@ class CastSettings(BaseModel):
 
 
 def _path(book_id: str):
-    return settings.data_dir / "books" / book_id / "cast_settings.json"
+    return users.cast_json(book_id)
 
 
 def _stored(book_id: str) -> CastSettings:
@@ -69,6 +69,7 @@ def save(book: Book, new: CastSettings) -> dict:
     main = list(dict.fromkeys(new.main if new.main is not None else _default_main(book)))
     out = CastSettings(main=main, narrator=new.narrator, characters=new.characters)
     p = _path(book.id)
+    p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex}.tmp")  # unique: concurrent PUTs never share a temp file
     tmp.write_text(json.dumps(out.model_dump(), indent=1), encoding="utf-8")
     tmp.replace(p)

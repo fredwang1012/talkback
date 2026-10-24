@@ -16,9 +16,10 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPE
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers
 from pydantic import BaseModel, Field
 
-from . import books, cast, faces, ingest_upload, public_client, retrieval, tts_cache, voices
+from . import books, cast, faces, ingest_upload, public_client, retrieval, tts_cache, users, voices
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
@@ -43,12 +44,13 @@ def _warm_up() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    await asyncio.to_thread(users.migrate_on_startup)  # PER_USER only; never raises
     task = asyncio.create_task(asyncio.to_thread(_warm_up))
     yield
     task.cancel()
 
 
-app = FastAPI(title="Talkback", lifespan=lifespan)
+app = FastAPI(title="Talkback", lifespan=lifespan, dependencies=[Depends(users.bind_identity)])
 app.add_middleware(UploadSizeLimit)  # added before CORS so CORS headers still wrap its 4xx replies
 app.add_middleware(
     CORSMiddleware,
@@ -68,7 +70,27 @@ def _lipsync_dir() -> Path:
 
 _lipsync_dir().mkdir(parents=True, exist_ok=True)
 app.mount("/media/avatar", StaticFiles(directory=_lipsync_dir()), name="lipsync")
-app.mount("/portraits", StaticFiles(directory=settings.data_dir / "portraits", check_dir=False), name="portraits")
+
+
+class PortraitFiles(StaticFiles):
+    """/portraits. With PER_USER the shared `faces` and `voices` folders are never served; /portraits/faces/<file>
+    is answered from the caller's own face folder, and a book's images only to callers who may see that book."""
+
+    async def get_response(self, path: str, scope):
+        if settings.per_user:
+            ident = users.identify_headers(Headers(scope=scope))
+            head, _, rest = path.replace("\\", "/").partition("/")  # StaticFiles hands over OS-style paths
+            if head == "voices":
+                raise HTTPException(404)
+            if head == "faces":
+                return await StaticFiles(directory=users.faces_dir(ident), check_dir=False).get_response(rest, scope)
+            if head and not users.can_see_book(head, ident):
+                raise HTTPException(404)
+            return await StaticFiles(directory=settings.data_dir / "portraits", check_dir=False).get_response(path, scope)
+        return await super().get_response(path, scope)
+
+
+app.mount("/portraits", PortraitFiles(directory=settings.data_dir / "portraits", check_dir=False), name="portraits")
 
 boson = BosonClient()
 token_bucket = TokenBucket(capacity=10, per_seconds=60)
@@ -78,6 +100,11 @@ answer_bucket = TokenBucket(capacity=20, per_seconds=60)  # every /api/answer ca
 
 
 retrieve_bucket = TokenBucket(capacity=30, per_seconds=60)  # vertex retrieval spends embedding + search credit
+
+
+def rate_key(request: Request) -> str:
+    """Rate-limit key: the signed-in account with PER_USER, else the client address."""
+    return users.rate_key(request, client_ip(request))
 
 
 def require_access(x_talkback_token: str | None = Header(default=None)) -> None:
@@ -118,6 +145,12 @@ def health():
             "answer_backend": answer_backend()}
 
 
+@app.get("/api/me")
+def me():
+    ident = users.current()
+    return {"email": ident.email if settings.per_user else None, "per_user": settings.per_user}
+
+
 @app.get("/api/books")
 def get_books():
     return books.list_books()
@@ -130,6 +163,7 @@ _book_bodies: dict[str, tuple[Book, bytes, bytes]] = {}  # book id -> (book obje
 def get_book(book_id: str, accept_encoding: str = Header(default="")):
     """The full book. Gated like the paid endpoints: a public deployment must not hand out a copyrighted text.
     Serialised and gzipped once per book version (a novel is several MB of JSON)."""
+    users.guard_book(book_id)
     book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
@@ -146,6 +180,7 @@ def get_book(book_id: str, accept_encoding: str = Header(default="")):
 def get_recap(book_id: str, para: int = 0):
     """Spoiler-safe "Previously..." for the reader's place: the latest stored summary written from text at or
     before `para` (never a later one), the chapter they are in, and the closing summaries of earlier books."""
+    users.guard_book(book_id)
     book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
@@ -163,7 +198,7 @@ def get_recap(book_id: str, para: int = 0):
 @app.post("/api/realtime/token", dependencies=[Depends(require_access)])
 async def realtime_token(request: Request):
     """Mint a fresh ephemeral Realtime key per call (never cached). The real API key never leaves the server."""
-    if not token_bucket.allow(client_ip(request)):
+    if not token_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many connection attempts; wait a moment.")
     try:
         secret = await boson.mint_client_secret(600)
@@ -184,6 +219,7 @@ class TtsRequest(BaseModel):
 
 @app.post("/api/tts", dependencies=[Depends(require_access)])
 async def tts(req: TtsRequest, request: Request):
+    users.guard_book(req.book_id)
     book = books.load_book(req.book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
@@ -196,7 +232,7 @@ async def tts(req: TtsRequest, request: Request):
                 cached = tts_cache.is_cached(c.tts_text, voice)
                 if req.cached_only and not cached:
                     raise HTTPException(409, "This line is not pre-rendered yet. Run preprocess/prerender_tts.py before the demo.")
-                if not cached and not tts_bucket.allow(client_ip(request)):
+                if not cached and not tts_bucket.allow(rate_key(request)):
                     raise HTTPException(429, "Too many new audio requests; wait a moment.")
                 try:
                     out = await tts_cache.get_or_create(boson, c.tts_text, voice, p.text[c.char_start:c.char_end])
@@ -270,6 +306,7 @@ def _resolve_talk(book_id: str, speaker_id: str, reader_para: int, spoilers: boo
     """Shared 404/403 checks for talk endpoints: returns (book, speaker or None, clamped reader_para).
 
     Full-book mode (`spoilers`) lifts the "not met yet" gate: every character is available."""
+    users.guard_book(book_id)
     book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
@@ -286,7 +323,7 @@ def _resolve_talk(book_id: str, speaker_id: str, reader_para: int, spoilers: boo
 
 @app.post("/api/retrieve", dependencies=[Depends(require_access)])
 async def retrieve(req: RetrieveRequest, request: Request):
-    if not retrieve_bucket.allow(client_ip(request)):
+    if not retrieve_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many lookups; wait a moment.")
     book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
     # realtime (Boson) instructions must stay short: fewer passages and a smaller character cap than /api/answer
@@ -312,7 +349,7 @@ def _line(obj: dict) -> str:
 
 @app.post("/api/answer", dependencies=[Depends(require_access)])
 async def answer(req: RetrieveRequest, request: Request):
-    if not answer_bucket.allow(client_ip(request)):
+    if not answer_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many questions; wait a moment.")
     book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
     t0 = time.monotonic()
@@ -371,7 +408,7 @@ class SpeakRequest(BaseModel):
 async def speak(req: SpeakRequest, request: Request):
     if not voices.is_known_voice(req.voice):
         raise HTTPException(400, f"Unknown voice '{req.voice}'.")
-    if not tts_cache.is_cached(req.text, req.voice) and not tts_bucket.allow(client_ip(request)):
+    if not tts_cache.is_cached(req.text, req.voice) and not tts_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many new audio requests; wait a moment.")
     try:
         out = await tts_cache.get_or_create(boson, req.text, req.voice, req.text)
@@ -542,7 +579,7 @@ async def upload_book(request: Request, background: BackgroundTasks, file: Uploa
                       title: str = Form(..., min_length=1, max_length=120),
                       author: str = Form("", max_length=120),
                       kind: Literal["auto", "novel", "textbook"] = Form("auto")):
-    if not upload_bucket.allow(client_ip(request)):
+    if not upload_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many uploads; wait a moment.")
     token = _ingest_guard.acquire()  # no await between the check and the hold
     if token is None:
@@ -560,6 +597,7 @@ async def upload_book(request: Request, background: BackgroundTasks, file: Uploa
         if ext == ".pdf" and not data.startswith(b"%PDF"):
             raise HTTPException(400, "That does not look like a PDF.")
         book_id, _ = ingest_upload.make_book_dir(title)
+        users.claim_book(book_id)  # PER_USER: this upload belongs to the caller
         path = ingest_upload.upload_path(book_id, ext)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
@@ -573,6 +611,7 @@ async def upload_book(request: Request, background: BackgroundTasks, file: Uploa
 
 @app.get("/api/books/{book_id}/status")
 def book_status(book_id: str):
+    users.guard_book(book_id)
     st = _upload_status.get(book_id)
     if st is None and books._ID.match(book_id):
         st = ingest_upload.read_status(book_id)
@@ -615,6 +654,7 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
     textbook -> novel starts enrichment (same caps and UPLOAD_CONFIRM behaviour as an upload) unless the book already
     has its characters; novel -> textbook only changes the kind (the characters stay in the file, the UI ignores them).
     """
+    users.guard_book(book_id)
     if not book_id.startswith("u-"):
         raise HTTPException(403, "Only books you uploaded can be moved.")
     book = books.load_book(book_id)
@@ -658,6 +698,7 @@ def list_avatars(book_id: str):
     """Chunk ids that have a pre-rendered avatar clip, so the reader only asks for clips that exist."""
     if not _SAFE_NAME.match(book_id):
         raise HTTPException(404, "Book not found")
+    users.guard_book(book_id)
     d = _avatar_dir(book_id)
     return sorted(p.stem for p in d.glob("*.mp4")) if d.is_dir() else []
 
@@ -719,7 +760,7 @@ async def lipsync(req: LipSyncRequest, request: Request):
     await _acquire_avatar_key(key)
     try:
         if not clip.is_file():
-            if not avatar_bucket.allow(client_ip(request)):
+            if not avatar_bucket.allow(rate_key(request)):
                 raise HTTPException(429, "Too many lip-sync renders; wait a moment.")
             data = audio.read_bytes()
             try:
@@ -760,7 +801,7 @@ async def lipsync_stream(req: LipSyncRequest, request: Request):
     try:
         if clip.is_file():  # another request finished it while we waited
             return {"video_url": f"/media/avatar/{clip.name}"}
-        if not avatar_bucket.allow(client_ip(request)):
+        if not avatar_bucket.allow(rate_key(request)):
             raise HTTPException(429, "Too many lip-sync renders; wait a moment.")
         data = audio.read_bytes()
         started = time.monotonic()
@@ -821,6 +862,7 @@ async def lipsync_stream(req: LipSyncRequest, request: Request):
 def avatar(chunk_id: str, book: str):
     if not (_SAFE_NAME.match(chunk_id) and _SAFE_NAME.match(book)):
         raise HTTPException(404, "No avatar clip")
+    users.guard_book(book)
     path = _avatar_dir(book) / f"{chunk_id}.mp4"
     if not path.is_file():
         raise HTTPException(404, "No avatar clip for this line")
@@ -833,7 +875,7 @@ def avatar(chunk_id: str, book: str):
 async def clone_voice(request: Request, audio: UploadFile = File(...), transcript: str = Form(..., max_length=2000),
                       name: str = Form(..., max_length=60), consent: str = Form("false"),
                       face: UploadFile | None = File(None)):
-    if not clone_bucket.allow(client_ip(request)):
+    if not clone_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many voice uploads; wait a moment.")
     data = await audio.read(voices.MAX_BYTES + 1)  # bounded read: never buffer an unbounded upload
     image = await face.read(faces.MAX_FACE_BYTES + 1) if face is not None else None
@@ -878,7 +920,7 @@ def _safe_face_id(face_id: str) -> str:
 
 @app.post("/api/faces", dependencies=[Depends(require_access)])
 async def upload_face(request: Request, image: UploadFile = File(...), name: str = Form(..., max_length=60)):
-    if not face_bucket.allow(client_ip(request)):
+    if not face_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many face uploads; wait a moment.")
     data = await image.read(faces.MAX_FACE_BYTES + 1)  # bounded read
     try:
@@ -924,7 +966,7 @@ async def animate_face(face_id: str, request: Request):
             if not faces.face_exists(face_id):  # deleted while we waited
                 raise HTTPException(404, "Face not found")
             if faces.needs_animation(face_id):
-                if not avatar_bucket.allow(client_ip(request)):
+                if not avatar_bucket.allow(rate_key(request)):
                     raise HTTPException(429, "Too many avatar renders; wait a moment.")
                 try:
                     face = await faces.animate(boson, face_id)
@@ -939,7 +981,7 @@ async def animate_face(face_id: str, request: Request):
 # ---------- cast settings per book ----------
 
 def _book_for_cast(book_id: str) -> Book:
-    book = books.load_book(book_id) if _SAFE_NAME.match(book_id) else None
+    book = books.load_book(book_id) if _SAFE_NAME.match(book_id) and users.can_see_book(book_id) else None
     if book is None:
         raise HTTPException(404, "Book not found")
     return book
