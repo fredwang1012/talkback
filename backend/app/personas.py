@@ -58,3 +58,12 @@ def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages:
         out = CHARACTER_TEMPLATE.format(name=character.name, title=book.title, persona=character.persona,
                                         story_so_far=story, passages=text_passages)
     return out[:MAX_INSTRUCTIONS_CHARS]
+
+
+ANSWER_SUFFIX = "\n\nYour reply is spoken aloud word for word, so write only the words to be spoken."
+
+
+def build_answer_prompt(book: Book, speaker_id: str, story_so_far: str, passages: list[dict], query: str) -> tuple[str, str]:
+    """(system, user) for the answer model: the Talk prompt for `speaker_id` plus a spoken-output rule; user is the question."""
+    system = build_instructions(book, speaker_id, story_so_far, passages)[: MAX_INSTRUCTIONS_CHARS - len(ANSWER_SUFFIX)]
+    return system + ANSWER_SUFFIX, query

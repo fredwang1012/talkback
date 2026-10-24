@@ -1,21 +1,24 @@
 import asyncio
 import base64
+import json
+import logging
 import re
 import secrets
+import time
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import books, retrieval, tts_cache, voices
 from .boson import BosonClient, BosonError
 from .config import settings
-from .personas import build_instructions
+from .personas import build_answer_prompt, build_instructions
 from .ratelimit import TokenBucket
 from .schema import Book
 
@@ -193,21 +196,83 @@ def _embedder():
         return None
 
 
-@app.post("/api/retrieve")
-async def retrieve(req: RetrieveRequest):
-    book = books.load_book(req.book_id)
+def _resolve_talk(book_id: str, speaker_id: str, reader_para: int):
+    """Shared 404/403 checks for talk endpoints: returns (book, speaker or None, clamped reader_para)."""
+    book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
-    if req.speaker_id != "narrator" and not any(c.id == req.speaker_id for c in book.characters):
+    if speaker_id != "narrator" and not any(c.id == speaker_id for c in book.characters):
         raise HTTPException(404, "Unknown speaker")
-    reader_para = min(req.reader_para, len(book.paragraphs) - 1)
-    speaker = next((c for c in book.characters if c.id == req.speaker_id), None)
+    reader_para = min(reader_para, len(book.paragraphs) - 1)
+    speaker = next((c for c in book.characters if c.id == speaker_id), None)
     if speaker and book.kind == "novel" and speaker.first_para > reader_para:
         raise HTTPException(403, f"{speaker.name} has not appeared yet at this point in the story.")  # server-side gate
+    return book, speaker, reader_para
+
+
+@app.post("/api/retrieve")
+async def retrieve(req: RetrieveRequest):
+    book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para)
     out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k)
     out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"])
     out["persona"] = speaker.persona if speaker else None
     return out
+
+
+# ---------- answer (Gemini) + speak (Boson TTS) for Talk mode ----------
+
+@lru_cache(maxsize=1)
+def get_answerer():
+    """Lazy Gemini answerer; tests monkeypatch this to avoid Vertex."""
+    from .gcp.llm import GeminiAnswerer
+    return GeminiAnswerer()
+
+
+def _line(obj: dict) -> str:
+    return json.dumps(obj, ensure_ascii=False) + "\n"
+
+
+@app.post("/api/answer")
+async def answer(req: RetrieveRequest):
+    book, _, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para)
+    t0 = time.monotonic()
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k)
+    retrieve_ms = int((time.monotonic() - t0) * 1000)
+    system, user = build_answer_prompt(book, req.speaker_id, out["story_so_far"], out["passages"], req.query)
+
+    async def stream():
+        first_ms = None
+        try:
+            async for sentence in get_answerer().stream_sentences(system, user):
+                if first_ms is None:
+                    first_ms = int((time.monotonic() - t0) * 1000) - retrieve_ms
+                yield _line({"type": "sentence", "text": sentence})
+        except Exception as e:  # never leak stack traces or secrets to the client
+            logging.getLogger(__name__).warning("answer stream failed: %s", type(e).__name__)
+            yield _line({"type": "error", "message": "The answer could not be generated; please try again."})
+            return
+        yield _line({"type": "done", "passages": len(out["passages"]), "retrieve_ms": retrieve_ms,
+                     "first_sentence_ms": first_ms if first_ms is not None else 0})
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+class SpeakRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=400)
+    voice: str
+
+
+@app.post("/api/speak", dependencies=[Depends(require_access)])
+async def speak(req: SpeakRequest, request: Request):
+    if not voices.is_known_voice(req.voice):
+        raise HTTPException(400, f"Unknown voice '{req.voice}'.")
+    if not tts_cache.is_cached(req.text, req.voice) and not tts_bucket.allow(client_ip(request)):
+        raise HTTPException(429, "Too many new audio requests; wait a moment.")
+    try:
+        out = await tts_cache.get_or_create(boson, req.text, req.voice, req.text)
+    except (BosonError, RuntimeError) as e:
+        raise boson_http_error(e)
+    return {"voice": req.voice, **out}
 
 
 # ---------- avatars (stretch) ----------
