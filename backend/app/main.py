@@ -849,7 +849,11 @@ async def _equations_job(book_id: str, data: bytes) -> None:
     try:
         crops = await asyncio.to_thread(ingest_upload.render_equations, book_id, data, stop)
         inline, shared = await asyncio.to_thread(ingest_upload.render_inline, book_id, data, stop)
-        if not (crops or inline) or not enrich_equations.available() or stop():
+        if not (crops or inline) or stop():
+            return
+        if not enrich_equations.available():
+            if settings.upload_enrich and public_client.active():   # a clone with only a Boson key
+                await _public_equations(book_id, crops, inline, shared, stop)
             return
         llm = enrich_equations.make_llm("gemini")
         readings = await enrich_equations.transcribe(book_id, crops, llm=llm) if crops else {}
@@ -863,6 +867,18 @@ async def _equations_job(book_id: str, data: bytes) -> None:
         logging.getLogger(__name__).warning("equations of %s failed: %s", book_id, type(e).__name__)
     finally:
         _equation_jobs.discard(book_id)
+
+
+async def _public_equations(book_id: str, crops: dict, inline: dict, shared: dict, stop) -> None:
+    """The equation readings through the public processing service (its caps); what it cannot read stays pictures."""
+    display, inl, note = await public_client.transcribe_equations(book_id, crops, inline, stop=stop)
+    if display and not stop():
+        await asyncio.to_thread(ingest_upload.update_equations, book_id, display)
+    fields = {i: r for k, r in inl.items() for i in shared.get(k, [k])}
+    if fields and not stop():
+        await asyncio.to_thread(ingest_upload.update_equations, book_id, fields)
+    if note:
+        logging.getLogger(__name__).info("equations of %s: %s", book_id, note)
 
 
 _EQ_ID = re.compile(r"^(?:e\d{1,5}|m\d{1,6})$")  # display equation / inline formula

@@ -933,3 +933,35 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   LLM-assigned styles, 17->7 shouting, 12->7 whispering); `--redetect-styles` keeps the old behaviour.
 - Cost: TTS cache keys are sha256(model, tts_text, voice, ...), so only chunks whose tts_text changed are re-voiced,
   and only when played (same for lip-sync videos). Unchanged chunks keep their audio (tested).
+
+## Public API parity for clones (2026-10-23)
+Audit of every Gemini/Vertex feature on a clone with only a Boson key + PUBLIC_API_URL (code on feat/public-api-parity;
+the deployed talkback-public-00001 is the Oct 21 code):
+| Feature | Clone before | Clone now | Old deployment |
+|---|---|---|---|
+| Novel cast, personas, dialogue (#115 attribution), summaries | works | works | no #115 attribution changes |
+| Series / series_index | missing (not returned) | works | missing |
+| Minor voices (stand-ins) | degraded (stand-ins made main, cut at 8) | works (kept main=False, fixed voices) | missing |
+| Textbook recap notes | works | works | missing (422 -> no notes) |
+| Equation LaTeX / spoken (#41) | missing (local GCP only) | works (tickets) | missing |
+| Question translation for search (#12) | missing | works (<= 4 s, else original) | missing |
+| Reply language rule | works (built server-side from the query) | works | missing (older prompt) |
+| Emotion markers in answers (#14) | works (stripped both sides) | works | server sends none; client strips |
+| Typed answers via Gemini | works | works | works (history ignored) |
+| Face auto-crop box (#109) | missing (centred square) | works | missing |
+| Add book title/author (describe) | degraded (metadata only) | works | missing |
+| Novel/textbook auto-detect | degraded (heuristic) | works | missing |
+| Retrieval embeddings (local e5) / Vector Search (live only) | fine | fine | n/a |
+- New routes in `public_api.py`: `/api/public/translate`, `/detect`, `/describe`, `/faces/detect` (one call each,
+  counted on the persisted daily answer budget; face boxes also on a persisted 100/day count), and
+  `/api/public/equations` (ticket: fits the pictures under the per-book cap, checks the total cap with running
+  reservations, charges the per-IP daily cap) + `/api/public/equations/{ticket}` (<= 24 PNGs, 256 KB each, 2 MB total,
+  bound to the caller's address, two at a time, 90 s; a cap stops with `"stopped"` and keeps the readings).
+  `equations.read()` is the shared batch reader. Body limits per route in `BodyLimit`. No content is logged.
+- Clone side (`public_client.py`): `translate`, `RemoteLLM` (detect/describe keep their own schema validation),
+  `detect_face` (re-clamped), `transcribe_equations` (display first, chunks by count and bytes, retries busy, readings
+  re-cleaned and limited to the ids sent; note says why pictures stay). A 401/403 marks the service unavailable for a
+  minute (answers then use Realtime too). All fall back exactly like the local no-GCP path.
+- No new env vars for deploy_public_api.sh (limits are constants). Needs a redeploy of talkback-public.
+- Test note: tests/test_kind.py::test_concurrent_kind_changes_start_only_one_enrichment failed once in a full run and
+  passed on every rerun (timing flake, unrelated code path).

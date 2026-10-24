@@ -125,8 +125,11 @@ The deploy script sets `PER_USER=true`, `IAP_AUDIENCE=/projects/272822965835/loc
 A second, much smaller Cloud Run service from the same image. It lets a fresh clone that has only a `BOSON_API_KEY` get
 full upload processing (main characters, dialogue split, recap notes) and Gemini-written typed answers, on the author's
 GCP project. With `PUBLIC_API=true` the container (entry point `app.asgi:app`) serves **only** `GET /api/health`,
-`POST /api/public/enrich` (+ `GET /api/public/enrich/{job_id}` to poll), and `POST /api/public/answer`. Every other path
-is 404: no frontend, no media, no portraits, no book data. It uses Gemini only (`UPLOAD_LLM=gemini`), holds results in
+`POST /api/public/enrich` (+ `GET /api/public/enrich/{job_id}` to poll), `POST /api/public/answer`, the small single
+calls `POST /api/public/translate` (a non-English question, translated for search), `/api/public/detect` (novel or
+textbook), `/api/public/describe` (title and author for the Add book form) and `/api/public/faces/detect` (face box for
+the crop), and textbook equation readings: `POST /api/public/equations` (a ticket: estimate first) then
+`POST /api/public/equations/{ticket}` (at most 24 cropped PNGs per request). Every other path is 404: no frontend, no media, no portraits, no book data. It uses Gemini only (`UPLOAD_LLM=gemini`), holds results in
 memory for 30 minutes, never logs request bodies (they may contain book text), and never decides what a reader may see:
 the local app sends already spoiler-filtered passages.
 
@@ -141,6 +144,13 @@ Limits, all enforced by the service:
   fails or is dropped before Gemini reports usage is charged the reservation. At most 4 answer streams run at once.
 - 20 answers per IP per minute, 3 MB of book text (6,000 paragraphs), two enrichment jobs at a time. Results are kept 30
   minutes after the job finishes.
+- Small calls (translate, detect, describe, face box): 30 per IP per minute (face boxes 10 per IP per hour and 100 per
+  UTC day in all, persisted in `public_face_calls.json`), counted on the daily answer budget above (worst case
+  reserved, real cost settled). Text at most 500 / 3,200 / 6,000 characters; photos PNG/JPEG/WebP up to 5 MB.
+- Equation readings: a ticket (2 per IP per hour) accepts as many pictures as fit under the per-book cap, and its
+  estimate is checked against the cumulative cap and charged to the address's daily cap like a book (settled to the
+  real spend when the ticket closes, stops at a cap, or idles 30 minutes). Then at most 24 PNGs (256 KB each, 2 MB in
+  all) per request, two requests at a time; a cap reached mid-run answers the readings so far with `"stopped"`.
 A cap answers `402` and a rate limit or full slot `429`, each with `{"detail", "code"}`. Counters live in the bucket's
 `usage/` folder: `upload_spend.json` (cumulative enrichment), `public_answer_spend.json` (answers, today),
 `public_ip_spend.json` (per address, today). To reset one, delete that file
