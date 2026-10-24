@@ -6,7 +6,7 @@ What remains needs a key or a file from you. When they arrive: `python scripts/r
 Standing rule: do **not** use the Anthropic key until told (user instruction, 2026-10-15).
 
 ## 1. You provide
-- [ ] `BOSON_API_KEY` in `talkback/.env` (unblocks section 3).
+- [x] `BOSON_API_KEY` in `talkback/.env` (2026-10-17).
 - [ ] OK to spend Anthropic credit (unblocks section 2; estimated a few dollars of the $100).
 - [ ] Set a monthly spend cap in the Boson workspace.
 - [ ] Review the cast after `cast.py` runs (voices, personas, `first_para`). `run_all.py --anthropic` pauses for this.
@@ -31,8 +31,8 @@ Standing rule: do **not** use the Anthropic key until told (user instruction, 20
 
 ## 3. Needs the Boson key (probes and prerender written; nothing has hit the live API)
 `python scripts/run_all.py` runs these in order:
-- [ ] The four probes `probe_{secret,tts,voice,realtime}.py` (M0 acceptance). They settle: timestamps null vs `[]`, tag tokens in timestamps, preset `berlinda`, mid-session voice change, commit-during-response, voice-clone response field.
-- [ ] `prerender_tts.py` for Sherlock (~365 chunks, ~$0.69) and, once the text exists, Biology.
+- [x] The four probes ran 2026-10-17 (results in NOTES.md): STT 0.66-0.89 s, first answer audio 0.66-0.72 s; `berlinda` does not exist (other 7 voices OK); tags arrive glued to the first timestamp word (alignment handles it, test added); timestamps `null` for one word and French; voice clone id field is `voice_id`, idempotent; mid-session voice change acked; `response.cancel` after a commit error gave no `response.done` within 10 s. Listen to `scripts/captures/realtime_answer_{oliver,nora}.wav` to confirm the voice changed.
+- [ ] `prerender_tts.py` for Sherlock (~365 chunks, ~$0.69; **waiting on your OK**, interrupted by a PC crash before it started) and, once the text exists, Biology.
 - [ ] Listen: M3 acceptance (no gaps over 150 ms, highlight tracks words).
 - [ ] M4 acceptance: 10 live Talk cycles, latency under 2 s first audio, logged to NOTES.md.
 - [ ] M7: five multilingual questions (zh/es/fr) answered in kind. Retrieval already verified offline.

@@ -116,9 +116,17 @@ async def main() -> None:
         await s.send(type="input_audio_buffer.commit")
         err = await s.wait("error", timeout=10)
         note(f"commit during active response -> {err['type']}: {json.dumps(err.get('error', err))[:200]}")
+        n0 = len(s.events)
         await s.send(type="response.cancel")
-        done = await s.wait("response.done")
-        note(f"response.cancel -> response.done status={done.get('response', {}).get('status')}")
+        try:
+            done = await s.wait("response.done", timeout=10)
+            note(f"response.cancel -> {done['type']} status={done.get('response', {}).get('status')}")
+        except TimeoutError:
+            seen = sorted({e["type"] for e in s.events[n0:]})
+            note(f"response.cancel -> no response.done within 10 s; events after cancel: {seen}")
+        # let any in-flight response finish before the next test
+        while s.q.qsize():
+            s.q.get_nowait()
 
         # (e) mid-session voice change
         s.audio.clear()
