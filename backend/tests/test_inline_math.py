@@ -8,7 +8,8 @@ import pytest
 from app import main
 from app.config import settings
 from app.enrich import equations
-from app.ingest_upload import (HEADING_REGEX, _cap_paragraphs, _crop, _mark_inline, build_book, equation_path, make_book_dir,
+from app.ingest_upload import (HEADING_REGEX, _attach_deco_rows, _by_x, _cap_paragraphs, _clean_line_text, _crop,
+                               _equation_clip, _mark_inline, _math_class, build_book, equation_path, make_book_dir,
                                pdf_to_text, plain_text, publish_book, render_inline, update_equations)
 from app.parsing import IM_CLOSE, IM_OPEN, inline_marker, parse, split_inline, strip_inline
 from app.schema import Book, InlineMath, Paragraph, Section
@@ -77,6 +78,64 @@ def test_operator_names_and_brackets_open_a_formula_but_prose_words_do_not():
             span("J", "CMMI10"), span("(i.e.,"), span(" "), span("the"), span(" "), span("return)")]
     text, [m] = split_inline(_mark_inline(line, 0), 1)
     assert text[m.start:m.end] == "maxπ J" and text.startswith("solves maxπ J(i.e.,")
+
+
+def test_a_root_drawn_as_its_own_block_joins_the_formula_beside_it():
+    """A tall root is its own PDF block and its font baseline sits near the line above. It belongs in the gap
+    between "RSE =" and "RSS", and "SE" in front of a hat stays in that formula."""
+    def S(text, font, x, y, size=10.0):
+        return {"text": text, "font": font, "size": size, "origin": (x, y),
+                "bbox": (x, y - size, x + 5 * len(text), y + 2)}
+    above = [S("given by the formula ", "CMR10", 50, 286)]
+    root = [S("⎨", "CMEX10", 90, 289)]
+    root[0]["bbox"] = (90, 270, 100, 320)
+    body = [S("RSE =", "CMR10", 50, 298), S("RSS/(n-2).", "CMR10", 110, 298),
+            S(" Strictly speaking, this is the estimate.", "CMR10", 200, 298)]
+    groups = [[[above, 286.0]], [[root, 289.4]], [[body, 298.0]]]
+    _attach_deco_rows(groups)
+    marked = []
+    for blk in groups:
+        for item in blk:
+            if item is None:
+                continue
+            spans = _by_x(item[0])
+            if _math_class(spans) == 0:
+                marked.append(_mark_inline(spans, 0) or _clean_line_text("".join(s["text"] for s in spans)))
+    assert any(m and "RSE" in m and "RSS" in m and "⎨" in m for m in marked)
+    assert all("⎨" not in m or "RSE" in m for m in marked)
+
+
+def test_a_tall_delimiter_stays_with_the_equation_under_it():
+    """A display equation's brackets are their own block, and the font baseline sits nearer the sentence above
+    than the equation. The bracket belongs to the equation, not inside "a 95% chance"."""
+    def S(text, font, x, y, size=10.0, box=None):
+        span = {"text": text, "font": font, "size": size, "origin": (x, y),
+                "bbox": (x, y - size, x + 8 * len(text), y + 2)}
+        if box:
+            span["bbox"] = box
+        return span
+    sentence = [S("That is, there is approximately a 95 % chance that the interval", "CMR10", 52, 432.6)]
+    bracket = [S("&", "CMEX10", 141, 442.4, box=(141.7, 434.7, 146.4, 471.9))]
+    equation = [S("β1 − 2 SE(β1), β1 + 2 SE(β1)", "CMMI10", 146, 455)]
+    groups = [[[sentence, 432.6]], [[bracket, 442.4]], [[equation, 455.0]]]
+    _attach_deco_rows(groups)
+    sentence_text = ""
+    for blk in groups:
+        for item in blk:
+            if item is None:
+                continue
+            spans = _by_x(item[0])
+            if _math_class(spans) == 0:
+                sentence_text += _clean_line_text("".join(s["text"] for s in spans))
+    assert "&" not in sentence_text
+    assert "95" in sentence_text and "chance" in sentence_text
+
+
+def test_equation_box_stops_above_the_next_line():
+    eq = ("sum", 60, 142, 200, 193, 10, False, False)
+    where = ("where the variance is", 52, 178, 360, 192, 10, False, False)
+    _x0, _y0, _x1, y1 = _equation_clip([eq], [164.0], [where], {id(where): 189.0})
+    assert y1 < 182  # above the letters, which start near the baseline 189
 
 
 def test_ordinary_lines_are_left_alone():
@@ -196,6 +255,22 @@ def test_crops_paint_out_other_lines():
     def ink(png: bytes) -> int:
         return sum(v < 128 for v in fitz.Pixmap(png).samples)
     assert ink(_crop(doc, 0, box, (0.5, 0.5), {})) == ink(_crop(clean, 0, box, (0.5, 0.5), {})) > 0
+
+
+def test_crop_hides_a_word_tucked_into_a_tall_formula():
+    """A sum or root reaches the line above, so that line's baseline falls inside the box. The word goes; the formula stays."""
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((80, 100), "we can", fontsize=11)
+    page.insert_text((100, 112), "y", fontsize=11)
+    clean = fitz.open()
+    clean.new_page().insert_text((100, 112), "y", fontsize=11)
+    box = [90.0, 92.0, 140.0, 116.0]
+
+    def ink(png: bytes) -> int:
+        return sum(v < 128 for v in fitz.Pixmap(png).samples)
+    kept = _crop(doc, 0, box, (0, 0), {}, mask_prose=True)
+    assert ink(kept) == ink(_crop(clean, 0, box, (0, 0), {}, mask_prose=True)) > 0
 
 
 def test_update_rechunks_with_the_reading(data_dir):

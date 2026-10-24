@@ -678,6 +678,14 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   formula's baseline); prose beside an inline formula is whited out up to the box edge. The inline box's baseline is
   the lowest main-size baseline (the hat of ˆβ sits on a raised one). Picture URLs carry ?v=<hash of the PNG>
   because the route is cached for a day.
+- A root, sum or hat is often its own PDF block, with a font box tall enough to overlap the lines above and below,
+  so the glyph used to fall into the next sentence ("!n where", "RSE = { RSS"). Rows on one baseline are joined, and
+  a math-only row is moved onto the prose row it actually sits in (the gap between the words, not the line above
+  whose words it overlaps). "SE" / "RSE" with no lowercase letter count as part of that formula. The display-equation
+  crop stops at the next line's letters, so the sum's box no longer takes in "where". An inline crop also whites out a
+  word whose baseline falls inside a tall sum or root ("we can" on the sum, "known as the" on the radical).
+  A display equation's tall brackets report a baseline near the sentence above; they are placed by the middle of
+  their ink, so they stay on the equation and "a 95% chance" is left as a sentence.
 - ISLR excerpt: 184 inline formulas (79 distinct crops), all read (e.g. "\hat{\beta}_1", "beta one hat"). CQL paper:
   49. Limits: a formula that pymupdf splits over several text lines (a stacked sum's limits, a hat set on its own
   line) is marked only in part; ligature glyphs such as "coe!cients" are a separate extraction issue.

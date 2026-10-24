@@ -208,6 +208,9 @@ button:disabled { cursor: not-allowed; }
 }
 .para.para-math .sentence.active .math-img, .para.para-math .sentence:hover .math-img { opacity: 1; }
 .para.para-math .math-text { font-style: italic; }
+/* KaTeX draws a sum's limits and a fraction a few pixels outside its box. The padding is part of the
+   line, so that ink stays off the line above and the line below. */
+.para .math-inline { padding-top: 0.08em; padding-bottom: 0.4em; }
 .para .math-inline .katex { font-size: 1.05em; }
 .para .math-inline-img {
   display: inline-block; vertical-align: middle; width: auto; max-width: 100%;
