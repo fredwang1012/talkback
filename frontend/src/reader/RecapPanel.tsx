@@ -59,6 +59,21 @@ export default function RecapPanel({ bookId, para, voice, onClose }: Props) {
     setError(null);
     readAloud.current?.toggle(key, speechParts(text));
   }
+  function restart(key: string, text: string) {
+    if (!voice || !text) return;
+    setError(null);
+    readAloud.current?.restart(key, speechParts(text));
+  }
+  const isPaused = (key: string, text: string) => playing !== key && !!readAloud.current?.paused(key, speechParts(text));
+  /** Read aloud -> Pause -> Resume (from the same part), with Start over while paused. */
+  const controls = (key: string, text: string, className: string) => (
+    <>
+      <button className={className} onClick={() => toggle(key, text)} aria-pressed={playing === key}>
+        {playing === key ? "Pause" : isPaused(key, text) ? "Resume" : "Read aloud"}
+      </button>
+      {isPaused(key, text) && <button className="recap-more" onClick={() => restart(key, text)}>Start over</button>}
+    </>
+  );
 
   const earlierText = (more && recap?.earlier_full ? recap.earlier_full : recap?.earlier) ?? "";
 
@@ -77,20 +92,14 @@ export default function RecapPanel({ bookId, para, voice, onClose }: Props) {
           : "Nothing to recap yet — keep reading."}</p>)}
       {recap?.text && voice && (
         <div className="lab-row">
-          <button className="primary" onClick={() => toggle("recap", recap.text)} aria-pressed={playing === "recap"}>
-            {playing === "recap" ? "Stop" : "Read aloud"}
-          </button>
+          {controls("recap", recap.text, "primary")}
         </div>
       )}
       {recap?.earlier && (
         <details className="recap-earlier">
           <summary>Earlier books</summary>
           <p className="recap-text">{earlierText}</p>
-          {voice && (
-            <button className="recap-more" aria-pressed={playing === "earlier"} onClick={() => toggle("earlier", earlierText)}>
-              {playing === "earlier" ? "Stop" : "Read aloud"}
-            </button>
-          )}
+          {voice && controls("earlier", earlierText, "recap-more")}
           {recap.earlier_full && recap.earlier_full !== recap.earlier && (
             <button className="recap-more" aria-expanded={more} onClick={() => setMore(!more)}>
               {more ? "Less" : "More"}
