@@ -243,11 +243,13 @@ export async function streamAnswer(
  * Synthesises one sentence in a voice (cached server-side) and returns where to fetch the audio. `emotion` (#14) is an
  * answer sentence's feeling; the server checks it and sends it to Boson as a delivery tag.
  */
-export async function speak(text: string, voice: string, emotion?: string): Promise<TtsResponse> {
+/** `language`: ISO 639-3 of a non-English answer (#135); the backend then asks Boson for normalized speech without
+ * word timestamps (the response's `timestamps` is null). Never sent for English. */
+export async function speak(text: string, voice: string, emotion?: string, language?: string | null): Promise<TtsResponse> {
   const res = await timedFetch("/api/speak", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ text, voice, ...(emotion ? { emotion } : {}) }),
+    body: JSON.stringify({ text, voice, ...(emotion ? { emotion } : {}), ...(language && language !== "eng" ? { language } : {}) }),
   }, 30000);
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);

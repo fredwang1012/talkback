@@ -740,6 +740,7 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   per-response retrieval instructions (spoiler-safe context, persona), so turns stay manual (`turn_detection: null`).
   The session still sets `noise_reduction: near_field`. If Boson adds `create_response: false`, `server_vad` with
   `threshold` ~0.6-0.7 (its default moved to 0.85) would replace the local gate.
+  **Superseded by #135 (below): `create_response: false` is honoured live, so hands-free now uses `semantic_vad`.**
 
 ## Spoken turns live: tool calls, barge-in leftovers, hands-free echo (#102, #97, #99, #100, #103, 2026-10-23)
 - Spoken commands failed where typed ones worked because the *question* was lost, not the tool. `pttUp` waited a fixed
@@ -1008,3 +1009,49 @@ the deployed talkback-public-00001 is the Oct 21 code):
 - `<|reset|>`: the docs say only that a new group of delivery tokens replaces the old one and that reset returns to
   neutral; sfx are not delivery tokens and chunks are synthesized independently, so no reset is emitted. A live clip with
   style + sfx + `<|reset|>` was accepted and no tag was read aloud (tag words absent from word timestamps).
+## Realtime hands-free on Boson turn detection, voice-timed captions, fast "didn't catch that" (#135, 2026-10-23)
+- Live probes (about $0.005 in total: ~1.5 min of input audio, one short reply), `higgs-realtime`, the 2 s TTS clip
+  "What is the capital of France?" streamed in real time:
+  - `turn_detection` **cannot change mid-session**: `session.update` after the start -> 400 `turn_detection cannot be
+    changed after session start`. So hands-free on/off reopens the socket (seeded history keeps the chat).
+    `transcription.language` *can* change mid-session (`session.updated` echoes it).
+  - `semantic_vad` + `create_response: false` + `interrupt_response: false` is echoed and honoured. Sequence:
+    `speech_started` (item_id, audio_start_ms) -> `speech_stopped` -> `committed` (~0.05-0.1 s later) ->
+    `transcription.completed` (0.15-0.4 s after the commit) -> nothing until our `response.create`. A
+    `speech_started` while our response was active did not cancel it.
+  - `noise_reduction: near_field` under server VAD started the turn ~1 s late and transcribed only "France." (also
+    split the question into fragments transcribed as "嗯。" at threshold 0.5). Without it: start at 436 ms, one turn,
+    "What is the capital of France?". Server-turn sessions therefore send no noise_reduction (the capture still has
+    the browser's noise suppression and echo cancellation); push-to-talk keeps near_field.
+  - Semantic's default `silence_duration_ms` 100 and threshold 0.85 cut the start; shipped: threshold 0.6, silence 500.
+  - A wrong transcription hint (`language: "es"` on English speech) gave **no transcript event at all**.
+  - `response.output_audio_transcript.delta` is followed by `.length` for the same fragment, `length_ms` per fragment
+    (not cumulative): "Hello!" 840 ms, " How can I assist you today?" 2680 ms (= the reply's 3.52 s). Fragments are
+    about a sentence, so captions interpolate words inside a fragment.
+- Hands-free (TalkController `serverTurns`, on in useTalk unless `?gate=local` or localStorage `talkback:gate=local`):
+  the session opens at once with semantic_vad (fallback chain: server_vad if refused, then manual turns + the local
+  gate, `turn-mode` event); the mic streams continuously (up to 3 s held while connecting). speech_started starts the
+  turn (reader paused, no extra mic start); speech_stopped -> transcribing; the transcript runs the normal flow
+  (`/api/retrieve` instructions, spoiler-safe) and we send `response.create`. Speech restarting within 600 ms of a stop
+  continues the same question (transcripts joined; the server can split one question). An answer the server starts by
+  itself is cancelled and never played (and would mean the docs' "no effect" became true again).
+- Echo guard: a speech_started while the character speaks (or within the 300 ms tail) counts only with the strict
+  local gate (`HANDS_FREE_OVER_SPEECH`, 0.10 RMS for 400 ms) speaking; otherwise it is on probation until the level
+  confirms it, and if it never does, its committed item is deleted (`conversation.item.delete`) and its transcript
+  ignored. Headphones advice stays. If the session closed (5 min idle), the idle gate reopens it on speech; the held
+  audio goes first.
+- Captions: TalkClient builds [text, start, end] from `.length` and reveals by the player's played position
+  (`RingPlayer.playedMs`, an AudioContext-clock estimate; it stops while paused); the full caption lands when playback
+  drains. Without a playback clock: as before (as it arrives). On a cut (`interrupt`) the `heard` event carries the
+  words up to the flushed position, and `chatLog.cutHeard` trims the interrupted (or stopped) reply to them, so the
+  bubble and `priorTurns` memory match what was said.
+- Fast failure: a `committed` with no transcript within 1.5 s (`FAST_FAIL_MS`), or an empty transcript, ends the turn
+  with "I didn't catch that" (push-to-talk too; the 6 s window stays only when no committed event comes). A failure
+  while a language hint is set clears the hint.
+- Language: `language.clearLanguage` (a script, or >= 2 stopwords of one language and more than any other); the newest
+  clear one of the last three questions sets `transcription.language` (ISO 639-1; English -> none). Gemini-path
+  answers pass it to `/api/speak` as ISO 639-3 (`spa`, `fra`, ...; only when not English); the backend then returns
+  `timestamps: null`, which the answer path never needed (sentence-level bubbles and playback).
+- Not verified live: the echo guard with real laptop speakers (needs a person), how fine `.length` fragments are for
+  long answers, `semantic_vad` on real (not TTS) speech with pauses.
+

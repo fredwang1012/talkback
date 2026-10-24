@@ -4,12 +4,13 @@ import { MicCapture } from "../audio/capture";
 import { RingPlayer } from "../audio/playback";
 import { spend } from "../spend";
 import type { LogEntry } from "../ui/DebugDrawer";
-import { addNarration, addQuestion, addToolChip, appendSentence, fillNarration, finishAnswer, loadChat, markInterrupted, priorTurns, saveChat, setPendingText, type ChatMessage } from "./chatLog";
+import { addNarration, addQuestion, addToolChip, appendSentence, cutHeard, fillNarration, finishAnswer, loadChat, markInterrupted, priorTurns, saveChat, setPendingText, type ChatMessage } from "./chatLog";
 import { createReadAloud, speechParts } from "../reader/readAloud";
-import { detectLanguage, type Detected } from "./language";
+import { answerLanguage, detectLanguage, type Detected } from "./language";
+import { localGateForcedHere } from "./handsFree";
 import { FaceSync } from "./faceSync";
 import { createPlayingGate, type TimingEvent } from "./speechGate";
-import { lipSyncClip } from "./clipVideo";
+import { answerClip, lipSyncClip } from "./clipVideo";
 import { createEmotionMemo } from "./answerEmotion";
 import { createSentenceSpeaker, type Clip } from "./sentencePlayer";
 import { createReplayPlayer, createReplayStore, runPcm, runSentences, type ReplayItem } from "./replay";
@@ -173,6 +174,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     let answerVoice = "";
     let answerFaceId: string | null = null;
     let answerMsgId: number | undefined;
+    let answerLang: string | null = null; // #135: ISO 639-3 when the reader's questions are clearly not English
     const answerEmotion = createEmotionMemo();
     let rtMsgId: number | undefined;
     let talk: TalkController | null = null;
@@ -199,14 +201,15 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
           answerFaceId = latest.current.faceIdFor(speaker);
           answerMsgId = pendingId();
           answerEmotion.clear();
+          answerLang = answerLanguage([...priorTurns(msgs.current, speaker).filter((t) => t.role === "user").map((t) => t.text), query]);
           return streamAnswer(bookId, query, para, speaker, (t, emotion) => { answerEmotion.note(t, emotion); setMessages((m) => appendSentence(m, t)); onSentence(t); }, signal, latest.current.spoilers, priorTurns(msgs.current, speaker));
         },
         speaker: createSentenceSpeaker(async (text) => {
           const voice = answerVoice;
-          const r = await speak(text, voice, answerEmotion.get(text));
           // always lip-synced when a face is shown (#92, any face since #113): the first word waits (bounded) until
-          // this clip can start with it from 0 (start gate: sentencePlayer, faceSync)
-          const clip = lipSyncClip(r.audio_url, voice, answerFaceId);
+          // this clip can start with it from 0 (start gate: sentencePlayer, faceSync). A non-English answer is voiced
+          // in its language (#135; its TTS has no word timestamps, which answers never needed)
+          const clip = await answerClip(speak, text, voice, { emotion: answerEmotion.get(text), language: answerLang, faceId: answerFaceId });
           if (answerMsgId !== undefined) replayStore.current.addSentence(answerMsgId, text, clip);
           return clip;
         }, undefined, { sync: faceSync.current as FaceSync, onPlaying: gate.playing, onTiming: logTiming }),
@@ -219,6 +222,8 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       },
       onToolRun: (chip) => setMessages((m) => addToolChip(m, chip)),
       onInterrupted: () => setMessages(markInterrupted),
+      onHeard: (text) => setMessages((m) => cutHeard(m, text)), // #135: the cut-off reply keeps the words heard
+      serverTurns: !localGateForcedHere(), // #135: hands-free on Boson's turn detection unless ?gate=local
       onState: (st) => { setState(st); if (st !== "answering") setLivePaused(false); if (["listening", "retrieving", "answering"].includes(st)) { replayer.current?.stop(); narration.current?.stop(); } if (["reading", "talk-idle", "resuming"].includes(st)) { setMessages(finishAnswer); resetIfSpeakerChanged.current(); } if (st === "listening") resetIfSpeakerChanged.current(); },
       onToast: setToast,
       onCaption: (text) => { setCaption(text); if (!viaGemini && text) setMessages((m) => setPendingText(m, text)); },

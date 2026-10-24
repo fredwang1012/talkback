@@ -18,6 +18,46 @@ export const BARGE_PREROLL_MS = 500;
 /** A turn started by the mic button while hands-free is on keeps only this much (the reader presses, then speaks). */
 const PRESS_PREROLL_MS = 300;
 
+/** Server-mode hands-free (#135): mic audio held while the socket is not open (or a cancel is out), newest kept. */
+export const STREAM_HOLD_MS = 3000;
+/** Caption reveal tick (#135): how often the played position is read while an answer plays. */
+export const CAPTION_TICK_MS = 100;
+/** Boson's turn detection types, best first (#135); the next one is tried when the server refuses one. */
+export const VAD_TYPES = ["semantic_vad", "server_vad"] as const;
+export type VadType = (typeof VAD_TYPES)[number];
+
+/**
+ * Hands-free turn detection (#135). `create_response: false`: the server detects, commits and transcribes the turn but
+ * never answers by itself (verified live; the migration guide still says it has no effect), so every answer is our
+ * response.create with the retrieval instructions. `interrupt_response: false`: we decide barge-in (echo guard), and
+ * live a speech_started during an active response did not cancel it. threshold 0.6 (default 0.85 misses soft speech;
+ * NOTES suggested 0.6-0.7), 500 ms of silence (semantic's default 100 ms split one live question into fragments).
+ */
+export function turnDetection(type: VadType): Record<string, unknown> {
+  return { type, create_response: false, interrupt_response: false, threshold: 0.6, silence_duration_ms: 500 };
+}
+
+/** One spoken fragment of the answer and when its audio plays, in ms into the reply (from `.length` events). */
+export type CaptionSegment = { text: string; start: number; end: number };
+
+/**
+ * The caption heard by `ms` into the reply (#135): every fragment whose audio has started, the current one word by
+ * word in proportion to its duration (Boson's `response.output_audio_transcript.length` gives a duration per
+ * fragment, live about a sentence, not per word).
+ */
+export function captionAt(segs: CaptionSegment[], ms: number): string {
+  let out = "";
+  for (const g of segs) {
+    if (ms <= g.start) break;
+    if (ms >= g.end) { out += g.text; continue; }
+    const parts = g.text.match(/\s*\S+/g) ?? [];
+    const n = Math.min(parts.length, Math.ceil(((ms - g.start) / Math.max(1, g.end - g.start)) * parts.length));
+    out += parts.slice(0, n).join("");
+    break;
+  }
+  return out.trim();
+}
+
 /** Duration of a base64 PCM16 mono chunk at AUDIO_RATE. */
 function chunkMs(b64: string): number {
   const pad = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
@@ -43,6 +83,9 @@ export interface PlayerLike {
   enqueueBase64(b64: string): void;
   /** Stop playback now; resolves with milliseconds actually handed to the audio output (audio_end_ms). */
   flush(): Promise<number>;
+  /** Milliseconds of this reply played so far (since reset), without stopping it. Optional: without it captions show
+   * the text as it arrives instead of in step with the voice (#135). */
+  playedMs?(): number;
   /** Hold playback where it is (queued audio is kept) and continue it. Optional. */
   pausePlayback?(): Promise<void>;
   resumePlayback?(): Promise<void>;
@@ -78,7 +121,9 @@ export interface TalkClientDeps {
 /** Close code 1013 before the session opened: too many concurrent connections. Safe to retry after a pause. */
 export class ConnectionLimitError extends Error {}
 
-export function sessionConfig(voice: string, tools: readonly unknown[] = TOOL_DEFS): ClientEvent {
+export type SessionOptions = { turnDetection?: Record<string, unknown> | null; language?: string | null };
+
+export function sessionConfig(voice: string, tools: readonly unknown[] = TOOL_DEFS, opts: SessionOptions = {}): ClientEvent {
   return {
     type: "session.update",
     session: {
@@ -91,15 +136,22 @@ export function sessionConfig(voice: string, tools: readonly unknown[] = TOOL_DE
       audio: {
         input: {
           format: { type: "audio/pcm", rate: AUDIO_RATE },
-          turn_detection: null, // push-to-talk: we commit each turn ourselves
-          transcription: { model: "higgs-stt-3.1" },
-          noise_reduction: { type: "near_field" },
+          turn_detection: opts.turnDetection ?? null, // push-to-talk: we commit each turn ourselves; hands-free: turnDetection()
+          transcription: transcription(opts.language ?? null),
+          // near_field for push-to-talk only: live (#135) it made the server VAD start a turn late and lose the first
+          // words; the browser's own noise suppression and echo cancellation still apply in the capture
+          ...(opts.turnDetection ? {} : { noise_reduction: { type: "near_field" } }),
         },
         output: { format: { type: "audio/pcm", rate: AUDIO_RATE }, voice },
       },
       temperature: 0.3,
     },
   };
+}
+
+/** The transcription block; `language` (ISO 639-1) is Boson's hint, set only for clearly non-English speech (#135). */
+function transcription(language: string | null): Record<string, unknown> {
+  return language ? { model: "higgs-stt-3.1", language } : { model: "higgs-stt-3.1" };
 }
 
 export class TalkClient implements TalkSession {
@@ -127,6 +179,20 @@ export class TalkClient implements TalkSession {
   private caption = "";
   private lastInstructions = "";
   private pendingCalls: ToolCall[] = []; // tool calls announced by function_call_arguments.done, until response.done
+
+  // #135 server turn detection: wanted (hands-free), and the VAD type the open (or next) session uses
+  private wantServer = false;
+  private vadIndex = 0;
+  private sessionServer = false; // the open session was configured with server turn detection
+  private sessionAcked = false; // its session.created was seen
+  private expectResponse = 0; // response.create calls not yet matched by a response.created
+  private language: string | null = null;
+  // #135 voice-timed captions
+  private segs: CaptionSegment[] = [];
+  private segMs = 0;
+  private finalCaption: string | null = null;
+  private shownCaption = "";
+  private captionTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(deps: TalkClientDeps) {
     this.d = { cancelWaitMs: 2000, voiceChangeWaitMs: 3000, backoffMs: [1000, 2000, 4000], ...deps };
@@ -182,7 +248,11 @@ export class TalkClient implements TalkSession {
       this.ws = ws;
       ws.onopen = () => {
         opened = true;
-        this.send(sessionConfig(voice, this.d.tools)); // the first session.update starts the session; no need to wait for session.created
+        this.sessionServer = this.wantServer;
+        this.sessionAcked = false;
+        const turn = this.sessionServer ? turnDetection(VAD_TYPES[this.vadIndex]) : null;
+        // the first session.update starts the session; no need to wait for session.created
+        this.send(sessionConfig(voice, this.d.tools, { turnDetection: turn, language: this.language }));
         this.seedHistory();
         this.flushPending();
         resolve();
@@ -224,7 +294,52 @@ export class TalkClient implements TalkSession {
     ws?.close(1000, "chat cleared");
   }
 
+  /** Server turns (#135): Boson's turn detection is wanted for the next session (hands-free) or not (push-to-talk).
+   * turn_detection cannot change mid-session (live: 400 "turn_detection cannot be changed after session start"), so an
+   * open session in the other mode is dropped; the next ensureOpen opens one with the right config. */
+  setServerTurns(on: boolean): void {
+    if (on === this.wantServer) return;
+    this.wantServer = on;
+    this.vadIndex = 0;
+    if (this.ws && this.sessionServer !== on) this.dropSocket("turn mode change");
+  }
+
+  /** Boson's turn detection is in use for hands-free (wanted, and not refused). */
+  get serverTurnsActive(): boolean { return this.wantServer; }
+
+  /** Remove an item from the server's conversation (#135: a turn that was only the character's echo). */
+  deleteItem(itemId: string): void { this.send({ type: "conversation.item.delete", item_id: itemId }); }
+
+  /** The transcription language hint (ISO 639-1, or null for none) (#135); sent at once when a session is open. */
+  setLanguageHint(code: string | null): void {
+    if (code === this.language) return;
+    this.language = code;
+    this.send({ type: "session.update", session: { audio: { input: { transcription: { model: "higgs-stt-3.1", language: code } } } } });
+  }
+
+  private dropSocket(reason: string): void {
+    const ws = this.ws;
+    this.ws = null;
+    this.resetResponse();
+    this.dropOutput = false;
+    this.interrupting = false;
+    this.expectResponse = 0;
+    ws?.close(1000, reason);
+  }
+
+  /** The server refused this turn detection (#135): try the next type, or go back to manual turns and say so. */
+  private refuseServerMode(why: string, toManual = false): void {
+    if (!this.sessionServer) return;
+    this.sessionServer = false;
+    this.d.onLog?.("info", "turn-mode", why);
+    if (!toManual && this.vadIndex + 1 < VAD_TYPES.length) this.vadIndex++;
+    else { this.wantServer = false; this.emit({ type: "turn-mode", server: false }); }
+    this.dropSocket("turn mode fallback");
+    void this.ensureOpen(this.voice).catch((e: unknown) => this.emit({ type: "error", message: e instanceof Error ? e.message : String(e) }));
+  }
+
   close(): void {
+    this.stopCaptionTimer();
     this.ws?.close(1000, "client disconnect");
     this.ws = null;
     this.monitor = false;
@@ -264,6 +379,14 @@ export class TalkClient implements TalkSession {
   private get ready(): boolean { return this.isOpen && !this.interrupting; }
 
   private onMicChunk(b64: string): void {
+    if (this.monitor && this.wantServer) { // #135: the server listens all the time and decides the turns
+      if (this.ready) { this.flushPending(); this.send(inputAudioAppend(b64)); return; }
+      this.pendingAudio.push(b64);
+      let ms = 0;
+      for (const c of this.pendingAudio) ms += chunkMs(c);
+      while (this.pendingAudio.length > 1 && ms > STREAM_HOLD_MS) ms -= chunkMs(this.pendingAudio.shift()!);
+      return;
+    }
     if (!this.micOn) {
       if (this.monitor) { // keep just enough to cover PREROLL_MS
         const ms = chunkMs(b64);
@@ -309,6 +432,7 @@ export class TalkClient implements TalkSession {
     this.lastInstructions = instructions;
     this.responseActive = true;
     if (question?.trim()) this.send(userTextItem(question.trim()));
+    this.expectResponse++;
     this.send({ type: "response.create", response: { instructions, max_output_tokens: 600 } });
   }
 
@@ -316,6 +440,7 @@ export class TalkClient implements TalkSession {
   returnTools(results: ToolResult[]): void {
     for (const r of results) this.send(functionCallOutput(r.callId, r.output));
     this.responseActive = true;
+    this.expectResponse++;
     this.send({ type: "response.create", response: { instructions: this.lastInstructions, max_output_tokens: 600 } });
   }
 
@@ -334,7 +459,11 @@ export class TalkClient implements TalkSession {
   async interrupt(): Promise<void> {
     const active = this.responseActive;
     if (active) { this.interrupting = true; this.dropOutput = true; }
+    this.stopCaptionTimer();
+    const segs = this.segs;
+    const heardAudio = this.audioStarted;
     const playedMs = await this.player.flush();
+    if (heardAudio && segs.length && this.timed) this.emit({ type: "heard", text: captionAt(segs, playedMs) }); // #135: the words the reader heard
     if (this.assistantItemId && playedMs > 0) this.send(truncateItem(this.assistantItemId, playedMs));
     if (!active) { this.resetResponse(); return; }
     const ack = this.waitForServer((e) => e.type === "response.done" || (e.type === "error" && errorCode(e) === "response_not_active"), this.d.cancelWaitMs);
@@ -380,6 +509,41 @@ export class TalkClient implements TalkSession {
     this.assistantItemId = null;
     this.caption = "";
     this.pendingCalls = [];
+    this.clearCaptions();
+  }
+
+  // ---- voice-timed captions (#135) -----------------------------------------------------------------------------
+
+  /** Captions follow the voice when the player can say how much it has played. */
+  private get timed(): boolean { return typeof this.player.playedMs === "function"; }
+
+  private clearCaptions(): void {
+    this.stopCaptionTimer();
+    this.segs = [];
+    this.segMs = 0;
+    this.finalCaption = null;
+    this.shownCaption = "";
+  }
+
+  private stopCaptionTimer(): void {
+    if (this.captionTimer !== null) clearInterval(this.captionTimer);
+    this.captionTimer = null;
+  }
+
+  private tickCaption(): void {
+    const text = captionAt(this.segs, this.player.playedMs?.() ?? 0);
+    if (text === this.shownCaption) return;
+    this.shownCaption = text;
+    this.emit({ type: "caption", text, done: false });
+  }
+
+  /** The reply finished playing: the whole caption, final. */
+  private finishCaption(): void {
+    this.stopCaptionTimer();
+    const text = this.finalCaption ?? this.segs.map((g) => g.text).join("").trim();
+    this.segs = [];
+    this.finalCaption = null;
+    if (text) this.emit({ type: "caption", text, done: true });
   }
 
   /** The tool calls of a finished response that are ours to run: `executor` "client" (the server runs its own, e.g. web_search). */
@@ -405,12 +569,38 @@ export class TalkClient implements TalkSession {
 
     switch (evt.type) {
       case "conversation.item.input_audio_transcription.completed":
-        this.emit({ type: "transcript", text: String(evt.transcript ?? "") });
+        this.emit({ type: "transcript", text: String(evt.transcript ?? ""), ...(typeof evt.item_id === "string" ? { itemId: evt.item_id } : {}) });
         break;
+      case "input_audio_buffer.speech_started":
+        this.emit({ type: "speech-started", ...(typeof evt.item_id === "string" ? { itemId: evt.item_id } : {}) });
+        break;
+      case "input_audio_buffer.speech_stopped":
+        this.emit({ type: "speech-stopped" });
+        break;
+      case "input_audio_buffer.committed":
+        this.emit({ type: "committed", ...(typeof evt.item_id === "string" ? { itemId: evt.item_id } : {}) });
+        break;
+      case "session.created":
+      case "session.updated": {
+        if (!this.sessionServer) break;
+        this.sessionAcked = true;
+        const t = (evt.session as { audio?: { input?: { turn_detection?: { type?: string; create_response?: boolean } | null } } } | undefined)?.audio?.input?.turn_detection;
+        if (t === undefined) break; // an ack without the audio block says nothing about turns
+        if (t && t.create_response !== false) this.refuseServerMode("the server would answer every turn by itself", true);
+        else if (!t || t.type !== VAD_TYPES[this.vadIndex]) this.refuseServerMode(`asked for ${VAD_TYPES[this.vadIndex]}, got ${t?.type ?? "none"}`);
+        break;
+      }
       case "conversation.item.input_audio_transcription.failed":
         this.emit({ type: "transcript", text: "" }); // nothing usable was heard: the turn ends now, not after the timeout
         break;
       case "response.created":
+        if (this.expectResponse === 0 && this.sessionServer) { // #135: the server answered a turn by itself; never play it
+          this.dropOutput = true;
+          this.send({ type: "response.cancel" });
+          break;
+        }
+        this.expectResponse = Math.max(0, this.expectResponse - 1);
+        this.clearCaptions();
         this.player.reset(); // zero the played-sample counter so audio_end_ms measures this reply only
         this.dropOutput = false; // a new answer: its output is wanted again
         this.responseActive = true;
@@ -436,10 +626,20 @@ export class TalkClient implements TalkSession {
       case "response.output_audio_transcript.delta":
         if (this.dropOutput) break;
         this.caption += String(evt.delta ?? "");
-        this.emit({ type: "caption", text: this.caption, done: false });
+        if (!this.timed) this.emit({ type: "caption", text: this.caption, done: false });
         break;
+      case "response.output_audio_transcript.length": { // Boson: the fragment again, with its audio duration (#135)
+        if (this.dropOutput || !this.timed) break;
+        const len = Number(evt.length_ms);
+        if (!Number.isFinite(len) || len < 0) break;
+        this.segs.push({ text: String(evt.delta ?? ""), start: this.segMs, end: this.segMs + len });
+        this.segMs += len;
+        if (this.captionTimer === null) this.captionTimer = setInterval(() => this.tickCaption(), CAPTION_TICK_MS);
+        break;
+      }
       case "response.output_audio_transcript.done":
         if (this.dropOutput) break;
+        if (this.timed && this.segs.length) { this.finalCaption = String(evt.transcript ?? this.caption); break; } // shown as it is heard
         this.emit({ type: "caption", text: String(evt.transcript ?? this.caption), done: true });
         break;
       case "response.function_call_arguments.done":
@@ -464,7 +664,11 @@ export class TalkClient implements TalkSession {
         break;
       }
       case "error": {
-        const err = (evt.error ?? evt) as { type?: string; code?: string | null; message?: string; event_id?: string };
+        const err = (evt.error ?? evt) as { type?: string; code?: string | null; message?: string; event_id?: string; param?: string | null };
+        if (this.sessionServer && !this.sessionAcked && /turn_detection|vad/i.test(`${err.message ?? ""} ${err.param ?? ""}`)) {
+          this.refuseServerMode(err.message ?? "turn detection refused"); // the config was refused (the session closes next)
+          break;
+        }
         if (typeof err.event_id === "string" && err.event_id.startsWith("seed-")) break; // a history item was refused: the chat just starts fresh
         if (errorCode(evt) === "response_not_active") break; // cancelling an already-finished response is harmless
         this.emit({ type: "error", message: err.message ?? "The voice service reported an error." });
@@ -480,6 +684,7 @@ export class TalkClient implements TalkSession {
 
   private onSpeaking(speaking: boolean): void {
     if (!speaking && this.responseDone && this.audioStarted) {
+      if (this.timed && (this.segs.length || this.finalCaption !== null)) this.finishCaption();
       this.emit({ type: "playback-drained" });
       this.responseDone = false;
     }

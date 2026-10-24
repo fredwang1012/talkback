@@ -2,11 +2,14 @@
  * Hands-free turns (#10): a small voice gate over the microphone level, so the reader can interrupt the character and
  * ask the next question without holding the mic. Runs in the browser on the RMS the capture worklet already reports.
  *
- * Why not Boson's `server_vad`: with it the server answers every turn by itself (`create_response` is accepted but has
- * no effect), so the spoken answer would lose the per-response retrieval instructions that keep it spoiler-safe and in
- * character. Our turns stay manual (`turn_detection: null`, `input_audio_buffer.commit`); this gate decides when a turn
- * starts (barge-in) and ends. Echo cancellation is on in the capture, so the character's own voice mostly stays out;
- * headphones make it reliable; without them the stricter `HANDS_FREE_OVER_SPEECH` profile applies while the character talks.
+ * #135: by default hands-free now runs on Boson's own turn detection (`semantic_vad` with `create_response: false`,
+ * verified live 2026-10-23: the server detects, commits and transcribes the turn, then waits for our response.create,
+ * so the answer still carries the per-response retrieval instructions). This gate is still fed while the server
+ * decides: over the character's voice it is the echo guard (a server `speech_started` counts as a barge-in only with
+ * clear local speech), and it is the whole mechanism again when the server mode is refused or forced off
+ * (`localGateForced`: `?gate=local`, or localStorage `talkback:gate` = `local`). Push-to-talk never uses either.
+ * Echo cancellation is on in the capture, so the character's own voice mostly stays out; headphones make it
+ * reliable; without them the stricter `HANDS_FREE_OVER_SPEECH` profile applies while the character talks.
  *
  * Tuned for laptop microphones (quiet, some fan noise): RMS of float samples, speech is typically 0.05-0.2, room noise
  * 0.005-0.02. Speech must last `minSpeechMs` to count (a cough or a click does not), and a turn ends after `silenceMs`
@@ -50,4 +53,17 @@ export function createVoiceGate(o: VoiceGateOptions = HANDS_FREE) {
     get speaking(): boolean { return speaking; },
     reset(): void { speaking = false; above = null; below = null; },
   };
+}
+
+/** The old local gate is forced for hands-free (#135): `?gate=local` in the URL, or localStorage `talkback:gate=local`. */
+export function localGateForced(search: string, stored: string | null): boolean {
+  try { if (new URLSearchParams(search).get("gate") === "local") return true; } catch { /* a bad query string */ }
+  return stored === "local";
+}
+
+/** `localGateForced` for this page (storage may be blocked: then only the URL counts). */
+export function localGateForcedHere(): boolean {
+  let stored: string | null = null;
+  try { stored = localStorage.getItem("talkback:gate"); } catch { /* blocked */ }
+  return localGateForced(typeof location === "undefined" ? "" : location.search, stored);
 }

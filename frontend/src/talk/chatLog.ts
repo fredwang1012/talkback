@@ -52,6 +52,19 @@ export function markInterrupted(m: ChatMessage[]): ChatMessage[] {
   return i < 0 ? m : m.map((x, j) => (j === i ? { ...x, interrupted: true } : x));
 }
 
+/**
+ * The reply the reader cut off (#135) keeps only the words actually heard (from the voice-timed caption at the moment
+ * of the cut), so the bubble and the character's memory (priorTurns) match what was said. The target is the newest
+ * character reply that was interrupted, or that is still pending with text (Stop); a new empty pending reply (a typed
+ * question asked over the old one) is skipped. An empty `heard` changes nothing.
+ */
+export function cutHeard(m: ChatMessage[], heard: string): ChatMessage[] {
+  const text = heard.trim();
+  if (!text) return m;
+  const i = m.findLastIndex((x) => x.role === "character" && (x.interrupted || (x.pending && x.text.trim() !== "")));
+  return i < 0 ? m : m.map((x, j) => (j === i ? { ...x, text } : x));
+}
+
 /** Append a sentence to the pending answer; ignored when none is pending. */
 export function appendSentence(m: ChatMessage[], sentence: string): ChatMessage[] {
   const i = m.findLastIndex((x) => x.pending);
