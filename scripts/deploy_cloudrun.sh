@@ -2,7 +2,9 @@
 # Build the image with Cloud Build and deploy it to Cloud Run. See docs/DEPLOY.md.
 # Refuses to do anything without --yes. Never reads .env and never prints a secret value.
 set -euo pipefail
-export MSYS_NO_PATHCONV=1  # Git Bash on Windows would rewrite /app/data into a Windows path
+# Git Bash on Windows rewrites "...=/app/data" arguments into Windows paths; exempt only the volume-mount argument
+# (turning conversion off everywhere breaks gcloud.cmd itself). Ignored on Linux and macOS.
+export MSYS2_ARG_CONV_EXCL="volume="
 
 PROJECT=frederick-talkback
 REGION=us-central1
