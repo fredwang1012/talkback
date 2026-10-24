@@ -26,7 +26,7 @@ from . import retrieval
 from .config import settings
 from .parsing import CODE_MARK, EQ_MARK, EQ_SEP, HEADING_MARK, inline_marker, parse, strip_inline
 from .schema import Book, Narrator, Paragraph, Section
-from .ttschunks import chunk_paragraph, rechunk_book, sentence_spans, split_long
+from .ttschunks import BookIndex, chunk_paragraph, rechunk_book, sentence_spans, split_long
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MULTIPART_SLACK = 1024 * 1024  # form-encoding overhead allowed on top of the file cap when checking Content-Length
@@ -1543,6 +1543,7 @@ def update_equations(book_id: str, fields: dict[str, dict]) -> int:
         except (OSError, ValueError):
             return 0
         n = 0
+        index = BookIndex(book)
         for p in book.paragraphs:
             changed = 0
             new = fields.get(p.math.id) if p.math is not None else None
@@ -1555,7 +1556,7 @@ def update_equations(book_id: str, fields: dict[str, dict]) -> int:
                     changed += 1
             if not changed:
                 continue
-            p.tts_chunks = chunk_paragraph(p, book)
+            p.tts_chunks = chunk_paragraph(p, book, index=index)
             n += changed
         if n:
             books.save_book(path, book)
