@@ -636,8 +636,11 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
 .series-books { margin-top: 0; padding-left: var(--s5); border-left: 1px solid var(--brass-soft); }
 @media (prefers-reduced-motion: reduce) { .series-card, .volume { transition: none; } .series-card:hover { transform: none; } }
 
+/* Tailwind's preflight zeroes every margin, which drops the browser's `margin: auto` that centres a modal dialog. */
 .add-dialog {
-  width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 0; overflow: auto;
+  position: fixed; inset: 0; margin: auto;
+  width: min(560px, calc(100vw - 32px)); max-width: none; height: fit-content;
+  max-height: calc(100dvh - 32px); padding: 0; overflow: auto; overscroll-behavior: contain;
   background: var(--ground); color: var(--ink); border: 1px solid var(--brass-soft); border-radius: var(--r-lg);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
 }
