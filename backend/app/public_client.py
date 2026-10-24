@@ -435,6 +435,18 @@ async def translate(text: str, client: httpx.AsyncClient | None = None) -> str:
     return english[:1000]
 
 
+PASSAGE_SECONDS = 20.0
+
+
+async def translate_passage(pieces: list[str], language: str, client: httpx.AsyncClient | None = None) -> list[str]:
+    """A paragraph's pieces in `language` (ISO 639-3), for bilingual reading (B3). Raises PublicFailure."""
+    out = await _post("/api/public/translate-passage", {"pieces": pieces, "language": language}, PASSAGE_SECONDS, client)
+    got = out.get("pieces")
+    if not isinstance(got, list) or not all(isinstance(x, str) for x in got):
+        raise PublicFailure("unavailable", "bad answer")
+    return got
+
+
 class RemoteLLM:
     """Stands in for the local LLM of enrich/detect.py ("detect") and enrich/describe.py ("describe"): the service
     runs the same fixed prompt and only the text is sent. The answer is validated with the caller's own schema."""

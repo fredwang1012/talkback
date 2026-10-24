@@ -43,3 +43,38 @@ def mp3_seconds(data: bytes) -> float:
             if frames:
                 return frames * spf / rate
     return (len(data) - off) * 8 / bitrate
+
+
+def _frame_len(data: bytes, off: int) -> int | None:
+    """Byte length of the Layer III frame whose header starts at `off`, or None when there is no valid header there."""
+    if off + 4 > len(data) or data[off] != 0xFF or (data[off + 1] & 0xE0) != 0xE0:
+        return None
+    b1, b2 = data[off + 1], data[off + 2]
+    vbits, layer, br_i, sr_i = (b1 >> 3) & 3, (b1 >> 1) & 3, b2 >> 4, (b2 >> 2) & 3
+    if vbits == 1 or layer != 1 or br_i in (0, 15) or sr_i == 3:
+        return None
+    ver = {3: 1, 2: 2, 0: 25}[vbits]
+    bitrate = _BITRATES[1 if ver == 1 else 2][br_i - 1] * 1000
+    return (144 if ver == 1 else 72) * bitrate // _RATES[ver][sr_i] + ((b2 >> 1) & 1)
+
+
+def _bare(data: bytes) -> bytes:
+    """`data` without its ID3v2 header, ID3v1 trailer and leading Xing/Info frame (that frame states the frame count
+    of this file alone, which would make a player stop or mis-seek in a joined file)."""
+    pos = 0
+    if data[:3] == b"ID3" and len(data) >= 10:
+        pos = 10 + ((data[6] & 0x7F) << 21 | (data[7] & 0x7F) << 14 | (data[8] & 0x7F) << 7 | (data[9] & 0x7F))
+    end = len(data) - 128 if len(data) >= 128 and data[-128:-125] == b"TAG" else len(data)
+    n = _frame_len(data, pos)
+    if n:
+        head = data[pos:pos + min(n, 64)]
+        if b"Xing" in head or b"Info" in head:
+            pos += n
+    return data[pos:end]
+
+
+def join(parts: list[bytes]) -> bytes:
+    """One MP3 from several of the same format (MPEG frames simply follow each other). A single part is unchanged."""
+    if len(parts) == 1:
+        return parts[0]
+    return b"".join(_bare(p) for p in parts)

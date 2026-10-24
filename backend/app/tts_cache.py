@@ -131,3 +131,33 @@ async def get_or_create(client: BosonClient, tts_text: str, voice: str, plain: s
         aligned = align_timestamps(raw, plain, inline)
         meta_path.write_text(json.dumps({"timestamps": aligned, "raw": raw}), encoding="utf-8")
     return {"audio_url": f"/media/tts/{key}.{FORMAT}", "timestamps": aligned, "cached": False}
+
+
+def all_cached(tts_texts: list[str], voice: str, language: str | None = None) -> bool:
+    return all(is_cached(t, voice, language) for t in tts_texts)
+
+
+async def get_or_create_joined(client: BosonClient, tts_texts: list[str], voice: str, plain: str,
+                               language: str | None = None) -> dict:
+    """Like get_or_create for text that needed several TTS inputs (a translated piece longer than one chunk): each
+    input is voiced (and cached) on its own, then the MP3s are joined into one file, cached under the inputs' keys.
+    Timestamps are dropped (the caption highlights the whole piece)."""
+    if len(tts_texts) == 1:
+        return await get_or_create(client, tts_texts[0], voice, plain, language=language)
+    from .mp3dur import join
+    keys = [cache_key(t, voice, language=language) for t in tts_texts]
+    key = hashlib.sha256(json.dumps(["joined", keys]).encode()).hexdigest()
+    audio_path, meta_path = _paths(key)
+    if audio_path.exists() and meta_path.exists():
+        return {"audio_url": f"/media/tts/{key}.{FORMAT}", "timestamps": None, "cached": True}
+    parts = [await get_or_create(client, t, voice, plain, language=language) for t in tts_texts]
+    lock = _locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        if not audio_path.exists():
+            audio = join([_paths(k)[0].read_bytes() for k in keys])
+            tmp = audio_path.with_suffix(".tmp")
+            tmp.write_bytes(audio)
+            tmp.replace(audio_path)
+            meta_path.write_text(json.dumps({"timestamps": None, "raw": None, "parts": keys}), encoding="utf-8")
+    return {"audio_url": f"/media/tts/{key}.{FORMAT}", "timestamps": None,
+            "cached": all(p["cached"] for p in parts)}

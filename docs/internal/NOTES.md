@@ -1316,3 +1316,8 @@ was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-
   identical output. HP7 and the HP collection: same titles, drop-cap words rejoined.
 - Already-uploaded books are not re-parsed: CHUNK_RULES_VERSION only rebuilds TTS chunks from stored paragraphs.
   Delete and upload the PDF again (the same file is a 409 duplicate while the old copy exists).
+## Bilingual reading (B3), 2026-10-24
+- Live check: Alice paragraphs 0 and 31 translated by gemini-2.5-flash-lite (746 in / 296 out tokens) and voiced with
+  `language` spa / zho + `normalize: true` in the book's preset voices (nora, chloe) and the cloned narrator voice:
+  all 8 clips came back as audio (10-17 s each). Total spend about $0.021 (1,390 Boson TTS chars). Cross-lingual
+  cloned-voice quality was not judged by ear here.

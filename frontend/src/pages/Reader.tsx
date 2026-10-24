@@ -2,7 +2,8 @@ import { isAutoplayBlock } from "../audio/mediaErrors";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getAccessToken, setAccessToken } from "../accessToken";
 import {
-  avatarUrl, fetchAvatars, fetchBook, fetchCast, fetchFaces, fetchHealth, fetchTts, fetchVoices, speak, fetchScopedRecap,
+  avatarUrl, fetchAvatars, fetchBook, fetchCast, fetchFaces, fetchHealth, fetchTranslatedTts, fetchTranslation, fetchTts, fetchVoices, speak,
+  fetchScopedRecap,
   type Book, type Cast, type Face, type Health,
 } from "../api";
 import {
@@ -11,7 +12,8 @@ import {
   type TalkChoices,
 } from "../reader/castLogic";
 import { DEMO_SPEAKER, DEMO_START_PARA, firstChunkAtOrAfter, isDemo } from "../demo";
-import BookText from "../reader/BookText";
+import BookText, { type TranslationView } from "../reader/BookText";
+import { loadBilingual, parasToTranslate, readingChunks, remapIndex, saveBilingual, type BiSettings } from "../reader/bilingual";
 import PlayerBar from "../reader/PlayerBar";
 import RecapPanel, { nothingYet, recapHeading } from "../reader/RecapPanel";
 import type { RecapChoice } from "../reader/RecapMenu";
@@ -79,6 +81,11 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [readClipShown, setReadClipShown] = useState(false);
   const readSync = useRef<FaceSync | null>(null);
   if (!readSync.current) readSync.current = new FaceSync(setReadClipShown);
+  // bilingual reading (B3): a second language per book, and the translated pieces that have arrived ("lang:para")
+  const [bi, setBi] = useState<BiSettings>(() => loadBilingual(bookId));
+  const [pieces, setPieces] = useState<Record<string, string[]>>({});
+  const [trError, setTrError] = useState<string | null>(null);
+  const asked = useRef(new Set<string>());
   const [spoilers, setSpoilers] = useState(() => loadSpoilers(bookId));
   useEffect(() => setSpoilers(loadSpoilers(bookId)), [bookId]);
   const [spendNow, setSpendNow] = useState<SpendSnapshot>(spend.snapshot());
@@ -104,7 +111,10 @@ export default function Reader({ bookId }: { bookId: string }) {
     fetchBook(bookId).then((b) => {
       setBook(b);
       const flat = flattenChunks(b);
-      setIndex(demo ? firstChunkAtOrAfter(flat, DEMO_START_PARA) : loadPosition(b.id, flat.length));
+      const saved = demo ? firstChunkAtOrAfter(flat, DEMO_START_PARA) : loadPosition(b.id, flat.length); // an index into `flat`
+      const s = loadBilingual(b.id);
+      setBi(s);
+      setIndex(s.mode === "off" ? saved : remapIndex(flat, readingChunks(b, s), saved));
       if (demo && b.characters.some((c) => c.id === DEMO_SPEAKER)) setSpeakerId(DEMO_SPEAKER); // pinned to the demo character
       // the cast lives on the server; the old series-wide localStorage voices are moved into it once
       castEdited.current = false;
@@ -120,7 +130,8 @@ export default function Reader({ bookId }: { bookId: string }) {
     fetchVoices().then(setCloned).catch(() => setCloned({}));
   }, [bookId, demo]);
 
-  const chunks = useMemo(() => (book ? flattenChunks(book) : []), [book]);
+  const baseChunks = useMemo(() => (book ? flattenChunks(book) : []), [book]);
+  const chunks = useMemo(() => (book ? readingChunks(book, bi) : []), [book, bi]);
   const para = readerPara(chunks, index);
   const last = chunks.length - 1;
   const needsCode = !!health?.access_required && !code;
@@ -131,6 +142,11 @@ export default function Reader({ bookId }: { bookId: string }) {
     if (!book || !audioAvailable || chunks.length === 0) return;
     const engine = new ReaderEngine(chunks, {
       fetchTts: async (chunk, voice, speedTag) => {
+        if (chunk.translation) { // bilingual reading: the chunk's translation, in the same voice
+          const t = await fetchTranslatedTts(book.id, chunk.translation.of, chunk.translation.lang, voice, demo, speedTag);
+          if (!t.cached) spend.addTts(t.text.length);
+          return t;
+        }
         const r = await fetchTts(book.id, chunk.id, voice, demo, speedTag); // demo: pre-rendered only
         if (!r.cached) spend.addTts(chunk.tts_text.length); // only freshly synthesised speech costs money
         return r;
@@ -338,7 +354,41 @@ export default function Reader({ bookId }: { bookId: string }) {
     else setPlaying((p) => !p);
   }, []);
 
-  useEffect(() => { if (book && !demo) savePosition(book.id, index); }, [book, index, demo]);
+  // the saved position is an index into the book's own chunk list, whatever the second-language mode
+  useEffect(() => { if (book && !demo) savePosition(book.id, remapIndex(chunks, baseChunks, index)); }, [book, index, demo, chunks, baseChunks]);
+
+  useEffect(() => { asked.current.clear(); setPieces({}); setTrError(null); }, [bookId]);
+  // bilingual reading: translate only the paragraphs about to be read (the TTS prefetch window), never the whole book
+  useEffect(() => {
+    if (!book || bi.mode === "off" || needsCode) return;
+    for (const p of parasToTranslate(chunks, index)) {
+      const k = `${bi.lang}:${p}`;
+      if (asked.current.has(k)) continue;
+      asked.current.add(k);
+      fetchTranslation(book.id, p, bi.lang).then((r) => {
+        setPieces((cur) => ({ ...cur, [k]: r.pieces }));
+        setTrError(null);
+      }, (e: Error) => { asked.current.delete(k); setTrError(e.message); });
+    }
+  }, [book, bi, chunks, index, needsCode]);
+  const translationView = useMemo<TranslationView | undefined>(() => {
+    if (bi.mode === "off") return undefined;
+    const mine: Record<number, string[]> = {};
+    for (const [k, v] of Object.entries(pieces)) {
+      const [lang, p] = k.split(":");
+      if (lang === bi.lang) mine[Number(p)] = v;
+    }
+    return { mode: bi.mode, lang: bi.lang, pieces: mine, error: trError };
+  }, [bi, pieces, trError]);
+  /** A new language or mode keeps the reader on the same sentence (the engine is rebuilt for the new chunk list). */
+  const changeBilingual = (next: BiSettings) => {
+    if (!book) return;
+    const at = remapIndex(chunks, readingChunks(book, next), index);
+    indexRef.current = at;
+    setIndex(at);
+    setBi(next);
+    saveBilingual(book.id, next);
+  };
 
   // Silent preview: advance at an estimated reading pace until real audio exists.
   useEffect(() => {
@@ -442,7 +492,7 @@ export default function Reader({ bookId }: { bookId: string }) {
                           portrait={book.characters.find((c) => c.id === speakerId)?.portrait ?? book.narrator?.portrait ?? null}
                           onBack={() => changeMode("read")} onRecap={recap} onVoices={() => setLabOpen(true)} />
           ) : (
-            <BookText book={book} chunks={chunks} index={index} word={word}
+            <BookText book={book} chunks={chunks} index={index} word={word} translation={translationView}
                       onPick={(i) => { lastManualScroll.current = Date.now(); seek(i); }} />
           )}
         </div>
@@ -485,6 +535,7 @@ export default function Reader({ bookId }: { bookId: string }) {
         atStart={index === 0} atEnd={index >= last}
         hasCast={book.characters.length > 0}
         audioAvailable={audioAvailable} audioError={audioError} audioNotice={audioNotice}
+        bilingual={{ value: bi, onChange: changeBilingual }}
       />}
     </>
   );

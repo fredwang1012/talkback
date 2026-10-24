@@ -2,7 +2,8 @@
 full upload processing (cast, dialogue split, summaries; textbooks: recap notes only) and Gemini-written Talk answers.
 
 Exposes ONLY GET /api/health, POST /api/public/enrich (+ GET /api/public/enrich/{job_id}), POST /api/public/answer,
-the small single calls POST /api/public/translate (a question for search, #12), /api/public/detect (novel or textbook),
+the small single calls POST /api/public/translate (a question for search, #12), /api/public/translate-passage (a
+paragraph for bilingual reading, B3), /api/public/detect (novel or textbook),
 /api/public/describe (title and author), /api/public/series (volume of a series, #134) and /api/public/faces/detect (face box, #109), and the equation readings of an
 uploaded textbook (#41): POST /api/public/equations (an estimate-first ticket) then POST /api/public/equations/{ticket}
 (a few pictures per request). Everything else is 404 (no docs, no static frontend, no media, no book data). Gemini only.
@@ -79,6 +80,9 @@ MSG_FACE_CAP = "The free face detection for today has been used up."
 SMALL_BODY_LIMIT = 32 * 1024
 TRANSLATE_MAX_CHARS = multilingual.MAX_QUERY_CHARS
 SERIES_MAX_CHARS = 600
+PASSAGE_MAX_PIECES = 40      # TTS chunks of one paragraph (translate.MAX_PIECES)
+PASSAGE_MAX_PIECE_CHARS = 600
+PASSAGE_MAX_CHARS = 8000
 DETECT_MAX_CHARS = detect_mod.SAMPLE_CHARS + 200          # the sample plus its "[...]" joins
 DESCRIBE_MAX_CHARS = describe_mod.MAX_CHARS
 TRANSLATE_SECONDS = 4.0      # the clone's answer waits no longer (multilingual.TRANSLATE_TIMEOUT_S)
@@ -195,6 +199,27 @@ class TextRequest(BaseModel):
 
 class Translation(BaseModel):
     english: str = Field(description="the question in English")
+
+
+class PassageRequest(BaseModel):
+    """One paragraph of a book for bilingual reading (B3): its TTS-chunk texts and the target language."""
+    pieces: list[str] = Field(min_length=1, max_length=PASSAGE_MAX_PIECES)
+    language: str = Field(min_length=3, max_length=3)
+
+    @field_validator("pieces")
+    @classmethod
+    def _bounded(cls, v):
+        if any(len(x) > PASSAGE_MAX_PIECE_CHARS for x in v) or sum(map(len, v)) > PASSAGE_MAX_CHARS:
+            raise ValueError("passage too long")
+        return v
+
+    @field_validator("language")
+    @classmethod
+    def _foreign(cls, v):
+        from . import tts_lang
+        if not tts_lang.valid(v) or tts_lang.is_english(v):
+            raise ValueError("unsupported language")
+        return v
 
 
 class FaceBox(BaseModel):
@@ -610,6 +635,7 @@ class BodyLimit:
     """Bound the request body of every POST endpoint before it is parsed (Content-Length required)."""
     LIMITS = {"/api/public/enrich": ENRICH_BODY_LIMIT, "/api/public/answer": ANSWER_BODY_LIMIT,
               "/api/public/translate": SMALL_BODY_LIMIT, "/api/public/detect": SMALL_BODY_LIMIT,
+              "/api/public/translate-passage": SMALL_BODY_LIMIT,
               "/api/public/describe": SMALL_BODY_LIMIT, "/api/public/series": SMALL_BODY_LIMIT,
               "/api/public/series-early": SMALL_BODY_LIMIT,
               "/api/public/faces/detect": FACE_BODY_LIMIT,
@@ -873,6 +899,20 @@ async def public_translate(req: TextRequest, request: Request):
     out = await _single_call(system, text, Translation, in_chars=len(system) + len(text), max_out=200,
                              seconds=TRANSLATE_SECONDS)
     return {"text": " ".join(out.english.split())[:TRANSLATE_MAX_CHARS * 2]}
+
+
+@app.post("/api/public/translate-passage")
+async def public_translate_passage(req: PassageRequest, request: Request):
+    """A paragraph translated piece by piece for bilingual reading (B3), with translate.py's own prompt. Counted on
+    the daily answer budget like the other small calls; the clone caches the result on its disk."""
+    from . import translate
+    _small_allowed(request)
+    system = translate.system_prompt(translate.language_name(req.language))
+    user = json.dumps(req.pieces, ensure_ascii=False)
+    chars = sum(map(len, req.pieces))
+    out = await _single_call(system, user, translate.Pieces, in_chars=len(system) + len(user),
+                             max_out=200 + 3 * chars, seconds=SMALL_SECONDS)
+    return {"pieces": [p[:PASSAGE_MAX_PIECE_CHARS * 3] for p in out.pieces]}
 
 
 @app.post("/api/public/detect")

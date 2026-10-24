@@ -184,6 +184,10 @@ button:disabled { cursor: not-allowed; }
 
 .section-mark { margin-top: var(--s7); margin-bottom: var(--s4); font-family: var(--font-title); font-weight: 400; font-size: 1.6rem; line-height: 1.2; color: var(--brass); }
 .para { margin-bottom: 1.1em; font-family: var(--font-book); font-size: 1.2rem; line-height: 1.7; text-wrap: pretty; }
+/* bilingual reading (B3): the paragraph in the second language, under the original */
+.para.para-translation { margin-top: -0.6em; padding-left: 0.9em; border-left: 2px solid color-mix(in srgb, currentColor 25%, transparent); opacity: 0.88; font-size: 1.1rem; }
+.para.para-translation.pending { font-style: italic; opacity: 0.55; font-size: 0.95rem; }
+.player .bilingual { display: inline-flex; gap: 0.4em; align-items: center; }
 .para .sentence {
   color: var(--ink-faint);
   cursor: pointer;

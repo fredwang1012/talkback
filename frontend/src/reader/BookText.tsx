@@ -7,10 +7,15 @@ import ChapterList from "./ChapterList";
 import Figure from "./Figure";
 import { isNested } from "./chapterTree";
 import { cleanTitle } from "./cleanTitle";
+import { htmlLang, type BiMode } from "./bilingual";
+
+/** Bilingual reading (B3): the translated pieces per paragraph (one per TTS chunk), as far as they have arrived. */
+export type TranslationView = { mode: BiMode; lang: string; pieces: Record<number, string[] | undefined>; error?: string | null };
 
 type Props = {
   book: Book; chunks: FlatChunk[]; index: number; onPick: (i: number) => void;
   word?: { charStart: number; charEnd: number } | null;
+  translation?: TranslationView;
 };
 
 /** Index of the section containing paragraph `para` (sections are ordered by start_para). */
@@ -31,11 +36,37 @@ export function sectionRange(book: Book, i: number): [number, number] {
  * Renders the chapter being read, with each TTS chunk as a clickable sentence span; the active one is lit.
  * Only one chapter is in the DOM: a whole novel is ~10,000 spans, too many to re-render on every spoken word.
  */
-function BookText({ book, chunks, index, onPick, word }: Props) {
+function BookText({ book, chunks, index, onPick, word, translation }: Props) {
   const indexById = new Map(chunks.map((c, i) => [c.id, i]));
   const sectionAt = new Map(book.sections.map((s) => [s.start_para, s]));
   const current = sectionIndexAt(book, chunks[index]?.para ?? 0);
   const [from, to] = sectionRange(book, current);
+  const tr = translation && translation.mode !== "off" ? translation : null;
+  const nowPara = chunks[index]?.para ?? 0;
+  /** The paragraph in the second language: one span per translated piece, lit while it is read (no word timing). */
+  const translated = (p: Paragraph) => {
+    if (!tr || p.kind === "code" || p.kind === "math") return null;
+    const pieces = tr.pieces[p.idx];
+    if (!pieces) {
+      if (tr.mode === "bilingual" && p.idx > nowPara + 1) return null; // nothing is fetched for it yet
+      return <p className="para para-translation pending" data-para={p.idx}>{tr.error ? `Translation unavailable: ${tr.error}` : "Translating…"}</p>;
+    }
+    return (
+      <p className="para para-translation" lang={htmlLang(tr.lang)} data-para={p.idx}>
+        {p.tts_chunks.map((c, k) => {
+          const i = indexById.get(`${c.id}@${tr.lang}`) ?? -1;
+          const state = i === index ? "active" : i >= 0 && i < index ? "past" : "";
+          return (
+            <Fragment key={c.id}>
+              {k > 0 && !/^(zho|cmn|jpn|kor)$/.test(tr.lang) && " "}
+              <span className={`sentence ${state}`} data-active={i === index} role="button" tabIndex={-1}
+                    onClick={() => i >= 0 && onPick(i)}>{pieces[k] ?? ""}</span>
+            </Fragment>
+          );
+        })}
+      </p>
+    );
+  };
   const goTo = (i: number) => {
     const [start] = sectionRange(book, i);
     const first = chunks.findIndex((c) => c.para >= start);
@@ -79,6 +110,9 @@ function BookText({ book, chunks, index, onPick, word }: Props) {
             </Fragment>
           );
         }
+        if (tr?.mode === "translated" && !p.kind) { // a code listing stays; a figure keeps its picture (caption below)
+          return <Fragment key={p.idx}>{heading}{translated(p)}</Fragment>;
+        }
         const parts: React.ReactNode[] = [];
         let cursor = 0;
         for (const c of p.tts_chunks) {
@@ -108,6 +142,7 @@ function BookText({ book, chunks, index, onPick, word }: Props) {
             {p.kind === "figure" && p.figure
               ? <Figure bookId={book.id} name={p.figure} caption={p.text} para={p.idx}>{parts}</Figure>
               : <p className={p.kind === "code" ? "para para-code" : "para"} data-para={p.idx}>{parts}</p>}
+            {tr && (tr.mode === "bilingual" || p.kind === "figure") && translated(p)}
           </Fragment>
         );
       })}

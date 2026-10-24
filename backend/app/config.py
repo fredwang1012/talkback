@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     # separate, less congested Vertex pool, so uploads are not throttled by Talk answers or busy shared capacity.
     enrich_gemini_model: str = ""
     enrich_fallback_on_429: bool = False   # send rate-limited processing calls to GEMINI_MODEL (pricier, faster when busy)
+    # bilingual reading (app/translate.py): paragraph translations, on the interactive lane. Empty = the enrichment model.
+    translate_model: str = "gemini-2.5-flash-lite"
     # Web search (Grounding with Google Search) on Gemini answers: textbooks and novels with spoilers on only (websearch.py).
     web_search: bool = True
     grounded_daily_cap: int = 100        # grounded answers per UTC day on this app, persisted (data/usage)

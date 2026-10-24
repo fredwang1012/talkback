@@ -175,6 +175,35 @@ export async function fetchTts(bookId: string, chunkId: string, voiceOverride?: 
   return res.json() as Promise<TtsResponse>;
 }
 
+export type TranslationResponse = { para: number; language: string; chunk_ids: string[]; pieces: string[] };
+
+async function postJson<T>(path: string, body: unknown, timeoutMs: number, what: string): Promise<T> {
+  const res = await timedFetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
+  }, timeoutMs);
+  if (!res.ok) {
+    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    throw new Error(typeof detail === "string" ? detail : `${what} failed (${res.status})`);
+  }
+  return res.json() as Promise<T>;
+}
+
+/** Bilingual reading (B3): one paragraph in `language` (ISO 639-3), a translated piece per TTS chunk (server-cached). */
+export function fetchTranslation(bookId: string, para: number, language: string): Promise<TranslationResponse> {
+  return postJson("/api/translate", { book_id: bookId, para, language }, 30000, "Translation");
+}
+
+/** A chunk's translation read aloud in the chunk's own voice (no word timestamps: the piece is lit as a whole). */
+export function fetchTranslatedTts(bookId: string, chunkId: string, language: string, voiceOverride?: string,
+  cachedOnly = false, speed?: string | null): Promise<TtsResponse & { text: string }> {
+  return postJson("/api/tts/translated", {
+    book_id: bookId, chunk_id: chunkId, language, voice_override: voiceOverride ?? null, cached_only: cachedOnly,
+    ...(speed ? { speed } : {}),
+  }, 90000, "Audio request");
+}
+
 export type RetrieveResponse = {
   passages: { para_start: number; para_end: number; text: string }[];
   story_so_far: string;
