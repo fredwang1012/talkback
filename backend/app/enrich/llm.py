@@ -175,6 +175,10 @@ class ClaudeProvider:
         return Raw(text=text, in_tokens=n_in, out_tokens=n_out, model=model)
 
 
+class _CutOff(Exception):
+    """Gemini stopped at max_output_tokens (finish_reason MAX_TOKENS): the JSON is incomplete."""
+
+
 class GeminiProvider:
     """Gemini on Vertex AI (the enrichment model, ENRICH_GEMINI_MODEL or GEMINI_MODEL; project and region from settings),
     JSON output."""
@@ -191,7 +195,22 @@ class GeminiProvider:
         self._sleep = sleep
         self._pacer = pacer
 
+    MAX_TOKENS_CAP = 16000   # a reply cut off for length is retried once with twice the room, up to this
+
     async def complete(self, system, user, schema, tier, max_tokens, effort) -> Raw:
+        try:
+            return await self._complete_once(system, user, schema, tier, max_tokens, effort)
+        except _CutOff:
+            bigger = min(max_tokens * 2, self.MAX_TOKENS_CAP)
+            if bigger <= max_tokens:
+                raise RuntimeError(f"{self.model} hit max_tokens={max_tokens}") from None
+            log.warning("gemini reply cut off at max_tokens=%d; retrying with %d", max_tokens, bigger)
+            try:
+                return await self._complete_once(system, user, schema, tier, bigger, effort)
+            except _CutOff:
+                raise RuntimeError(f"{self.model} hit max_tokens={bigger}") from None
+
+    async def _complete_once(self, system, user, schema, tier, max_tokens, effort) -> Raw:
         from google.genai import types
         # Gemini 3 rejects thinking_budget; drop it and retry once when the model says so.
         thinking = True
@@ -225,7 +244,7 @@ class GeminiProvider:
         if any(w in reason for w in ("SAFETY", "PROHIBITED", "BLOCKLIST")) or (not cands and getattr(resp, "prompt_feedback", None)):
             raise LLMRefusal(f"{self.model} refused ({reason})")
         if "MAX_TOKENS" in reason:
-            raise RuntimeError(f"{self.model} hit max_tokens={max_tokens}")
+            raise _CutOff(n_in, n_out)
         return Raw(text=resp.text or "", in_tokens=n_in, out_tokens=n_out, model=self.model)
 
 

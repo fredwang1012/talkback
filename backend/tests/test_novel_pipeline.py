@@ -832,3 +832,33 @@ def test_a_textbook_upload_skips_the_early_series_check(client, monkeypatch):
     monkeypatch.setattr(main, "_start_series_early", lambda book_id: seen.append(book_id))
     upload(client, kind="textbook")
     assert seen == []
+
+
+def test_gemini_reply_cut_off_for_length_is_retried_with_twice_the_room():
+    caps = []
+
+    def resp(reason, text):
+        return type("R", (), {"text": text, "candidates": [type("C", (), {"finish_reason": reason})()],
+                              "usage_metadata": type("M", (), {"prompt_token_count": 10, "candidates_token_count": 5,
+                                                               "thoughts_token_count": 0})()})()
+
+    class Models:
+        async def generate_content(self, model, contents, config):
+            caps.append(config.max_output_tokens)
+            return resp("MAX_TOKENS", '{"summ') if len(caps) == 1 else resp("STOP", '{"summary":"ok"}')
+
+    client = type("Cl", (), {"aio": type("A", (), {"models": Models()})()})()
+    llm = LLM("gemini", {"gemini": GeminiProvider(client)})
+    out = asyncio.run(llm.complete_json("sys", "usr", sum_mod.NoteResult, "smart", max_tokens=4000))
+    assert out.summary == "ok" and len(caps) == 2 and caps[1] > caps[0]
+
+
+def test_gemini_reply_cut_off_twice_still_fails():
+    class Models:
+        async def generate_content(self, model, contents, config):
+            return type("R", (), {"text": "{", "candidates": [type("C", (), {"finish_reason": "MAX_TOKENS"})()],
+                                  "usage_metadata": None})()
+
+    client = type("Cl", (), {"aio": type("A", (), {"models": Models()})()})()
+    with pytest.raises(RuntimeError, match="max_tokens"):
+        asyncio.run(GeminiProvider(client).complete("sys", "usr", {}, "smart", 4000, "low"))
