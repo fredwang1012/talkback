@@ -4,6 +4,7 @@ type Props = {
   fullCast: boolean; onFullCast: (v: boolean) => void;
   autoResume: boolean; onAutoResume: (v: boolean) => void;
   para: number; totalParas: number; atStart: boolean; atEnd: boolean; hasCast: boolean;
+  onRecap: () => void;
   loading?: boolean; audioAvailable: boolean; audioError: string | null;
 };
 
@@ -39,6 +40,7 @@ export default function PlayerBar(p: Props) {
         <input type="checkbox" checked={p.autoResume} onChange={(e) => p.onAutoResume(e.target.checked)} />
         Auto-resume
       </label>
+      <button className="recap-btn" onClick={p.onRecap}>Recap</button>
       <span className="pos">¶ {p.para + 1} / {p.totalParas}</span>
       <p className="note" role={p.audioError ? "alert" : undefined}>
         {p.audioError

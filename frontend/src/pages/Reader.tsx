@@ -4,6 +4,7 @@ import { avatarUrl, fetchAvatars, fetchBook, fetchHealth, fetchTts, fetchVoiceFa
 import { DEMO_SPEAKER, DEMO_START_PARA, firstChunkAtOrAfter, isDemo } from "../demo";
 import BookText from "../reader/BookText";
 import PlayerBar from "../reader/PlayerBar";
+import RecapPanel from "../reader/RecapPanel";
 import { ReaderEngine, type AudioLike } from "../reader/ReaderEngine";
 import Stage from "../reader/Stage";
 import VoiceLab from "../reader/VoiceLab";
@@ -34,6 +35,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const demo = useMemo(() => isDemo(), []);
   const [code, setCode] = useState(getAccessToken());
   const [labOpen, setLabOpen] = useState(false);
+  const [recapOpen, setRecapOpen] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [faces, setFaces] = useState<Record<string, VoiceFace>>({});
   const [lipSync, setLipSync] = useState(() => { try { return localStorage.getItem("talkback:lipsync") === "1"; } catch { return false; } });
@@ -269,9 +271,13 @@ export default function Reader({ bookId }: { bookId: string }) {
         <VoiceLab book={book} overrides={overrides} onOverride={setOverride} onPreview={preview} onFaces={setFaces}
                   audioAvailable={audioAvailable} onClose={() => setLabOpen(false)} />
       )}
+      {recapOpen && (
+        <RecapPanel bookId={book.id} para={para} voice={audioAvailable ? narratorVoice ?? voiceFor("narrator") : null}
+                    onClose={() => setRecapOpen(false)} />
+      )}
       <DebugDrawer entries={talk.logs} spend={spendNow} />
       <PlayerBar
-        playing={playing} loading={loading} onToggle={toggle}
+        playing={playing} loading={loading} onToggle={toggle} onRecap={() => setRecapOpen(true)}
         onPrev={() => { lastManualScroll.current = 0; step(-1); }} onNext={() => { lastManualScroll.current = 0; step(1); }}
         speed={speed} speeds={SPEEDS} onSpeed={setSpeed}
         fullCast={fullCast} onFullCast={setFullCast}
