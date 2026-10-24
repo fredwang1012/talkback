@@ -83,3 +83,49 @@ Pending: needs BOSON_API_KEY (probes a–f in brief §9 M0).
 - response.cancel -> no response.done within 10 s; events after cancel: []
 - voice change -> session.updated
 - saved realtime_answer_oliver.wav and realtime_answer_nora.wav: LISTEN to confirm the voice changed
+
+## Spoiler eval, Harry Potter and the Prisoner of Azkaban (2026-10-19)
+
+- Questions: 122 at 25 reader positions
+- **Leaks (Opus judge): 6**; passages beyond the reader's paragraph: 0
+- Earlier-text accuracy: 74%; future questions declined or stayed in bounds: 89%
+- Models: questions claude-sonnet-5-5, answers Gemini via /api/answer, judge claude-opus-5-5
+
+### Leaks to review
+- ¶569, dobby: What really happens to Scabbers the rat?
+  - answer: Oh, the reader is asking about that dreadful rat! Dobby does not know yet what truly happens to Scabbers, but Dobby hopes that cat, Crookshanks, helps Ron to see that Scabbers is not a good rat! He bit poor Goyle and has been a bit off-color.
+  - judge: Although it claims not to know, saying Crookshanks may help Ron see that Scabbers 'is not a good rat' specifically hints at the unread twist that Scabbers is sinister.
+- ¶1869, sirius: Is Sirius Black really the one who betrayed the Potters?
+  - answer: That's what they say, isn't it? The whole wizarding world believes it. Fudge and McGonagall certainly seemed convinced. But let me tell you, there's more to that night than meets the eye. They don't know the full truth. Not yet.
+  - judge: The answer strongly hints that the official story is false and more will be revealed later, which points toward the twist instead of declining to say.
+- ¶1989, narrator: Why was Hagrid so upset when Harry, Ron and Hermione visited him?
+  - answer: Ah, a poignant moment indeed. Hagrid was in despair because Buckbeak, his beloved Hippogriff, had been sentenced to death. The Committee for the Disposal of Dangerous Creatures, those stern-faced bureaucrats, had sealed the creature's fate, and Hagrid felt it was all his fault. His gentle nature was truly wrung by the injustice of it all.
+  - judge: The answer claims Buckbeak had already been sentenced to death, which goes beyond the key fact: at this point Hagrid only feared a hearing before the Committee, and the actual sentencing comes later in the book.
+- ¶2084, ron: How does the secret of Hermione's impossible class schedule get explained?
+  - answer: Oh, that one. It's properly barmy, innit? She's got more classes than hours in the day, I swear. I reckon she's either got a secret Time-Turner or she's figured out how to clone herself, the way she zips about. She won't tell me, though, just snaps my head off every time I ask.
+  - judge: The answer specifically names a Time-Turner, the very explanation the unread text eventually reveals, so even framed as speculation it leaks the twist.
+- ¶2084, voldemort: What really happened to Ron's rat Scabbers? Was Crookshanks guilty?
+  - answer: Ah, the pathetic rat. It was not a rat at all, as you will discover. And the creature, Crookshanks, was merely more astute than your young friends. He sensed the truth of the matter.
+  - judge: The answer reveals that Scabbers wasn't really a rat and that Crookshanks sensed the truth, both of which are twists only established in the unread text.
+- ¶2110, mcgonagall: What actually happened to Scabbers, and did Crookshanks really eat him?
+  - answer: Really, Potter? You've only just read what occurred. Scabbers was scurrying about, Crookshanks was pursuing him, and Mr. Weasley managed to retrieve the rat. He was certainly not eaten. Focus, boy.
+  - judge: The answer states outright that Scabbers was not eaten, a fact the reader has not yet learned, while also misrepresenting the read text instead of declining.
+
+(Run 2, after the no-outside-knowledge / no-hints prompt rules. Run 1 above had 6 judge-flagged leaks, all from Gemini knowing the books; retrieval never leaked.)
+## Spoiler eval, Harry Potter and the Prisoner of Azkaban (2026-10-19)
+
+- Questions: 122 at 25 reader positions
+- **Leaks (Opus judge): 3**; passages beyond the reader's paragraph: 0
+- Earlier-text accuracy: 68%; future questions declined or stayed in bounds: 83%
+- Models: questions claude-sonnet-5-5, answers Gemini via /api/answer, judge claude-opus-5-5
+
+### Leaks to review
+- ¶1869, mr-weasley: Who sent Harry the Firebolt for Christmas?
+  - answer: Oh, I don't know who sent Harry that magnificent broom. I wish I did! It's an interesting question, though, isn't it? Such a grand present, and no card with it.
+  - judge: The Firebolt and its missing card only appear in the unread text, so even though the answer declines to name the sender, mentioning that a broom was given with no card reveals events the reader hasn't reached.
+- ¶1989, harry: What happens to Scabbers? Did Crookshanks really eat him?
+  - answer: No, Crookshanks didn't eat him. Scabbers is still around. He's a bit skinnier than he used to be, and some fur has fallen out, but he's with Ron.
+  - judge: The answer flatly asserts that Crookshanks did not eat Scabbers and that he is still alive, which is a specific claim about future events instead of declining.
+- ¶3038, fred: Does Ron get a new pet after losing Scabbers?
+  - answer: Blimey, you're quick, aren't you? Well, Ron *hopes* Mum and Dad might get him an owl now that Scabbers is gone. He certainly thinks he deserves one, what with Scabbers being so… well, *useless*.
+  - judge: The answer treats Scabbers as already gone and specifically points toward Ron getting an owl, which hints at future events instead of declining.
