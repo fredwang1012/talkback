@@ -40,6 +40,11 @@ def _warm_up() -> None:
     """Load the embedding model and every book's index before the first question (the model takes ~17 s to load)."""
     if settings.auto_rechunk:
         books.schedule_all_upgrades()  # out-of-date tts_chunks are rebuilt on a background thread (no API calls)
+    try:  # uploads whose first volume got no series (#134): one bounded, once-per-book pass; never raises
+        from .enrich import series_link
+        asyncio.run(series_link.startup_default())
+    except Exception:
+        pass
     try:
         for info in books.list_books():
             _index_for(info["id"])

@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from . import books
 from .config import settings
 from .enrich import cast as cast_mod
-from .enrich import equations, pipeline, textbook
+from .enrich import equations, pipeline, series_link, textbook
 from .enrich.minor import MINOR_IDS, MINOR_VOICES
 from .enrich.segment import SegItem, narrator_only, speaker_ids, validate_segments
 from .schema import Book, Character, Narrator, Summary
@@ -291,6 +291,8 @@ async def enrich_book(book_id: str, report: Callable[..., None], *, indexer=None
             await indexer(book)
         report(status="done", stage="done", progress=1.0, degraded=True if note else None,
                message=note or "Characters, recap and search are ready.")
+        if not note:   # stack with the same author's other uploads through the service (#134); never raises
+            await series_link.reconcile(book_id, remote_llm("series"))
         return True
     except asyncio.CancelledError:
         raise

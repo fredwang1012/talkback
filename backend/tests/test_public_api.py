@@ -82,7 +82,7 @@ def wait_done(c, job_id, timeout=20):
 def test_only_the_public_routes_exist(pub):
     paths = {r.path for r in public_api.app.routes if hasattr(r, "methods")}
     assert paths == {"/api/health", "/api/public/enrich", "/api/public/enrich/{job_id}", "/api/public/answer",
-                     "/api/public/translate", "/api/public/detect", "/api/public/describe",
+                     "/api/public/translate", "/api/public/detect", "/api/public/describe", "/api/public/series",
                      "/api/public/faces/detect", "/api/public/equations", "/api/public/equations/{ticket}"}
     assert pub.get("/api/health").json() == {"ok": True, "public": True}
     for path in ["/", "/index.html", "/api/books", "/api/books/demo", "/api/answer", "/api/retrieve", "/api/tts",

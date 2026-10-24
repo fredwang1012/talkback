@@ -23,6 +23,7 @@ from . import attribute as attribute_mod
 from . import cast as cast_mod
 from . import minor as minor_mod
 from . import segment as seg_mod
+from . import series_link
 from . import spend
 from . import summaries as sum_mod
 from . import textbook as tb_mod
@@ -78,6 +79,7 @@ def estimate(book: Book, provider: str | None = None) -> float:
     notes, cond, note_chars = sum_mod.estimate_calls(book)
     in_chars = note_chars + notes * len(sum_mod.NOTE_SYSTEM) + cond * (len(sum_mod.CONDENSE_SYSTEM) + min(cond, 60) * 150 * 6)
     usd += estimate_usd(provider, "fast", in_chars, notes * 220 + cond * 300)
+    usd += series_link.MAX_CHECKS * series_link.check_estimate_usd(provider)  # library series checks (#134)
     return round(usd * ESTIMATE_MARGIN, 4)
 
 
@@ -281,6 +283,7 @@ async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Inde
         report(status="done", stage="done", progress=1.0, degraded=degraded or None,
                message=FALLBACK_DONE if degraded else "Characters, recap and search are ready.")
         log.info("enriched %s: $%.4f in %d calls", book_id, llm.usd, llm.calls)
+        await series_link.reconcile(book_id, llm)   # stack with the same author's other uploads (#134); never raises
         return True
     except asyncio.CancelledError:
         raise

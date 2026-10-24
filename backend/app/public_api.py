@@ -3,7 +3,7 @@ full upload processing (cast, dialogue split, summaries; textbooks: recap notes 
 
 Exposes ONLY GET /api/health, POST /api/public/enrich (+ GET /api/public/enrich/{job_id}), POST /api/public/answer,
 the small single calls POST /api/public/translate (a question for search, #12), /api/public/detect (novel or textbook),
-/api/public/describe (title and author) and /api/public/faces/detect (face box, #109), and the equation readings of an
+/api/public/describe (title and author), /api/public/series (volume of a series, #134) and /api/public/faces/detect (face box, #109), and the equation readings of an
 uploaded textbook (#41): POST /api/public/equations (an estimate-first ticket) then POST /api/public/equations/{ticket}
 (a few pictures per request). Everything else is 404 (no docs, no static frontend, no media, no book data). Gemini only.
 
@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .config import settings
 from .enrich import describe as describe_mod
 from .enrich import detect as detect_mod
-from .enrich import equations, pipeline, spend, textbook
+from .enrich import equations, pipeline, series_link, spend, textbook
 from .enrich.llm import CHARS_PER_TOKEN, SpendLimit, make_llm, price_usd
 from . import face_detect, multilingual
 from . import emotion
@@ -75,6 +75,7 @@ MSG_FACE_CAP = "The free face detection for today has been used up."
 # small single calls (translate, detect, describe, face box): counted on the daily answer budget
 SMALL_BODY_LIMIT = 32 * 1024
 TRANSLATE_MAX_CHARS = multilingual.MAX_QUERY_CHARS
+SERIES_MAX_CHARS = 600
 DETECT_MAX_CHARS = detect_mod.SAMPLE_CHARS + 200          # the sample plus its "[...]" joins
 DESCRIBE_MAX_CHARS = describe_mod.MAX_CHARS
 TRANSLATE_SECONDS = 4.0      # the clone's answer waits no longer (multilingual.TRANSLATE_TIMEOUT_S)
@@ -631,7 +632,8 @@ class BodyLimit:
     """Bound the request body of every POST endpoint before it is parsed (Content-Length required)."""
     LIMITS = {"/api/public/enrich": ENRICH_BODY_LIMIT, "/api/public/answer": ANSWER_BODY_LIMIT,
               "/api/public/translate": SMALL_BODY_LIMIT, "/api/public/detect": SMALL_BODY_LIMIT,
-              "/api/public/describe": SMALL_BODY_LIMIT, "/api/public/faces/detect": FACE_BODY_LIMIT,
+              "/api/public/describe": SMALL_BODY_LIMIT, "/api/public/series": SMALL_BODY_LIMIT,
+              "/api/public/faces/detect": FACE_BODY_LIMIT,
               "/api/public/equations": 1024}
 
     def __init__(self, app):
@@ -883,6 +885,17 @@ async def public_describe(req: TextRequest, request: Request):
     out = await _single_call(describe_mod.SYSTEM, req.text, describe_mod.Guess,
                              in_chars=len(describe_mod.SYSTEM) + len(req.text), max_out=describe_mod.OUT_TOKENS,
                              seconds=SMALL_SECONDS)
+    return out.model_dump()
+
+
+@app.post("/api/public/series")
+async def public_series(req: TextRequest, request: Request):
+    """Is this book a volume of that series, and which number (enrich/series_link.py's prompt; #134). Text only."""
+    if len(req.text) > SERIES_MAX_CHARS:
+        raise PublicError(422, "invalid", "Invalid request: text")
+    _small_allowed(request)
+    out = await _single_call(series_link.SYSTEM, req.text, series_link.SeriesGuess,
+                             in_chars=len(series_link.SYSTEM) + len(req.text), max_out=200, seconds=SMALL_SECONDS)
     return out.model_dump()
 
 

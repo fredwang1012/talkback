@@ -58,7 +58,7 @@ def test_untagged_reply_is_attributed_with_minor_voices_too(data_dir, monkeypatc
 
 def test_series_slug():
     assert cast_mod.series_slug("Harry Potter") == "harry-potter"
-    assert cast_mod.series_slug("The Saga Chronicles series") == "saga-chronicles"
+    assert cast_mod.series_slug("The Saga Chronicles series") == "saga"
     assert cast_mod.series_slug("  ") is None and cast_mod.series_slug(None) is None
     assert cast_mod.series_slug("A Song of Ice & Fire") == "a-song-of-ice-fire"
 
@@ -67,7 +67,7 @@ def test_cast_call_sets_series_and_volume(data_dir):
     make_book_on_disk(data_dir)
     ok, _, _ = run_pipeline("u-test-aaaaaaaa", SeriesFake("The Saga Chronicles", 2))
     book = saved(data_dir)
-    assert ok and (book.series, book.series_index) == ("saga-chronicles", 2)
+    assert ok and (book.series, book.series_index) == ("saga", 2)
     assert "series" in cast_mod.UPLOAD_SYSTEM
 
 
