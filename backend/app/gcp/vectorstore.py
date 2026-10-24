@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 BASE_URL = "https://vectorsearch.googleapis.com/v1"
 BATCH_SIZE = 1000
 MAX_RETRIES = 3
+DELETE_CONCURRENCY = 32  # parallel per-object DELETEs: a 3000-chunk book takes seconds, not minutes
 
 
 class VectorStoreError(Exception):
@@ -111,10 +112,27 @@ class VectorStore:
                 raise self._error(resp)
 
     async def delete(self, ids: list[str]) -> None:
-        for id_ in ids:
-            resp = await self._send("DELETE", f"{self._base}/dataObjects/{id_}")
+        """Delete data objects by id (a missing one is fine), at most DELETE_CONCURRENCY requests in flight.
+
+        One DELETE per object: Vector Search 2.0's batchDelete is not used here because this client has never been
+        verified against it live. The first failure cancels the rest and is raised.
+        """
+        slots = asyncio.Semaphore(DELETE_CONCURRENCY)
+
+        async def one(id_: str) -> None:
+            async with slots:
+                resp = await self._send("DELETE", f"{self._base}/dataObjects/{id_}")
             if not resp.is_success and resp.status_code != 404:
                 raise self._error(resp)
+
+        tasks = [asyncio.ensure_future(one(i)) for i in ids]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
     @staticmethod
     def _parse(payload: dict) -> list[dict]:
