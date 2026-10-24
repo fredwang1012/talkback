@@ -56,6 +56,17 @@ to the paragraph text for highlighting. Voice choices (e.g. the cloned narrator)
 browser, so one choice covers all seven books. Audio is made on demand; nothing is pre-rendered (the series is
 ~6 M characters).
 
+## Retrieval sizes
+
+- Chunks (`retrieval.make_chunks`): paragraph-aligned, about 1,400 characters (min 900, max 2,000; a single longer paragraph
+  stays one chunk), neighbours sharing about one trailing paragraph (up to 250 characters). HP book 3 is 607 chunks
+  (median 1,308 characters). The whole series is 6,208 Vector Search objects (was 17,327 three-paragraph chunks, median 443 chars).
+- `/api/answer` (Gemini): k = 8 (`DEFAULT_K`), passages capped at 12,000 characters (`MAX_PASSAGE_CHARS`), whole prompt at
+  24,000 (`MAX_ANSWER_PROMPT_CHARS`). The most recent two paragraphs are always added.
+- `/api/retrieve` (Boson realtime instructions): k <= 4 (`REALTIME_K`), passages capped at 4,500 characters
+  (`REALTIME_MAX_PASSAGE_CHARS`), so the instructions fit `MAX_INSTRUCTIONS_CHARS` = 8,000 and stay short (BRIEF: long
+  realtime prompts made the model stop calling tools).
+
 ## The spoiler rule (enforced on the server, never by the model)
 
 - A passage of the book being read is eligible only if `para_end <= reader_para`. Earlier books of the series are
@@ -63,7 +74,8 @@ browser, so one choice covers all seven books. Audio is made on demand; nothing 
 - Enforced three times: the Vector Search filter, the `VertexIndex` post-filter, and `retrieval._finish`.
 - Summaries: only those with `upto_para <= reader_para`. They are built incrementally, each from the previous
   summary plus the new paragraphs only, so no summary ever saw later text.
-- Characters can be talked to only after they have appeared (`first_para`; 0 if met in an earlier book).
+- Characters can be talked to only after they have appeared (`first_para`; 0 if met in an earlier book). Full-book mode lifts
+  this gate (server 403 and the Stage picker), so every character is available with spoilers on.
 - Checked by `preprocess/eval_spoilers.py` (questions written by Sonnet, answered by the real `/api/answer`, judged by Opus).
 - Full-book mode: `/api/retrieve` and `/api/answer` accept `spoilers: true` (default false, so every existing client stays
   spoiler-safe). For a novel it makes the whole book and the earlier books eligible (the Vector Search filter becomes
