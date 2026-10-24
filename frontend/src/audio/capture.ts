@@ -48,10 +48,22 @@ export class MicCapture {
     return this.node !== null;
   }
 
-  async start(): Promise<void> {
-    if (this.node) return;
+  /** Bumped by every stop(); a start() that finds it changed while awaiting was cancelled and must clean up after itself. */
+  private gen = 0;
+  private starting: Promise<void> | null = null;
 
-    this.stream = await navigator.mediaDevices.getUserMedia({
+  start(): Promise<void> {
+    if (this.node) return Promise.resolve();
+    // A second press while the first start is still awaiting the mic or the worklet must not open a second
+    // stream and context (the first would leak with the recording indicator stuck on).
+    if (this.starting) return this.starting;
+    const p = this.doStart(this.gen).finally(() => { if (this.starting === p) this.starting = null; });
+    this.starting = p;
+    return p;
+  }
+
+  private async doStart(gen: number): Promise<void> {
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         // Echo cancellation on: without it the microphone hears the model
         // through your speakers, the server's VAD treats that as you talking,
@@ -66,6 +78,9 @@ export class MicCapture {
         channelCount: 1,
       },
     });
+    // Released before the permission/device resolved (a quick tap): nothing may stay open.
+    if (gen !== this.gen) { stream.getTracks().forEach((t) => t.stop()); return; }
+    this.stream = stream;
 
     // No sampleRate here on purpose: use the browser-selected graph rate,
     // normally the output device's preferred rate. A microphone track at a
@@ -73,7 +88,13 @@ export class MicCapture {
     // context's actual rate to the API's 24 kHz ourselves.
     const ctx = new AudioContext();
     this.ctx = ctx;
-    await addWorkletModule(ctx, captureWorkletSource);
+    try {
+      await addWorkletModule(ctx, captureWorkletSource);
+    } catch (e) {
+      if (gen !== this.gen) return; // stop() already closed this context under us
+      throw e;
+    }
+    if (gen !== this.gen) return;
 
     this.resampler = createResampler(ctx.sampleRate, AUDIO_RATE);
     this.source = ctx.createMediaStreamSource(this.stream);
@@ -114,14 +135,16 @@ export class MicCapture {
   }
 
   async stop(): Promise<void> {
+    this.gen++;
     this.node?.port.close();
     this.source?.disconnect();
     this.node?.disconnect();
     // Stopping the tracks is what turns off the browser's recording indicator.
     // Leave them running and the tab looks like it is still listening.
     this.stream?.getTracks().forEach((t) => t.stop());
-    if (this.ctx) await this.ctx.close();
+    const ctx = this.ctx;
     this.ctx = null;
+    if (ctx && ctx.state !== "closed") await ctx.close().catch(() => {});
     this.stream = null;
     this.source = null;
     this.node = null;

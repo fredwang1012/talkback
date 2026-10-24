@@ -61,8 +61,11 @@ export class AudioLevelMeter {
     if (this.broken) return null;
     if (!(typeof HTMLAudioElement !== "undefined" && el instanceof HTMLAudioElement)) return null;
     this.unlock();
+    // Attach even while not yet "playing": routing an element through Web Audio after it has started playing
+    // makes it blip as the output path switches, audibly at every sentence boundary.
+    const attached = this.attach(el);
     if (!playing) { return 0; }
-    if (!this.attach(el) || !this.analyser || !this.buf) return null;
+    if (!attached || !this.analyser || !this.buf) return null;
     this.analyser.getFloatTimeDomainData(this.buf);
     return rms(this.buf);
   }
