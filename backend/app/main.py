@@ -58,8 +58,10 @@ def _warm_up() -> None:
 async def lifespan(_: FastAPI):
     await asyncio.to_thread(users.migrate_on_startup)  # PER_USER only; never raises
     task = asyncio.create_task(asyncio.to_thread(_warm_up))
+    resume = asyncio.create_task(_resume_enrichments())   # no job survives a restart: pick up the interrupted ones
     yield
     task.cancel()
+    resume.cancel()
 
 
 app = FastAPI(title="Talkback", lifespan=lifespan, dependencies=[Depends(users.bind_identity)])
@@ -732,7 +734,8 @@ _enrich_jobs: set[str] = set()   # books with an enrichment job queued or runnin
 _kind_claims: set[str] = set()   # books whose kind change is being handled (check-and-claim, see change_kind)
 
 
-async def _run_enrichment(book_id: str) -> None:
+async def _run_enrichment(book_id: str, resume: bool = False) -> None:
+    """resume (a retry or a restart's resume): the pipeline reuses the stages an earlier run already saved."""
     if book_id in _enrich_jobs:  # defence in depth: never two paid jobs for one book
         return
     _enrich_jobs.add(book_id)
@@ -748,15 +751,77 @@ async def _run_enrichment(book_id: str) -> None:
                 run = public_client.summarize_textbook if public_client.active() else enrich_pipeline.enrich_textbook
                 await run(book_id, report)
                 return
-            if book is not None and book.characters:  # already enriched: nothing to pay for
+            if book is not None and book.characters and (book.summaries or not resume):  # already enriched: nothing to pay for
                 _set_enrich(book_id, status="done", stage="done", progress=1.0,
                             message="Characters, recap and search are ready.")
                 return
-            run = public_client.enrich_book if public_client.active() else enrich_pipeline.enrich_book
-            await run(book_id, lambda **f: _set_enrich(book_id, **f), indexer=_enrich_indexer)
+            if public_client.active():
+                await public_client.enrich_book(book_id, lambda **f: _set_enrich(book_id, **f), indexer=_enrich_indexer)
+            else:
+                await enrich_pipeline.enrich_book(book_id, lambda **f: _set_enrich(book_id, **f), indexer=_enrich_indexer,
+                                                  resume=resume)
     finally:
         _enrich_jobs.discard(book_id)
         _index_for.cache_clear()
+
+
+_resume_tasks: set[asyncio.Task] = set()
+
+
+def _stale_enrichments() -> list[str]:
+    """Uploads whose status.json says the character processing is queued or running: after a restart, nothing runs."""
+    out = []
+    for path in sorted((settings.data_dir / "books").glob("u-*/status.json")):
+        book_id = path.parent.name
+        st = ingest_upload.read_status(book_id) or {}
+        if books._ID.match(book_id) and (st.get("enrich") or {}).get("status") in ("running", "queued"):
+            out.append(book_id)
+    return out
+
+
+async def _resume_one(book_id: str, ns: str) -> None:
+    """Run the interrupted job as its owner (the PER_USER namespace is a context variable, not a global)."""
+    token = users._current.set(users.Identity(None, ns)) if ns else None
+    try:
+        await _run_enrichment(book_id, resume=True)
+    finally:
+        if token is not None:
+            users._current.reset(token)
+
+
+async def _resume_enrichments() -> None:
+    """Startup: restart the enrichment of uploads that a restart interrupted. Same caps and the same single
+    enrichment slot as a fresh job; stages already saved are not paid for again. With PER_USER on, the owner comes
+    from the book's owner marker; when it cannot be determined the book is left retryable instead of run. Never raises."""
+    try:
+        todo = await asyncio.to_thread(_stale_enrichments)
+        jobs = []
+        for book_id in todo:
+            if book_id in _enrich_jobs or book_id in _kind_claims or book_id in _deleted:
+                continue
+            book = await asyncio.to_thread(books.load_book, book_id)
+            if book is None:
+                continue
+            ns = ""
+            if settings.per_user:
+                ns = users.book_owner_ns(book_id) or ""
+                if not ns:   # unknown owner: never run it as somebody else
+                    _set_enrich(book_id, status="error", message=enrich_pipeline.INTERRUPTED)
+                    continue
+            textbook = book.kind == "textbook"
+            flag = {"summaries_only": True} if textbook else {}
+            reason = enrich_pipeline.check_caps(enrich_pipeline.estimate_for(book), textbook=textbook)
+            if reason:
+                _set_enrich(book_id, status="refused", message=reason, **flag)
+                continue
+            _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start", **flag)
+            jobs.append(asyncio.create_task(_resume_one(book_id, ns)))   # the enrichment lock lets one run at a time
+        _resume_tasks.update(jobs)
+        for t in jobs:
+            t.add_done_callback(_resume_tasks.discard)
+        await asyncio.gather(*jobs, return_exceptions=True)
+    except Exception as e:
+        logging.getLogger(__name__).warning("resuming enrichment failed: %s", type(e).__name__)
 
 
 def _decide_enrichment(book_id: str, book: Book) -> bool:
@@ -1040,9 +1105,9 @@ def book_status(book_id: str):
         st = ingest_upload.read_status(book_id)
         if st and st.get("status") == "processing":  # not in memory: the server restarted mid-ingest
             st = {"status": "error", "message": "Processing was interrupted; please upload again."}
-        elif st and (st.get("enrich") or {}).get("status") == "running":  # restarted mid-enrichment
+        elif st and (st.get("enrich") or {}).get("status") in ("running", "queued"):  # restarted mid-enrichment
             st = {"status": "ready", "enrich": {"status": "error", "stage": st["enrich"].get("stage"),
-                  "message": "Character processing was interrupted; the book is still readable with the narrator."}}
+                  "message": enrich_pipeline.INTERRUPTED}}
         if st and (st.get("index") or {}).get("state") in ("running", "queued"):  # restarted mid-indexing: BM25 keeps serving
             st = {**st, "index": {**st["index"], "state": "error", "message": "Search indexing was interrupted."}}
     if st is None:
@@ -1052,11 +1117,20 @@ def book_status(book_id: str):
 
 @app.post("/api/books/{book_id}/enrich", status_code=202, dependencies=[Depends(require_access)])
 async def start_enrichment(book_id: str, background: BackgroundTasks):
-    """Testing mode (UPLOAD_CONFIRM): start the character processing the reader just confirmed."""
+    """Start the character processing: after the reader confirmed it (testing mode, UPLOAD_CONFIRM), or again after it
+    was interrupted or failed (status "error"; only for an upload the caller owns)."""
+    users.guard_book(book_id)
     st = book_status(book_id)
-    if book_id in _kind_claims:   # a delete or kind change is in progress
+    state = (st.get("enrich") or {}).get("status")
+    retry = state == "error"
+    if retry:
+        users.require_account("Sign in to process books.")
+        if not book_id.startswith("u-"):
+            raise HTTPException(403, "Only books you uploaded can be processed again.")
+    # check without an await before the new status is written: a second request then sees the job and gets a 409
+    if book_id in _kind_claims or book_id in _enrich_jobs or book_id in _equation_jobs:   # a job or kind change is running
         raise HTTPException(409, "This book is still being processed; try again when it finishes.")
-    if (st.get("enrich") or {}).get("status") != "awaiting_confirmation":
+    if state not in ("awaiting_confirmation", "error"):
         raise HTTPException(409, "This book is not waiting for confirmation.")
     book = books.load_book(book_id)
     if book is None:
@@ -1068,7 +1142,7 @@ async def start_enrichment(book_id: str, background: BackgroundTasks):
         _set_enrich(book_id, status="refused", message=reason, **flag)
         return _upload_status[book_id]
     _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start", **flag)
-    background.add_task(_run_enrichment, book_id)
+    background.add_task(_run_enrichment, book_id, resume=retry)
     return _upload_status[book_id]
 
 

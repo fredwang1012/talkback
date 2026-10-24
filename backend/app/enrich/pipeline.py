@@ -41,7 +41,8 @@ MESSAGES = {
 }
 TOO_LONG = "This book is too long to process with characters; it will be read by the narrator."
 BUDGET_USED = "Character processing is paused for now; this book will be read by the narrator."
-FAILED = "Character processing stopped early; the book is still readable with the narrator."
+FAILED = "Character processing stopped early; you can try again. The book is still readable with the narrator."
+INTERRUPTED = "Character processing was interrupted; you can try again. The book is still readable with the narrator."
 FALLBACK_DONE = "Characters detected with a simple fallback (no LLM key configured). Add ANTHROPIC_API_KEY for full voices and recap."
 # textbooks: only recap notes (no characters, no dialogue split)
 TEXTBOOK_MESSAGE = "Writing study notes for the recap"
@@ -136,13 +137,15 @@ def _meter(book_id: str, llm: LLM) -> None:
     llm.on_usage = on_usage
 
 
-async def enrich_book(book_id: str, report: Report, *, llm: LLM | None = None, indexer: Indexer | None = None) -> bool:
-    """Run every stage on data/books/<id>/book.json. Returns True when all stages finished. Never raises."""
+async def enrich_book(book_id: str, report: Report, *, llm: LLM | None = None, indexer: Indexer | None = None,
+                      resume: bool = False) -> bool:
+    """Run every stage on data/books/<id>/book.json. Returns True when all stages finished. Never raises.
+    resume: stages whose result was already saved by an earlier, interrupted run are not paid for again."""
     path = _book_path(book_id)
     llm = llm or make_llm()
     _meter(book_id, llm)
     try:
-        return await _run(book_id, path, report, llm, indexer)
+        return await _run(book_id, path, report, llm, indexer, resume)
     finally:
         await asyncio.shield(asyncio.to_thread(spend.flush))
 
@@ -203,11 +206,13 @@ async def enrich_textbook(book_id: str, report: Report, *, llm: LLM | None = Non
 
 
 async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save: Callable[[Book], Awaitable[None]] | None = None,
-                     indexer: Indexer | None = None, allow_fallback: bool = True) -> bool:
+                     indexer: Indexer | None = None, allow_fallback: bool = True, resume: bool = False) -> bool:
     """Cast, segment and summarise `book` in place; `save` runs after each stage. Returns True when degraded.
 
     `state["stage"]` always names the stage in progress (for the caller's error message). Raises on failure.
-    With allow_fallback=False a missing LLM is an error instead of a name-based cast.
+    With allow_fallback=False a missing LLM is an error instead of a name-based cast. With resume=True, the cast is not
+    redone when the book already has one, and cast + segmentation are not redone when it already has summaries (each
+    stage is saved only when complete, and the summaries stage runs after the other two).
     """
     degraded = False
 
@@ -215,10 +220,12 @@ async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save:
         if save is not None:
             await save(book)
 
+    have_cast, have_summaries = resume and bool(book.characters), resume and bool(book.summaries)
     stage = state["stage"] = "cast"
     report(status="running", stage=stage, progress=0.0, message=MESSAGES[stage])
     try:
-        await cast_mod.cast_novel(book, llm)
+        if not have_cast:
+            await cast_mod.cast_novel(book, llm)
     except (asyncio.CancelledError, SpendLimit):
         raise
     except Exception as e:
@@ -229,30 +236,31 @@ async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save:
         book.characters, book.narrator = [], None
         cast_mod.fallback_cast(book)
         degraded = True
-    if book.narrator and book.narrator.is_character:
+    if book.narrator and book.narrator.is_character and not have_cast:
         await asyncio.to_thread(rebuild_chunks, book)  # a first-person narrator reads in that character's voice
     await checkpoint()
     _Throttle(report, stage)(1.0)
 
     stage = state["stage"] = "segment"
     report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
-    counts = await seg_mod.segment_book(book, llm, LLMRefusal, seg_mod.FAST, _Throttle(report, stage))
-    report(status="running", stage=stage, progress=round(_offset(stage) + WEIGHTS[stage], 3), message=ATTRIBUTE_MESSAGE)
+    if not have_summaries:   # else segmented before the interruption (the summaries stage comes after it)
+        counts = await seg_mod.segment_book(book, llm, LLMRefusal, seg_mod.FAST, _Throttle(report, stage))
+        report(status="running", stage=stage, progress=round(_offset(stage) + WEIGHTS[stage], 3), message=ATTRIBUTE_MESSAGE)
 
-    def attribute_and_rechunk() -> dict[str, int]:  # seconds of CPU on a long novel: off the event loop
-        found = attribute_speakers(book)
-        rebuild_chunks(book)
-        return found
-    counts.update(await asyncio.to_thread(attribute_and_rechunk))
-    await checkpoint()
-    log.info("segmented book: %s", counts)
-    if counts.get("fallback") and not (counts.get("llm") or counts.get("retry")):
-        degraded = True
+        def attribute_and_rechunk() -> dict[str, int]:  # seconds of CPU on a long novel: off the event loop
+            found = attribute_speakers(book)
+            rebuild_chunks(book)
+            return found
+        counts.update(await asyncio.to_thread(attribute_and_rechunk))
+        await checkpoint()
+        log.info("segmented book: %s", counts)
+        if counts.get("fallback") and not (counts.get("llm") or counts.get("retry")):
+            degraded = True
 
-    stage = state["stage"] = "summaries"
-    report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
-    book.summaries = await sum_mod.build_summaries(book, llm, _Throttle(report, stage))
-    await checkpoint()
+        stage = state["stage"] = "summaries"
+        report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
+        book.summaries = await sum_mod.build_summaries(book, llm, _Throttle(report, stage))
+        await checkpoint()
 
     stage = state["stage"] = "index"
     report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
@@ -271,7 +279,7 @@ def attribute_speakers(book: Book) -> dict[str, int]:
     return {"attributed": sum(1 for d in decisions if d.speaker)}
 
 
-async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Indexer | None) -> bool:
+async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Indexer | None, resume: bool = False) -> bool:
     state = {"stage": STAGES[0]}
 
     async def save(book: Book) -> None:
@@ -279,7 +287,7 @@ async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Inde
 
     try:
         book = Book.model_validate_json(path.read_text(encoding="utf-8"))
-        degraded = await run_stages(book, report, llm, state=state, save=save, indexer=indexer)
+        degraded = await run_stages(book, report, llm, state=state, save=save, indexer=indexer, resume=resume)
         report(status="done", stage="done", progress=1.0, degraded=degraded or None,
                message=FALLBACK_DONE if degraded else "Characters, recap and search are ready.")
         log.info("enriched %s: $%.4f in %d calls", book_id, llm.usd, llm.calls)

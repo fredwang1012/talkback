@@ -15,5 +15,5 @@ export default defineConfig({
       "/portraits": { target: api, changeOrigin: true },
     },
   },
-  test: { environment: "node", include: ["test/**/*.test.ts"] },
+  test: { environment: "node", include: ["test/**/*.test.{ts,tsx}"] },
 });

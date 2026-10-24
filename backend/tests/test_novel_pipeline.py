@@ -628,7 +628,7 @@ def test_confirm_mode_waits_then_starts_on_post(client, monkeypatch):
 
 
 def test_enrich_endpoint_409_without_waiting_book_and_404(client):
-    book_id = upload(client, kind="textbook").json()["book_id"]
+    book_id = upload(client).json()["book_id"]   # enriched already: neither waiting nor failed (a failed job may be retried)
     assert client.post(f"/api/books/{book_id}/enrich").status_code == 409
     assert client.post("/api/books/nope-nope/enrich").status_code == 404
 
