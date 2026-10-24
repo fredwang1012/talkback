@@ -477,49 +477,73 @@ async def speak(req: SpeakRequest, request: Request):
 # ---------- user uploads (PDF / .txt -> narrator-only book) ----------
 
 _upload_status: dict[str, dict] = {}
-upload_bucket = TokenBucket(capacity=3, per_seconds=60)  # uploads per IP
+upload_bucket = TokenBucket(capacity=6, per_seconds=60)  # uploads per IP (a multi-file drop; UPLOAD_QUEUE_MAX)
+
+
+UPLOAD_QUEUE_MAX = 6      # uploads accepted and not yet readable (each holds its bytes in memory until parsed)
+INGEST_CONCURRENCY = 2    # of those, parsed at once (a 20 MB PDF is a lot of CPU and memory)
+INDEX_CONCURRENCY = 2     # Vertex indexing jobs at once across uploads and enrichment; the rest wait as "queued"
 
 
 class IngestGuard:
-    """Allows one ingest at a time (a 20 MB PDF is a lot of CPU and memory).
+    """Bounds the uploads in flight (accepted, not yet published) to `capacity`; each upload holds one token.
 
-    A hold older than STALE_SECONDS may be taken over only if its background task never started (it is dead).
-    A task that started and has not released is still running (a thread cannot be killed), so it keeps the guard
-    and new uploads keep getting 429. Release only works for the current holder's token.
+    When full, a hold older than STALE_SECONDS may be taken over only if its background task never started (it is
+    dead). A task that started and has not released is still running (a thread cannot be killed), so it keeps its
+    slot. Release only frees the caller's own token.
     """
     STALE_SECONDS = 15 * 60
 
-    def __init__(self, clock=time.monotonic):
-        self.clock, self._since, self._token = clock, None, 0
-        self._started = self._warned = False
+    def __init__(self, clock=time.monotonic, capacity: int = UPLOAD_QUEUE_MAX):
+        self.clock, self.capacity = clock, capacity
+        self._holds: dict[int, list] = {}   # token -> [since, started]
+        self._token = 0
+        self._warned = False
 
     @property
     def busy(self) -> bool:
-        return self._since is not None
+        return bool(self._holds)
 
     def acquire(self) -> int | None:
-        if self._since is not None:
-            if self.clock() - self._since < self.STALE_SECONDS:
-                return None
+        if len(self._holds) >= self.capacity:
+            now = self.clock()
+            dead = [t for t, (since, started) in self._holds.items() if not started and now - since >= self.STALE_SECONDS]
             log = logging.getLogger(__name__)
-            if self._started:
-                if not self._warned:
+            if not dead:
+                if not self._warned and any(now - since >= self.STALE_SECONDS for since, _ in self._holds.values()):
                     self._warned = True
-                    log.warning("an ingest has been running for over 15 minutes; new uploads stay blocked")
+                    log.warning("an ingest has been running for over 15 minutes; its upload slot stays taken")
                 return None
-            log.warning("ingest guard was held for over 15 minutes by a task that never started; taking it over")
+            log.warning("an upload slot was held for over 15 minutes by a task that never started; taking it over")
+            self._holds.pop(min(dead))
         self._token += 1
-        self._since = self.clock()
-        self._started = self._warned = False
+        self._holds[self._token] = [self.clock(), False]
         return self._token
 
     def mark_started(self, token: int) -> None:
-        if token == self._token:
-            self._started = True
+        if token in self._holds:
+            self._holds[token][1] = True
 
     def release(self, token: int) -> None:
-        if token == self._token:
-            self._since = None
+        self._holds.pop(token, None)
+        if not self._holds:
+            self._warned = False
+
+
+def _loop_semaphore(n: int):
+    """A semaphore per event loop (asyncio primitives bind to the loop they first wait on; tests run several)."""
+    cache: dict = {}
+
+    def get() -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        if cache.get("loop") is not loop:
+            cache.update(loop=loop, sem=asyncio.Semaphore(n))
+        return cache["sem"]
+    return get
+
+
+_ingest_slot = _loop_semaphore(INGEST_CONCURRENCY)
+_index_slot = _loop_semaphore(INDEX_CONCURRENCY)
 
 
 _ingest_guard = IngestGuard()
@@ -586,17 +610,22 @@ def _index_progress(book_id: str, done: int, total: int) -> None:
     _index_writes[book_id] = asyncio.ensure_future(asyncio.to_thread(_write_current_status, book_id))
 
 
-# One Vertex indexing job at a time across uploads and enrichment: the upload guard is released once a book is
-# published, so without this many uploads could each start a paid embedding job at once.
-_index_lock = asyncio.Lock()
+# Each book is its own indexing job; at most INDEX_CONCURRENCY run at once (the upload guard is released once a book is
+# published, so without a limit many uploads could each start a paid embedding job at once) and one book never has
+# two jobs (no duplicate paid indexing).
+_index_jobs: set[str] = set()
 
 
 async def _index_in_background(book: Book, chunks) -> None:
     """Index a published book into Vertex; the book is readable (BM25) meanwhile. Never raises."""
     book_id, total = book.id, len(chunks)
+    if book_id in _index_jobs:   # already queued or running for this book
+        return
+    _index_jobs.add(book_id)
     final: dict | None = None
     try:
-        async with _index_lock:
+        _set_index(book_id, state="queued", done=0, total=total)
+        async with _index_slot():
             if book_id in _deleted:   # deleted while queued: nothing to pay for
                 return
             _set_index(book_id, state="running", done=0, total=total)
@@ -613,6 +642,7 @@ async def _index_in_background(book: Book, chunks) -> None:
             final = {"state": "error", "done": 0, "total": total,
                      "message": "Search indexing failed; using basic search."}
     finally:
+        _index_jobs.discard(book_id)
         _index_for.cache_clear()
         pending = _index_writes.pop(book_id, None)
         if pending is not None:   # a throttled progress write must not land after the final one
@@ -640,8 +670,14 @@ async def _enrich_indexer(book: Book) -> None:
         from .gcp.indexing import index_book, load_chunks
         embedder, store = _vertex_deps()
         chunks = await asyncio.to_thread(load_chunks, book)
-        async with _index_lock:
-            await index_book(book, chunks, embedder, store)
+        while book.id in _index_jobs:   # the upload's own indexing job is still queued or running: never overlap it
+            await asyncio.sleep(1.0)
+        _index_jobs.add(book.id)
+        try:
+            async with _index_slot():
+                await index_book(book, chunks, embedder, store)
+        finally:
+            _index_jobs.discard(book.id)
 
 
 _enrich_jobs: set[str] = set()   # books with an enrichment job queued or running
@@ -699,19 +735,8 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
     ready: Book | None = None
     chunks: list = []
     try:
-        raw, detected = None, None
-        if kind == "auto":  # decide novel or textbook from the extracted text
-            raw = await asyncio.to_thread(ingest_upload.extract_text, data, ext)
-            kind, confidence, method = await detect_kind(raw, book_id=book_id)
-            detected = {"kind": kind, "confidence": confidence, "method": method}
-        book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext,
-                                               raw, detected)
-        await asyncio.to_thread(ingest_upload.publish_book, book)  # readable now; Vertex indexing follows
-        _index_for.cache_clear()
-        _set_status(book_id, "ready", **({"kind": kind, "kind_detected": detected} if detected else {}))
-        if settings.retrieval_backend == "vertex":
-            _set_index(book_id, state="running", done=0, total=len(chunks))
-        ready = book
+        async with _ingest_slot():   # other uploads wait here; their status says "Queued"
+            ready, chunks, kind = await _ingest_work(book_id, title, author, kind, data, ext)
     except Exception as e:
         ingest_upload.discard_book(book_id)
         if isinstance(e, ingest_upload.UploadError):
@@ -734,6 +759,26 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
             _set_enrich(book_id, status="error", message=enrich_pipeline.FAILED)
 
 
+async def _ingest_work(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str):
+    """Parse, chunk and publish one upload (the caller holds an ingest slot). Returns (book, chunks, final kind)."""
+    if book_id in _deleted:
+        raise ingest_upload.UploadError("The book was deleted.")
+    _set_status(book_id, "processing", "Reading the PDF" if ext == ".pdf" else "Reading the text")
+    raw, detected = None, None
+    if kind == "auto":  # decide novel or textbook from the extracted text
+        raw = await asyncio.to_thread(ingest_upload.extract_text, data, ext)
+        kind, confidence, method = await detect_kind(raw, book_id=book_id)
+        detected = {"kind": kind, "confidence": confidence, "method": method}
+    book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext,
+                                           raw, detected)
+    await asyncio.to_thread(ingest_upload.publish_book, book)  # readable now; Vertex indexing follows
+    _index_for.cache_clear()
+    _set_status(book_id, "ready", **({"kind": kind, "kind_detected": detected} if detected else {}))
+    if settings.retrieval_backend == "vertex":
+        _set_index(book_id, state="queued", done=0, total=len(chunks))
+    return book, chunks, kind
+
+
 @app.post("/api/books/upload", status_code=202, dependencies=[Depends(require_access)])
 async def upload_book(request: Request, background: BackgroundTasks, file: UploadFile = File(...),
                       title: str = Form(..., min_length=1, max_length=120),
@@ -743,7 +788,7 @@ async def upload_book(request: Request, background: BackgroundTasks, file: Uploa
         raise HTTPException(429, "Too many uploads; wait a moment.")
     token = _ingest_guard.acquire()  # no await between the check and the hold
     if token is None:
-        raise HTTPException(429, "Another book is still being processed; try again shortly.")
+        raise HTTPException(429, f"{UPLOAD_QUEUE_MAX} books are already being processed; try again shortly.")
     try:
         title = title.strip()
         if not title:
@@ -761,7 +806,7 @@ async def upload_book(request: Request, background: BackgroundTasks, file: Uploa
         path = ingest_upload.upload_path(book_id, ext)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-        _set_status(book_id, "processing")
+        _set_status(book_id, "processing", "Queued")
         background.add_task(_ingest, book_id, title, author.strip(), kind, data, ext, token)  # releases the guard
     except BaseException:
         _ingest_guard.release(token)
@@ -782,7 +827,7 @@ def book_status(book_id: str):
         elif st and (st.get("enrich") or {}).get("status") == "running":  # restarted mid-enrichment
             st = {"status": "ready", "enrich": {"status": "error", "stage": st["enrich"].get("stage"),
                   "message": "Character processing was interrupted; the book is still readable with the narrator."}}
-        if st and (st.get("index") or {}).get("state") == "running":  # restarted mid-indexing: BM25 keeps serving
+        if st and (st.get("index") or {}).get("state") in ("running", "queued"):  # restarted mid-indexing: BM25 keeps serving
             st = {**st, "index": {**st["index"], "state": "error", "message": "Search indexing was interrupted."}}
     if st is None:
         raise HTTPException(404, "Book not found")
@@ -854,7 +899,7 @@ def _book_busy(book_id: str) -> bool:
     """True while an ingest, Vertex indexing (running or queued), enrichment or kind change for this book is running."""
     st = _upload_status.get(book_id) or {}
     return (st.get("status") == "processing" or (st.get("enrich") or {}).get("status") == "running"
-            or (st.get("index") or {}).get("state") == "running"
+            or (st.get("index") or {}).get("state") in ("running", "queued") or book_id in _index_jobs
             or book_id in _enrich_jobs or book_id in _kind_claims)
 
 

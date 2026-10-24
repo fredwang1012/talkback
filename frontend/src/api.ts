@@ -317,8 +317,9 @@ export function enrichDoneNote(e: EnrichStatus): string {
   return e.degraded && e.message ? e.message : "characters, voices and recap are ready";
 }
 /** Cloud search indexing after the book is readable (it uses basic search until state is "done"). */
-export type IndexStatus = { state: "running" | "done" | "error"; done: number; total: number; message?: string };
-export const indexingLabel = (i: IndexStatus): string => `Indexing ${i.done} / ${i.total}`;
+export type IndexStatus = { state: "queued" | "running" | "done" | "error"; done: number; total: number; message?: string };
+export const indexingLabel = (i: IndexStatus): string =>
+  i.state === "queued" ? "Queued for indexing" : `Indexing ${i.done} / ${i.total}`;
 export type BookStatus = {
   status: "processing" | "ready" | "error" | "deleting" | "delete_error"; message?: string; enrich?: EnrichStatus; index?: IndexStatus;
   kind?: BookKind; kind_detected?: KindDetected;
@@ -395,7 +396,16 @@ export function pollBookStatus(
 export function pollIndexing(
   id: string, onUpdate?: (s: BookStatus) => void, signal?: AbortSignal, intervalMs = 2000, maxMs = 30 * 60 * 1000,
 ): Promise<BookStatus | null> {
-  return pollStatus(id, (s) => s.status !== "ready" || s.index?.state !== "running", signal, intervalMs, maxMs, onUpdate);
+  return pollStatus(id, (s) => s.status !== "ready" || (s.index?.state !== "running" && s.index?.state !== "queued"),
+    signal, intervalMs, maxMs, onUpdate);
+}
+
+/** One poll for a whole upload: until `settled` (see uploads.uploadSettled); `onUpdate` sees every other status. */
+export function pollUpload(
+  id: string, settled: (s: BookStatus) => boolean, onUpdate?: (s: BookStatus) => void, signal?: AbortSignal,
+  intervalMs = 2000, maxMs = 60 * 60 * 1000,
+): Promise<BookStatus | null> {
+  return pollStatus(id, settled, signal, intervalMs, maxMs, onUpdate);
 }
 
 /**

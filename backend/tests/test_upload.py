@@ -262,30 +262,6 @@ def test_estimate_prices_gemini_when_claude_has_no_key(monkeypatch):
     assert set(seen) == {"claude"}
 
 
-def test_vertex_indexing_runs_one_job_at_a_time(client, monkeypatch):
-    """Uploads release the upload guard once published, so indexing itself must be serialized (cost control)."""
-    import asyncio
-    state = {"now": 0, "max": 0}
-
-    async def fake_index(book, chunks, embedder, store, on_progress=None):
-        state["now"] += 1
-        state["max"] = max(state["max"], state["now"])
-        await asyncio.sleep(0.01)
-        state["now"] -= 1
-        return 0
-
-    monkeypatch.setattr("app.gcp.indexing.index_book", fake_index)
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
-    books = [ingest_upload.build_book(f"u-b{i}-0000000{i}", "T", "A", "textbook", "One paragraph.") for i in range(3)]
-
-    async def run():
-        monkeypatch.setattr(main, "_index_lock", asyncio.Lock())  # bound to this test's event loop
-        await asyncio.gather(*(main._index_in_background(b, []) for b in books))
-
-    asyncio.run(run())
-    assert state["max"] == 1
-
-
 def test_book_deleted_during_indexing_is_not_recreated_or_enriched(client, monkeypatch):
     planned = []
 
