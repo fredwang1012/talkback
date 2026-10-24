@@ -32,6 +32,8 @@ def _warm_up() -> None:
     try:
         for info in books.list_books():
             _index_for(info["id"])
+        if settings.retrieval_backend == "vertex":  # first Vertex call pays auth + TLS setup (~5 s): pay it now
+            _vertex_deps()[0].embed_query("warm up")
     except Exception:  # never block startup; retrieval falls back to BM25 / loads lazily
         pass
 
