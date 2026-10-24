@@ -22,9 +22,9 @@ class Settings(BaseSettings):
     # Comma-separated browser origins allowed by CORS (the single-container deploy is same-origin and needs none).
     cors_origins: str = "http://localhost:5173"
     # Google Cloud (Vertex AI). retrieval_backend="local" keeps today's BM25 + e5 behaviour.
-    gcp_project: str = "frederick-talkback"
+    gcp_project: str = ""  # set GCP_PROJECT when RETRIEVAL_BACKEND=vertex or UPLOAD_LLM=gemini
     gcp_region: str = "us-central1"
-    gcp_bucket: str = "frederick-talkback-data"
+    gcp_bucket: str = ""
     retrieval_backend: Literal["local", "vertex"] = "local"
     # Who writes talk-mode answers. None = follow retrieval_backend (vertex -> gemini, local -> realtime).
     answer_backend: Literal["gemini", "realtime"] | None = None
