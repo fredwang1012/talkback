@@ -35,5 +35,6 @@ data/raw/*
 !data/raw/.gitkeep
 data/samples/
 data/voices.json
+data/voice_faces.json
 logs/
 *.log

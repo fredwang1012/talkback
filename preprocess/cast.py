@@ -83,7 +83,8 @@ def locate_first_para(book: Book, aliases: list[str], fallback: int) -> int:
 
 SERIES_MAX = 24
 _TAG_VERBS = r"(?:said|asked|shouted|whispered|snapped|called|muttered|cried|yelled|added|replied|roared|bellowed|hissed|growled|sneered|squeaked|gasped|began)"
-_NAME = r"((?:Professor|Mr\.|Mrs\.|Madam|Uncle|Aunt|Mad-Eye|Dr\.) [A-Z][a-z]+|[A-Z][a-z]+(?: [A-Z][a-z]+)?)"
+_W = r"[A-Z][A-Za-z'-]*[a-z]"  # a capitalised word: "Hagrid", "McGonagall", "O'Brien"
+_NAME = rf"((?:Professor|Mr\.|Mrs\.|Madam|Uncle|Aunt|Mad-Eye|Dr\.) {_W}|{_W}(?: {_W})?)"
 _SAID_X = re.compile(rf"\b{_TAG_VERBS} {_NAME}")
 _X_SAID = re.compile(rf"{_NAME} {_TAG_VERBS}\b")
 _NOT_NAMES = {"He", "She", "They", "It", "I", "We", "You", "Then", "There", "But", "And", "The", "A", "This", "That",
