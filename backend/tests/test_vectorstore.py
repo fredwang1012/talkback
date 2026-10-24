@@ -277,3 +277,18 @@ def test_delete_runs_requests_concurrently_but_bounded():
     assert sorted(state["seen"]) == sorted(ids)
     assert 1 < state["max"] <= vectorstore.DELETE_CONCURRENCY <= 4
     assert len([s for s in sleeps if s >= vectorstore.DELETE_GAP_S]) >= len(ids)   # every request is paced
+
+
+def test_upsert_409_retries_until_refused_deletes_land():
+    """A half-indexed book: the first re-create still finds objects whose delete Vertex refused (429); the store
+    deletes again and the next create succeeds instead of failing the whole indexing run."""
+    creates, deletes = [], []
+
+    def handler(req):
+        if req.url.path.endswith(":batchCreate"):
+            creates.append(1)
+            return httpx.Response(409, json={"error": "exists"}) if len(creates) <= 2 else httpx.Response(200, json={})
+        deletes.append(1)
+        return httpx.Response(200, json={})
+    run(make(handler).upsert([obj(1), obj(2)]))
+    assert len(creates) == 3 and len(deletes) >= 2

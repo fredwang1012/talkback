@@ -732,8 +732,8 @@ async def _index_with_retries(book: Book, chunks, embedder, store, on_progress=N
         except Exception as e:
             if wait is None or book.id in _deleted:
                 raise
-            logging.getLogger(__name__).warning("vertex indexing attempt %d failed (%s); retrying in %.0f s",
-                                                attempt + 1, type(e).__name__, wait)
+            logging.getLogger(__name__).warning("vertex indexing attempt %d failed (%s %s); retrying in %.0f s",
+                                                attempt + 1, type(e).__name__, getattr(e, "status", ""), wait)
             await asyncio.sleep(wait)
             if book.id in _deleted:
                 return False
@@ -762,7 +762,7 @@ async def _index_in_background(book: Book, chunks) -> None:
         pass
     except Exception as e:  # the book stays readable and keeps the BM25 fallback
         if book_id not in _deleted:
-            logging.getLogger(__name__).warning("vertex indexing failed: %s", type(e).__name__)
+            logging.getLogger(__name__).warning("vertex indexing failed: %s %s", type(e).__name__, getattr(e, "status", ""))
             final = {"state": "error", "done": 0, "total": total, "message": INDEX_FAILED_MESSAGE}
     finally:
         _index_jobs.discard(book_id)
@@ -947,7 +947,8 @@ async def _enrich_indexer(book: Book) -> None:
                 await _index_with_retries(book, chunks, embedder, store)
         except Exception as e:
             if book.id not in _deleted:
-                logging.getLogger(__name__).warning("vertex re-indexing failed: %s", type(e).__name__)
+                logging.getLogger(__name__).warning("vertex re-indexing failed: %s %s", type(e).__name__,
+                                                    getattr(e, "status", ""))
                 _set_index(book.id, state="error", done=0, total=len(chunks), message=INDEX_FAILED_MESSAGE)
             raise
         finally:
