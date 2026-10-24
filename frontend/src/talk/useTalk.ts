@@ -278,7 +278,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       via.current = "voice"; // an ignored (empty) ask must not label the next spoken question as typed
     }, []),
     stop: useCallback(() => { void controller.current?.stop(); narration.current?.stop(); }, []),
-    clearMessages: useCallback(() => { void controller.current?.stop(); replayer.current?.stop(); narration.current?.reset(); replayStore.current.clear(); clientRef.current?.resetConversation(); setMessages(() => []); }, [setMessages]),
+    clearMessages: useCallback(() => { controller.current?.endQuiz(); void controller.current?.stop(); replayer.current?.stop(); narration.current?.reset(); replayStore.current.clear(); clientRef.current?.resetConversation(); setMessages(() => []); }, [setMessages]),
     replayable: playable, liveId,
     replayingId: narratingKey !== null ? Number(narratingKey) : replayingId ?? (liveId !== null && !livePaused ? liveId : null),
     isPaused: (id: number) => {

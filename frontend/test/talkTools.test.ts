@@ -432,6 +432,51 @@ describe("TalkController quiz mode", () => {
     expect(responds(g).at(-1)).toBe("INSTR");
   });
 
+  it("reading on (Play, or a mic tap that resumes the story) ends the quiz: the next question is a plain one", async () => {
+    const h = setup({ playing: false });
+    await startQuiz(h);
+    h.reader.play(); // the reader pressed Play and reads on
+    await ask(h, "Who is the knight?");
+    expect(responds(h).at(-1)).toBe("INSTR");
+
+    const g = setup({ playing: false });
+    await startQuiz(g);
+    await g.talk.pttDown();
+    await tick(50);
+    await g.talk.pttUp(); // a tap: the story plays again
+    expect(g.reader.log.at(-1)).toBe("play");
+    g.reader.pause(); // even if it is paused again before the next question
+    await ask(g, "Who is the knight?");
+    expect(responds(g).at(-1)).toBe("INSTR");
+  });
+
+  it("endQuiz (the chat is cleared) ends it", async () => {
+    const h = setup({ playing: false });
+    await startQuiz(h);
+    h.talk.endQuiz();
+    await ask(h, "answer one");
+    expect(responds(h).at(-1)).toBe("INSTR");
+  });
+
+  it("only completed answers count: an answer cut off by a barge-in is asked again as the same question", async () => {
+    const h = setup({ playing: false });
+    await startQuiz(h);
+    await ask(h, "answer one");
+    h.session.emit({ type: "audio-start" });
+    await tick(0);
+    await ask(h, "answer one, again"); // barge-in before the grading finished
+    expect(responds(h).at(-1)).toMatch(/question 1 of 3/);
+    await finishSpeaking(h);
+    await ask(h, "answer two");
+    expect(responds(h).at(-1)).toMatch(/question 2 of 3/);
+    await finishSpeaking(h);
+    await ask(h, "answer three");
+    expect(responds(h).at(-1)).toMatch(/question 3 of 3/);
+    await finishSpeaking(h);
+    await ask(h, "What happens next?");
+    expect(responds(h).at(-1)).toBe("INSTR");
+  });
+
   it("Gemini path: the answers go to Gemini wrapped with the quiz progress, then plain again", async () => {
     const h = setup({ gemini: true, playing: false });
     await ask(h, "quiz me");
