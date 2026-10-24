@@ -226,12 +226,12 @@ def test_drop_cap_without_an_epigraph_mid_book_is_a_scene_break_not_a_chapter():
 
 def test_all_caps_attribution_is_not_taken_for_a_heading():
     def chapter_with_caps_source(seed):
-        return [("line", f"Those who would repeat the past must {WORDS[seed]} the teaching of it.", 9, LEFT + 30),
-                ("line", f"-BENE GESSERIT CODA {WORDS[seed + 3].upper()}", BODY, 240),
+        return [("line", f"A quiet river remembers every {WORDS[seed]} that crossed it.", 9, LEFT + 30),
+                ("line", f"-SAYINGS OF THE RIVER GUILD {WORDS[seed + 3].upper()}", BODY, 240),
                 ("chapter", "W", "hen", {"epigraph": False, "seed": seed})]
     sections, paras = sections_of(novel([chapter_with_caps_source(k) for k in range(3)]))
     assert [s.title for s in sections] == ["Chapter 1", "Chapter 2", "Chapter 3"]
-    assert paras[sections[0].start_para].text.startswith("Those who would repeat")
+    assert paras[sections[0].start_para].text.startswith("A quiet river remembers")
 
 
 def test_each_novel_of_a_collection_numbers_its_chapters_from_one():
@@ -243,14 +243,14 @@ def test_each_novel_of_a_collection_numbers_its_chapters_from_one():
 
 
 def test_small_text_without_an_attribution_over_a_drop_cap_is_no_chapter():
-    dedication = [("line", "Here is another book dedicated to a friend, who gave this one its title.", 9, LEFT + 30),
+    dedication = [("line", "This volume is for my sister, who read every draft of it twice.", 9, LEFT + 30),
                   ("line", " ", 24, LEFT), ("chapter", "O", "ne", {"epigraph": False, "seed": 4})]
     sections, paras = sections_of(novel(chapter_pages(3) + [dedication]))
     assert [s.title for s in sections] == ["Chapter 1", "Chapter 2", "Chapter 3"]
-    assert any(p.text.startswith("Here is another book") for p in paras)
+    assert any(p.text.startswith("This volume is for my sister") for p in paras)
 
 
 def test_attribution_with_dots_and_a_number_is_not_a_contents_line():
     from app.ingest_upload import _drop_contents
-    line = ("\u2014ANALYSIS, ARCHIVES #XOXTM99 . . . .. 041", 72, 100, 300, 112, 9.0, False, False)
+    line = ("\u2014LETTERS, FILE #A12 . . . .. 041", 72, 100, 300, 112, 9.0, False, False)
     assert _drop_contents([[line]]) == [[line]]
