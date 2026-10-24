@@ -718,6 +718,28 @@ _index_jobs: set[str] = set()
 INDEX_RETRY_WAITS_S = (30.0, 90.0)   # a failed indexing run (often Vertex 429s while big deletes run) is retried after these
 
 
+async def _index_with_retries(book: Book, chunks, embedder, store, on_progress=None) -> bool:
+    """index_book, retried after each INDEX_RETRY_WAITS_S wait (Vertex 429s while big deletes or other books run).
+    Re-running is safe: batchCreate replaces objects that already exist (409 -> delete + create). False when the book
+    was deleted while waiting; the last failure is raised."""
+    from .gcp.indexing import index_book
+    for attempt, wait in enumerate((*INDEX_RETRY_WAITS_S, None)):
+        try:
+            await index_book(book, chunks, embedder, store, on_progress=on_progress)
+            return True
+        except _BookDeleted:
+            raise
+        except Exception as e:
+            if wait is None or book.id in _deleted:
+                raise
+            logging.getLogger(__name__).warning("vertex indexing attempt %d failed (%s); retrying in %.0f s",
+                                                attempt + 1, type(e).__name__, wait)
+            await asyncio.sleep(wait)
+            if book.id in _deleted:
+                return False
+    return True
+
+
 async def _index_in_background(book: Book, chunks) -> None:
     """Index a published book into Vertex; the book is readable (BM25) meanwhile. Never raises."""
     book_id, total = book.id, len(chunks)
@@ -732,22 +754,9 @@ async def _index_in_background(book: Book, chunks) -> None:
                 return
             _set_index(book_id, state="running", done=0, total=total)
             embedder, store = _vertex_deps()
-            from .gcp.indexing import index_book
-            for attempt, wait in enumerate((*INDEX_RETRY_WAITS_S, None)):
-                try:   # re-running is safe: batchCreate replaces objects that already exist (409 -> delete + create)
-                    await index_book(book, chunks, embedder, store,
-                                     on_progress=lambda done, tot: _index_progress(book_id, done, tot))
-                    break
-                except _BookDeleted:
-                    raise
-                except Exception as e:
-                    if wait is None or book_id in _deleted:
-                        raise
-                    logging.getLogger(__name__).warning("vertex indexing attempt %d failed (%s); retrying in %.0f s",
-                                                        attempt + 1, type(e).__name__, wait)
-                    await asyncio.sleep(wait)
-                    if book_id in _deleted:
-                        return
+            if not await _index_with_retries(book, chunks, embedder, store,
+                                             on_progress=lambda done, tot: _index_progress(book_id, done, tot)):
+                return   # deleted while waiting to retry
         final = {"state": "done", "done": total, "total": total}
     except _BookDeleted:
         pass
@@ -927,7 +936,7 @@ async def _enrich_indexer(book: Book) -> None:
     store's and embedder's own retries) is recorded as index state "error", so retrieval falls back to BM25 and the
     next start retries it (_retry_failed_indexes); it is then raised for the pipeline, which finishes the book anyway."""
     if settings.retrieval_backend == "vertex":
-        from .gcp.indexing import index_book, load_chunks
+        from .gcp.indexing import load_chunks
         embedder, store = _vertex_deps()
         chunks = await asyncio.to_thread(load_chunks, book)
         while book.id in _index_jobs:   # the upload's own indexing job is still queued or running: never overlap it
@@ -935,7 +944,7 @@ async def _enrich_indexer(book: Book) -> None:
         _index_jobs.add(book.id)
         try:
             async with _index_slot():
-                await index_book(book, chunks, embedder, store)
+                await _index_with_retries(book, chunks, embedder, store)
         except Exception as e:
             if book.id not in _deleted:
                 logging.getLogger(__name__).warning("vertex re-indexing failed: %s", type(e).__name__)

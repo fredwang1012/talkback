@@ -305,6 +305,23 @@ def test_enrich_indexer_records_an_index_error_for_the_startup_retry(client, mon
     assert BID not in main._index_jobs
 
 
+def test_enrich_indexer_retries_a_failed_reindex(client, monkeypatch):  # noqa: F811
+    book = make_book_on_disk(settings.data_dir)
+    ingest_upload.write_status(BID, "ready", index={"state": "done", "done": 3, "total": 3})
+    main._upload_status.clear()
+    monkeypatch.setattr(settings, "retrieval_backend", "vertex")
+    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    calls = []
+
+    async def flaky_index(book, chunks, embedder, store, on_progress=None):
+        calls.append(1)
+        if len(calls) < 2:
+            raise httpx.ReadError("429")
+    monkeypatch.setattr("app.gcp.indexing.index_book", flaky_index)
+    asyncio.run(main._enrich_indexer(book))
+    assert len(calls) == 2 and ingest_upload.read_status(BID)["index"]["state"] == "done"
+
+
 def test_startup_retries_failed_indexes_once_and_bounded(client, monkeypatch):  # noqa: F811
     ids = [f"u-test-{i:08d}" for i in range(3)]
     for bid in ids:
