@@ -105,6 +105,20 @@ def test_a_root_drawn_as_its_own_block_joins_the_formula_beside_it():
     assert all("⎨" not in m or "RSE" in m for m in marked)
 
 
+def test_two_glyphs_can_join_the_same_sentence():
+    """Appending a math glyph must not turn that sentence into a formula row and delete it."""
+    def S(text, font, x, y, size=10.0):
+        return {"text": text, "font": font, "size": size, "origin": (x, y),
+                "bbox": (x, y - size, x + 6 * len(text), y + 2)}
+    sentence = [S("the estimate is given by the formula here", "CMR10", 50, 100)]
+    groups = [[[[S("⎨", "CMEX10", 200, 100)], 100.0]], [[sentence, 100.0]],
+              [[[S("!", "CMEX10", 220, 100)], 100.0]]]
+    _attach_deco_rows(groups)
+    kept = [item[0] for blk in groups for item in blk if item is not None]
+    text = "".join(s["text"] for spans in kept for s in spans)
+    assert "formula" in text and "⎨" in text and "!" in text
+
+
 def test_a_tall_delimiter_stays_with_the_equation_under_it():
     """A display equation's brackets are their own block, and the font baseline sits nearer the sentence above
     than the equation. The bracket belongs to the equation, not inside "a 95% chance"."""

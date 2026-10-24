@@ -391,10 +391,13 @@ def _attach_deco_rows(groups: list[list[list]]) -> None:
     """
     prose = [(bi, li) for bi, blk in enumerate(groups) for li, (spans, _b) in enumerate(blk)
              if _math_class(spans) == NOT_MATH]
+    prose_set = set(prose)
     for bi, blk in enumerate(groups):
-        for li, (spans, base) in enumerate(blk):
-            if _math_class(spans) == NOT_MATH:
+        for li, item in enumerate(blk):
+            # a prose row stays prose even after a glyph is appended: reclassifying it would delete the sentence
+            if item is None or (bi, li) in prose_set:
                 continue
+            spans, base = item
             real = [s for s in spans if s["text"].strip()]
             size = max(s["size"] for s in real)
             anchor = _deco_anchor(spans, base)
