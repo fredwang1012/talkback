@@ -45,6 +45,36 @@ export function talkbackStatus(state: TalkState, speaking: boolean): TalkbackSta
   return "idle";
 }
 
+type Timers = { set: (fn: () => void, ms: number) => unknown; clear: (h: unknown) => void };
+const realTimers: Timers = { set: (fn, ms) => setTimeout(fn, ms), clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>) };
+
+/**
+ * Keeps the Talkback status line still during an answer (#81). The raw status follows the audio, which stops between
+ * sentences (the next one is still being synthesised, or a replay moves to its next clip), so the line flickered
+ * between "Speaking…" and "Thinking…" or "Ready…". Here:
+ * - once an answer is speaking it stays "speaking" until the answer ends (`answering` false);
+ * - a drop to "idle" waits `holdMs`, and is cancelled if anything else comes first (a short gap is not an end);
+ * - every other change (listening, thinking, speaking) shows at once.
+ */
+export function createStatusGate(set: (s: TalkbackStatus) => void, holdMs = 600, timers: Timers = realTimers) {
+  let shown: TalkbackStatus | null = null;
+  let pending: unknown = null;
+  const cancel = () => { if (pending !== null) { timers.clear(pending); pending = null; } };
+  const show = (s: TalkbackStatus) => { cancel(); if (s !== shown) { shown = s; set(s); } };
+  return {
+    update(raw: TalkbackStatus, answering: boolean) {
+      if (raw === "thinking" && answering && shown === "speaking") { cancel(); return; } // a pause between sentences
+      if (raw === "idle" && shown !== null && shown !== "idle" && shown !== "listening") {
+        if (pending === null) pending = timers.set(() => { pending = null; show("idle"); }, holdMs);
+        return;
+      }
+      show(raw);
+    },
+    reset(s: TalkbackStatus) { show(s); },
+    dispose: cancel,
+  };
+}
+
 /** Whether a Space key press should start hold-to-talk (not while typing in a field or pressing a button). */
 export function spaceStartsTalk(e: { code: string; repeat: boolean; target: { tagName?: string } | null }): boolean {
   if (e.code !== "Space" || e.repeat) return false;
