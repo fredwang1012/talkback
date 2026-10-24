@@ -96,7 +96,7 @@ button:disabled { cursor: not-allowed; }
 .jobs ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .job { border: 1px solid var(--brass-soft); border-left: 4px solid var(--brass); border-radius: var(--radius); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .job-error { border-left-color: var(--seal-bright); }
-.job-ready { border-left-color: var(--brass-soft); }
+.job-ready, .job-exists { border-left-color: var(--brass-soft); }
 .job-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .job-title { font-family: var(--font-title); font-size: 1.15rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .job-line { margin: 0; color: var(--ink-soft); font-size: 0.9rem; font-variant-numeric: tabular-nums; }

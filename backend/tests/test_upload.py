@@ -124,7 +124,7 @@ def test_vertex_indexing_only_when_enabled(client, monkeypatch):
     post(client, "a.txt", b"One paragraph.")
     assert calls == []
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
-    book_id = post(client, "b.txt", b"One paragraph.").json()["book_id"]
+    book_id = post(client, "b.txt", b"Another paragraph.").json()["book_id"]
     assert len(calls) == 1 and calls[0][0] == book_id and calls[0][2:] == ("EMB", "STORE")
     st = client.get(f"/api/books/{book_id}/status").json()
     assert st["status"] == "ready" and st["index"]["state"] == "done" and st["index"]["done"] == st["index"]["total"]

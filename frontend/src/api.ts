@@ -328,6 +328,21 @@ export type BookStatus = {
   kind?: BookKind; kind_detected?: KindDetected;
 };
 
+/** A 409 from the upload: this account already has the file ("duplicate"), is adding it right now ("processing"), or
+ * is still deleting its earlier copy ("deleting"). `bookId` is that existing book. */
+export class UploadConflict extends Error {
+  readonly reason: "duplicate" | "processing" | "deleting";
+  readonly bookId: string;
+  readonly title?: string;
+  constructor(message: string, reason: UploadConflict["reason"], bookId: string, title?: string) {
+    super(message);
+    this.name = "UploadConflict";
+    this.reason = reason;
+    this.bookId = bookId;
+    this.title = title;
+  }
+}
+
 /** Sends a PDF or .txt for ingest. Resolves with the new book id; ingest continues server-side (poll fetchBookStatus). */
 export async function uploadBook(file: File, title: string, author: string, kind: UploadKind): Promise<{ book_id: string }> {
   const form = new FormData();
@@ -338,7 +353,10 @@ export async function uploadBook(file: File, title: string, author: string, kind
   // no Content-Type: the browser adds the multipart boundary
   const res = await timedFetch("/api/books/upload", { method: "POST", headers: authHeaders(), body: form }, 120000);
   if (!res.ok) {
-    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    const body = await res.json().catch(() => ({})) as { detail?: string; reason?: string; book_id?: string; title?: string };
+    const detail = typeof body.detail === "string" ? body.detail : undefined;
+    if (res.status === 409 && body.book_id && (body.reason === "duplicate" || body.reason === "processing" || body.reason === "deleting"))
+      throw new UploadConflict(detail ?? "This file is already in your library.", body.reason, body.book_id, body.title);
     throw new Error(detail ?? `Upload failed (${res.status})`);
   }
   return res.json() as Promise<{ book_id: string }>;

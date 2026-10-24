@@ -10,10 +10,12 @@ PDF extraction heuristics (deliberately simple), working on text lines with thei
 - a line ending in a hyphen right after a letter and followed by a lowercase letter is de-hyphenated ("exam-" + "ple").
 Limits: pages, extracted characters and paragraph length are capped (see constants).
 """
+import hashlib
 import json
 import re
 import secrets
 import shutil
+import threading
 import unicodedata
 from collections import Counter
 from pathlib import Path
@@ -796,3 +798,52 @@ def delete_book_files(book_id: str, ident=None) -> list[str]:
         else:
             left.append(t.relative_to(root).as_posix())
     return left
+
+
+# ---- duplicate uploads (#82): sha256 of the uploaded bytes -> book id, one map per account ----
+
+_hashes_lock = threading.Lock()   # read-modify-write of upload_hashes.json (uploads record from worker threads)
+
+
+def content_hash(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _read_hashes(path: Path) -> dict[str, str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)} if isinstance(data, dict) else {}
+
+
+def record_upload_hash(digest: str, book_id: str, ident=None) -> None:
+    """Remember that this account's file `digest` is book `book_id` (atomic write; a newer upload replaces it)."""
+    from . import users
+    path = users.upload_hashes_json(ident)
+    with _hashes_lock:
+        hashes = _read_hashes(path)
+        hashes[digest] = book_id
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(hashes), encoding="utf-8")
+        tmp.replace(path)
+
+
+def find_upload(digest: str, ident=None) -> tuple[str, str, str | None] | None:
+    """The account's existing book for this file: (book id, "ready" | "deleting", title), or None.
+
+    "deleting" means a delete tombstone is on disk (the caller decides whether that delete is still running). A folder
+    with neither book.json nor a tombstone is a failed or interrupted ingest: no book to point at, so None.
+    """
+    from . import books, users
+    book_id = _read_hashes(users.upload_hashes_json(ident)).get(digest)
+    if not book_id or not books._ID.match(book_id) or not users.can_see_book(book_id, ident):
+        return None
+    d = settings.data_dir / "books" / book_id
+    if (d / "deleting.json").is_file():
+        return book_id, "deleting", None
+    if (d / "book.json").is_file():
+        book = books.load_book(book_id)
+        return (book_id, "ready", book.title) if book else None
+    return None

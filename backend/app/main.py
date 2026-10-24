@@ -730,7 +730,8 @@ async def _plan_enrichment(book_id: str, book: Book) -> None:
         await _run_enrichment(book_id)
 
 
-async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str, token: int) -> None:
+async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str, token: int,
+                  hash_key: tuple[str, str] | None = None) -> None:
     """Background ingest: CPU work in a thread, then publish book.json (readable, local BM25 retrieval), then (vertex
     only) index the chunks in the background with progress in status.json["index"].
 
@@ -752,6 +753,8 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
             _set_status(book_id, "error", "The file could not be processed.")
     finally:
         _ingest_guard.release(token)
+        if hash_key is not None:   # book.json is written by now (or the ingest failed): the disk check takes over
+            _hash_claims.pop(hash_key, None)
     if ready is not None and settings.retrieval_backend == "vertex":
         await _index_in_background(ready, chunks)
     if ready is not None and kind == "novel" and settings.upload_enrich and book_id not in _deleted:
@@ -807,17 +810,67 @@ async def upload_book(request: Request, background: BackgroundTasks, file: Uploa
             raise HTTPException(413, "File is too large (20 MB maximum).")
         if ext == ".pdf" and not data.startswith(b"%PDF"):
             raise HTTPException(400, "That does not look like a PDF.")
-        book_id, _ = ingest_upload.make_book_dir(title)
-        users.claim_book(book_id)  # PER_USER: this upload belongs to the caller
-        path = ingest_upload.upload_path(book_id, ext)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
-        _set_status(book_id, "processing", "Queued")
-        background.add_task(_ingest, book_id, title, author.strip(), kind, data, ext, token)  # releases the guard
+        ident = users.current()
+        digest = await asyncio.to_thread(ingest_upload.content_hash, data)
+        hash_key = (ident.ns, digest)
+        if hash_key in _hash_claims:   # the same file is being added right now
+            _ingest_guard.release(token)
+            return _duplicate("processing", _hash_claims[hash_key])
+        _hash_claims[hash_key] = ""   # claimed before the lookup (no await since the check): a twin request 409s above
+        try:
+            found = await asyncio.to_thread(ingest_upload.find_upload, digest, ident)
+            conflict = _upload_conflict(found)
+            if conflict:
+                _hash_claims.pop(hash_key, None)
+                _ingest_guard.release(token)
+                return conflict
+            book_id, _ = ingest_upload.make_book_dir(title)
+            _hash_claims[hash_key] = book_id
+            users.claim_book(book_id)  # PER_USER: this upload belongs to the caller
+            path = ingest_upload.upload_path(book_id, ext)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            await asyncio.to_thread(ingest_upload.record_upload_hash, digest, book_id, ident)
+            _set_status(book_id, "processing", "Queued")
+        except BaseException:
+            _hash_claims.pop(hash_key, None)
+            raise
+        # releases the guard and the hash claim
+        background.add_task(_ingest, book_id, title, author.strip(), kind, data, ext, token, hash_key)
     except BaseException:
         _ingest_guard.release(token)
         raise
     return {"book_id": book_id, "status": "processing"}
+
+
+# (account ns, sha256 of the file) -> book id, from the upload request until its ingest ends (#82). After that the
+# per-account upload_hashes.json and the book's folder say whether the file is already in the library.
+_hash_claims: dict[tuple[str, str], str] = {}
+STILL_DELETING = "This book is still being deleted — try again in a moment."
+
+
+def _duplicate(reason: str, book_id: str, title: str | None = None) -> JSONResponse:
+    """409 for a file the account already has: `detail` is the message, `book_id` the existing copy to open."""
+    if reason == "deleting":
+        detail = STILL_DELETING
+    elif reason == "processing":
+        detail = "This file is already being added to your library."
+    else:
+        detail = f"This file is already in your library as “{title}”." if title else "This file is already in your library."
+    body = {"detail": detail, "reason": reason, "book_id": book_id} | ({"title": title} if title else {})
+    return JSONResponse(body, status_code=409)
+
+
+def _upload_conflict(found: tuple[str, str, str | None] | None) -> JSONResponse | None:
+    """The 409 for an existing copy of the uploaded file, or None when it may be added. A tombstone left by a delete
+    that is not running any more (a restart, a failed delete) does not block: the new upload is a new book."""
+    if found is None:
+        return None
+    book_id, state, title = found
+    running = book_id in _deleting or (_delete_status.get(book_id) or {}).get("status") == "deleting"
+    if running:
+        return _duplicate("deleting", book_id)
+    return _duplicate("duplicate", book_id, title) if state == "ready" else None
 
 
 @app.get("/api/books/{book_id}/status")

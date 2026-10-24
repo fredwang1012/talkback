@@ -241,7 +241,10 @@ def test_a_reupload_during_a_delete_is_a_new_book(client, tmp_path, monkeypatch)
         return bg
 
     bg = asyncio.run(run())
-    new = upload(client, title="Same Title")   # while the old one is still being removed
+    same = post(client, "a.txt", b"First paragraph here.\n\nSecond paragraph here.\n\nThird.", kind="textbook")
+    assert same.status_code == 409 and same.json()["reason"] == "deleting"   # the same file waits for the delete (#82)
+    r = post(client, "b.txt", b"Another file.\n\nWith the same title.", kind="textbook", title="Same Title")
+    new = r.json()["book_id"]   # a different file while the old one is still being removed
     assert new != bid
     asyncio.run(bg())
     assert not (tmp_path / "books" / bid).exists()

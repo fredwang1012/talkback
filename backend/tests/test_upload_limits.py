@@ -164,8 +164,8 @@ def test_huge_paragraph_chunks_fast():
 def test_upload_rate_limit(client, monkeypatch):
     monkeypatch.setattr(main, "upload_bucket", TokenBucket(2, 60))
     assert post(client, "a.txt", b"hello there").status_code == 202
-    assert post(client, "a.txt", b"hello there").status_code == 202
-    assert post(client, "a.txt", b"hello there").status_code == 429
+    assert post(client, "a.txt", b"hello again").status_code == 202
+    assert post(client, "a.txt", b"hello once more").status_code == 429
 
 
 def test_upload_queue_is_bounded(client):

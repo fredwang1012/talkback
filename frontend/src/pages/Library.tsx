@@ -6,7 +6,7 @@ import {
 } from "../api";
 import { clearAccessToken, getAccessToken } from "../accessToken";
 import { canDelete, cardActions, groupShelves, hiddenLabel, kindLabel, moveTarget, seriesBlurb, seriesTitle, wrapIndex, type CardAction, type SeriesGroup } from "../shelves";
-import { fileProblem, isBusyError, jobLine, jobProgress, titleFromFile, uploadSettled, type UploadJob } from "../uploads";
+import { conflictPatch, fileProblem, isBusyError, isDeletingConflict, jobFinished, jobLine, jobProgress, titleFromFile, uploadSettled, type UploadJob } from "../uploads";
 
 const pct = (p: number | undefined) => Math.round(Math.max(0, Math.min(1, p ?? 0)) * 100);
 
@@ -96,7 +96,7 @@ function AddBook({ onStart, onCancel }: { onStart: (req: UploadRequest) => void;
 /** One card per upload: its own stage, indexing count or queue place, and the confirm button in testing mode. */
 function JobCard({ j, onConfirm, onDismiss }: { j: UploadJob; onConfirm: (j: UploadJob) => void; onDismiss: (j: UploadJob) => void }) {
   const progress = jobProgress(j);
-  const finished = j.phase === "ready" || j.phase === "error";
+  const finished = jobFinished(j);
   return (
     <li className={`job job-${j.phase}`}>
       <div className="job-head">
@@ -113,6 +113,7 @@ function JobCard({ j, onConfirm, onDismiss }: { j: UploadJob; onConfirm: (j: Upl
         </button>
       )}
       {j.bookId && j.phase !== "error" && j.status?.status === "ready" && <a className="job-open" href={`#/read/${j.bookId}`}>Open</a>}
+      {j.existing && <a className="job-open" href={`#/read/${j.existing}`}>Open the existing copy</a>}
     </li>
   );
 }
@@ -432,6 +433,13 @@ export default function Library() {
             await sleep(15000, signal);
             continue;
           }
+          if (isDeletingConflict(err) && attempt < 60) {  // the same file is still being deleted: send it once that ends
+            updJob(key, { phase: "waiting", message: "Waiting for the earlier copy to finish deleting" });
+            await sleep(5000, signal);
+            continue;
+          }
+          const dup = conflictPatch(err);
+          if (dup) { updJob(key, dup); break; }
           updJob(key, { phase: "error", message: (err as Error).message });
           break;
         }

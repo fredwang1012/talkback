@@ -223,6 +223,11 @@ def hidden_json(ident: Identity | None = None) -> Path:
     return user_root(ident) / "hidden_books.json"
 
 
+def upload_hashes_json(ident: Identity | None = None) -> Path:
+    """sha256 of each uploaded file -> its book id, so the same file is not added twice to one account (#82)."""
+    return user_root(ident) / "upload_hashes.json"
+
+
 _hidden_lock = threading.Lock()   # read-modify-write of hidden_books.json (endpoints run in the threadpool)
 
 

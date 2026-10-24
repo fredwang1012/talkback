@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { indexingLabel, pollIndexing, type BookStatus } from "../src/api";
-import { fileProblem, isBusyError, jobLine, jobProgress, titleFromFile, uploadSettled, type UploadJob } from "../src/uploads";
+import { indexingLabel, pollIndexing, uploadBook, UploadConflict, type BookStatus } from "../src/api";
+import { conflictPatch, fileProblem, isBusyError, isDeletingConflict, jobFinished, jobLine, jobProgress, titleFromFile, uploadSettled, type UploadJob } from "../src/uploads";
 import { vi, afterEach } from "vitest";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -64,5 +64,38 @@ describe("multi-file uploads", () => {
     const st = await pollIndexing("b", undefined, undefined, 1);
     expect(st?.index?.state).toBe("done");
     expect(f).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("duplicate uploads (#82)", () => {
+  const conflict = (body: object) => vi.fn(async () => new Response(JSON.stringify(body), { status: 409 }));
+
+  it("a 409 for a file already in the library carries the existing book", async () => {
+    vi.stubGlobal("fetch", conflict({ detail: "This file is already in your library as “Dune”.", reason: "duplicate", book_id: "u-dune-1", title: "Dune" }));
+    const err = await uploadBook(new File(["x"], "a.txt"), "A", "", "novel").catch((e) => e);
+    expect(err).toBeInstanceOf(UploadConflict);
+    expect(err).toMatchObject({ reason: "duplicate", bookId: "u-dune-1", message: "This file is already in your library as “Dune”." });
+    expect(conflictPatch(err)).toEqual({ phase: "exists", message: err.message, existing: "u-dune-1" });
+  });
+
+  it("a book still being deleted means wait and retry, not a failure", async () => {
+    vi.stubGlobal("fetch", conflict({ detail: "This book is still being deleted — try again in a moment.", reason: "deleting", book_id: "u-x-1" }));
+    const err = await uploadBook(new File(["x"], "a.txt"), "A", "", "novel").catch((e) => e);
+    expect(isDeletingConflict(err)).toBe(true);
+    expect(isDeletingConflict(new Error("nope"))).toBe(false);
+  });
+
+  it("the twin of an upload in flight is shown without an open link", async () => {
+    vi.stubGlobal("fetch", conflict({ detail: "This file is already being added to your library.", reason: "processing", book_id: "u-x-1" }));
+    const err = await uploadBook(new File(["x"], "a.txt"), "A", "", "novel").catch((e) => e);
+    expect(conflictPatch(err)).toEqual({ phase: "exists", message: "This file is already being added to your library." });
+    expect(conflictPatch(new Error("other"))).toBeNull();
+  });
+
+  it("the card says so and can be dismissed", () => {
+    const j = job({ phase: "exists", message: "This file is already in your library as “Dune”.", existing: "u-dune-1" });
+    expect(jobLine(j)).toBe("This file is already in your library as “Dune”.");
+    expect(jobFinished(j)).toBe(true);
+    expect(jobFinished(job({ phase: "processing" }))).toBe(false);
   });
 });
