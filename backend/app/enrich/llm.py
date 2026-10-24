@@ -228,10 +228,17 @@ class GeminiProvider:
             cut = isinstance(e, _TooLong)
             if not cut and not (on_429 and pacing.is_rate_limited(e)):
                 raise
-            if not cut:
+            if cut:
+                log.warning("%s cut off twice; sending this call to %s", self.model, self.fallback)
+            else:
+                if self._clock() >= self._cool_until:   # one line per switch, not one per call already in flight
+                    log.warning("%s rate limited; using %s for %.0f s", self.model, self.fallback, self.COOL_S)
                 self._cool_until = self._clock() + self.COOL_S
-            log.warning("%s %s; sending this call to %s", self.model, "cut off twice" if cut else "rate limited", self.fallback)
             return await self._complete_model(self.fallback, system, user, schema, max_tokens, self.RETRIES)
+
+    async def complete_again(self, system, user, schema, tier, max_tokens, effort) -> Raw:
+        """A second try after a reply that was not valid JSON: on the fallback model when there is one."""
+        return await self._complete_model(self.fallback or self.model, system, user, schema, max_tokens, self.RETRIES)
 
     async def _complete_model(self, model, system, user, schema, max_tokens, attempts) -> Raw:
         try:
@@ -353,7 +360,21 @@ class LLM:
             try:
                 return schema_model.model_validate_json(raw.text)
             except ValueError as e:
-                raise RuntimeError(f"{raw.model} returned invalid JSON") from e
+                again = getattr(self.provider(name), "complete_again", None)
+                if again is None:
+                    raise RuntimeError(f"{raw.model} returned invalid JSON") from e
+                log.warning("%s returned invalid JSON; trying once more", raw.model)
+            async with self.sem:   # one more try (Gemini: on the fallback model), then give up
+                raw = await again(system, user, schema, tier, max_tokens, effort)
+            try:
+                self._record(name, tier, raw)
+            except SpendLimit as e:
+                self.stopped = e
+                raise
+            try:
+                return schema_model.model_validate_json(raw.text)
+            except ValueError as e:
+                raise RuntimeError(f"{raw.model} returned invalid JSON twice") from e
 
     async def __call__(self, model: str, system: str, user: str, schema_model: type[T], *,
                        max_tokens: int = 4000, effort: str = "low") -> T:
