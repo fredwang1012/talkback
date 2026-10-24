@@ -3,7 +3,9 @@
 Talkback reads books aloud with a full expressive cast and lets you talk back to the characters. Narration and
 dialogue are voiced with **Higgs Audio TTS 3** (emotion, whispering and shouting, sound effects, singing, pauses),
 with each word highlighted as it is spoken and a lip-synced face for whoever is speaking. Stop at any point and ask a
-question out loud: the narrator or the character you pick answers over **Higgs Realtime**, in their own voice, using
+question out loud: **Higgs Realtime** hears you (turn detection, barge-in) and the narrator or character you pick
+answers in their own voice (spoken by Higgs Realtime, or written by Gemini and spoken by Higgs TTS when Google Cloud
+is configured), using
 only what you have read so far, so it never spoils the story. Then reading continues from the same sentence. You can
 also upload your own novel or textbook (PDF or .txt). Textbooks get typeset equations, figures, study-note recaps and
 a spoken quiz.
@@ -29,7 +31,8 @@ Five fully processed public-domain books ship in the repo, so you can try everyt
 - **Ask in your language.** Questions in other languages are searched in English and answered and spoken in your
   language.
 - **Let the character drive the reader.** "Read chapter 3", "go back a bit", "slower", "recap the last chapter",
-  "bookmark this" are Realtime function calls that act on the reader.
+  "bookmark this" act on the reader: Realtime function calls when Realtime answers, matched from the transcript
+  when Gemini answers.
 - **Study a textbook.** Equations typeset with KaTeX and read out in words, figures shown inline, nested sections,
   "where is BM25 explained?", "quiz me on this section", "explain this equation", per-chapter study notes.
 - **Get grounded answers from the web.** For textbooks (and novels with Spoilers on), Gemini answers can use Google
