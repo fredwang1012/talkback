@@ -35,8 +35,7 @@ import { useTalk } from "../talk/useTalk";
 import { DebugDrawer } from "../ui/DebugDrawer";
 import { debugEnabled } from "../ui/debugFlag";
 import {
-  clampIndex, flattenChunks, loadPosition, loadReadCaptions, nextChunk as nextToRead, readerPara, saveReadCaptions, savePosition,
-  silentDurationMs,
+  clampIndex, flattenChunks, loadPosition, readerPara, savePosition, silentDurationMs,
 } from "../reader/position";
 
 const SPEEDS = [0.75, 1, 1.25, 1.5];
@@ -50,7 +49,6 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [speed, setSpeed] = useState(1);
   const [naturalSpeed, setNaturalSpeed] = useState(loadNaturalSpeed); // #78: opt-in, remembered
   const [autoResume, setAutoResume] = useState(true);
-  const [readCaptions, setReadCaptions] = useState(loadReadCaptions); // figure captions read aloud (#40)
   const [speakerId, setSpeakerId] = useState("narrator");
   const [avatars, setAvatars] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<"read" | "talk">("read");
@@ -91,13 +89,10 @@ export default function Reader({ bookId }: { bookId: string }) {
   const getAudio = useCallback(() => (engineRef.current?.currentAudio() as unknown as FollowAudio | null) ?? null, []);
   const indexRef = useRef(0);
   const playingRef = useRef(false);
-  const readCaptionsRef = useRef(readCaptions);
   indexRef.current = index;
   playingRef.current = playing;
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  readCaptionsRef.current = readCaptions;
-  useEffect(() => { engineRef.current?.setSkipCaptions(!readCaptions); saveReadCaptions(readCaptions); }, [readCaptions]);
 
   useEffect(() => {
     fetchBook(bookId).then((b) => {
@@ -138,7 +133,6 @@ export default function Reader({ bookId }: { bookId: string }) {
       sync: readSync.current as FaceSync,
     }, indexRef.current);
     engineRef.current = engine;
-    engine.setSkipCaptions(!readCaptionsRef.current);
     const off = engine.on((s) => {
       setIndex(s.index);
       setPlaying(s.state === "playing" || s.state === "loading");
@@ -220,10 +214,11 @@ export default function Reader({ bookId }: { bookId: string }) {
   const toolDeps = useRef<{ ctx: () => ToolContext; act: ToolActions } | null>(null);
   toolDeps.current = book ? {
     ctx: () => ({
-      bookId: book.id, sections: book.sections, paragraphs: book.paragraphs, characters: book.characters, chunks,
+      bookId: book.id, kind: book.kind, sections: book.sections, paragraphs: book.paragraphs, characters: book.characters, chunks,
       index: indexRef.current, readerPara: readerPara(chunks, indexRef.current), spoilers: spoilers && book.kind === "novel",
       playing: engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current,
       speed, speeds: SPEEDS, voiceMode: voiceMode(cast), narrator: narratorGender(cast), inSeries: !!book.series,
+      textbook: book.kind === "textbook",
     }),
     act: {
       seek: (i) => { lastManualScroll.current = 0; const next = clampIndex(i, chunks.length); if (engineRef.current) engineRef.current.seek(next); else setIndex(next); },
@@ -231,7 +226,8 @@ export default function Reader({ bookId }: { bookId: string }) {
       setVoiceMode: (m) => changeCast(withVoiceMode(cast, m)),
       setNarrator: (g) => changeCast({ ...cast, narrator_gender: g }),
       setSpeed,
-      openRecap: (scope) => recap({ scope, label: scope === "chapter" ? "Last chapter" : scope === "book" ? "This book so far" : "The series so far" }),
+      openRecap: (scope, section) => recap(section ? { scope: "chapter", label: "Chapter recap", section: section.id }
+        : { scope, label: scope === "chapter" ? (book.kind === "textbook" ? "This chapter" : "Last chapter") : scope === "book" ? "This book so far" : "The series so far" }),
       showCast: () => setLabOpen(true),
     },
   } : null;
@@ -255,6 +251,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     voiceFor: talkVoiceFor,
     narratorVoice: audioAvailable ? narratorVoice : null,
     tools: toolRunner,
+    bookKind: book?.kind,
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
       currentIndex: () => indexRef.current,
@@ -315,7 +312,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     if (mode !== "talk") changeMode("talk");
     const at = para;
     void talk.narrate(c.label, async () => {
-      const r = await fetchScopedRecap(book.id, at, c.scope);
+      const r = await fetchScopedRecap(book.id, at, c.scope, c.section);
       return { text: r.text, heading: recapHeading(c, r), empty: nothingYet(at) };
     });
   };
@@ -337,11 +334,10 @@ export default function Reader({ bookId }: { bookId: string }) {
   // Silent preview: advance at an estimated reading pace until real audio exists.
   useEffect(() => {
     if (audioAvailable || !playing || chunks.length === 0) return;
-    const next = nextToRead(chunks, index, !readCaptions);
-    if (next < 0) { setPlaying(false); return; }
-    const t = window.setTimeout(() => setIndex(next), silentDurationMs(chunks[index], speed));
+    if (index >= last) { setPlaying(false); return; }
+    const t = window.setTimeout(() => setIndex((i) => clampIndex(i + 1, chunks.length)), silentDurationMs(chunks[index], speed));
     return () => window.clearTimeout(t);
-  }, [audioAvailable, playing, index, speed, chunks, readCaptions]);
+  }, [audioAvailable, playing, index, speed, chunks, last]);
 
   // Keep the active sentence in view, unless the reader scrolled by hand in the last 5 seconds.
   useEffect(() => {
@@ -467,14 +463,12 @@ export default function Reader({ bookId }: { bookId: string }) {
       )}
       {debugEnabled() && <DebugDrawer entries={talk.logs} spend={spendNow} />}
       {mode === "read" && <PlayerBar
-        playing={playing} loading={loading} onToggle={toggle} onRecap={recap} inSeries={!!book.series}
+        playing={playing} loading={loading} onToggle={toggle} onRecap={recap} inSeries={!!book.series} textbook={book.kind === "textbook"}
         onPrev={() => { lastManualScroll.current = 0; step(-1); }} onNext={() => { lastManualScroll.current = 0; step(1); }}
         speed={speed} speeds={SPEEDS} onSpeed={setSpeed}
         naturalSpeed={naturalSpeed && !demo} onNaturalSpeed={demo ? undefined : setNaturalSpeed}
         onVoices={() => setLabOpen(true)}
         autoResume={autoResume} onAutoResume={setAutoResume}
-        hasFigures={book.kind === "textbook" && book.paragraphs.some((p) => p.kind === "figure")}
-        readCaptions={readCaptions} onReadCaptions={setReadCaptions}
         para={para} totalParas={book.paragraphs.length}
         atStart={index === 0} atEnd={index >= last}
         hasCast={book.characters.length > 0}

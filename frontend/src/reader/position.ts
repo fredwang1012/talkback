@@ -1,30 +1,10 @@
 import type { Book, Character, TtsChunk } from "../api";
 
-/** One readable unit: a TTS chunk plus where it sits in the book; `caption`: it reads a figure's caption (#40). */
-export type FlatChunk = TtsChunk & { para: number; caption?: boolean };
+/** One readable unit: a TTS chunk plus where it sits in the book. */
+export type FlatChunk = TtsChunk & { para: number };
 
 export function flattenChunks(book: Book): FlatChunk[] {
-  return book.paragraphs.flatMap((p) => p.tts_chunks.map((c) => ({ ...c, para: p.idx, ...(p.kind === "figure" ? { caption: true } : {}) })));
-}
-
-/**
- * The chunk continuous reading goes on to after `i`, or -1 at the end. With `skipCaptions` figure captions are passed
- * over (the chunk list itself never changes, so saved positions stay valid; a click on a caption still reads it).
- */
-export function nextChunk(chunks: FlatChunk[], i: number, skipCaptions: boolean): number {
-  for (let n = i + 1; n < chunks.length; n++) if (!(skipCaptions && chunks[n].caption)) return n;
-  return -1;
-}
-
-const CAPTIONS_KEY = "talkback:readCaptions";
-
-/** Whether figure captions are read aloud (#40): on unless the reader turned it off. */
-export function loadReadCaptions(): boolean {
-  try { return localStorage.getItem(CAPTIONS_KEY) !== "0"; } catch { return true; }
-}
-
-export function saveReadCaptions(on: boolean): void {
-  try { localStorage.setItem(CAPTIONS_KEY, on ? "1" : "0"); } catch { /* storage can be blocked */ }
+  return book.paragraphs.flatMap((p) => p.tts_chunks.map((c) => ({ ...c, para: p.idx })));
 }
 
 export function clampIndex(i: number, length: number): number {

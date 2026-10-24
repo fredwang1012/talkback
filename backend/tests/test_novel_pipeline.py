@@ -660,10 +660,12 @@ def test_demo_mode_refusal_is_silent_but_plain(client, monkeypatch):
     assert "estimate_usd" not in st["enrich"] and not client.fake.calls
 
 
-def test_textbooks_are_unchanged(client, monkeypatch):
+def test_textbooks_get_recap_notes_only(client, monkeypatch):
     monkeypatch.setattr(settings, "upload_confirm", True)
     book_id = upload(client, kind="textbook").json()["book_id"]
-    assert client.get(f"/api/books/{book_id}/status").json() == {"status": "ready"}
+    st = client.get(f"/api/books/{book_id}/status").json()
+    assert st["enrich"]["status"] == "awaiting_confirmation" and st["enrich"]["summaries_only"] is True
+    assert st["enrich"]["message"] == pipeline.TEXTBOOK_CONFIRM
     assert not client.fake.calls
     book = client.get(f"/api/books/{book_id}").json()
     assert book["characters"] == [] and book["summaries"] == []

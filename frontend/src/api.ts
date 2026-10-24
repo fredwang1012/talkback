@@ -37,10 +37,9 @@ export type Paragraph = {
   text: string;
   segments: Segment[];
   tts_chunks: TtsChunk[];
-  kind?: "code" | "math" | "figure" | null; // code: a textbook listing, shown in a code font, not read aloud; math: an equation; figure (#40): `text` is its caption
+  kind?: "code" | "math" | null; // code: a textbook listing, shown in a code font, not read aloud; math: an equation
   math?: MathBlock | null;
   inline_math?: InlineMath[];
-  figure?: string | null; // the figure's image file (kind "figure"), see figureUrl
 };
 export type Character = {
   id: string;
@@ -93,18 +92,6 @@ export function authHeaders(): Record<string, string> {
   return token ? { "X-Talkback-Token": token } : {};
 }
 
-/** A textbook figure's image (#40), served with the book's own gate. */
-export function figureUrl(bookId: string, name: string): string {
-  return `/api/books/${encodeURIComponent(bookId)}/figures/${encodeURIComponent(name)}`;
-}
-
-/** The figure as an object URL: fetched with the access code, which an <img src> cannot send. Revoke it when done. */
-export async function fetchFigure(bookId: string, name: string): Promise<string> {
-  const res = await timedFetch(figureUrl(bookId, name), { headers: authHeaders() });
-  if (!res.ok) throw new Error(`Figure failed: ${res.status}`);
-  return URL.createObjectURL(await res.blob());
-}
-
 /** fetch with a deadline, so a stalled server shows an error instead of an endless spinner. */
 export async function timedFetch(url: string, init: RequestInit = {}, timeoutMs = 15000): Promise<Response> {
   const ctl = new AbortController();
@@ -153,8 +140,10 @@ export const fetchRecap = (bookId: string, para: number) =>
 export type RecapScope = "chapter" | "book" | "series";
 /** One scope's recap; `chapter` is the chapter it covers (scope "chapter") or the one the reader is in. Spoiler-safe. */
 export type ScopedRecap = { scope: RecapScope; upto_para: number | null; chapter: string; text: string };
-export const fetchScopedRecap = (bookId: string, para: number, scope: RecapScope) =>
-  getJson<ScopedRecap>(`/api/books/${encodeURIComponent(bookId)}/recap?para=${Math.max(0, Math.floor(para))}&scope=${scope}`);
+/** `section`: that chapter / subsection instead (a textbook: any; a novel: only as far as the reader has read). */
+export const fetchScopedRecap = (bookId: string, para: number, scope: RecapScope, section?: string) =>
+  getJson<ScopedRecap>(`/api/books/${encodeURIComponent(bookId)}/recap?para=${Math.max(0, Math.floor(para))}&scope=${scope}`
+    + (section ? `&section=${encodeURIComponent(section)}` : ""));
 
 export type WordTiming = { start: number; end: number; char_start: number; char_end: number };
 export type TtsResponse = { chunk_id: string; voice: string; audio_url: string; timestamps: WordTiming[] | null; cached: boolean };
@@ -200,7 +189,7 @@ export async function fetchRetrieve(bookId: string, query: string, readerPara: n
  */
 export async function streamAnswer(
   bookId: string, query: string, readerPara: number, speakerId: string,
-  onSentence: (text: string) => void, signal?: AbortSignal, spoilers = false,
+  onSentence: (text: string, emotion?: string) => void, signal?: AbortSignal, spoilers = false,
   history: { role: "user" | "character"; text: string }[] = [],
 ): Promise<void> {
   const res = await timedFetch("/api/answer", {
@@ -222,9 +211,11 @@ export async function streamAnswer(
   let buf = "";
   const handle = (line: string) => {
     if (!line.trim()) return;
-    let msg: { type?: string; text?: string; message?: string };
+    let msg: { type?: string; text?: string; message?: string; emotion?: unknown };
     try { msg = JSON.parse(line); } catch { return; } // tolerate a garbled line
-    if (msg.type === "sentence" && typeof msg.text === "string") onSentence(msg.text);
+    if (msg.type === "sentence" && typeof msg.text === "string") {
+      onSentence(msg.text, typeof msg.emotion === "string" && msg.emotion ? msg.emotion : undefined); // #14
+    }
     else if (msg.type === "error") throw new Error(msg.message || "The answer failed.");
   };
   try {
@@ -248,12 +239,15 @@ export async function streamAnswer(
   }
 }
 
-/** Synthesises one sentence in a voice (cached server-side) and returns where to fetch the audio. */
-export async function speak(text: string, voice: string): Promise<TtsResponse> {
+/**
+ * Synthesises one sentence in a voice (cached server-side) and returns where to fetch the audio. `emotion` (#14) is an
+ * answer sentence's feeling; the server checks it and sends it to Boson as a delivery tag.
+ */
+export async function speak(text: string, voice: string, emotion?: string): Promise<TtsResponse> {
   const res = await timedFetch("/api/speak", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ text, voice }),
+    body: JSON.stringify({ text, voice, ...(emotion ? { emotion } : {}) }),
   }, 30000);
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
@@ -352,7 +346,8 @@ export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 export type BookKind = "novel" | "textbook";
 /** What the upload form can send: "auto" lets the server decide. */
 export type UploadKind = BookKind | "auto";
-/** Novel enrichment (characters, voices, recap) that runs after a novel is readable. Absent for textbooks. */
+/** Enrichment that runs once a book is readable: characters, voices and recap for a novel; only the recap study
+ * notes for a textbook (`summaries_only`). */
 export type EnrichStatus = {
   status: "awaiting_confirmation" | "running" | "done" | "refused" | "error";
   stage?: string;       // queued | cast | segment | summaries | index | done
@@ -360,9 +355,11 @@ export type EnrichStatus = {
   message?: string;
   degraded?: boolean;    // done, but without a working LLM (simple fallback cast)
   estimate_usd?: number; // only in testing mode (UPLOAD_CONFIRM)
+  summaries_only?: boolean; // a textbook: recap study notes only
 };
 /** The line shown when enrichment finished: the full-success wording only when an LLM really did the work. */
 export function enrichDoneNote(e: EnrichStatus): string {
+  if (e.summaries_only) return "study notes for the recap are ready";
   return e.degraded && e.message ? e.message : "characters, voices and recap are ready";
 }
 /** Cloud search indexing after the book is readable (it uses basic search until state is "done"). */

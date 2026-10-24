@@ -16,3 +16,21 @@ export function loopsToPreload(current: Loops | null | undefined, next: Loops | 
   if (!next || next.id === current?.id) return [];
   return [next.talk, next.idle].filter((u): u is string => !!u);
 }
+
+/** The talk states in which a question or its answer is in progress (the reader is paused for it). */
+const ANSWER_STATES = ["listening", "transcribing", "retrieving", "answering"];
+
+/** True while a question asked from read mode, or its answer, is in progress or still sounding: the stage shows the
+ * answering face, exactly as Talkback does, instead of the paused reading's face or clip. */
+export const answerOnStage = (state: string, speaking: boolean): boolean => speaking || ANSWER_STATES.includes(state);
+
+/**
+ * Which face the read-mode stage shows. An answer always wins: the reading face, its lip-sync clip and a chunk's
+ * pre-rendered clip are all frozen on the paused reading then, and covered the moving face (the read-mode mic bug).
+ */
+export function stageFace(s: { answering: boolean; avatar: boolean; reading: boolean; face: boolean }): "avatar" | "read" | "talk" | "portrait" {
+  if (s.answering) return s.face ? "talk" : "portrait";
+  if (s.avatar) return "avatar";
+  if (s.face && s.reading) return "read";
+  return s.face ? "talk" : "portrait";
+}

@@ -3,7 +3,7 @@ import type { ClipSync, VideoClip } from "../talk/sentencePlayer";
 import { gateVoiceOnClip, type ClipGate } from "../talk/startGate";
 import { rateFor, type SpeedTag } from "./naturalSpeed";
 import { prefetchEnd } from "./prefetch";
-import { nextChunk, type FlatChunk } from "./position";
+import type { FlatChunk } from "./position";
 import { clipAheadFor, clipWindow, READ_CHAIN_WAIT_MS, READ_START_WAIT_MS, speechSeconds } from "./readLipSync";
 import { resumeTime, staleIndexes } from "./voiceSwitch";
 
@@ -81,7 +81,6 @@ export class ReaderEngine {
 
   private chunks: FlatChunk[];
   private deps: EngineDeps;
-  private skipCaptions = false;
 
   constructor(chunks: FlatChunk[], deps: EngineDeps, startIndex = 0) {
     this.chunks = chunks;
@@ -132,12 +131,9 @@ export class ReaderEngine {
   }
 
   /** Fetch the window [current, prefetchEnd] and drop everything outside it (stale after a seek). */
-  /** Figure captions (#40) are read by default; skipped, continuous reading passes over them (never fetched ahead). */
-  setSkipCaptions(skip: boolean): void { this.skipCaptions = skip; }
-
   private prefetchFrom(i: number): void {
     const end = prefetchEnd(this.chunks, i);
-    for (let n = i; n <= end; n++) if (n === i || !(this.skipCaptions && this.chunks[n].caption)) this.entry(n).promise.catch(() => {});
+    for (let n = i; n <= end; n++) this.entry(n).promise.catch(() => {});
     for (const [k, e] of this.entries) {
       if (k < i || k > end) this.dropEntry(k, e);
     }
@@ -311,15 +307,14 @@ export class ReaderEngine {
 
   private handleEnded(gen: number): void {
     if (gen !== this.gen) return;
-    const next = nextChunk(this.chunks, this.index, this.skipCaptions);
-    if (next < 0) {
+    if (this.index >= this.chunks.length - 1) {
       this.wantPlay = false;
       this.stopCurrent();
       this.set("ended");
       return;
     }
     this.deps.sync?.leave(); // the finished chunk's clip comes down now, not when the next clip joins (#104)
-    this.index = next;
+    this.index += 1;
     void this.startChunk(this.index, { chained: true });
   }
 

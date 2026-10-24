@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.books import save_book  # noqa: E402
 from app.enrich import attribute as at  # noqa: E402
 from app.schema import Book  # noqa: E402
-from app.ttschunks import chunk_paragraph  # noqa: E402
+from app.ttschunks import rechunk_book  # noqa: E402
 
 
 def main() -> None:
@@ -41,8 +41,7 @@ def main() -> None:
             bak = path.with_name(path.name + ".bak")
             if not bak.exists():
                 shutil.copy2(path, bak)
-            for p in book.paragraphs:
-                p.tts_chunks = chunk_paragraph(p, book)
+            rechunk_book(book)  # stamps Book.chunk_rules
             save_book(path, book)
     if args.estimate_llm:
         e = at.llm_estimate(estimates)

@@ -1,9 +1,15 @@
 """Read books produced by the preprocess pipeline from data/books/<id>/book.json."""
+import logging
 import re
+import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 
 from .config import settings
 from .schema import Book
+from .ttschunks import CHUNK_RULES_VERSION, needs_rechunk, rechunk_book
+
+log = logging.getLogger(__name__)
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
@@ -45,7 +51,76 @@ def load_book(book_id: str) -> Book | None:
     if book.narrator:
         book.narrator.portrait = book.narrator.portrait or portrait_url(book_id, "narrator")
     _cache[key] = (stamp, book)
+    if settings.auto_rechunk and needs_rechunk(book):
+        _schedule_upgrade(key, path, stamp)
     return book
+
+
+# Auto-upgrade of books whose tts_chunks were built with older chunk rules (ttschunks.CHUNK_RULES_VERSION).
+# Re-chunking HP5 (18k chunks) takes ~2 s, so it runs on one background thread and requests keep the old chunks
+# until the new book.json is saved; the next load_book sees the new mtime and serves it (main._book_bodies follows).
+_upgrade_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rechunk")
+_upgrade_lock = threading.Lock()
+_upgrading: dict[str, Future] = {}   # resolved book.json path -> running / queued upgrade
+_upgrade_failed: dict[str, tuple[int, int]] = {}   # path -> file stamp that failed: not retried until the file changes
+
+
+def _stamp(path) -> tuple[int, int]:
+    st = path.stat()
+    return st.st_mtime_ns, st.st_size
+
+
+def _schedule_upgrade(key: str, path, stamp: tuple[int, int]) -> None:
+    with _upgrade_lock:
+        if key in _upgrading or _upgrade_failed.get(key) == stamp:
+            return
+        _upgrading[key] = _upgrade_pool.submit(_upgrade, key, path, stamp)
+
+
+def _upgrade(key: str, path, stamp: tuple[int, int]) -> bool:
+    """Re-chunk one book.json with the current rules, keeping segment styles, and save it atomically. Works on a fresh
+    parse (never the cached object, which requests share). Skips the write if the file changed since `stamp` (another
+    writer won; its next load schedules again). Any failure leaves the old file in place and is logged."""
+    try:
+        if _stamp(path) != stamp:
+            return False
+        book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+        if not needs_rechunk(book):
+            return False
+        before = book.chunk_rules
+        rechunk_book(book)
+        if _stamp(path) != stamp:
+            return False
+        save_book(path, book)
+        log.info("re-chunked %s (chunk rules %s -> %s)", path.parent.name, before, CHUNK_RULES_VERSION)
+        return True
+    except Exception:
+        log.exception("re-chunking %s failed; serving its old chunks", path.parent.name)
+        _upgrade_failed[key] = stamp
+        return False
+    finally:
+        with _upgrade_lock:
+            _upgrading.pop(key, None)
+
+
+def schedule_all_upgrades() -> None:
+    """Queue the upgrade of every out-of-date book (called at startup), whoever may see it."""
+    for path in sorted(_books_dir().glob("*/book.json")):
+        try:
+            load_book(path.parent.name)
+        except Exception:  # an unreadable book.json is reported where it is served
+            log.warning("could not load %s for re-chunking", path.parent.name)
+
+
+def wait_for_upgrades(timeout: float | None = 60) -> None:
+    """Block until every queued upgrade has finished (tests, scripts)."""
+    while True:
+        with _upgrade_lock:
+            pending = list(_upgrading.values())
+        if not pending:
+            return
+        if wait(pending, timeout=timeout).not_done:
+            return
 
 
 SERIES_TTL = 60.0  # seconds; the index is also dropped when the books dir changes or a book is saved
@@ -129,7 +204,11 @@ def list_books(hidden: bool = False) -> list[dict]:
     for path in sorted(_books_dir().glob("*/book.json")):
         if not users.can_see_book(path.parent.name) or (path.parent.name in hidden_ids) != hidden:
             continue
-        book = load_book(path.parent.name)
+        try:
+            book = load_book(path.parent.name)
+        except Exception as e:  # one unreadable book.json (e.g. written by a newer version) must not hide the library
+            logging.getLogger(__name__).warning("skipping book %s: %s", path.parent.name, type(e).__name__)
+            continue
         if book is None:
             continue
         out.append({

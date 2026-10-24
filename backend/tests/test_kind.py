@@ -123,12 +123,15 @@ def test_auto_is_the_default_and_stores_kind_and_detection(client):
     book_id = r.json()["book_id"]
     st = client.get(f"/api/books/{book_id}/status").json()
     det = {"kind": "textbook", "confidence": 0.9, "method": "llm"}
-    assert st == {"status": "ready", "kind": "textbook", "kind_detected": det}  # textbook: no enrichment
+    assert {k: st[k] for k in ("status", "kind", "kind_detected")} == {"status": "ready", "kind": "textbook",
+                                                                       "kind_detected": det}
+    assert st["enrich"]["summaries_only"] is True  # textbook: recap notes only
     book = client.get(f"/api/books/{book_id}").json()
     assert book["kind"] == "textbook" and book["kind_detected"] == det
     listed = next(b for b in client.get("/api/books").json() if b["id"] == book_id)
     assert listed["kind"] == "textbook" and listed["kind_detected"] == det
-    assert client.fake.calls == ["KindGuess"]
+    assert client.fake.calls[0] == "KindGuess" and "MainCast" not in client.fake.calls
+    assert set(client.fake.calls[1:]) <= {"SectionSummary"}
     assert spend.total_usd() > 0  # the detection call counts towards the caps
 
 
@@ -172,7 +175,7 @@ def test_change_kind_gating_and_builtin_refusal(client, monkeypatch):
 
 def test_textbook_to_novel_starts_enrichment(client):
     book_id = upload(client, kind="textbook").json()["book_id"]
-    assert not client.fake.calls
+    assert "MainCast" not in client.fake.calls  # a textbook gets recap notes only
     r = client.post(f"/api/books/{book_id}/kind", json={"kind": "novel"})
     assert r.status_code == 202
     st = client.get(f"/api/books/{book_id}/status").json()
@@ -186,7 +189,7 @@ def test_textbook_to_novel_respects_caps_and_confirm(client, monkeypatch):
     monkeypatch.setattr(settings, "upload_book_cap_usd", 0.00001)
     client.post(f"/api/books/{book_id}/kind", json={"kind": "novel"})
     st = client.get(f"/api/books/{book_id}/status").json()
-    assert st["enrich"] == {"status": "refused", "message": pipeline.TOO_LONG} and not client.fake.calls
+    assert st["enrich"] == {"status": "refused", "message": pipeline.TOO_LONG} and "MainCast" not in client.fake.calls
     assert client.get(f"/api/books/{book_id}").json()["kind"] == "novel"  # still moved, narrator only
 
     other = upload(client, kind="textbook", raw=story() + "\n\nA different copy.").json()["book_id"]   # not a duplicate (#82)
@@ -195,7 +198,7 @@ def test_textbook_to_novel_respects_caps_and_confirm(client, monkeypatch):
     client.post(f"/api/books/{other}/kind", json={"kind": "novel"})
     st = client.get(f"/api/books/{other}/status").json()
     assert st["enrich"]["status"] == "awaiting_confirmation" and st["enrich"]["estimate_usd"] > 0
-    assert not client.fake.calls
+    assert "MainCast" not in client.fake.calls
     assert client.post(f"/api/books/{other}/enrich").status_code == 202
 
 
@@ -225,7 +228,7 @@ def test_change_kind_refused_while_enrichment_runs(client):
 def test_concurrent_kind_changes_start_only_one_enrichment(client):
     import httpx
     book_id = upload(client, kind="textbook").json()["book_id"]
-    assert not client.fake.calls
+    assert "MainCast" not in client.fake.calls
 
     async def go():
         transport = httpx.ASGITransport(app=main.app)

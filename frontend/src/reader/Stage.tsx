@@ -7,6 +7,7 @@ import type { TalkUi } from "../talk/useTalk";
 import type { TalkState } from "../talk/TalkController";
 import { splitCharacters } from "./position";
 import { FaceView, ReadFace } from "./FaceView";
+import { answerOnStage, stageFace } from "./readFace";
 
 /** Read-mode lip-sync (#80, always on since #92): the persistent clip video the sync drives; `shown` once a clip has
  * a frame and is in step with the voice (otherwise the talk loop or the still face shows). */
@@ -109,7 +110,10 @@ function ReadClipVideo({ sync, shown }: { sync: FaceSync; shown: boolean }) {
 export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, getAudio, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, preloadLoops = [], readSpeaking, levelRef, readLipSync }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
   const [remember, setRemember] = useState(true);
-  const clipShown = !!readLipSync?.shown;
+  // a question asked here (mic or Space) and its answer take the stage, as in Talkback: the paused reading's frozen
+  // lip-sync frame, reading face or pre-rendered clip must not cover the answering face
+  const answering = answerOnStage(talk.state, talk.speaking);
+  const clipShown = !!readLipSync?.shown && !answering;
   const tutor = book.kind === "textbook";
   // read mode (#94): the Talkback spoiler setting does not apply here, so unmet characters stay locked and no
   // spoiler note shows; Talkback has its own
@@ -122,9 +126,9 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
   const live = talk.state === "listening";
   const portrait = speaker ? speaker.portrait : book.narrator?.portrait ?? null;
   // In read mode the reading cast's face is shown while it reads; otherwise the Talk avatar choice decides.
-  const face = readingFace ?? faceFor(speakerId);
-  const faceSpeaking = readingFace ? true : talk.speaking;
-  const big = !!face || !!avatarSrc || clipShown; // a real face grows the circle (animated); no face keeps the small monogram
+  const face = (answering ? null : readingFace) ?? faceFor(speakerId);
+  const shows = stageFace({ answering, avatar: !!avatarSrc, reading: !!readingFace, face: !!face });
+  const big = !!face || (shows === "avatar") || clipShown; // a real face grows the circle (animated); no face keeps the small monogram
   const thinking = ["transcribing", "retrieving", "answering"].includes(talk.state) && !talk.speaking;
   const talkTo = (id: string) => { onSpeaker(id); onMode("talk"); };
   const pressed = useRef(false); // survives re-renders between press and release
@@ -136,9 +140,9 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
     <aside className="stage" aria-label="Stage">
       <div className={`speaker${big ? " big" : ""}`}>
         <div className={`medallion${big ? " big" : ""}${live ? " live" : ""}${thinking ? " thinking" : ""}${talk.speaking ? " speaking" : ""}`} aria-hidden="true">
-          {avatarSrc ? <AvatarVideo src={avatarSrc} playing={avatarPlaying} getAudio={getAudio} />
-            : face && readingFace ? <ReadFace face={face} speaking={readSpeaking} levelRef={levelRef} clipShown={clipShown} />
-            : face ? <FaceView face={face} speaking={faceSpeaking} sync={talk.faceSync} clipShown={talk.clipShown} />
+          {shows === "avatar" && avatarSrc ? <AvatarVideo src={avatarSrc} playing={avatarPlaying} getAudio={getAudio} />
+            : shows === "read" && face ? <ReadFace face={face} speaking={readSpeaking} levelRef={levelRef} clipShown={clipShown} />
+            : shows === "talk" && face ? <FaceView face={face} speaking={talk.speaking} sync={talk.faceSync} clipShown={talk.clipShown} />
             : portrait ? <img src={portrait} alt="" /> : <span>{name.charAt(0)}</span>}
           {readLipSync && <ReadClipVideo sync={readLipSync.sync} shown={clipShown} />}
           {preloadLoops.map((src) => <video key={src} className="preload" src={src} muted playsInline preload="auto" />)}

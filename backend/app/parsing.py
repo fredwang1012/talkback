@@ -75,7 +75,6 @@ def _equation(block: str, n: int) -> tuple[str, MathBlock] | None:
     return text or EQUATION_TEXT, MathBlock(id=f"e{n}", page=page, bbox=bbox, number=number, garbled=garbled)
 
 
-FIGURE_MARK = "\x07"   # prefix pdf_to_text puts on a figure: its image file name, a newline, then its caption
 ROMAN = re.compile(r"^[IVXLC]+\.$")
 CURLY = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
 BLANK_LINE = re.compile(r"\n\s*\n")
@@ -159,15 +158,6 @@ def parse(raw: str, start_marker: str | None, end_marker: str | None,
                 paragraphs.append(Paragraph(idx=len(paragraphs), section_id=current.id, text=code, kind="code"))
             continue
         marked, block = block, strip_inline(block)
-        if block.startswith(FIGURE_MARK):
-            name, _, caption = block[1:].partition("\n")
-            if name.strip():
-                if current is None:
-                    current = Section(id="s1", title="", start_para=len(paragraphs))
-                    sections.append(current)
-                paragraphs.append(Paragraph(idx=len(paragraphs), section_id=current.id, text=normalize(caption) or "Figure",
-                                            kind="figure", figure=name.strip()))
-            continue
         if heading and block.count("\n") == 1 and len(block) < 70:
             block = block.replace("\n", " ")  # "CHAPTER 8" on one line, its title on the next
         is_heading = bool(heading.match(block)) if heading else bool(ROMAN.match(block))
