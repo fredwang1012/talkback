@@ -121,11 +121,16 @@ Cloud Run instance warm only during the demo.
       ```
       (`roles/vectorsearch.admin` is the expected role name; check with
       `gcloud iam roles list --filter="name:vectorsearch"` if it fails.)
-- [ ] **G3** Hard stop at $50: budget → Pub/Sub topic → small Cloud Run function that
-      unlinks billing from the project. This shuts everything off when hit, so you need to
-      approve it. Until then the alerts are the only guard.
-- [ ] **G4** `BOSON_API_KEY` into `.env` and into Secret Manager
-      (`gcloud secrets create boson-api-key --data-file=-`).
+- [~] **G3** Hard stop at $50: the budget publishes to Pub/Sub topic `budget-alerts`; the Cloud Run
+      function `budget-stop` (code in `infra/budget_stop/`, service account `budget-stop@`) unlinks billing
+      when cost >= budget. Deployed in DRY_RUN mode. Remaining (you, the permission check blocks Claude):
+      ```bash
+      gcloud projects add-iam-policy-binding frederick-talkback         --member=serviceAccount:budget-stop@frederick-talkback.iam.gserviceaccount.com --role=roles/billing.projectManager
+      gcloud pubsub topics publish budget-alerts --project frederick-talkback         --message='{"costAmount":51,"budgetAmount":50,"currencyCode":"CAD"}'   # dry run: logs "would disable billing"
+      gcloud run services update budget-stop --region us-central1 --project frederick-talkback --update-env-vars DRY_RUN=false
+      ```
+- [x] **G4** Secret Manager: `boson-api-key` (from `.env`) and `talkback-access-token` (the code is in the
+      gitignored `.talkback-access-code`).
 
 ### Code (Claude, next)
 
@@ -146,6 +151,7 @@ Cloud Run instance warm only during the demo.
 
 ### Later (real project, ~$800)
 
-- [ ] Avatar clips in talk mode via `/v1/videos/stream` once the base loop is fast enough.
+- [x] Faces in talk mode: speaking/idle loops (instant) and optional lip-synced clips (~10 s per sentence).
+- [ ] Lip-sync via `/v1/videos/stream` if it gets fast enough to keep up with speech.
 - [ ] Re-evaluate Gemini 3 Flash when it leaves preview.
 - [ ] Separate dev and demo projects so test spending never touches the demo.
