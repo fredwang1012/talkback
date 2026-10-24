@@ -1532,15 +1532,12 @@ def render_inline(book_id: str, data: bytes, stop=lambda: False) -> tuple[dict[s
     return found, shared
 
 
-_eq_lock = threading.Lock()   # read-modify-write of book.json by the equation job's threads
-
-
 def update_equations(book_id: str, fields: dict[str, dict]) -> int:
     """Set MathBlock / InlineMath fields ({id: {image|latex|spoken: value}}) in book.json and re-chunk those
     paragraphs. Returns how many changed; nothing is written when book.json is gone (a deleted book)."""
     from . import books
     path = _book_json(book_id)
-    with _eq_lock:
+    with books.write_lock(path):   # read-modify-write: shared with every other book.json writer
         try:
             book = Book.model_validate_json(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -1567,10 +1564,8 @@ def update_equations(book_id: str, fields: dict[str, dict]) -> int:
 
 def publish_book(book: Book) -> None:
     """Write book.json (which makes the book visible to list_books/load_book)."""
-    d = settings.data_dir / "books" / book.id
-    tmp = d / "book.json.tmp"
-    tmp.write_text(book.model_dump_json(indent=1), encoding="utf-8")
-    tmp.replace(d / "book.json")
+    from . import books
+    books.save_book(settings.data_dir / "books" / book.id / "book.json", book)
 
 
 def discard_book(book_id: str) -> None:
@@ -1579,6 +1574,8 @@ def discard_book(book_id: str) -> None:
     shutil.rmtree(d / "index", ignore_errors=True)
     for name in ("book.json", "book.json.tmp"):
         (d / name).unlink(missing_ok=True)
+    for tmp in d.glob("book.json.*.tmp"):   # books.save_book's per-call temp files (only left by a crash)
+        tmp.unlink(missing_ok=True)
 
 
 KIND_KEYS = ("kind", "kind_detected")

@@ -1087,20 +1087,24 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
         return st
     _kind_claims.add(book_id)
     try:
-        book = book.model_copy(deep=True)  # load_book's result is cached and must not be mutated
-        pdf_bytes = None
+        def set_kind(b) -> None:
+            b.kind = body.kind
+        path = settings.data_dir / "books" / book_id / "book.json"
+        pdf_bytes = restored = None
         pdf = ingest_upload.upload_path(book_id, ".pdf")
         if body.kind == "textbook" and pdf.is_file():
             try:
                 pdf_bytes = pdf.read_bytes()
-                book = await asyncio.to_thread(ingest_upload.restore_as_textbook, book, pdf_bytes)
+                restored = await asyncio.to_thread(ingest_upload.restore_as_textbook, book.model_copy(deep=True), pdf_bytes)
             except Exception as e:  # still move the shelf; the text they already have stays
                 logging.getLogger(__name__).warning("textbook restore failed: %s", type(e).__name__)
-                pdf_bytes = None
-                book.kind = body.kind
-        else:
-            book.kind = body.kind
-        await asyncio.to_thread(books.save_book, settings.data_dir / "books" / book_id / "book.json", book)
+                pdf_bytes = restored = None
+        if restored is not None:
+            def set_kind(b) -> None:  # the re-read text replaces the book's, written under its lock
+                for name in restored.model_fields:
+                    setattr(b, name, getattr(restored, name))
+        # a fresh read under the book's write lock (never the cached object, never a stale copy of it)
+        book = await asyncio.to_thread(books.update_book, path, set_kind)
         _index_for.cache_clear()
         _set_status(book_id, "ready", kind=body.kind)
         if pdf_bytes is not None and any(p.kind == "math" or p.inline_math for p in book.paragraphs):

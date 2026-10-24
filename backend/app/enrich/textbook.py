@@ -9,7 +9,6 @@ Cost: about one read of the book's text in the "fast" tier plus a short answer p
 call, and `plan()` drops the subsections when only the chapters fit the per-book cap.
 """
 import logging
-import threading
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
@@ -197,15 +196,12 @@ async def build(book: Book, call: CallFn, on_progress: Callable[[float], None] |
     return sorted(out, key=lambda s: (s.upto_para, s.section_id or ""))
 
 
-_save_lock = threading.Lock()
-
-
 def save_summaries(book_id: str, summaries: list[Summary]) -> bool:
     """Re-read book.json and set only its summaries (the equations job may have saved it meanwhile). False when the
     book is gone or is no longer a textbook."""
-    from .. import books, ingest_upload
+    from .. import books
     path = settings.data_dir / "books" / book_id / "book.json"
-    with ingest_upload._eq_lock, _save_lock:
+    with books.write_lock(path):   # read-modify-write: shared with every other book.json writer
         try:
             book = Book.model_validate_json(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

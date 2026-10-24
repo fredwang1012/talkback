@@ -1,8 +1,11 @@
 """Read books produced by the preprocess pipeline from data/books/<id>/book.json."""
 import logging
+import os
 import re
 import threading
 import time
+import uuid
+from pathlib import Path
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 
 from .config import settings
@@ -89,9 +92,10 @@ def _upgrade(key: str, path, stamp: tuple[int, int]) -> bool:
             return False
         before = book.chunk_rules
         rechunk_book(book)
-        if _stamp(path) != stamp:
-            return False
-        save_book(path, book)
+        with write_lock(path):   # the stamp check and the save are atomic against every other book.json writer
+            if _stamp(path) != stamp:
+                return False
+            save_book(path, book)
         log.info("re-chunked %s (chunk rules %s -> %s)", path.parent.name, before, CHUNK_RULES_VERSION)
         return True
     except Exception:
@@ -222,10 +226,57 @@ def list_books(hidden: bool = False) -> list[dict]:
     return sorted(out, key=lambda b: (b["series"] or "", b["series_index"] or 0, b["id"]))
 
 
+_write_locks: dict[str, threading.RLock] = {}
+_write_locks_guard = threading.Lock()
+
+
+def write_lock(path) -> threading.RLock:
+    """The one lock of a book.json, shared by every writer (rechunk upgrade, equations, textbook notes, kind change,
+    enrich checkpoints, ingest). A read-modify-write holds it from the read to the save; save_book takes it too
+    (re-entrant), so whole-book saves never interleave either."""
+    key = os.path.normcase(os.path.abspath(path))
+    with _write_locks_guard:
+        lock = _write_locks.get(key)
+        if lock is None:
+            lock = _write_locks[key] = threading.RLock()
+        return lock
+
+
+def _replace(tmp: Path, path: Path) -> None:
+    """os.replace; on Windows a reader that has book.json open makes it fail for a moment, so retry briefly."""
+    for attempt in range(20):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == 19:
+                raise
+            time.sleep(0.01 * (attempt + 1))
+
+
 def save_book(path, book: Book) -> None:
-    """Write book.json atomically (temp file + rename) so a running server never reads a half-written book."""
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(book.model_dump_json(indent=1), encoding="utf-8")
-    tmp.replace(path)
+    """Write book.json atomically (temp file + rename) so a running server never reads a half-written book. Each call
+    has its own temp file in the same folder: two writers never truncate one temp file (slow on GCS FUSE)."""
+    path = Path(path)
+    data = book.model_dump_json(indent=1)
+    with write_lock(path):
+        tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(data, encoding="utf-8")
+            _replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
     global _series_index
     _series_index = None
+
+
+def update_book(path, change) -> Book:
+    """Read-modify-write of book.json under its write lock: `change(book)` edits a fresh parse (never the cached
+    object), which is then saved. Returns the saved book."""
+    path = Path(path)
+    with write_lock(path):
+        book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+        change(book)
+        save_book(path, book)
+    return book
