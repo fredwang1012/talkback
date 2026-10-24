@@ -12,6 +12,9 @@ const OPEN = 1; // WebSocket.OPEN, spelled out so tests need no global WebSocket
  * question was gone before the turn began. Short enough that little of the character's echo comes along with it.
  */
 export const PREROLL_MS = 1500;
+/** A voice-started turn while the character is speaking (a barge-in) keeps only about the over-speech gate's window
+ * (HANDS_FREE_OVER_SPEECH.minSpeechMs): before that the mic hears the character, and any echo leak would be transcribed. */
+export const BARGE_PREROLL_MS = 500;
 /** A turn started by the mic button while hands-free is on keeps only this much (the reader presses, then speaks). */
 const PRESS_PREROLL_MS = 300;
 
@@ -236,10 +239,10 @@ export class TalkClient implements TalkSession {
    * first, so the words spoken before the gate decided it was speech are kept (#114). A press keeps only ~300 ms.
    * Without hands-free nothing was captured before, so push-to-talk starts from the press as always.
    */
-  async startMic(voiceStarted = false): Promise<void> {
+  async startMic(voiceStarted = false, overSpeech = false): Promise<void> {
     this.micOn = true;
     this.commitWhenOpen = false;
-    const keepMs = voiceStarted ? PREROLL_MS : PRESS_PREROLL_MS;
+    const keepMs = voiceStarted ? (overSpeech ? BARGE_PREROLL_MS : PREROLL_MS) : PRESS_PREROLL_MS;
     const pre = this.recent.splice(0);
     this.recentMs = 0;
     let from = pre.length;

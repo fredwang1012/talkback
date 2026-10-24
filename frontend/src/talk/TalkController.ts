@@ -39,8 +39,9 @@ export interface TalkSession {
   /**
    * Start streaming mic audio; audio captured while the socket is still connecting is buffered then sent.
    * `voiceStarted`: the hands-free voice gate opened the turn, so the pre-roll from before it goes first (#114).
+   * `overSpeech`: it opened while the character was speaking (a barge-in): only a short pre-roll, the rest is echo.
    */
-  startMic(voiceStarted?: boolean): Promise<void>;
+  startMic(voiceStarted?: boolean, overSpeech?: boolean): Promise<void>;
   /** Stop the mic. With `discard`, drop what was captured instead of keeping it for a commit. */
   stopMic(discard?: boolean): Promise<void>;
   commit(): void;
@@ -250,7 +251,7 @@ export class TalkController {
     const now = this.d.now();
     const overSpeech = this._state !== "listening" && (this.speaking || now - this.quietSince < TalkController.ECHO_TAIL_MS);
     const ev = this.gate.feed(rms, now, overSpeech ? HANDS_FREE_OVER_SPEECH : undefined);
-    if (ev === "start" && ["reading", "talk-idle", "answering", "resuming"].includes(this._state)) void this.beginTurn(true);
+    if (ev === "start" && ["reading", "talk-idle", "answering", "resuming"].includes(this._state)) void this.beginTurn(true, overSpeech);
     else if (ev === "stop" && this._state === "listening") { this.handsFreeTurn = true; void this.pttUp(); } // a pressed turn ends on silence too, and is never a tap
   }
 
@@ -258,7 +259,7 @@ export class TalkController {
 
   pttDown(): Promise<void> { return this.beginTurn(false); }
 
-  private async beginTurn(handsFree: boolean): Promise<void> {
+  private async beginTurn(handsFree: boolean, overSpeech = false): Promise<void> {
     this.handsFreeTurn = handsFree;
     this.clearResumeTimer(); // pressing during the 1.5 s window starts a follow-up question
     const turn = ++this.turn;
@@ -287,7 +288,7 @@ export class TalkController {
       : Promise.resolve();
     const connecting = this.d.session.ensureOpen(this.d.voiceFor(this.speakerId)).catch((e: unknown) => this.fail(turn, e));
     this.opening = Promise.all([interrupting, connecting]).then(() => undefined);
-    try { await this.d.session.startMic(handsFree); } catch (e) { this.fail(turn, e, micErrorMessage(e)); }
+    try { await this.d.session.startMic(handsFree, handsFree && overSpeech); } catch (e) { this.fail(turn, e, micErrorMessage(e)); }
   }
 
   async pttUp(): Promise<void> {
