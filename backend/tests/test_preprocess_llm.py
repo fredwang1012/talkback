@@ -185,3 +185,41 @@ def test_trim_words_caps_runaway_summaries():
     assert trim_words("short note.") == "short note."
     long = " ".join(["word"] * 400)
     assert len(trim_words(long).split()) <= 150
+
+
+# ---------- textbook mode ----------
+
+from cast import TUTOR_VOICE, cast_textbook  # noqa: E402
+from segment import Pick, PickResult, apply_emphasis, emphasize_textbook  # noqa: E402
+
+
+def test_cast_textbook_has_no_characters_and_a_tutor_voice():
+    book = make_book("textbook")
+    cast_textbook(book)
+    assert book.characters == [] and book.narrator.voice == TUTOR_VOICE and book.narrator.is_character is None
+
+
+def test_apply_emphasis_tiles_the_paragraph():
+    text = "Plants use light. It is astonishing how much energy arrives. Then sugar forms."
+    segs = apply_emphasis(text, "It is astonishing how much energy arrives.", "awe")
+    assert [s.emotion for s in segs] == [None, "awe", None]
+    assert " ".join(s.text for s in segs) == text
+    assert apply_emphasis(text, "not in the text", "awe") is None
+
+
+def test_emphasize_textbook_only_applies_verbatim_picks_and_defaults_to_narrator():
+    book = make_book("textbook", n=10, cast=False)
+    for p in book.paragraphs:
+        p.text = f"Plain fact {p.idx}. Striking claim {p.idx}!"
+    seen = []
+
+    async def fake(model, system, user, schema, **kw):
+        seen.append(user)
+        return PickResult(picks=[Pick(para=3, sentence="Striking claim 3!", emotion="awe"),
+                                 Pick(para=4, sentence="invented sentence", emotion="awe")])
+
+    n = run(emphasize_textbook(book, fake))
+    assert n == 1
+    assert [s.emotion for s in book.paragraphs[3].segments] == [None, "awe"]
+    assert all(len(p.segments) >= 1 and p.segments[0].speaker == "narrator" for p in book.paragraphs)
+    assert len(seen) == 1  # one call per non-empty section (section 2 has no paragraphs)

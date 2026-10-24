@@ -3,6 +3,10 @@
 Usage: uv run --project backend python preprocess/ingest.py --book scandal-in-bohemia
 Idempotent. Running later stages (cast, segment, ...) fills in the rest of book.json; re-running ingest
 keeps existing characters/narrator/summaries/segments only if paragraph text is unchanged.
+
+Meta keys: book_id, title, author, kind (novel|textbook), license, attribution, and optionally
+start_marker / end_marker (text boundaries), heading_regex (a block that matches starts a new section; default is a
+roman numeral line) and skip_regex (blocks that match are dropped: figure credits, link lists, exercises).
 """
 import argparse
 import re
@@ -17,6 +21,7 @@ from app.schema import Book, Paragraph, Section  # noqa: E402
 
 ROMAN = re.compile(r"^[IVXLC]+\.$")
 CURLY = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
+BLANK_LINE = re.compile(r"\n\s*\n")
 
 
 def normalize(text: str) -> str:
@@ -25,28 +30,45 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def parse(raw: str, start_marker: str, end_marker: str | None):
-    raw = raw.replace("\r\n", "\n")
-    # skip the Gutenberg header/footer and any table of contents before the real body
-    body_start = raw.index("*** START OF")
-    start = raw.index(start_marker, raw.index("\n", body_start))
-    # first occurrence after the TOC: take the LAST occurrence before the first prose paragraph
-    # is overkill; the TOC lists titles without the exact "I. TITLE" heading twice, so use the heading
-    occurrences = [m.start() for m in re.finditer(re.escape(start_marker), raw[body_start:])]
-    start = body_start + occurrences[-1] if len(occurrences) > 1 else start
-    end = raw.index(end_marker, start) if end_marker else raw.index("*** END OF", start)
-    body = raw[raw.index("\n", start) : end]
+def parse(raw: str, start_marker: str | None, end_marker: str | None,
+          heading_regex: str | None = None, skip_regex: str | None = None):
+    """Split `raw` into sections and paragraphs.
 
+    Gutenberg texts: the body lies between *** START OF / *** END OF and sections are roman-numeral lines.
+    Plain texts (textbooks) need no Gutenberg markers.
+    """
+    raw = raw.replace("\r\n", "\n")
+    gutenberg = "*** START OF" in raw
+    body_start = raw.index("*** START OF") if gutenberg else 0
+    start = body_start
+    if start_marker:
+        # the TOC lists titles without the exact "I. TITLE" heading twice, so use the LAST occurrence
+        occurrences = [m.start() for m in re.finditer(re.escape(start_marker), raw[body_start:])]
+        if not occurrences:
+            raise ValueError(f"start_marker not found: {start_marker!r}")
+        start = body_start + (occurrences[-1] if len(occurrences) > 1 else occurrences[0])
+    if end_marker:
+        end = raw.index(end_marker, start)
+    else:
+        end = raw.index("*** END OF", start) if gutenberg else len(raw)
+    newline = raw.find("\n", start, end)
+    body = raw[(newline if newline >= 0 else start):end] if start_marker else raw[start:end]
+
+    heading = re.compile(heading_regex) if heading_regex else None
+    skip = re.compile(skip_regex) if skip_regex else None
     sections: list[Section] = []
     paragraphs: list[Paragraph] = []
     current = None
-    for block in re.split(r"\n\s*\n", body):
+    for block in BLANK_LINE.split(body):
         block = block.strip()
         if not block:
             continue
-        if ROMAN.match(block):
-            current = Section(id=f"s{len(sections) + 1}", title=block, start_para=len(paragraphs))
+        is_heading = bool(heading.match(block)) if heading else bool(ROMAN.match(block))
+        if is_heading:
+            current = Section(id=f"s{len(sections) + 1}", title=normalize(block), start_para=len(paragraphs))
             sections.append(current)
+            continue
+        if skip and skip.search(block):
             continue
         if current is None:
             current = Section(id="s1", title="", start_para=len(paragraphs))
@@ -66,9 +88,12 @@ def main() -> None:
     meta = next((m for m in metas if m["book_id"] == args.book), None)
     if meta is None:
         sys.exit(f"No data/raw/*.meta.yaml with book_id={args.book}")
-    txt = next(p for p in (ROOT / "data/raw").glob("*.txt") if (p.with_suffix(".meta.yaml").exists()
-               and yaml.safe_load(p.with_suffix(".meta.yaml").read_text(encoding="utf-8"))["book_id"] == args.book))
-    sections, paragraphs = parse(txt.read_text(encoding="utf-8"), meta["start_marker"], meta.get("end_marker"))
+    txt = next((p for p in (ROOT / "data/raw").glob("*.txt") if (p.with_suffix(".meta.yaml").exists()
+                and yaml.safe_load(p.with_suffix(".meta.yaml").read_text(encoding="utf-8"))["book_id"] == args.book)), None)
+    if txt is None:
+        sys.exit(f"No text file for {args.book}: put the text in data/raw/<name>.txt next to its .meta.yaml")
+    sections, paragraphs = parse(txt.read_text(encoding="utf-8"), meta.get("start_marker"), meta.get("end_marker"),
+                                 meta.get("heading_regex"), meta.get("skip_regex"))
 
     out = ROOT / "data/books" / args.book / "book.json"
     old = Book.model_validate_json(out.read_text(encoding="utf-8")) if out.exists() else None

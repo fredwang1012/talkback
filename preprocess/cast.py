@@ -55,6 +55,15 @@ Rules:
 - Paragraphs are numbered [0], [1], ... Use those numbers for first_para."""
 
 
+TUTOR_VOICE = "marcus"  # enthusiastic, professorial: the brief's choice for textbook narration
+
+
+def cast_textbook(book: Book) -> None:
+    """Textbooks have no characters: one narrator/tutor voice, no LLM call (the tutor persona lives in personas.py)."""
+    book.characters = []
+    book.narrator = Narrator(voice=TUTOR_VOICE, is_character=None)
+
+
 def numbered(book: Book) -> str:
     return "\n\n".join(f"[{p.idx}] {p.text}" for p in book.paragraphs)
 
@@ -74,6 +83,11 @@ async def main() -> None:
     args = ap.parse_args()
     path = llm.ROOT / "data/books" / args.book / "book.json"
     book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+    if book.kind == "textbook":
+        cast_textbook(book)
+        path.write_text(book.model_dump_json(indent=1), encoding="utf-8")
+        print(f"Textbook: no characters; narrator/tutor voice={TUTOR_VOICE}. No LLM call made.")
+        return
 
     user = f'Title: "{book.title}" by {book.author}\n\n{numbered(book)}'
     est = llm.estimate_cost(MODEL, len(SYSTEM) + len(user), 3000)

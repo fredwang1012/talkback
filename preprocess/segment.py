@@ -111,15 +111,83 @@ async def segment_paragraph(book: Book, p: Paragraph, call: CallFn, refusal_exc:
     return narrator_only(p.text), "fallback"
 
 
+# ---------- textbooks: single narrator segment per paragraph, plus the occasional awe/enthusiasm sentence ----------
+
+class Pick(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    para: int
+    sentence: str
+    emotion: Literal["awe", "enthusiasm"]
+
+
+class PickResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    picks: list[Pick]
+
+
+EMPHASIS_SYSTEM = """You help a tutor read a science textbook aloud with natural expression.
+From the numbered paragraphs, pick the few sentences that are genuinely striking (a surprising scale, a key insight,
+an elegant mechanism). At most one sentence per paragraph and at most one pick per five paragraphs.
+Copy each sentence exactly as written. emotion is "awe" or "enthusiasm"."""
+
+
+def apply_emphasis(text: str, sentence: str, emotion: str) -> list[Segment] | None:
+    """Split `text` around `sentence` (narrator throughout) so the picked sentence carries the emotion. None if absent."""
+    sentence = sentence.strip()
+    at = text.find(sentence) if sentence else -1
+    if at < 0:
+        return None
+    parts = [(text[:at].strip(), None), (sentence, emotion), (text[at + len(sentence):].strip(), None)]
+    return [Segment(speaker="narrator", text=t, emotion=e) for t, e in parts if t]  # type: ignore[arg-type]
+
+
+async def emphasize_textbook(book: Book, call: Callable[..., Awaitable[PickResult]]) -> int:
+    """Fill segments for every paragraph; returns how many sentences received an emotion."""
+    for p in book.paragraphs:
+        p.segments = narrator_only(p.text)
+    applied = 0
+    for section in book.sections:
+        paras = [p for p in book.paragraphs if p.section_id == section.id]
+        if not paras:
+            continue
+        user = "\n\n".join(f"[{p.idx}] {p.text}" for p in paras)
+        result = await call(MODEL, EMPHASIS_SYSTEM, user, PickResult, max_tokens=1500, effort="low")
+        taken: set[int] = set()
+        for pick in result.picks[: max(1, len(paras) // 5)]:
+            target = next((p for p in paras if p.idx == pick.para), None)
+            if target is None or pick.para in taken:
+                continue
+            segs = apply_emphasis(target.text, pick.sentence, pick.emotion)
+            if segs:
+                target.segments, applied = segs, applied + 1
+                taken.add(pick.para)
+    return applied
+
+
 async def main() -> None:
     import llm
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--book", required=True)
     ap.add_argument("--yes", action="store_true")
+    ap.add_argument("--emphasis", action="store_true", help="textbooks: let Haiku pick a few awe/enthusiasm sentences")
     args = ap.parse_args()
     path = llm.ROOT / "data/books" / args.book / "book.json"
     book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+    if book.kind == "textbook":
+        if args.emphasis:
+            est = llm.estimate_cost(MODEL, sum(len(p.text) for p in book.paragraphs), 150 * len(book.sections), calls=len(book.sections))
+            print(f"segment (textbook emphasis): {len(book.sections)} calls to {MODEL}, estimated ${est:.3f}")
+            n = await emphasize_textbook(book, llm.call_structured)
+            print(f"{n} sentences got an emotion")
+            llm.print_usage()
+        else:
+            for p in book.paragraphs:
+                p.segments = narrator_only(p.text)
+            print("textbook: one narrator segment per paragraph (use --emphasis for awe/enthusiasm picks)")
+        path.write_text(book.model_dump_json(indent=1), encoding="utf-8")
+        print("Next: rerun chunk_tts.py.")
+        return
     if book.kind == "novel" and not book.characters:
         sys.exit("No cast yet: run cast.py first.")
 
