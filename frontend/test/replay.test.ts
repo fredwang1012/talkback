@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createReplayPlayer, createReplayStore, pcmToWav, runSentences, MAX_REPLAYS } from "../src/talk/replay";
+import { createReplayPlayer, createReplayStore, pcmToWav, runPcm, runSentences, MAX_REPLAYS } from "../src/talk/replay";
 import type { SentenceSpeaker } from "../src/talk/sentencePlayer";
 
 const clip = { audio_url: "/a.mp3" };
@@ -95,5 +95,52 @@ describe("replay player", () => {
     const { player, runs } = mk();
     player.toggle(9);
     expect(runs.length).toBe(0);
+  });
+});
+
+describe("replay pause / resume (#90)", () => {
+  it("a run that can pause is paused and resumed by toggling; another reply stops it", () => {
+    const store = createReplayStore();
+    store.addPcm(1, "AA=="); store.addPcm(2, "AA==");
+    const log: string[] = [];
+    const changes: (number | null)[] = [];
+    const player = createReplayPlayer(store, (item) => {
+      const id = item === store.get(1) ? 1 : 2;
+      return { done: new Promise<void>(() => {}), stop: () => log.push(`stop${id}`), pause: () => log.push(`pause${id}`), resume: () => { log.push(`resume${id}`); return true; } };
+    }, (p) => changes.push(p));
+    player.toggle(1);
+    player.toggle(1);
+    expect(player.playing()).toBeNull();
+    expect(player.paused()).toBe(1);
+    player.toggle(1);
+    expect(player.playing()).toBe(1);
+    expect(player.paused()).toBeNull();
+    player.toggle(1); // pause again
+    player.toggle(2); // a paused reply is dropped when another plays
+    expect(log).toEqual(["pause1", "resume1", "pause1", "stop1"]);
+    expect(player.playing()).toBe(2);
+    expect(player.paused()).toBeNull();
+    expect(changes.filter((c, i) => c !== changes[i - 1])).toEqual([1, null, 1, null, 2]);
+  });
+
+  it("runSentences pauses and resumes its speaker", () => {
+    const f = fakeSpeaker();
+    const sp = { ...f.sp, pause: vi.fn(), resume: vi.fn(() => true) };
+    const r = runSentences([{ text: "a" }], sp);
+    r.pause?.();
+    expect(r.resume?.()).toBe(true);
+    expect(sp.pause).toHaveBeenCalled();
+    expect(sp.resume).toHaveBeenCalled();
+  });
+
+  it("runPcm pauses the audio element and plays it on from there", () => {
+    const a = { onended: null, onerror: null, play: vi.fn(() => Promise.resolve()), pause: vi.fn() } as unknown as HTMLAudioElement;
+    const url = globalThis.URL as unknown as { createObjectURL?: unknown; revokeObjectURL?: unknown };
+    url.createObjectURL ??= () => "blob:x"; url.revokeObjectURL ??= () => {};
+    const r = runPcm(["AA=="], () => a);
+    r.pause?.();
+    expect(a.pause).toHaveBeenCalled();
+    r.resume?.();
+    expect(a.play).toHaveBeenCalledTimes(2);
   });
 });

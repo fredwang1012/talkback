@@ -348,3 +348,30 @@ describe("TalkController speaking flag", () => {
     expect(flags).toEqual([true, false]);
   });
 });
+
+describe("pause / resume of a Realtime answer (#90)", () => {
+  it("holds the session playback and resumes it; Stop still interrupts", async () => {
+    const h = setup();
+    const calls: string[] = [];
+    Object.assign(h.session, { pausePlayback: async () => { calls.push("hold"); }, resumePlayback: async () => { calls.push("go"); } });
+    await ask(h);
+    await tick(0);
+    expect(h.talk.state).toBe("answering");
+    h.session.emit({ type: "audio-start" });
+    expect(h.talk.pauseAnswer()).toBe(true);
+    expect(h.talk.answerPaused).toBe(true);
+    expect(h.talk.resumeAnswer()).toBe(true);
+    expect(calls).toEqual(["hold", "go"]);
+    h.talk.pauseAnswer();
+    await h.talk.stop();
+    expect(h.talk.answerPaused).toBe(false);
+    expect(h.session.calls).toContain("interrupt");
+  });
+
+  it("cannot pause a session without playback control", async () => {
+    const h = setup();
+    await ask(h);
+    await tick(0);
+    expect(h.talk.pauseAnswer()).toBe(false);
+  });
+});

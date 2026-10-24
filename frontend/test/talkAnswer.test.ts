@@ -35,7 +35,10 @@ class FakeSpeaker {
   gates: Record<string, () => void> = {};
   play = (text: string) => new Promise<void>((resolve) => { this.log.push(`play:${text}`); this.gates[text] = resolve; });
   prefetch = (text: string) => { this.log.push(`prefetch:${text}`); };
-  stop = () => { this.log.push("stop"); Object.values(this.gates).forEach((g) => g()); };
+  stop = () => { this.log.push("stop"); this.paused = false; Object.values(this.gates).forEach((g) => g()); };
+  paused = false;
+  pause = () => { this.log.push("pause"); this.paused = true; };
+  resume = () => { this.log.push("resume"); const was = this.paused; this.paused = false; return was; };
 }
 
 const tick = (ms: number) => vi.advanceTimersByTimeAsync(ms);
@@ -217,5 +220,40 @@ describe("speaking follows the audio", () => {
     expect(speaking).toEqual([true]);
     h.talk.notePlaying(false);
     expect(speaking).toEqual([true, false]);
+  });
+});
+
+describe("pause / resume of the live answer (#90)", () => {
+  it("pauses the speaker where it is and resumes it, staying in the same answer", async () => {
+    const h = setup();
+    await ask(h);
+    expect(h.talk.pauseAnswer()).toBe(false); // nothing is being said yet
+    h.stream.emit("One.");
+    h.stream.emit("Two.");
+    await tick(0);
+    expect(h.talk.pauseAnswer()).toBe(true);
+    expect(h.talk.answerPaused).toBe(true);
+    expect(h.speaker.log).toContain("pause");
+    await tick(20000); // a long pause is not a timeout
+    expect(h.talk.state).toBe("answering");
+    expect(h.talk.resumeAnswer()).toBe(true);
+    expect(h.talk.answerPaused).toBe(false);
+    await end(h, "One.");
+    h.stream.finish();
+    await end(h, "Two.");
+    expect(h.talk.state).toBe("resuming");
+    expect(h.speaker.log.filter((l) => l.startsWith("play:"))).toEqual(["play:One.", "play:Two."]);
+  });
+
+  it("a new question while paused cancels the paused answer", async () => {
+    const h = setup();
+    await ask(h);
+    h.stream.emit("One.");
+    await tick(0);
+    h.talk.pauseAnswer();
+    await h.talk.pttDown();
+    expect(h.talk.answerPaused).toBe(false);
+    expect(h.speaker.log).toContain("stop");
+    expect(h.talk.resumeAnswer()).toBe(false);
   });
 });

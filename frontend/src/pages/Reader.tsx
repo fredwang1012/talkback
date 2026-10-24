@@ -2,7 +2,7 @@ import { isAutoplayBlock } from "../audio/mediaErrors";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getAccessToken, setAccessToken } from "../accessToken";
 import {
-  avatarUrl, fetchAvatars, fetchBook, fetchCast, fetchFaces, fetchHealth, fetchTts, fetchVoices, speak,
+  avatarUrl, fetchAvatars, fetchBook, fetchCast, fetchFaces, fetchHealth, fetchTts, fetchVoices, speak, fetchScopedRecap,
   type Book, type Cast, type Face, type Health,
 } from "../api";
 import {
@@ -12,7 +12,8 @@ import {
 import { DEMO_SPEAKER, DEMO_START_PARA, firstChunkAtOrAfter, isDemo } from "../demo";
 import BookText from "../reader/BookText";
 import PlayerBar from "../reader/PlayerBar";
-import RecapPanel from "../reader/RecapPanel";
+import RecapPanel, { nothingYet, recapHeading } from "../reader/RecapPanel";
+import type { RecapChoice } from "../reader/RecapMenu";
 import { ReaderEngine, type AudioLike, type ClipSource } from "../reader/ReaderEngine";
 import type { FollowAudio } from "../reader/clipFollow";
 import { AudioLevelMeter } from "../reader/audioLevel";
@@ -56,7 +57,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [code, setCode] = useState(getAccessToken());
   const [remember, setRemember] = useState(true);
   const [labOpen, setLabOpen] = useState(false);
-  const [recapOpen, setRecapOpen] = useState(false);
+  const [recapOpen, setRecapOpen] = useState<RecapChoice | null>(null); // text-only recap (no Talkback without a voice)
   const [cast, setCast] = useState<Cast>(emptyCast);
   const [castLoaded, setCastLoaded] = useState(false); // false until the saved cast arrived: then the server picks voices
   const castEdited = useRef(false); // a local edit happened: late server loads must not overwrite it
@@ -220,6 +221,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     spoilers: spoilers && book?.kind === "novel",
     talkback: mode === "talk",
     voiceFor: talkVoiceFor,
+    narratorVoice: audioAvailable ? narratorVoice : null,
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
       currentIndex: () => indexRef.current,
@@ -268,6 +270,18 @@ export default function Reader({ bookId }: { bookId: string }) {
     if (m === "talk") { if (engineRef.current) engineRef.current.pause(); else setPlaying(false); }
     else stopTalkRef.current(); // leaving Talkback silences the character; the reading position is untouched
   }, []);
+
+  /** Recap menu: the narrator posts the chosen recap into the Talkback chat and reads it aloud (text panel without a voice). */
+  const recap = (c: RecapChoice) => {
+    if (!book) return;
+    if (!audioAvailable) { setRecapOpen(c); return; }
+    if (mode !== "talk") changeMode("talk");
+    const at = para;
+    void talk.narrate(c.label, async () => {
+      const r = await fetchScopedRecap(book.id, at, c.scope);
+      return { text: r.text, heading: recapHeading(c, r), empty: nothingYet(at) };
+    });
+  };
 
   const seek = useCallback((i: number) => {
     const next = clampIndex(i, chunks.length);
@@ -382,7 +396,7 @@ export default function Reader({ bookId }: { bookId: string }) {
                           lipSyncable={lipSyncable} lipSync={lipSync}
                           onLipSync={(on) => { setLipSync(on); try { localStorage.setItem("talkback:lipsync", on ? "1" : "0"); } catch { /* storage blocked */ } }}
                           portrait={book.characters.find((c) => c.id === speakerId)?.portrait ?? book.narrator?.portrait ?? null}
-                          onBack={() => changeMode("read")} onRecap={() => setRecapOpen(true)} onVoices={() => setLabOpen(true)} />
+                          onBack={() => changeMode("read")} onRecap={recap} onVoices={() => setLabOpen(true)} />
           ) : (
             <BookText book={book} chunks={chunks} index={index} word={word}
                       onPick={(i) => { lastManualScroll.current = Date.now(); seek(i); }} />
@@ -411,12 +425,11 @@ export default function Reader({ bookId }: { bookId: string }) {
                   onPreview={preview} audioAvailable={audioAvailable} onClose={() => setLabOpen(false)} />
       )}
       {recapOpen && (
-        <RecapPanel bookId={book.id} para={para} voice={audioAvailable ? narratorVoice : null}
-                    onClose={() => setRecapOpen(false)} />
+        <RecapPanel bookId={book.id} para={para} choice={recapOpen} onClose={() => setRecapOpen(null)} />
       )}
       {debugEnabled() && <DebugDrawer entries={talk.logs} spend={spendNow} />}
       {mode === "read" && <PlayerBar
-        playing={playing} loading={loading} onToggle={toggle} onRecap={() => setRecapOpen(true)}
+        playing={playing} loading={loading} onToggle={toggle} onRecap={recap} inSeries={!!book.series}
         onPrev={() => { lastManualScroll.current = 0; step(-1); }} onNext={() => { lastManualScroll.current = 0; step(1); }}
         speed={speed} speeds={SPEEDS} onSpeed={setSpeed}
         onVoices={() => setLabOpen(true)}

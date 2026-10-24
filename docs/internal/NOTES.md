@@ -580,3 +580,30 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
 - Gender (backend/app/genders.py, free, offline): title/noun in the name, first-name list, tag pronouns (attribute.infer_genders, >=3 and 85%), then the cast preset's gender. All 40 characters of the five classics and the 47 of HP1 + HP5 come out right (it also fixes Fred in A Christmas Carol and Mole, both cast with a female preset). Unknown -> narrator's voice.
 - Character pitch/speed tags are dropped in two-voice mode, so character lines are new TTS cache keys: the first read of a book in two-voice mode re-synthesises its dialogue (narration keeps its cache because the narrator's slot defaults to the book's narrator voice). Demo mode (cached_only) needs a prerender in two-voice mode or Full cast.
 - Minor pass on the classics, dry run only (not applied): Alice 205, Carol 119, Peter Pan 140, Willows 45, Oz 101 uncast lines would get a stand-in (610 total: 561 male, 49 female).
+
+## Recap menu (#89, 2026-10-23)
+- `GET /api/books/{id}/recap?para=&scope=chapter|book|series` (backend/app/recap.py). No model call: built from stored
+  "story so far" summaries, all with `upto_para <= para`. "Last chapter" = the last chapter the reader finished (in the
+  first chapter: that chapter so far). Its part is the text after "The current chapter so far:" when the note has that
+  mark (uploads, Alice, Oz, Peter Pan, Carol, Willows); for rolling notes without it (HP) the sentences the note before
+  the chapter did not already say (>= 60% content-word overlap = old), else the whole note.
+- The recap is posted into the Talkback chat as a `narrator` message and read aloud in the narrator voice. It is NOT
+  sent to the model and is left out of the chat memory (`priorTurns`): it is not a turn of the conversation, and the
+  answer prompt already carries the spoiler-safe story so far, so including it would only spend prompt budget.
+
+## Play/pause on every reply (#90, 2026-10-23)
+- The answer being spoken shows its play/pause button from its first sentence. Pause holds it in place and the turn
+  stays open (a question or Stop still cancels it): Gemini path = `SentenceSpeaker.pause()` (the clip's audio element is
+  paused; faceSync freezes the face on the voice's `pause` event and resumes it on `playing`); Realtime path =
+  `RingPlayer.pausePlayback()` suspends the AudioContext, so the worklet stops mid-buffer and the rest of the reply
+  queues in the ring (180 s cap); a flush (barge-in/Stop) wakes it first so truncation still gets the played ms.
+  A session without playback control falls back to Stop (the reply can be replayed afterwards).
+- Finished replies replay; a playing replay now pauses/resumes too. One voice at a time: starting any reply pauses or
+  stops the others (a paused live answer is stopped when another reply is played).
+- Not changed (other agents own it): while the live answer is paused the status line may read "Thinking…".
+
+## Resume mid-sentence (#88, 2026-10-23)
+- Read-aloud (narrator recaps) pauses through `SentenceSpeaker.pause()`: the clip's audio element is paused and kept,
+  and Resume plays it on from that moment. Up to 3 paused texts keep their clip; past that, or when the clip is gone
+  (stopped), Resume restarts the part it was on. The lip-sync video, when there is one, pauses and resumes with the
+  voice (faceSync follows the voice's pause/playing events). Chat replies (live and replays) use the same speaker pause.

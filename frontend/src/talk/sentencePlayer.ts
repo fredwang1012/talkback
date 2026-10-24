@@ -8,6 +8,10 @@
  * from 0. A rank-0 prefetch opens the next sentence's stream early, so usually only the first sentence of an answer
  * waits. Once the voice plays, nothing waits for the face again. `hooks.onPlaying` reports whether sound is actually
  * coming out, which is what the face follows.
+ *
+ * Pause / resume (#90, #88): `pause` pauses the playing clip where it is (the lip-sync face freezes with it: faceSync
+ * follows the voice's pause/playing events) and holds back any sentence that has not started yet; `resume` plays the
+ * same clip on from that moment. `stop` ends a paused sentence like a playing one.
  */
 
 import type { TimingEvent } from "./speechGate";
@@ -18,6 +22,11 @@ export interface SentenceSpeaker {
   prefetch(text: string, rank?: number): void;
   play(text: string): Promise<void>;
   stop(): void;
+  /** Hold the voice at this moment (a sentence not started yet waits too). Optional: test doubles may lack it. */
+  pause?(): void;
+  /** Continue from the moment it was paused. False when there is nothing to continue (not paused, or stopped since). */
+  resume?(): boolean;
+  readonly paused?: boolean;
 }
 
 export interface AudioLike {
@@ -76,8 +85,10 @@ export function createSentenceSpeaker(
 ): SentenceSpeaker {
   const now = hooks.now ?? (() => Date.now());
   const pending = new Map<string, Entry>();
-  let current: { audio: AudioLike; settle: () => void } | null = null;
+  let current: { audio: AudioLike; settle: () => void; started: () => boolean } | null = null;
   let epoch = 0; // bumped by stop(), so a clip that was still synthesising never starts
+  let paused = false;
+  let held: (() => void) | null = null; // a voice start that waits for resume
 
   const emit = (stage: TimingEvent["stage"], since: number, text: string) =>
     hooks.onTiming?.({ stage, ms: Math.max(0, now() - since), sentence: text.slice(0, 40) });
@@ -146,7 +157,8 @@ export function createSentenceSpeaker(
         };
         const settle = () => { teardown(); resolve(); };
         const fail = (e: Error) => { teardown(); reject(e); };
-        current = { audio, settle };
+        let voiceAsked = false;
+        current = { audio, settle, started: () => voiceAsked };
         const playing = () => {
           if (over) return;
           if (!started) { started = true; emit("audio-start", asked, text); }
@@ -158,9 +170,9 @@ export function createSentenceSpeaker(
         on("playing", playing);
         on("pause", quiet);
         on("waiting", quiet);
-        let voiceAsked = false;
         const startVoice = () => {
           if (over || voiceAsked) return;
+          if (paused) { held = startVoice; return; } // resume starts it
           voiceAsked = true;
           Promise.resolve(audio.play()).then(
             () => { if (!audio.addEventListener) playing(); }, // test doubles without media events
@@ -175,8 +187,28 @@ export function createSentenceSpeaker(
         void gate.ready.then(() => { if (!voiceAsked && !over) { emit("face-wait", waitFrom, text); startVoice(); } });
       });
     },
+    get paused() { return paused; },
+    pause() {
+      if (paused) return;
+      paused = true;
+      if (current?.started()) current.audio.pause();
+    },
+    resume() {
+      if (!paused) return false;
+      paused = false;
+      const h = held;
+      held = null;
+      if (h) h();
+      else if (current?.started()) {
+        const a = current.audio;
+        Promise.resolve(a.play()).catch(() => a.onerror?.());
+      }
+      return true;
+    },
     stop() {
       epoch++;
+      paused = false;
+      held = null;
       for (const e of pending.values()) void discard(e);
       pending.clear();
       const c = current;

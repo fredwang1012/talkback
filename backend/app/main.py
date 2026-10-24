@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from pydantic import BaseModel, Field
 
-from . import books, cast, faces, ingest_upload, public_client, retrieval, tts_cache, users, voices
+from . import books, cast, faces, ingest_upload, public_client, recap, retrieval, tts_cache, users, voices
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
@@ -223,14 +223,17 @@ def get_book(book_id: str, accept_encoding: str = Header(default="")):
 
 
 @app.get("/api/books/{book_id}/recap", dependencies=[Depends(require_access)])
-def get_recap(book_id: str, para: int = 0):
+def get_recap(book_id: str, para: int = 0, scope: recap.Scope | None = None):
     """Spoiler-safe "Previously..." for the reader's place: the latest stored summary written from text at or
-    before `para` (never a later one), the chapter they are in, and the closing summaries of earlier books."""
+    before `para` (never a later one), the chapter they are in, and the closing summaries of earlier books.
+    With `scope` (chapter | book | series, see recap.py) just that recap: {scope, upto_para, chapter, text}."""
     users.guard_book(book_id)
     book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
     _, para = retrieval._clamp(book, para)
+    if scope is not None:
+        return recap.scoped(book, para, scope)
     ok = [s for s in book.summaries if s.upto_para <= para]
     best = max(ok, key=lambda s: s.upto_para) if ok else None
     sections = [s for s in book.sections if s.start_para <= para]

@@ -175,3 +175,66 @@ describe("lip-sync start gate", () => {
     expect(g.release).toHaveBeenCalled();
   });
 });
+
+describe("pause and resume (#90, #88)", () => {
+  const evAudio = (url: string) => {
+    const l: Record<string, (() => void)[]> = {};
+    const a = {
+      url, onended: null as (() => void) | null, onerror: null, paused: true, currentTime: 0, plays: 0,
+      play() { a.plays++; a.paused = false; (l.playing || []).forEach((f) => f()); return Promise.resolve(); },
+      pause() { a.paused = true; (l.pause || []).forEach((f) => f()); },
+      addEventListener(t: string, f: () => void) { (l[t] ||= []).push(f); },
+      removeEventListener(t: string, f: () => void) { l[t] = (l[t] || []).filter((x) => x !== f); },
+    };
+    return a;
+  };
+
+  it("pause holds the clip at its place and resume continues the same clip", async () => {
+    const clips: ReturnType<typeof evAudio>[] = [];
+    const on: boolean[] = [];
+    const s = createSentenceSpeaker(async (t) => ({ audio_url: `/m/${t}` }), (u) => { const a = evAudio(u); clips.push(a); return a; }, { onPlaying: (x) => on.push(x) });
+    const done = s.play("a");
+    await vi.waitFor(() => expect(clips[0]?.plays).toBe(1));
+    clips[0].currentTime = 1.7;
+    s.pause!();
+    expect(s.paused).toBe(true);
+    expect(clips[0].paused).toBe(true);
+    expect(on.at(-1)).toBe(false); // the face goes quiet with the voice
+    expect(s.resume!()).toBe(true);
+    expect(clips).toHaveLength(1); // the same clip, not a new one
+    expect(clips[0].plays).toBe(2);
+    expect(clips[0].currentTime).toBe(1.7); // never rewound
+    expect(on.at(-1)).toBe(true);
+    clips[0].onended?.();
+    await done;
+  });
+
+  it("a sentence that has not started yet waits while paused, then starts on resume", async () => {
+    const clips: ReturnType<typeof evAudio>[] = [];
+    let release!: () => void;
+    const s = createSentenceSpeaker(() => new Promise((r) => { release = () => r({ audio_url: "/x" }); }), (u) => { const a = evAudio(u); clips.push(a); return a; });
+    const done = s.play("a");
+    s.pause!();
+    release();
+    await vi.waitFor(() => expect(clips).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(clips[0].plays).toBe(0);
+    s.resume!();
+    expect(clips[0].plays).toBe(1);
+    clips[0].onended?.();
+    await done;
+  });
+
+  it("stop ends a paused sentence; resume after stop has nothing to continue", async () => {
+    const clips: ReturnType<typeof evAudio>[] = [];
+    const s = createSentenceSpeaker(async () => ({ audio_url: "/x" }), (u) => { const a = evAudio(u); clips.push(a); return a; });
+    const done = s.play("a");
+    await vi.waitFor(() => expect(clips[0]?.plays).toBe(1));
+    s.pause!();
+    s.stop();
+    await done;
+    expect(s.paused).toBe(false);
+    expect(s.resume!()).toBe(false);
+    expect(clips[0].plays).toBe(1);
+  });
+});

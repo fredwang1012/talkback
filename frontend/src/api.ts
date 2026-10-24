@@ -112,6 +112,13 @@ export type Recap = { upto_para: number | null; chapter: string; text: string; e
 export const fetchRecap = (bookId: string, para: number) =>
   getJson<Recap>(`/api/books/${encodeURIComponent(bookId)}/recap?para=${Math.max(0, Math.floor(para))}`);
 
+/** Recap menu scopes: the last chapter, this book so far, the series so far (earlier books + this one so far). */
+export type RecapScope = "chapter" | "book" | "series";
+/** One scope's recap; `chapter` is the chapter it covers (scope "chapter") or the one the reader is in. Spoiler-safe. */
+export type ScopedRecap = { scope: RecapScope; upto_para: number | null; chapter: string; text: string };
+export const fetchScopedRecap = (bookId: string, para: number, scope: RecapScope) =>
+  getJson<ScopedRecap>(`/api/books/${encodeURIComponent(bookId)}/recap?para=${Math.max(0, Math.floor(para))}&scope=${scope}`);
+
 export type WordTiming = { start: number; end: number; char_start: number; char_end: number };
 export type TtsResponse = { chunk_id: string; voice: string; audio_url: string; timestamps: WordTiming[] | null; cached: boolean };
 

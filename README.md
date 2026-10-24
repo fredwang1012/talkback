@@ -44,7 +44,8 @@ nothing else to start. (On Windows PowerShell use `Copy-Item .env.example .env`.
    lights up, and the characters speak in their own voices.
 2. Open the **Voices** panel. **One voice** reads everything with the narrator; **Full cast** gives every speaking
    character their own voice and expressive delivery.
-3. Open **Recap** for a spoiler-safe "story so far" up to where you are.
+3. Open **Recap** and pick **Last chapter**, **This book so far** or **The series so far**: the narrator posts a
+   spoiler-safe recap (only up to where you are) into the Talkback chat and reads it aloud.
 4. Switch to **Talkback**, pick the **Cheshire Cat** (or the Queen of Hearts, or the Duchess), **hold Space** and ask
    a question out loud. Release to send it. Press Space again while it is talking to interrupt. Reading resumes from the
    same sentence.

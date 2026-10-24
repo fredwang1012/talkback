@@ -29,6 +29,8 @@ export class RingPlayer {
   private readonly onSpeakingChange?: (speaking: boolean) => void;
   /** Resolvers waiting for a `flushed` reply from the worklet. */
   private pendingFlush: Array<(ms: number) => void> = [];
+  /** Held by pausePlayback: the context is suspended on purpose, so new audio must not wake it. */
+  private held = false;
 
   constructor(onSpeakingChange?: (speaking: boolean) => void) {
     this.onSpeakingChange = onSpeakingChange;
@@ -94,7 +96,7 @@ export class RingPlayer {
   enqueueBase64(base64: string): void {
     if (!this.node) return;
     // Never let a context that went to sleep swallow a whole reply silently.
-    if (this.ctx?.state === "suspended") void this.ctx.resume().catch(() => {});
+    if (this.ctx?.state === "suspended" && !this.held) void this.ctx.resume().catch(() => {});
     const buf = base64ToBytes(base64);
     // The second argument transfers ownership of the buffer to the audio thread
     // instead of copying it. At ~120 chunks per reply the copies would add up.
@@ -120,13 +122,30 @@ export class RingPlayer {
    */
   flush(): Promise<number> {
     if (!this.node) return Promise.resolve(0);
+    if (this.held) { this.held = false; void this.ctx?.resume().catch(() => {}); } // the worklet must run to answer
     return new Promise((resolve) => {
       this.pendingFlush.push(resolve);
       this.node!.port.postMessage({ type: "flush" });
     });
   }
 
+  /**
+   * Pause the reply where it is: suspending the AudioContext stops the worklet mid-buffer, so nothing queued is lost
+   * and `resumePlayback` continues from the same sample. The played-sample counter stays right for truncation.
+   */
+  async pausePlayback(): Promise<void> {
+    this.held = true;
+    if (this.ctx?.state === "running") await this.ctx.suspend().catch(() => {});
+  }
+
+  async resumePlayback(): Promise<void> {
+    if (!this.held) return;
+    this.held = false;
+    if (this.ctx?.state === "suspended") await this.ctx.resume().catch(() => {});
+  }
+
   async close(): Promise<void> {
+    this.held = false;
     this.closed = true;
     const ctx = this.ctx;
     this.ctx = null;

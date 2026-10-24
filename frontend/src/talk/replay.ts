@@ -68,7 +68,8 @@ export function pcmToWav(chunks: string[], rate = AUDIO_RATE): Uint8Array<ArrayB
   return out;
 }
 
-export type ReplayRun = { done: Promise<void>; stop: () => void };
+/** A reply being played. `pause` holds it at this moment and `resume` continues it (#90); both optional. */
+export type ReplayRun = { done: Promise<void>; stop: () => void; pause?: () => void; resume?: () => boolean };
 
 /** Speak the parts in order. `stop` cancels for good: a stopped speaker must not go on to the next part. */
 export function runSentences(parts: { text: string }[], speaker: SentenceSpeaker): ReplayRun {
@@ -80,14 +81,19 @@ export function runSentences(parts: { text: string }[], speaker: SentenceSpeaker
       await speaker.play(p.text);
     }
   })();
-  return { done, stop: () => { cancelled = true; speaker.stop(); } };
+  return {
+    done, stop: () => { cancelled = true; speaker.stop(); },
+    pause: () => speaker.pause?.(), resume: () => speaker.resume?.() ?? false,
+  };
 }
 
 export interface ReplayPlayer {
-  /** Plays reply `id`, or stops it when it is the one playing. Anything else playing stops first. */
+  /** Plays reply `id`; when it is the one playing, pauses it (or stops it if it cannot pause); resumes it when paused.
+   * Anything else playing or paused stops first. */
   toggle(id: number): void;
   stop(): void;
   playing(): number | null;
+  paused(): number | null;
 }
 
 export function createReplayPlayer(
@@ -96,8 +102,8 @@ export function createReplayPlayer(
   onChange: (playing: number | null) => void,
   onError?: (e: unknown) => void,
 ): ReplayPlayer {
-  let current: { id: number; run: ReplayRun } | null = null;
-  const set = (c: typeof current) => { current = c; onChange(c ? c.id : null); };
+  let current: { id: number; run: ReplayRun; paused?: boolean } | null = null;
+  const set = (c: typeof current) => { current = c; onChange(c && !c.paused ? c.id : null); };
   const stop = () => {
     const c = current;
     if (!c) return;
@@ -106,9 +112,15 @@ export function createReplayPlayer(
   };
   return {
     stop,
-    playing: () => current?.id ?? null,
+    playing: () => (current && !current.paused ? current.id : null),
+    paused: () => (current?.paused ? current.id : null),
     toggle(id) {
-      if (current?.id === id) { stop(); return; }
+      const c = current;
+      if (c?.id === id) {
+        if (c.paused) { if (c.run.resume?.()) { set({ ...c, paused: false }); return; } stop(); }
+        else if (c.run.pause) { c.run.pause(); set({ ...c, paused: true }); return; }
+        else { stop(); return; }
+      }
       stop();
       const item = store.get(id);
       if (!item) return;
@@ -116,7 +128,7 @@ export function createReplayPlayer(
       try { r = run(item); } catch (e) { onError?.(e); return; }
       const mine = { id, run: r };
       set(mine);
-      r.done.then(() => {}, (e) => onError?.(e)).then(() => { if (current === mine) set(null); });
+      r.done.then(() => {}, (e) => onError?.(e)).then(() => { if (current?.run === r) set(null); });
     },
   };
 }
@@ -132,5 +144,9 @@ export function runPcm(chunks: string[], make: (url: string) => HTMLAudioElement
     audio.onerror = () => reject(new Error("Could not replay the reply."));
     Promise.resolve(audio.play()).catch(reject);
   }).finally(() => URL.revokeObjectURL(url));
-  return { done, stop: () => { audio.onended = null; audio.pause(); finish(); } };
+  return {
+    done, stop: () => { audio.onended = null; audio.pause(); finish(); },
+    pause: () => audio.pause(),
+    resume: () => { Promise.resolve(audio.play()).catch(() => audio.onerror?.(new Event("error"))); return true; },
+  };
 }

@@ -23,6 +23,9 @@ export interface PlayerLike {
   enqueueBase64(b64: string): void;
   /** Stop playback now; resolves with milliseconds actually handed to the audio output (audio_end_ms). */
   flush(): Promise<number>;
+  /** Hold playback where it is (queued audio is kept) and continue it. Optional. */
+  pausePlayback?(): Promise<void>;
+  resumePlayback?(): Promise<void>;
   reset(): void;
   close(): Promise<void>;
 }
@@ -233,6 +236,10 @@ export class TalkClient implements TalkSession {
     this.responseActive = true;
     this.send({ type: "response.create", response: { instructions, max_output_tokens: 600 } });
   }
+
+  /** Pause / resume the reply being played (#90): the rest of the reply keeps arriving and waits in the ring buffer. */
+  async pausePlayback(): Promise<void> { await this.player.pausePlayback?.(); }
+  async resumePlayback(): Promise<void> { await this.player.resumePlayback?.(); }
 
   /** Barge-in: stop playback, truncate the item at what was actually heard, cancel generation, wait for the ack. */
   async interrupt(): Promise<void> {

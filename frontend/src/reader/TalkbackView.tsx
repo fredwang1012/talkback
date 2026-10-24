@@ -3,6 +3,7 @@ import type { Book, Face as FaceT } from "../api";
 import type { TalkUi } from "../talk/useTalk";
 import { PRESETS, type TalkChoice } from "./castLogic";
 import { FaceView } from "./FaceView";
+import RecapMenu, { type RecapChoice } from "./RecapMenu";
 import { priorTurns } from "../talk/chatLog";
 import { chapterAt, createStatusGate, showSpoilerToggle, speakerChoices, speakerName, talkbackStatus, type TalkbackStatus } from "./talkbackLogic";
 
@@ -26,7 +27,7 @@ type Props = {
   onLipSync: (on: boolean) => void;
   portrait: string | null;
   onBack: () => void;
-  onRecap: () => void;
+  onRecap: (c: RecapChoice) => void; // a recap is posted into this chat by the narrator
   onVoices: () => void;
 };
 
@@ -98,7 +99,7 @@ export default function TalkbackView({
     <section className="talkback" aria-label="Talkback conversation">
       <div className="tb-top">
         <button className="link-btn" onClick={onBack}>Back to reading</button>
-        <button className="link-btn" onClick={onRecap}>Recap</button>
+        <RecapMenu inSeries={!!book.series} onPick={onRecap} />
         <button className="link-btn" onClick={onVoices}>Voices</button>
         <div className={`badge${fullBook ? " spoilers-on" : ""}`}>
           <strong>You're at {chapter ?? `paragraph ${para + 1}`}.</strong>
@@ -147,7 +148,7 @@ export default function TalkbackView({
           {face && lipSyncable && (
             <label className="lipsync">
               <input type="checkbox" checked={lipSync} onChange={(e) => onLipSync(e.target.checked)} />
-              Lip-synced face (answers start about 10 seconds later)
+              Lip-synced face (answers start about 2 seconds later)
             </label>
           )}
         </div>
@@ -158,17 +159,23 @@ export default function TalkbackView({
             {talk.messages.map((m) => (
               <div key={m.id} className={`bubble ${m.role}`}>
                 <span className="who-line">
-                  {m.role === "user" ? "You" : speakerName(book, m.speakerId)}
+                  {m.role === "user" ? "You" : m.role === "narrator" ? "Narrator" : speakerName(book, m.speakerId)}
                   {m.via === "typed" && m.role === "user" && <small> typed</small>}
+                  {m.role === "narrator" && m.recap && <small> · Recap: {m.recap}</small>}
                 </span>
-                <p>{m.text || (m.pending ? "…" : "")}</p>
-                {m.role === "character" && !m.pending && talk.replayable?.has(m.id) && (
-                  <button type="button" className="replay-btn" aria-pressed={talk.replayingId === m.id}
-                          aria-label={`${talk.replayingId === m.id ? "Pause" : "Play"} ${speakerName(book, m.speakerId)}'s reply again`}
-                          onClick={() => talk.replay(m.id)}>
-                    {talk.replayingId === m.id ? "❚❚" : "▶"}
-                  </button>
-                )}
+                <p>{m.text || (m.pending || m.loading ? "…" : "")}</p>
+                {m.role !== "user" && (m.id === talk.liveId ? !!m.text : !m.pending && talk.replayable?.has(m.id)) && (() => {
+                  const on = talk.replayingId === m.id;
+                  const verb = on ? "Pause" : talk.isPaused?.(m.id) ? "Resume" : "Play";
+                  const what = m.role === "narrator" ? "the narrator's recap"
+                    : `${speakerName(book, m.speakerId)}'s reply${m.id === talk.liveId ? "" : " again"}`;
+                  return (
+                    <button type="button" className="replay-btn" aria-pressed={on} aria-label={`${verb} ${what}`}
+                            onClick={() => talk.replay(m.id)}>
+                      {on ? "❚❚" : "▶"}
+                    </button>
+                  );
+                })()}
               </div>
             ))}
           </div>

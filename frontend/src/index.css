@@ -695,3 +695,12 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
   .choices { grid-template-columns: 1fr 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { .choice { transition: none; } }
+
+/* Recap menu (#89): a small drop-down from the Recap button; opens upward from the bottom player bar */
+.recap-menu { position: relative; display: inline-block; }
+.recap-menu-list { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; display: flex; flex-direction: column; min-width: 190px; padding: 4px; background: var(--ground-raised); border: 1px solid var(--brass-soft); border-radius: var(--radius); box-shadow: 0 8px 24px rgb(0 0 0 / 0.35); }
+.player .recap-menu-list { top: auto; bottom: calc(100% + 4px); }
+.recap-menu-list [role="menuitem"] { text-align: left; background: transparent; border: 0; border-radius: calc(var(--radius) - 2px); padding: 9px 12px; min-height: 40px; color: var(--ink); font: inherit; cursor: pointer; }
+.recap-menu-list [role="menuitem"]:hover, .recap-menu-list [role="menuitem"]:focus-visible { background: var(--brass-soft); outline: none; }
+.bubble.narrator { align-self: stretch; max-width: none; border-style: dashed; background: var(--ground-sunk); }
+.bubble.narrator .who-line small { text-transform: none; letter-spacing: 0; color: var(--ink-soft); font-weight: 400; }
