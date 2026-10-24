@@ -254,3 +254,29 @@ def test_attribution_with_dots_and_a_number_is_not_a_contents_line():
     from app.ingest_upload import _drop_contents
     line = ("\u2014LETTERS, FILE #A12 . . . .. 041", 72, 100, 300, 112, 9.0, False, False)
     assert _drop_contents([[line]]) == [[line]]
+
+
+def test_merge_drop_caps_stays_fast_and_inert_on_a_page_of_many_caps():
+    import time
+    # a crafted page: thousands of big letters, each beside a line, all in one tall band
+    caps = [{"type": 0, "lines": [_line(_span("W", 40, (45, 100 + k * 0.01, 80, 150 + k * 0.01)))]} for k in range(3000)]
+    text = [{"type": 0, "lines": [_line(_span("ord", 12, (82, 110 + k * 0.01, 200, 124 + k * 0.01)))]}
+            for k in range(3000)]
+    start = time.perf_counter()
+    ingest_upload._merge_drop_caps(caps + text)
+    assert time.perf_counter() - start < 1.0
+    assert all(b["lines"] and b["lines"][0]["spans"][0]["text"] == "W" for b in caps)   # more caps than a page has
+
+
+def test_merge_drop_caps_looks_only_at_lines_near_each_cap():
+    # 40 caps down a long page, each beside its own line, among many unrelated lines: every cap finds its own word
+    blocks = []
+    for k in range(40):
+        y = 100 + 60 * k
+        blocks.append({"type": 0, "lines": [_line(_span("T", 40, (45, y, 70, y + 45)))]})
+        blocks.append({"type": 0, "lines": [_line(_span(f"he line {k}", 12, (72, y + 5, 300, y + 19)))]})
+        blocks.append({"type": 0, "lines": [_line(_span("unrelated body text", 12, (45, y + 50, 300, y + 64)))]})
+    ingest_upload._merge_drop_caps(blocks)
+    words = [b["lines"][0]["spans"][0]["text"] for b in blocks[1::3]]
+    assert words == [f"The line {k}" for k in range(40)]
+    assert all(b["lines"] == [] for b in blocks[0::3])

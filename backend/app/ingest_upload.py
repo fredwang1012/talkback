@@ -391,6 +391,8 @@ def _assemble_rows(block_lines: list[dict]) -> list[tuple[list[dict], float]]:
 
 DROP_CAP = re.compile(r"^[\"'“‘«„]?[^\W\d_]$")  # an initial letter, maybe after an opening quote
 DROP_RATIO = 1.8       # a drop cap is set at least this many times the size of the text it starts
+DROP_MAX_CAPS = 50     # a page with more drop caps than this is not a novel page: they are left as they are
+DROP_MAX_LINES = 5000  # ... and so is a page with more lines than this
 DROP_CHAPTERS = 3      # a book with this many drop-cap starts (no heading over them) has them as its chapters
 CHAPTER_MARK = "\x08"  # the line pdf_to_text puts where a drop-cap chapter starts; becomes "Chapter N"
 _PART = re.compile(r"^\x01?(?:book|part)\s+\S", re.I)
@@ -407,45 +409,56 @@ def _merge_drop_caps(blocks: list[dict]) -> None:
     for a heading. The cap is joined to the topmost line that starts at its right edge within its height, and
     the lines beside it are moved to its left edge so they do not look indented. The word's span is flagged
     "dropcap": its paragraph starts there (see _keep_epigraphs and _mark_drop_chapters).
+
+    Each cap only looks at the lines whose middles fall within its height (bisect over the lines sorted by
+    middle); a page with more than DROP_MAX_CAPS caps or DROP_MAX_LINES lines is left alone (no real book page
+    has them, and a crafted one must not make this slow).
     """
-    lines = [(b, ln) for b in blocks if b.get("type") == 0 for ln in b["lines"] if abs(ln["dir"][1]) <= 0.2]
-
-    def real(ln: dict) -> list[dict]:
-        return [s for s in ln["spans"] if s["text"].strip()]
-
-    caps = [(b, ln) for b, ln in lines if real(ln) and DROP_CAP.match("".join(s["text"] for s in real(ln)).strip())]
+    items = []   # (middle y, line, its non-blank spans, its largest size, its leftmost span), sorted by middle
+    caps = []    # (block, line, non-blank spans)
+    for blk in blocks:
+        if blk.get("type") != 0:
+            continue
+        for ln in blk["lines"]:
+            if abs(ln["dir"][1]) > 0.2:
+                continue
+            real = [s for s in ln["spans"] if s["text"].strip()]
+            if not real:
+                continue
+            if len(items) >= DROP_MAX_LINES:
+                return
+            mid = (min(s["bbox"][1] for s in real) + max(s["bbox"][3] for s in real)) / 2
+            items.append((mid, ln, real, max(s["size"] for s in real), min(real, key=lambda s: s["bbox"][0])))
+            if DROP_CAP.match("".join(s["text"] for s in real).strip()):
+                caps.append((blk, ln, real))
+    if not caps or len(caps) > DROP_MAX_CAPS:
+        return
+    items.sort(key=lambda it: it[0])
+    mids = [it[0] for it in items]
     used: set[int] = set()
-    for b, cap in caps:
+    for blk, cap, real in caps:
         if id(cap) in used:
             continue
-        r = real(cap)
-        size = max(s["size"] for s in r)
-        x0, x1 = min(s["bbox"][0] for s in r), max(s["bbox"][2] for s in r)
-        y0, y1 = min(s["bbox"][1] for s in r), max(s["bbox"][3] for s in r)
+        size = max(s["size"] for s in real)
+        x0, x1 = min(s["bbox"][0] for s in real), max(s["bbox"][2] for s in real)
+        y0, y1 = min(s["bbox"][1] for s in real), max(s["bbox"][3] for s in real)
         beside = []
-        for _b, ln in lines:
-            r2 = real(ln)
-            if ln is cap or not r2 or id(ln) in used:
+        for mid, ln, _real, lsize, first in items[bisect.bisect_left(mids, y0):bisect.bisect_right(mids, y1)]:
+            if ln is cap or id(ln) in used or lsize * DROP_RATIO > size:
                 continue
-            lsize = max(s["size"] for s in r2)
-            if lsize * DROP_RATIO > size:
-                continue
-            first = min(r2, key=lambda s: s["bbox"][0])
-            mid = (min(s["bbox"][1] for s in r2) + max(s["bbox"][3] for s in r2)) / 2
             # a glyph box is often wider than its ink ("A" in a book face): the text may start inside it
-            if (x0 + x1) / 2 < first["bbox"][0] <= x1 + max(20.0, 1.5 * lsize) and y0 <= mid <= y1:
+            if (x0 + x1) / 2 < first["bbox"][0] <= x1 + max(20.0, 1.5 * lsize):
                 beside.append((mid, id(ln), first))
         if not beside:
             continue
-        beside.sort(key=lambda it: it[0])
-        first = beside[0][2]
-        first["text"] = "".join(s["text"] for s in r).strip() + first["text"].lstrip()
+        first = beside[0][2]   # the items are sorted by middle: the first one is the topmost
+        first["text"] = "".join(s["text"] for s in real).strip() + first["text"].lstrip()
         first["dropcap"] = True
         for _mid, lid, span in beside:
             span["bbox"] = (x0,) + tuple(span["bbox"][1:])
             used.add(lid)
         used.add(id(cap))
-        b["lines"] = [ln for ln in b["lines"] if ln is not cap]
+        blk["lines"] = [ln for ln in blk["lines"] if ln is not cap]
 
 
 def _line_key(pno: int, ln: tuple) -> tuple:
