@@ -408,9 +408,9 @@ describe("TalkController on Boson turn detection (#135)", () => {
     await handsFreeOn(l);
     await speakTurn(l, "Who is Alice?");
     await characterSpeaks(l);
-    await l.level(0.06, 300); // what the echo canceller leaves of the character
+    await l.level(0.03, 300); // what the echo canceller leaves of the character
     l.ws().recv({ type: "input_audio_buffer.speech_started", item_id: "echo1" });
-    await l.level(0.06, 400);
+    await l.level(0.03, 400);
     expect(l.talk.state).toBe("answering");
     l.ws().recv({ type: "input_audio_buffer.speech_stopped", item_id: "echo1" });
     l.ws().recv({ type: "input_audio_buffer.committed", item_id: "echo1" });

@@ -26,9 +26,11 @@ export const HANDS_FREE: VoiceGateOptions = { threshold: 0.04, minSpeechMs: 150,
  * echo level measured during this playback, see `createEchoFloor`), sustained for a quarter of a second: the
  * character stops within about 300 ms of the reader starting to talk.
  */
-export const HANDS_FREE_OVER_SPEECH: VoiceGateOptions = { threshold: 0.10, minSpeechMs: 250, silenceMs: 700 };
+// export const HANDS_FREE_OVER_SPEECH: VoiceGateOptions = { threshold: 0.10, minSpeechMs: 250, silenceMs: 700 };
+export const HANDS_FREE_OVER_SPEECH: VoiceGateOptions = { threshold: 0.04, minSpeechMs: 250, silenceMs: 700 };
 /** A barge-in must be this many times louder than the echo level the mic hears while the character speaks. */
-export const ECHO_RATIO = 2.5;
+// export const ECHO_RATIO = 2.5;
+export const ECHO_RATIO = 1;
 /** How much of the recent playback the echo level is taken over (a median, so a burst of the reader's speech does not move it). */
 export const ECHO_WINDOW_MS = 2000;
 /** The start of a playback during which every mic reading is taken as the character's echo. */

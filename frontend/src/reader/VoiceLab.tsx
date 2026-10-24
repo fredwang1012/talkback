@@ -89,9 +89,9 @@ export default function VoiceLab({ book, cast, onCast, castError, cloned, onClon
   }
 
   return (
-    <div className="lab" role="dialog" aria-label="Voices">
+    <div className="lab" role="dialog" aria-label="Character Control">
       <div className="lab-head">
-        <h2>Voices</h2>
+        <h2>Character Control</h2>
         <button onClick={onClose}>Close</button>
       </div>
 

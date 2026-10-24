@@ -162,7 +162,7 @@ async function drain(l: L) { l.player.played = 2000; l.player.onSpeaking(false);
 async function geminiAnswerPlays(l: L, ms = 2000) {
   await settle();
   expect(l.talk.state).toBe("answering");
-  await l.audio("echo", 0.05, ms);
+  await l.audio("echo", 0.03, ms);
   l.endSentence();
   await settle();
 }
@@ -199,7 +199,7 @@ describe("hands-free questions do not accumulate (the server's buffer is cleared
     for (const [i, q] of qs.entries()) {
       await says(l, q);
       await realtimeAnswer(l, `r${i}`, `Answer ${i}.`);
-      await l.audio("echo", 0.05, 1000);
+      await l.audio("echo", 0.03, 1000);
       await drain(l);
       await afterAnswer(l);
     }
@@ -273,13 +273,13 @@ describe("the server reuses one item id: a stray speech_started during the answe
     await settle();
     expect(l.talk.state).toBe("answering");
     const ws = l.ws();
-    await l.audio("echo", 0.05, 500);
+    await l.audio("echo", 0.03, 500);
     // a stray speech_started for audio sent just before the hold; its commit and transcript follow while the mic is held
     ws.recv({ type: "input_audio_buffer.speech_started", item_id: ws.itemId });
-    await l.audio("echo", 0.05, 400);
+    await l.audio("echo", 0.03, 400);
     ws.commitTurn("um");
     ws.transcribe();
-    await l.audio("echo", 0.05, 1000);
+    await l.audio("echo", 0.03, 1000);
     expect(l.talk.state).toBe("answering");
     expect(l.interrupted()).toBe(0);
     l.endSentence();

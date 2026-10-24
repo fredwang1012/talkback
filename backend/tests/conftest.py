@@ -66,3 +66,18 @@ def _fresh_gemini_pacer(monkeypatch):
     """The shared Gemini limiter is process state (a 429 in one test would slow the next): each test gets its own."""
     from app import pacer
     monkeypatch.setattr(pacer, "shared", pacer.Pacer())
+
+
+@pytest.fixture(autouse=True)
+def _never_reach_real_google(monkeypatch):
+    """A developer's .env (GCP_PROJECT, GEMINI_LOCATION) never makes a test call real Gemini or Vertex: there is no
+    project by default, and building a real google-genai client fails loudly. Tests that need one set their own fake."""
+    monkeypatch.setattr(settings, "gcp_project", "", raising=False)
+    monkeypatch.setattr(settings, "enrich_gemini_model", "", raising=False)   # tests assert the default model
+    import google.genai as genai
+
+    class _NoRealGoogle:
+        def __init__(self, *a, **k):
+            raise RuntimeError("tests must not create a real google-genai client; inject a fake")
+
+    monkeypatch.setattr(genai, "Client", _NoRealGoogle)

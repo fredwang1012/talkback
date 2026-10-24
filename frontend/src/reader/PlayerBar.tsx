@@ -44,7 +44,7 @@ export default function PlayerBar(p: Props) {
           Natural speed
         </label>
       )}
-      <button className="recap-btn" onClick={p.onVoices}>Voices</button>
+      <button className="recap-btn" onClick={p.onVoices}>Character Control</button>
       <label>
         <input type="checkbox" checked={p.autoResume} onChange={(e) => p.onAutoResume(e.target.checked)} />
         Auto-resume

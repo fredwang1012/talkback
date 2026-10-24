@@ -1,3 +1,4 @@
+from app.config import settings
 import asyncio
 import json
 
@@ -31,7 +32,8 @@ def test_spoiler_filter():
     assert spoiler_filter("b", 7) == {"$and": [{"book_id": {"$eq": "b"}}, {"para_end": {"$lte": 7}}]}
 
 
-def test_upsert_shape_and_auth():
+def test_upsert_shape_and_auth(monkeypatch):
+    monkeypatch.setattr(settings, "gcp_project", "frederick-talkback")   # its own project, never from .env
     seen = []
 
     def handler(req):

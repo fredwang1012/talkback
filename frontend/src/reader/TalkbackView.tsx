@@ -103,7 +103,7 @@ export default function TalkbackView({
       <div className="tb-top">
         <button className="link-btn" onClick={onBack}>Back to reading</button>
         <RecapMenu inSeries={!!book.series} textbook={book.kind === "textbook"} onPick={onRecap} />
-        <button className="link-btn" onClick={onVoices}>Voices</button>
+        <button className="link-btn" onClick={onVoices}>Character Control</button>
         <div className={`badge${fullBook ? " spoilers-on" : ""}`}>
           <strong>You're at {chapter ?? `paragraph ${para + 1}`}.</strong>
           {fullBook && <> Spoilers on — whole book.</>}
