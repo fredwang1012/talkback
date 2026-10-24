@@ -1,4 +1,5 @@
 """Read books produced by the preprocess pipeline from data/books/<id>/book.json."""
+import logging
 import re
 import time
 
@@ -129,7 +130,11 @@ def list_books(hidden: bool = False) -> list[dict]:
     for path in sorted(_books_dir().glob("*/book.json")):
         if not users.can_see_book(path.parent.name) or (path.parent.name in hidden_ids) != hidden:
             continue
-        book = load_book(path.parent.name)
+        try:
+            book = load_book(path.parent.name)
+        except Exception as e:  # one unreadable book.json (e.g. written by a newer version) must not hide the library
+            logging.getLogger(__name__).warning("skipping book %s: %s", path.parent.name, type(e).__name__)
+            continue
         if book is None:
             continue
         out.append({
