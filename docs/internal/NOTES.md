@@ -1267,3 +1267,16 @@ was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-
   when played). Rebuilt book.json files are not committed. Re-chunking all five books still takes 1.6 s
   (`textnorm.may_change`: plain prose with no digit or math character skips normalisation).
 - Seen, not changed: "6:30" is spoken "six:thirty" in that Peter Pan paragraph (times are not normalized).
+
+## Prices follow the model (chore/cleanup-findings, 2026-10-24)
+- Vertex AI standard (online) text prices per 1M tokens, read from cloud.google.com/vertex-ai/generative-ai/pricing on
+  2026-10-24 (same below and above 200K input tokens): gemini-2.5-flash $0.30 in / $2.50 out; gemini-2.5-flash-lite
+  $0.10 in / $0.40 out (Flex/Batch and Priority have other rates; we use standard). Cached input $0.03 / $0.01 (unused).
+- `enrich.llm.gemini_prices(model)` (longest prefix; unknown models priced as 2.5 Flash) replaces the per-tier Gemini
+  row that priced Flash-Lite at full Flash rates. Estimates default to the enrichment model (ENRICH_GEMINI_MODEL, else
+  GEMINI_MODEL); the spend ledger is charged at `Raw.model`, the model that answered. Face detection and public answers
+  are priced at GEMINI_MODEL (what they call). With ENRICH_GEMINI_MODEL=gemini-2.5-flash-lite an estimate is 1/6 to 1/3 of
+  before (input 1/3, output 4/25 of the Flash rate), so caps refuse fewer books.
+- Higgs Avatar (docs.boson.ai/pricing, 2026-10-24): 640x640 $0.09/min, 640x480 and 480x640 $0.07/min. We stream
+  640x640, so $0.09 everywhere: frontend spend.ts (already), scripts/usage.py (was $0.08) and prerender_avatar.py's
+  docstring (its constant was already 0.09). Boson TTS: $0.015 per 1K characters (unchanged).

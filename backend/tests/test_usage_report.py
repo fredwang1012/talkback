@@ -188,7 +188,7 @@ def test_avatar_pricing_and_clone_counts():
             {"ts": "2026-10-19T00:00:00+00:00", "kind": "boson_avatar", "model": "higgs-avatar", "chars": 900},
             {"ts": "2026-10-19T00:00:00+00:00", "kind": "boson_voice_clone", "model": "boson-voice-clone", "clones": 1}]
     s = report.summarize(rows)["boson"]
-    assert s["cost"] == pytest.approx(0.04 + 0.08)  # 30 s, then 900 chars = 60 s
+    assert s["cost"] == pytest.approx(0.045 + 0.09)  # 30 s, then 900 chars = 60 s, at $0.09/min (640x640)
     assert s["models"][("boson_voice_clone", "boson-voice-clone")]["clones"] == 1
 
 

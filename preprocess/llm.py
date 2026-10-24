@@ -77,7 +77,7 @@ def client() -> AsyncAnthropic:
 
 def estimate_cost(model: str, input_chars: int, expected_output_tokens: int, calls: int = 1) -> float:
     if provider() == "gemini":
-        pin, pout = app_llm.PRICES["gemini"]["fast" if "haiku" in model else "smart"]
+        pin, pout = app_llm.gemini_prices(app_llm.enrich_gemini_model())   # both tiers run on the same Gemini model
     else:
         pin, pout = PRICES[model]
     return calls * (input_chars / 4 * pin + expected_output_tokens * pout) / 1e6

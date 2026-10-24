@@ -4,7 +4,7 @@ export const RATES = {
   audioInPerMin: 0.0023,
   audioOutPerMin: 0.014,
   transcriptionPerMin: 0.0025,
-  avatarPerMin: 0.09, // Higgs Avatar at the streamed 640x640
+  avatarPerMin: 0.09, // Higgs Avatar at the streamed 640x640 (640x480 is $0.07); scripts/usage.py uses the same rate
 };
 const BYTES_PER_SECOND = 24000 * 2; // PCM16 mono @ 24 kHz
 

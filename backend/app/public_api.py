@@ -735,7 +735,7 @@ async def public_answer(req: AnswerRequest, request: Request):
     grounded, token = False, None
     if req.web_search and websearch.allowed(req.kind, req.spoilers):
         system, user = req.prompt(web_search=True)
-        cost = price_usd("gemini", "fast", int((len(system) + len(user)) / 3.5) + 1, MAX_OUTPUT_TOKENS)
+        cost = price_usd("gemini", "fast", int((len(system) + len(user)) / 3.5) + 1, MAX_OUTPUT_TOKENS, model=settings.gemini_model)
         token = answer_budget.reserve(cost + GROUNDED_USD)
         if token is not None and not grounded_calls.take(settings.public_grounded_daily_cap):
             answer_budget.settle(token, 0.0)
@@ -743,7 +743,7 @@ async def public_answer(req: AnswerRequest, request: Request):
         grounded = token is not None
     if not grounded:
         system, user = req.prompt()
-        cost = price_usd("gemini", "fast", int((len(system) + len(user)) / 3.5) + 1, MAX_OUTPUT_TOKENS)
+        cost = price_usd("gemini", "fast", int((len(system) + len(user)) / 3.5) + 1, MAX_OUTPUT_TOKENS, model=settings.gemini_model)
         token = answer_budget.reserve(cost)
     if token is None:
         raise PublicError(402, "daily_cap", MSG_DAILY_CAP)
@@ -764,7 +764,7 @@ async def public_answer(req: AnswerRequest, request: Request):
             return
         state["done"] = True
         if state["seen"]:
-            actual = price_usd("gemini", "fast", state["in"], state["out"]) + (GROUNDED_USD if sources else 0.0)
+            actual = price_usd("gemini", "fast", state["in"], state["out"], model=settings.gemini_model) + (GROUNDED_USD if sources else 0.0)
         else:
             actual = cost if state["started"] else 0.0
         answer_budget.settle(token, actual)

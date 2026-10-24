@@ -21,7 +21,7 @@ GEMINI_EMBED_PRICES = {"gemini-embedding-001": 0.15}  # $ per 1M input tokens
 CHARS_PER_TOKEN = 4  # the embedder logs characters, so tokens are estimated
 BOSON_TTS_PER_1K_CHARS = 0.015
 
-AVATAR_PER_MINUTE = 0.08
+AVATAR_PER_MINUTE = 0.09  # Higgs Avatar at 640x640, the streamed size (docs.boson.ai/pricing; 640x480 is $0.07)
 AVATAR_CHARS_PER_SECOND = 15  # used only when the audio duration was not logged
 
 PROVIDER_OF = {"embed": "gcp", "llm": "gcp", "anthropic": "anthropic",
@@ -157,7 +157,7 @@ def render(summary: dict, skipped: int, budgets: dict[str, float | None]) -> str
         L.append(f"  {TITLES[prov]:<12} {'$' + format(spent, '.4f'):>14} {budget:>10} {remaining:>12}")
     if skipped:
         L.append(f"\n  skipped {skipped} unreadable line(s)")
-    L.append("\nThese are estimates (embeddings assume 4 chars/token; Boson TTS $0.015 per 1K chars; avatar $0.08/min of audio; Realtime sessions")
+    L.append("\nThese are estimates (embeddings assume 4 chars/token; Boson TTS $0.015 per 1K chars; avatar $0.09/min of audio; Realtime sessions")
     L.append("and voice clones are counts only, not priced). Check each provider's billing console for actual spend.")
     return "\n".join(L)
 

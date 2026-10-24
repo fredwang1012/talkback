@@ -4,7 +4,7 @@ Usage: uv run --project backend python preprocess/prerender_avatar.py --book hp1
 Needs: portraits at data/portraits/<book>/<speaker>.png|jpg|webp (original art only), pre-rendered TTS audio
 (run prerender_tts.py first) and the Boson key. Chunks of speakers without a portrait are skipped.
 Output: data/cache/avatar/<book>/<chunk_id>.mp4, served by /api/avatar/<chunk_id>?book=<book>.
-Cost is about $0.08 per minute of speech; the estimate assumes ~15 characters per second. Confirms above $5.
+Cost is about $0.09 per minute of speech (640x640); the estimate assumes ~15 characters per second. Confirms above $5.
 Run scripts/probe_avatar.py first: the request shape and whether the MP4 carries audio are not verified yet.
 """
 import argparse

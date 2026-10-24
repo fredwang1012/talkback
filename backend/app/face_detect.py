@@ -95,14 +95,14 @@ async def _gemini(image: bytes, mime: str) -> str:
     if meta is not None:
         n_in, n_out = meta.prompt_token_count or 0, meta.candidates_token_count or 0
         usage_log.record("llm", settings.gemini_model, prompt_tokens=n_in, output_tokens=n_out)
-        over = price_usd("gemini", "fast", n_in, n_out) - estimate_usd()
+        over = price_usd("gemini", "fast", n_in, n_out, model=settings.gemini_model) - estimate_usd()
         if over > 0:
             spend.add("face-detect", "gemini", over)
     return resp.text or ""
 
 
 def estimate_usd() -> float:
-    return price_usd("gemini", "fast", IMAGE_TOKENS + len(PROMPT) // 3, OUT_TOKENS)
+    return price_usd("gemini", "fast", IMAGE_TOKENS + len(PROMPT) // 3, OUT_TOKENS, model=settings.gemini_model)
 
 
 async def detect(image: bytes, ext: str) -> dict | None:
