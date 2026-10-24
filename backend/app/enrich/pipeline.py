@@ -174,6 +174,10 @@ async def enrich_textbook(book_id: str, report: Report, *, llm: LLM | None = Non
         book = Book.model_validate_json(_book_path(book_id).read_text(encoding="utf-8"))
         _, subs = tb_mod.plan(book)
         await run_textbook_stage(book, report, llm, state=state, include_subsections=subs, out=out)
+        if not out:   # every section call failed: nothing to save, and the notes from before stay
+            log.warning("textbook notes for %s: no section could be summarised", book_id)
+            report(status="error", stage="summaries", message=TEXTBOOK_FAILED)
+            return False
         if not await asyncio.to_thread(tb_mod.save_summaries, book_id, out):
             report(status="error", stage="summaries", message=TEXTBOOK_FAILED)
             return False

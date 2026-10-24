@@ -365,6 +365,8 @@ async def _run_job(job: Job, book: Book, llm=None) -> None:
                 _, subs = textbook.plan(book, "gemini", cap=settings.public_book_cap_usd)
                 book.summaries = await pipeline.run_textbook_stage(book, job.report, llm, state=state,
                                                                    include_subsections=subs)
+                if not book.summaries:   # every section call failed: not a result
+                    raise RuntimeError("no textbook notes")
                 degraded, done_msg = False, pipeline.TEXTBOOK_DONE
             else:
                 degraded = await pipeline.run_stages(book, job.report, llm, state=state, allow_fallback=False)

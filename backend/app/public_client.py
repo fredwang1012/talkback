@@ -329,6 +329,8 @@ async def summarize_textbook(book_id: str, report: Callable[..., None], *, clien
             if own:
                 await client.aclose()
         apply_textbook_result(book, result)
+        if not book.summaries:   # nothing usable came back: keep the notes from before
+            raise ValueError("no textbook notes")
         if not await asyncio.to_thread(textbook.save_summaries, book_id, book.summaries):
             raise ValueError("book gone or no longer a textbook")
         report(status="done", stage="done", progress=1.0, message=pipeline.TEXTBOOK_DONE)

@@ -975,3 +975,19 @@ the deployed talkback-public-00001 is the Oct 21 code):
   least $0.02 (so opening tickets cannot be repeated for free).
 - Test note: tests/test_kind.py::test_concurrent_kind_changes_start_only_one_enrichment failed once in a full run and
   passed on every rerun (timing flake, unrelated code path).
+
+## Review of integration PR #133 (backend fixes)
+- book.json writers share one re-entrant lock per file (`books.write_lock`): rechunk upgrade (stamp re-checked inside
+  the lock), equation updates, textbook notes, kind change (`books.update_book`, fresh read), enrich checkpoints and
+  ingest publish. `save_book` writes a per-call temp file (`book.json.<uuid>.tmp`) and `os.replace`s it; on Windows a
+  replace over a file a reader has open is retried briefly (this was the cause of the test_kind flake above).
+- Known transient (not fixed): rechunking an old book (chunk_rules upgrade) can shift chunk ids (`p{idx}c{n}`) when a
+  paragraph gains a singing split. A reader that loaded the old book JSON before the upgrade asks for the old ids until
+  it reloads the book, so a few chunks may play the wrong audio once. There is no book version / ETag the client
+  could check; the upgrade runs once per book at startup, so a reload after deploy clears it.
+- Enrichment CPU (attribution + whole-book rechunk) runs in a worker thread; the minor-voice pass no longer rechunks
+  on its own (the segment stage rechunks once). TTS chunking uses a per-book `BookIndex` (30k paras x 3k sections:
+  9.4 s -> 1.8 s, committed books byte-identical).
+- Emotion markers: `emotion.strip_tags` removes every `<|...|>` (repeatedly, then stray `|`); split_marker is linear and
+  capped at 2000 chars; `/api/speak` strips tags from its text. An empty textbook-notes result is now a failure (keeps
+  earlier notes); `start_enrich` purges abandoned equation tickets.
