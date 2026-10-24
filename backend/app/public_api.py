@@ -711,6 +711,7 @@ async def start_enrich(req: EnrichRequest, request: Request):
     if not enrich_bucket.allow(client_key(request)):
         raise PublicError(429, "rate", "Too many books from your address; try again later.")
     _purge()
+    _purge_tickets()   # an abandoned equations ticket must not keep its reservation (and the caller's charge)
     book = req.to_book()
     est = (textbook.plan(book, "gemini", cap=settings.public_book_cap_usd)[0] if book.kind == "textbook"
            else pipeline.estimate(book, "gemini"))

@@ -365,3 +365,11 @@ def test_enrich_result_has_series_fields(par, monkeypatch):
     job = par.post("/api/public/enrich", json=enrich_body()).json()["job_id"]
     view, _ = wait_done(par, job)
     assert "series" in view["result"] and "series_index" in view["result"]
+
+
+def test_starting_an_enrichment_purges_abandoned_tickets(par):
+    """An abandoned ticket must not keep inflating the reserved spend for enrich admissions (review of #133)."""
+    t = start(par, 4).json()["ticket"]
+    public_api._tickets[t].used -= public_api.EQ_TICKET_START_TTL + 1
+    assert par.post("/api/public/enrich", json=enrich_body()).status_code == 202
+    assert t not in public_api._tickets
