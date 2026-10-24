@@ -140,8 +140,10 @@ export const fetchRecap = (bookId: string, para: number) =>
 export type RecapScope = "chapter" | "book" | "series";
 /** One scope's recap; `chapter` is the chapter it covers (scope "chapter") or the one the reader is in. Spoiler-safe. */
 export type ScopedRecap = { scope: RecapScope; upto_para: number | null; chapter: string; text: string };
-export const fetchScopedRecap = (bookId: string, para: number, scope: RecapScope) =>
-  getJson<ScopedRecap>(`/api/books/${encodeURIComponent(bookId)}/recap?para=${Math.max(0, Math.floor(para))}&scope=${scope}`);
+/** `section`: that chapter / subsection instead (a textbook: any; a novel: only as far as the reader has read). */
+export const fetchScopedRecap = (bookId: string, para: number, scope: RecapScope, section?: string) =>
+  getJson<ScopedRecap>(`/api/books/${encodeURIComponent(bookId)}/recap?para=${Math.max(0, Math.floor(para))}&scope=${scope}`
+    + (section ? `&section=${encodeURIComponent(section)}` : ""));
 
 export type WordTiming = { start: number; end: number; char_start: number; char_end: number };
 export type TtsResponse = { chunk_id: string; voice: string; audio_url: string; timestamps: WordTiming[] | null; cached: boolean };
@@ -344,7 +346,8 @@ export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 export type BookKind = "novel" | "textbook";
 /** What the upload form can send: "auto" lets the server decide. */
 export type UploadKind = BookKind | "auto";
-/** Novel enrichment (characters, voices, recap) that runs after a novel is readable. Absent for textbooks. */
+/** Enrichment that runs once a book is readable: characters, voices and recap for a novel; only the recap study
+ * notes for a textbook (`summaries_only`). */
 export type EnrichStatus = {
   status: "awaiting_confirmation" | "running" | "done" | "refused" | "error";
   stage?: string;       // queued | cast | segment | summaries | index | done
@@ -352,9 +355,11 @@ export type EnrichStatus = {
   message?: string;
   degraded?: boolean;    // done, but without a working LLM (simple fallback cast)
   estimate_usd?: number; // only in testing mode (UPLOAD_CONFIRM)
+  summaries_only?: boolean; // a textbook: recap study notes only
 };
 /** The line shown when enrichment finished: the full-success wording only when an LLM really did the work. */
 export function enrichDoneNote(e: EnrichStatus): string {
+  if (e.summaries_only) return "study notes for the recap are ready";
   return e.degraded && e.message ? e.message : "characters, voices and recap are ready";
 }
 /** Cloud search indexing after the book is readable (it uses basic search until state is "done"). */

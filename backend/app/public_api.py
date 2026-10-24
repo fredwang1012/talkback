@@ -1,5 +1,5 @@
 """The public processing API: a small, separate Cloud Run service (PUBLIC_API=true) that a fresh clone calls for
-full upload processing (cast, dialogue split, summaries) and Gemini-written Talk answers.
+full upload processing (cast, dialogue split, summaries; textbooks: recap notes only) and Gemini-written Talk answers.
 
 Exposes ONLY GET /api/health, POST /api/public/enrich (+ GET /api/public/enrich/{job_id}) and POST /api/public/answer.
 Everything else is 404 (no docs, no static frontend, no media, no book data). Gemini only.
@@ -29,7 +29,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .config import settings
-from .enrich import pipeline, spend
+from .enrich import pipeline, spend, textbook
 from .enrich.llm import SpendLimit, make_llm, price_usd
 from . import emotion
 from .personas import build_answer_prompt
@@ -81,13 +81,14 @@ class PSection(BaseModel):
     id: str = Field(max_length=80)
     title: str = Field(max_length=300)
     start_para: int = Field(ge=0)
+    level: int = Field(default=1, ge=1, le=6)   # textbooks: 1 = chapter, 2 = "4.2", ...
 
 
 class EnrichRequest(BaseModel):
-    """An already-ingested, narrator-only novel."""
+    """An already-ingested, narrator-only novel (cast, dialogue, summaries), or a textbook (recap notes only)."""
     title: str = Field(min_length=1, max_length=200)
     author: str = Field(default="", max_length=200)
-    kind: Literal["novel"] = "novel"
+    kind: Literal["novel", "textbook"] = "novel"
     sections: list[PSection] = Field(max_length=MAX_SECTIONS)
     paragraphs: list[PParagraph] = Field(min_length=1, max_length=MAX_PARAGRAPHS)
 
@@ -102,8 +103,9 @@ class EnrichRequest(BaseModel):
         return self
 
     def to_book(self) -> Book:
-        return Book(id="public", title=self.title, author=self.author, kind="novel", license="n/a",
-                    sections=[Section(id=s.id, title=s.title, start_para=s.start_para) for s in self.sections],
+        return Book(id="public", title=self.title, author=self.author, kind=self.kind, license="n/a",
+                    sections=[Section(id=s.id, title=s.title, start_para=s.start_para, level=s.level)
+                              for s in self.sections],
                     paragraphs=[Paragraph(idx=p.idx, section_id=p.section_id, text=p.text) for p in self.paragraphs])
 
 
@@ -238,9 +240,16 @@ async def _run_job(job: Job, book: Book, llm=None) -> None:
     state = {"stage": "cast"}
     try:
         async with asyncio.timeout(JOB_MAX_SECONDS):
-            degraded = await pipeline.run_stages(book, job.report, llm, state=state, allow_fallback=False)
+            if book.kind == "textbook":   # recap notes only (enrich/textbook.py)
+                _, subs = textbook.plan(book, "gemini", cap=settings.public_book_cap_usd)
+                book.summaries = await pipeline.run_textbook_stage(book, job.report, llm, state=state,
+                                                                   include_subsections=subs)
+                degraded, done_msg = False, pipeline.TEXTBOOK_DONE
+            else:
+                degraded = await pipeline.run_stages(book, job.report, llm, state=state, allow_fallback=False)
+                done_msg = "Characters and recap are ready."
         job.result, job.degraded = _result(book), degraded or None
-        job.status, job.stage, job.progress, job.message = "done", "done", 1.0, "Characters and recap are ready."
+        job.status, job.stage, job.progress, job.message = "done", "done", 1.0, done_msg
         log.info("enrich job %s done: $%.4f in %d calls", job.id, llm.usd, llm.calls)
     except SpendLimit as e:
         job.status, job.code = "error", "cap" if "budget" in str(e) else "book_cap"
@@ -503,7 +512,8 @@ async def start_enrich(req: EnrichRequest, request: Request):
         raise PublicError(429, "rate", "Too many books from your address; try again later.")
     _purge()
     book = req.to_book()
-    est = pipeline.estimate(book, "gemini")
+    est = (textbook.plan(book, "gemini", cap=settings.public_book_cap_usd)[0] if book.kind == "textbook"
+           else pipeline.estimate(book, "gemini"))
     if est > settings.public_book_cap_usd:
         raise PublicError(402, "book_cap", MSG_BOOK_CAP)
     if spend.total_usd() + _reserved_usd() + est > settings.public_total_cap_usd:
