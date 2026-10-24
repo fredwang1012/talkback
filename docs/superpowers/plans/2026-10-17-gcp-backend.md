@@ -50,7 +50,7 @@ local UI; it is ingested into a new book and indexed in the cloud.
 7. **Commands:** uv is at `/c/Users/fredw/AppData/Roaming/Python/Python314/Scripts/uv.exe` (not on PATH).
    Backend tests: `cd backend && $UV run python -m pytest -q`. Frontend: `cd frontend && npm test` and
    `npx tsc -p tsconfig.app.json --noEmit`. Add deps with `$UV add <pkg>` inside `backend/`.
-8. Commit after each task on branch `gcp-backend` with message trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+8. Commit after each task on branch `gcp-backend`. No Co-Authored-By or any Claude attribution in commit messages.
    Never push.
 
 ## Task 1: GCP settings, auth, embeddings, Gemini wrapper, usage log
