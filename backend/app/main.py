@@ -921,6 +921,8 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
     if ready is not None and kind == "textbook" and ext == ".pdf" and any(p.kind == "math" or p.inline_math
                                                                          for p in ready.paragraphs):
         _start_equations(book_id, data)
+    if ready is not None and kind == "novel" and book_id not in _deleted:
+        _start_series_early(book_id)   # stacks the volume within seconds, before indexing and the queued enrichment
     if ready is not None and settings.retrieval_backend == "vertex":
         await _index_in_background(ready, chunks)
     if ready is not None and settings.upload_enrich and book_id not in _deleted:
