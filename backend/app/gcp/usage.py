@@ -8,6 +8,10 @@ from ..config import settings
 log = logging.getLogger("talkback.usage")
 
 
+def _log_path():
+    return settings.data_dir / "cache" / "usage.jsonl"
+
+
 def record(kind: str, model: str, **counts) -> None:
     """Append one usage line and also log it (Cloud Logging keeps it if file appends are lost). Never raises."""
     try:
@@ -20,7 +24,7 @@ def record(kind: str, model: str, **counts) -> None:
     except Exception:
         pass
     try:
-        path = settings.data_dir / "cache" / "usage.jsonl"
+        path = _log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
             f.write(text + "\n")
