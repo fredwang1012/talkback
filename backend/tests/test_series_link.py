@@ -233,3 +233,49 @@ def test_enrich_runs_reconciliation_at_the_end(lib, monkeypatch):
     monkeypatch.setattr(pipeline, "run_stages", fake_stages)
     ok = run(pipeline.enrich_book("u-mess", lambda **f: None, llm=FakeLLM({})))
     assert ok and seen == ["u-mess"]
+
+
+# ---- startup pass: LLM down, books being enriched, ordering (#141 review) ----
+
+def test_startup_stops_after_a_failed_call(lib):
+    put(lib, mk("u-mess", "Dune Messiah", series="dune", idx=2))
+    for i in range(4):
+        put(lib, mk(f"u-b{i}", f"Book {i}"))
+
+    class Down:
+        calls = 0
+
+        async def complete_json(self, *a, **k):
+            Down.calls += 1
+            raise TimeoutError("llm down")
+    assert run(series_link.startup_pass(Down())) == 1   # the failed call counts as attempted
+    assert Down.calls == 1   # LLM down: one timeout per startup, not one per candidate
+
+
+def test_startup_skips_books_being_enriched(lib):
+    from app import ingest_upload
+    put(lib, mk("u-dune", "Dune"))
+    put(lib, mk("u-mess", "Dune Messiah", series="dune", idx=2))
+    for state in ("running", "queued"):
+        ingest_upload.write_status("u-dune", "ready", enrich={"status": state, "stage": "cast"})
+        llm = FakeLLM({"Dune": (True, 1)})
+        assert run(series_link.startup_pass(llm)) == 0 and llm.calls == 0   # its own enrichment checks at the end
+    assert books.load_book("u-dune").series is None
+    ingest_upload.write_status("u-dune", "ready", enrich={"status": "error", "message": "x"})
+    assert run(series_link.startup_pass(FakeLLM({"Dune": (True, 1)}))) == 1
+
+
+def test_warm_up_loads_indexes_before_the_series_pass(lib, monkeypatch):
+    from app import main
+    order = []
+    monkeypatch.setattr(settings, "auto_rechunk", False)
+    monkeypatch.setattr(settings, "retrieval_backend", "local", raising=False)
+    monkeypatch.setattr(books, "list_books", lambda: [{"id": "a"}, {"id": "b"}])
+    monkeypatch.setattr(main, "_index_for", lambda bid: order.append(("index", bid)))
+
+    async def series():
+        order.append(("series",))
+        return 0
+    monkeypatch.setattr(series_link, "startup_default", series)
+    main._warm_up()
+    assert order == [("index", "a"), ("index", "b"), ("series",)]

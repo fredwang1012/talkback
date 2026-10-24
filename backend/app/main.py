@@ -40,17 +40,18 @@ def _warm_up() -> None:
     """Load the embedding model and every book's index before the first question (the model takes ~17 s to load)."""
     if settings.auto_rechunk:
         books.schedule_all_upgrades()  # out-of-date tts_chunks are rebuilt on a background thread (no API calls)
-    try:  # uploads whose first volume got no series (#134): one bounded, once-per-book pass; never raises
-        from .enrich import series_link
-        asyncio.run(series_link.startup_default())
-    except Exception:
-        pass
     try:
         for info in books.list_books():
             _index_for(info["id"])
         if settings.retrieval_backend == "vertex":  # first Vertex call pays auth + TLS setup (~5 s): pay it now
             _vertex_deps()[0].embed_query("warm up")
     except Exception:  # never block startup; retrieval falls back to BM25 / loads lazily
+        pass
+    # after the indexes: with the LLM down a check can wait for a timeout, which must not delay the first question
+    try:  # uploads whose first volume got no series (#134): one bounded, once-per-book pass; never raises
+        from .enrich import series_link
+        asyncio.run(series_link.startup_default())
+    except Exception:
         pass
 
 

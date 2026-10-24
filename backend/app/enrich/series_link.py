@@ -136,15 +136,44 @@ async def _save(target: str, series: str, member: bool, index: int | None) -> No
     await asyncio.to_thread(_record, target, series, member, index)
 
 
+class _Counted:
+    """Counts every call of the startup pass, failed ones included (a failed call is attempted, just not marked)."""
+
+    def __init__(self, llm: _LLM):
+        self.llm, self.calls, self.failed = llm, 0, False
+
+    async def complete_json(self, *a, **kw):
+        self.calls += 1
+        try:
+            return await self.llm.complete_json(*a, **kw)
+        except Exception:
+            self.failed = True
+            raise
+
+
+def _enriching(book_id: str) -> bool:
+    """Its enrichment is queued or running (or was, before a restart, and is about to be resumed): that job saves its
+    whole Book at the end, which would overwrite a series written now, and it runs its own check when it finishes."""
+    from .. import ingest_upload
+    try:
+        st = ingest_upload.read_status(book_id) or {}
+    except Exception:
+        return True
+    return (st.get("enrich") or {}).get("status") in ("running", "queued")
+
+
 async def startup_pass(llm: _LLM, max_checks: int = STARTUP_MAX_CHECKS) -> int:
-    """Once per (book, series): uploads with no series that share an author with a series upload. Bounded."""
-    done = 0
+    """Once per (book, series): uploads with no series that share an author with a series upload. Bounded by
+    max_checks calls, failed ones included; the first failed call ends the pass (the LLM is likely down: one timeout
+    per startup, not one per candidate). Books with an enrichment queued or running are left to that job."""
+    counted = _Counted(llm)
     for b in _uploads():
-        if done >= max_checks:
+        if counted.calls >= max_checks or counted.failed:
             break
-        if b.series:
+        if b.series or _enriching(b.id):
             continue
-        done += await reconcile(b.id, llm, max_checks=min(MAX_CHECKS, max_checks - done))
+        await reconcile(b.id, counted, max_checks=min(MAX_CHECKS, max_checks - counted.calls))
+    done = counted.calls
     if done:
         log.info("series reconciliation at startup: %d checks", done)
     return done
