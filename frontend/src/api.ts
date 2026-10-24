@@ -61,14 +61,20 @@ export function authHeaders(): Record<string, string> {
 /** fetch with a deadline, so a stalled server shows an error instead of an endless spinner. */
 export async function timedFetch(url: string, init: RequestInit = {}, timeoutMs = 15000): Promise<Response> {
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, timeoutMs);
+  // a caller-supplied signal (barge-in) aborts the request too, and keeps its own AbortError
+  const outer = init.signal;
+  const onOuterAbort = () => ctl.abort();
+  if (outer) { if (outer.aborted) ctl.abort(); else outer.addEventListener("abort", onOuterAbort); }
   try {
     return await fetch(url, { ...init, signal: ctl.signal });
   } catch (e) {
-    if (ctl.signal.aborted) throw new Error("The server took too long to respond. Check that the backend is running.");
+    if (timedOut) throw new Error("The server took too long to respond. Check that the backend is running.");
     throw e;
   } finally {
     clearTimeout(timer);
+    outer?.removeEventListener("abort", onOuterAbort);
   }
 }
 
@@ -120,6 +126,73 @@ export async function fetchRetrieve(bookId: string, query: string, readerPara: n
   return res.json() as Promise<RetrieveResponse>;
 }
 
+/**
+ * Streams the spoken answer from /api/answer (NDJSON: `sentence` lines, then `done` or `error`).
+ * Only the response headers have a deadline; the body can take as long as the model needs. `signal` aborts it.
+ */
+export async function streamAnswer(
+  bookId: string, query: string, readerPara: number, speakerId: string,
+  onSentence: (text: string) => void, signal?: AbortSignal,
+): Promise<void> {
+  const res = await timedFetch("/api/answer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId }),
+    signal,
+  }, 20000);
+  if (!res.ok) {
+    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    throw new Error(detail ?? `Answer request failed (${res.status})`);
+  }
+  if (!res.body) throw new Error("The answer stream was empty.");
+  const reader = res.body.getReader();
+  // timedFetch stops watching the signal once headers arrive, so cancel the body ourselves on barge-in
+  const onAbort = () => { reader.cancel().catch(() => {}); };
+  if (signal?.aborted) onAbort(); else signal?.addEventListener("abort", onAbort);
+  const decoder = new TextDecoder();
+  let buf = "";
+  const handle = (line: string) => {
+    if (!line.trim()) return;
+    let msg: { type?: string; text?: string; message?: string };
+    try { msg = JSON.parse(line); } catch { return; } // tolerate a garbled line
+    if (msg.type === "sentence" && typeof msg.text === "string") onSentence(msg.text);
+    else if (msg.type === "error") throw new Error(msg.message || "The answer failed.");
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (signal?.aborted) throw new DOMException("aborted", "AbortError");
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        handle(line);
+      }
+    }
+    buf += decoder.decode();
+    handle(buf); // a last line without a newline
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    reader.cancel().catch(() => {}); // always release the connection, whatever the exit path
+  }
+}
+
+/** Synthesises one sentence in a voice (cached server-side) and returns where to fetch the audio. */
+export async function speak(text: string, voice: string): Promise<TtsResponse> {
+  const res = await timedFetch("/api/speak", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ text, voice }),
+  }, 30000);
+  if (!res.ok) {
+    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    throw new Error(detail ?? `Speech request failed (${res.status})`);
+  }
+  return res.json() as Promise<TtsResponse>;
+}
+
 /** A fresh ephemeral Realtime key for one connection. Never cache the result. */
 export async function fetchRealtimeKey(): Promise<string> {
   const res = await timedFetch("/api/realtime/token", { method: "POST", headers: authHeaders() });
@@ -147,6 +220,65 @@ export async function cloneVoice(audio: Blob, filename: string, transcript: stri
   return res.json() as Promise<CloneResult>;
 }
 
+export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+export type BookKind = "novel" | "textbook";
+export type BookStatus = { status: "processing" | "ready" | "error"; message?: string };
+
+/** Sends a PDF or .txt for ingest. Resolves with the new book id; ingest continues server-side (poll fetchBookStatus). */
+export async function uploadBook(file: File, title: string, author: string, kind: BookKind): Promise<{ book_id: string }> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  form.append("title", title);
+  form.append("author", author);
+  form.append("kind", kind);
+  // no Content-Type: the browser adds the multipart boundary
+  const res = await timedFetch("/api/books/upload", { method: "POST", headers: authHeaders(), body: form }, 120000);
+  if (!res.ok) {
+    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    throw new Error(detail ?? `Upload failed (${res.status})`);
+  }
+  return res.json() as Promise<{ book_id: string }>;
+}
+
+export async function fetchBookStatus(id: string): Promise<BookStatus> {
+  const res = await timedFetch(`/api/books/${encodeURIComponent(id)}/status`, { headers: authHeaders() });
+  if (!res.ok) {
+    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    throw new Error(detail ?? `Status check failed (${res.status})`);
+  }
+  return res.json() as Promise<BookStatus>;
+}
+
+/**
+ * Polls a book's ingest status until it is ready or errored, then resolves with that status.
+ * Stops quietly (resolves null) when `signal` aborts; rejects if it is still processing after `maxMs`.
+ * A failed status call rejects too, so the caller can show the message.
+ */
+export async function pollBookStatus(
+  id: string, signal?: AbortSignal, intervalMs = 1500, maxMs = 10 * 60 * 1000,
+): Promise<BookStatus | null> {
+  const deadline = Date.now() + maxMs;
+  let failures = 0;
+  while (!signal?.aborted) {
+    let s: BookStatus | undefined;
+    try {
+      s = await fetchBookStatus(id);
+      failures = 0;
+    } catch (e) {
+      if (signal?.aborted) return null;
+      if (++failures > 3) throw e; // tolerate up to 3 failed calls in a row
+    }
+    if (signal?.aborted) return null;
+    if (s && s.status !== "processing") return s;
+    if (Date.now() + intervalMs > deadline) throw new Error("This is taking too long. Check the backend and try again.");
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(done, intervalMs);
+      function done() { clearTimeout(t); signal?.removeEventListener("abort", done); resolve(); }
+      signal?.addEventListener("abort", done);
+    });
+  }
+  return null;
+}
 export const fetchVoices = () => getJson<Record<string, string>>("/api/voices");
 
 /** Chunk ids that have a pre-rendered avatar clip (stretch feature). Empty when there are none or the call fails. */

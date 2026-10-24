@@ -16,6 +16,7 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "google-genai>=2.31.0",
     "google-auth>=2.62.0",
+    "pymupdf>=1.28.2",
 ]
 
 [project.optional-dependencies]

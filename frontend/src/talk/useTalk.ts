@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchRealtimeKey, fetchRetrieve } from "../api";
+import { fetchRealtimeKey, fetchRetrieve, speak, streamAnswer } from "../api";
 import { MicCapture } from "../audio/capture";
 import { RingPlayer } from "../audio/playback";
 import { spend } from "../spend";
 import type { LogEntry } from "../ui/DebugDrawer";
 import { detectLanguage, type Detected } from "./language";
+import { createSentenceSpeaker } from "./sentencePlayer";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
 import { TalkController, type Latency, type ReaderControl, type TalkState } from "./TalkController";
+
+/** true: Gemini (via /api/answer) writes the answer and Boson TTS speaks it; false: Realtime answers itself. */
+export const ANSWER_VIA_GEMINI = true;
 
 export type TalkUi = {
   state: TalkState;
@@ -63,6 +67,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         setLogs((l) => [...l.slice(-299), { id: ++logSeq.current, dir, type, at: Date.now(), raw }]);
       },
     });
+    let answerVoice = "";
     const talk = new TalkController({
       session: client,
       reader: {
@@ -74,6 +79,14 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         resumeAt: (i) => latest.current.reader.resumeAt(i),
       },
       retrieve: (query, para, speaker) => fetchRetrieve(bookId, query, para, speaker),
+      ...(ANSWER_VIA_GEMINI ? {
+        // the voice is fixed when the answer starts, so a mid-answer speaker switch cannot change it
+        answer: (query, para, speaker, onSentence, signal) => {
+          answerVoice = latest.current.voiceFor(speaker);
+          return streamAnswer(bookId, query, para, speaker, onSentence, signal);
+        },
+        speaker: createSentenceSpeaker((text) => speak(text, answerVoice)),
+      } : {}),
       voiceFor: (id) => latest.current.voiceFor(id),
       onState: setState,
       onToast: setToast,

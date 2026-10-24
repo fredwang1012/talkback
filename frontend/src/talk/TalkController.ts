@@ -5,6 +5,8 @@
  * so the whole loop can be tested with fakes.
  */
 
+import type { SentenceSpeaker } from "./sentencePlayer";
+
 export type TalkState =
   | "reading" | "listening" | "transcribing" | "retrieving" | "answering" | "resuming" | "talk-idle";
 
@@ -47,10 +49,20 @@ export type RetrieveFn = (query: string, readerPara: number, speakerId: string) 
 
 export type Latency = { commitToTranscriptMs?: number; retrieveMs?: number; firstAudioMs?: number };
 
+/** Streams the answer sentence by sentence; rejects on failure; `signal` aborts it (barge-in). */
+export type AnswerFn = (
+  query: string, readerPara: number, speakerId: string, onSentence: (text: string) => void, signal?: AbortSignal,
+) => Promise<void>;
+
 export interface TalkDeps {
   session: TalkSession;
   reader: ReaderControl;
   retrieve: RetrieveFn;
+  /** With `speaker`, replaces `retrieve` + `session.respond`: the backend writes the answer, we speak each sentence. */
+  answer?: AnswerFn;
+  speaker?: SentenceSpeaker;
+  /** How long to wait for the first sentence before giving up. */
+  firstSentenceTimeoutMs?: number;
   voiceFor: (speakerId: string) => string;
   onState?: (s: TalkState) => void;
   onToast?: (message: string) => void;
@@ -79,6 +91,7 @@ export class TalkController {
   private resumeTimer: ReturnType<typeof setTimeout> | null = null;
   private waiters: { predicate: (e: SessionEvent) => boolean; resolve: (e: SessionEvent | null) => void }[] = [];
   private latency: Latency = {};
+  private run: { abort: AbortController; timer: ReturnType<typeof setTimeout> | null } | null = null; // the Gemini answer in flight
   private off: () => void;
 
   constructor(deps: TalkDeps) {
@@ -113,6 +126,7 @@ export class TalkController {
   dispose(): void {
     this.off();
     this.clearResumeTimer();
+    this.cancelAnswer();
     this.turn++;
     this.waiters.forEach((w) => w.resolve(null));
     this.waiters = [];
@@ -126,6 +140,8 @@ export class TalkController {
     this.pressedAt = this.d.now();
     const wasAnswering = this._state === "answering";
     const wasBusy = ["transcribing", "retrieving"].includes(this._state);
+    const viaAnswer = this.run !== null;
+    this.cancelAnswer(); // barge-in: stop the clip, drop the queue, abort the stream
 
     if (this.resumeIndex === null) {
       this.wasPlayingBeforePress = this.d.reader.isPlaying();
@@ -135,7 +151,7 @@ export class TalkController {
     this.d.onCaption?.("", false);
     this.set("listening");
 
-    if (wasAnswering || wasBusy) {
+    if ((wasAnswering || wasBusy) && !viaAnswer) {
       try { await this.d.session.interrupt(); } catch { /* nothing to cancel is fine */ }
     }
     if (turn !== this.turn) return;
@@ -172,6 +188,10 @@ export class TalkController {
 
     this.set("retrieving");
     const r0 = this.d.now();
+    if (this.d.answer && this.d.speaker) {
+      void this.streamAndSpeak(turn, query, r0);
+      return;
+    }
     let instructions: string;
     try {
       const res = await this.withTimeout(this.d.retrieve(query, this.d.reader.currentPara(), this.speakerId), this.d.retrieveTimeoutMs);
@@ -189,6 +209,90 @@ export class TalkController {
     const a0 = this.d.now();
     this.d.session.respond(instructions);
     void this.awaitAnswer(turn, a0); // key release returns now; the answer is handled in the background
+  }
+
+  /** Gemini path: sentences arrive on a stream and are spoken in order, the first while later ones are still coming. */
+  private async streamAndSpeak(turn: number, query: string, r0: number): Promise<void> {
+    const { answer, speaker } = this.d;
+    if (!answer || !speaker) return;
+    const run = { abort: new AbortController(), timer: null as ReturnType<typeof setTimeout> | null };
+    this.run = run;
+    const queue: string[] = [];
+    let streamDone = false;
+    let pumping = false;
+    let delivered = 0;
+    let streamError: string | null = null;
+    const alive = () => turn === this.turn && this.run === run;
+    const clearTimer = () => { if (run.timer) clearTimeout(run.timer); run.timer = null; };
+
+    const finish = () => {
+      if (!alive() || !streamDone || pumping || queue.length) return;
+      clearTimer();
+      this.run = null;
+      if (streamError && delivered === 0) { this.d.onToast?.(`Could not look that up: ${streamError}. Continuing the story.`); this.backToReading(); return; }
+      if (streamError) this.d.onToast?.(streamError);
+      this.afterAnswer();
+    };
+    const pump = async () => {
+      if (pumping) return;
+      pumping = true;
+      while (queue.length && alive()) {
+        const text = queue.shift() as string;
+        this.setSpeaking(true);
+        if (queue.length) speaker.prefetch(queue[0]);
+        try {
+          await speaker.play(text);
+        } catch (e) {
+          if (!alive()) return;
+          pumping = false;
+          this.cancelAnswer();
+          this.d.onToast?.(e instanceof Error ? e.message : String(e));
+          this.turn++;
+          this.backToReading();
+          return;
+        }
+      }
+      pumping = false;
+      finish();
+    };
+
+    run.timer = setTimeout(() => {
+      if (!alive()) return;
+      this.cancelAnswer();
+      this.turn++;
+      this.d.onToast?.("The answer took too long. Continuing the story.");
+      this.backToReading();
+    }, this.d.firstSentenceTimeoutMs ?? 15000);
+
+    try {
+      await answer(query, this.d.reader.currentPara(), this.speakerId, (text) => {
+        if (!alive() || !text.trim()) return;
+        if (delivered++ === 0) {
+          clearTimer();
+          this.latency.retrieveMs = this.d.now() - r0;
+          this.d.onLatency?.({ ...this.latency });
+          this.set("answering");
+        }
+        queue.push(text);
+        if (pumping && queue.length === 1) speaker.prefetch(text); // the next one, while the current plays
+        void pump();
+      }, run.abort.signal);
+    } catch (e) {
+      if (!alive()) return; // barge-in or a dead turn: the abort error is expected
+      streamError = e instanceof Error ? e.message : String(e);
+    }
+    streamDone = true;
+    finish();
+  }
+
+  /** Stop speaking, drop queued sentences and abort the stream. Safe to call when nothing is running. */
+  private cancelAnswer(): void {
+    const run = this.run;
+    if (!run) return;
+    this.run = null;
+    if (run.timer) clearTimeout(run.timer);
+    run.abort.abort();
+    this.d.speaker?.stop();
   }
 
   private async awaitAnswer(turn: number, a0: number): Promise<void> {
@@ -218,9 +322,9 @@ export class TalkController {
     if (e.type === "playback-drained") this.setSpeaking(false);
     if (e.type === "error") {
       this.d.onToast?.(e.message);
-      if (["listening", "transcribing", "retrieving", "answering"].includes(this._state)) { this.turn++; this.backToReading(); }
+      if (["listening", "transcribing", "retrieving", "answering"].includes(this._state)) { this.cancelAnswer(); this.turn++; this.backToReading(); }
     }
-    if (e.type === "closed" && this._state === "answering") { this.turn++; this.backToReading(); }
+    if (e.type === "closed" && this._state === "answering" && !this.run) { this.turn++; this.backToReading(); }
     if (e.type === "playback-drained" && this._state === "answering") this.afterAnswer();
   }
 

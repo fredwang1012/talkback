@@ -24,3 +24,12 @@ scripts/captures/*.log
 .playwright-mcp/
 *.png.tmp
 .superpowers/
+
+# Personal / copyrighted material: never commit
+data/uploads/
+data/books/u-*/
+data/portraits/*/
+data/samples/
+data/voices.json
+logs/
+*.log

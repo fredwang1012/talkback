@@ -84,6 +84,23 @@ button:disabled { cursor: not-allowed; }
 .volume-closed { background: transparent; border-style: dashed; border-left-width: 1px; opacity: 0.85; }
 .volume-closed h2 { font-size: 1.9rem; color: var(--ink-soft); }
 .volume-closed .open { color: var(--ink-faint); font-weight: 500; }
+.add-book { margin-top: 56px; max-width: 520px; }
+.add-book h2 { font-family: var(--font-title); font-weight: 400; font-size: 1.9rem; margin: 0 0 16px; }
+.add-book .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.add-book label { font-size: 0.9rem; color: var(--ink-soft); }
+.add-book input, .add-book select {
+  font: inherit; color: var(--ink); width: 100%; min-height: 44px; padding: 8px 10px;
+  background: var(--ground-sunk); border: 1px solid var(--brass-soft); border-radius: var(--radius);
+}
+.add-book input:disabled, .add-book select:disabled { opacity: 0.6; }
+.add-book-go {
+  min-height: 44px; padding: 8px 22px; font-weight: 600; color: var(--ground);
+  background: var(--brass); border: 1px solid var(--brass); border-radius: var(--radius);
+}
+.add-book-go:disabled { opacity: 0.6; }
+.add-book-status { min-height: 1.5em; margin-top: 12px; color: var(--ink-soft); }
+.add-book-error { margin: 12px 0 0; color: var(--seal-bright); }
+.add-book-note { margin: 12px 0 0; color: var(--ink-faint); font-size: 0.85rem; }
 .licence { margin-top: 56px; color: var(--ink-faint); font-size: 0.85rem; line-height: 1.6; max-width: 70ch; }
 .licence a { color: var(--ink-soft); }
 

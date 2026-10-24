@@ -8,19 +8,22 @@ import time
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import books, retrieval, tts_cache, voices
+from . import books, ingest_upload, retrieval, tts_cache, voices
 from .boson import BosonClient, BosonError
 from .config import settings
+from .gcp import usage
 from .personas import build_answer_prompt, build_instructions
 from .ratelimit import TokenBucket
 from .schema import Book
+from .uploadlimit import UploadSizeLimit
 
 def _warm_up() -> None:
     """Load the embedding model and every book's index before the first question (the model takes ~17 s to load)."""
@@ -39,6 +42,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Talkback", lifespan=lifespan)
+app.add_middleware(UploadSizeLimit)  # added before CORS so CORS headers still wrap its 4xx replies
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -107,9 +111,11 @@ async def realtime_token(request: Request):
     if not token_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many connection attempts; wait a moment.")
     try:
-        return await boson.mint_client_secret(600)
+        secret = await boson.mint_client_secret(600)
     except (BosonError, RuntimeError) as e:
         raise boson_http_error(e)
+    usage.record("boson_realtime_session", "boson-realtime", sessions=1)
+    return secret
 
 
 # ---------- TTS ----------
@@ -277,6 +283,133 @@ async def speak(req: SpeakRequest, request: Request):
     except (BosonError, RuntimeError) as e:
         raise boson_http_error(e)
     return {"voice": req.voice, **out}
+
+
+# ---------- user uploads (PDF / .txt -> narrator-only book) ----------
+
+_upload_status: dict[str, dict] = {}
+upload_bucket = TokenBucket(capacity=3, per_seconds=60)  # uploads per IP
+
+
+class IngestGuard:
+    """Allows one ingest at a time (a 20 MB PDF is a lot of CPU and memory).
+
+    A hold older than STALE_SECONDS may be taken over only if its background task never started (it is dead).
+    A task that started and has not released is still running (a thread cannot be killed), so it keeps the guard
+    and new uploads keep getting 429. Release only works for the current holder's token.
+    """
+    STALE_SECONDS = 15 * 60
+
+    def __init__(self, clock=time.monotonic):
+        self.clock, self._since, self._token = clock, None, 0
+        self._started = self._warned = False
+
+    @property
+    def busy(self) -> bool:
+        return self._since is not None
+
+    def acquire(self) -> int | None:
+        if self._since is not None:
+            if self.clock() - self._since < self.STALE_SECONDS:
+                return None
+            log = logging.getLogger(__name__)
+            if self._started:
+                if not self._warned:
+                    self._warned = True
+                    log.warning("an ingest has been running for over 15 minutes; new uploads stay blocked")
+                return None
+            log.warning("ingest guard was held for over 15 minutes by a task that never started; taking it over")
+        self._token += 1
+        self._since = self.clock()
+        self._started = self._warned = False
+        return self._token
+
+    def mark_started(self, token: int) -> None:
+        if token == self._token:
+            self._started = True
+
+    def release(self, token: int) -> None:
+        if token == self._token:
+            self._since = None
+
+
+_ingest_guard = IngestGuard()
+
+
+def _set_status(book_id: str, status: str, message: str | None = None) -> None:
+    _upload_status[book_id] = ingest_upload.write_status(book_id, status, message)
+
+
+async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str, token: int) -> None:
+    """Background ingest: CPU work in a thread, then (vertex only) index the chunks, then publish book.json.
+
+    book.json is written last, so a processing or failed upload is never listed or readable. Never raises.
+    """
+    _ingest_guard.mark_started(token)
+    try:
+        book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext)
+        if settings.retrieval_backend == "vertex":
+            from .gcp.indexing import index_book
+            embedder, store = _vertex_deps()
+            await index_book(book, chunks, embedder, store)
+        await asyncio.to_thread(ingest_upload.publish_book, book)
+        _index_for.cache_clear()
+        _set_status(book_id, "ready")
+    except Exception as e:
+        ingest_upload.discard_book(book_id)
+        if isinstance(e, ingest_upload.UploadError):
+            _set_status(book_id, "error", str(e))
+        else:  # never leak details to the client
+            logging.getLogger(__name__).warning("upload ingest failed: %s", type(e).__name__)
+            _set_status(book_id, "error", "The file could not be processed.")
+    finally:
+        _ingest_guard.release(token)
+
+
+@app.post("/api/books/upload", status_code=202, dependencies=[Depends(require_access)])
+async def upload_book(request: Request, background: BackgroundTasks, file: UploadFile = File(...),
+                      title: str = Form(..., min_length=1, max_length=120),
+                      author: str = Form("", max_length=120),
+                      kind: Literal["novel", "textbook"] = Form(...)):
+    if not upload_bucket.allow(client_ip(request)):
+        raise HTTPException(429, "Too many uploads; wait a moment.")
+    token = _ingest_guard.acquire()  # no await between the check and the hold
+    if token is None:
+        raise HTTPException(429, "Another book is still being processed; try again shortly.")
+    try:
+        title = title.strip()
+        if not title:
+            raise HTTPException(422, "Title is required.")
+        ext = Path(file.filename or "").suffix.lower()
+        if ext not in (".pdf", ".txt"):
+            raise HTTPException(400, "Upload a .pdf or .txt file.")
+        data = await file.read(ingest_upload.MAX_UPLOAD_BYTES + 1)  # bounded read (size is also checked up front by middleware)
+        if len(data) > ingest_upload.MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "File is too large (20 MB maximum).")
+        if ext == ".pdf" and not data.startswith(b"%PDF"):
+            raise HTTPException(400, "That does not look like a PDF.")
+        book_id, _ = ingest_upload.make_book_dir(title)
+        path = ingest_upload.upload_path(book_id, ext)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        _set_status(book_id, "processing")
+        background.add_task(_ingest, book_id, title, author.strip(), kind, data, ext, token)  # releases the guard
+    except BaseException:
+        _ingest_guard.release(token)
+        raise
+    return {"book_id": book_id, "status": "processing"}
+
+
+@app.get("/api/books/{book_id}/status")
+def book_status(book_id: str):
+    st = _upload_status.get(book_id)
+    if st is None and books._ID.match(book_id):
+        st = ingest_upload.read_status(book_id)
+        if st and st.get("status") == "processing":  # not in memory: the server restarted mid-ingest
+            st = {"status": "error", "message": "Processing was interrupted; please upload again."}
+    if st is None:
+        raise HTTPException(404, "Book not found")
+    return st
 
 
 # ---------- avatars (stretch) ----------

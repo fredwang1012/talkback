@@ -214,7 +214,23 @@ Files: `frontend/src/pages/Library.tsx`, `frontend/src/api.ts`, `frontend/src/in
 - `api.ts`: `uploadBook(file, title, author, kind)` and `fetchBookStatus(id)`.
 - Tests: `uploadBook` sends multipart with the fields and auth header; status polling helper stops on ready.
 
-## Task 9: Usage report script
+## Task 9: Usage report script (GCP + Anthropic + Boson)
+
+Scope extended 2026-10-19 (user asked to track spend on all three providers):
+- `preprocess/llm.py`: after every real (non-cached) Anthropic call, also append a usage line via
+  `backend/app/gcp/usage.py`'s `record` (kind `"anthropic"`, model, `input_tokens`, `output_tokens`, `usd`).
+  If importing it from `preprocess/` is awkward, move `record` to `backend/app/usage.py` and keep a thin re-export
+  at `app/gcp/usage.py`.
+- `backend/app/tts_cache.py`: on a cache MISS (real Boson TTS call) record kind `"boson_tts"`, model `"higgs-tts-3"`,
+  `chars` = len(tts_text). `scripts/prerender_tts.py`/`preprocess/prerender_tts.py` go through the same function so
+  they are covered.
+- `/api/realtime/token` mint: record kind `"boson_realtime_session"` (count only; Realtime pricing unknown).
+- Prices for the report (constants, labelled estimates): Boson TTS $0.015 per 1K chars; Anthropic per-model prices
+  from `preprocess/llm.py`'s table (import it, do not copy); Realtime sessions listed as counts.
+- The report prints one section per provider with totals and an all-provider summary against three budgets:
+  `--gcp-budget 50`, `--anthropic-budget 77.33`, `--boson-budget` (optional; omit the remaining line if unset).
+
+Original scope:
 
 Files: new `scripts/usage.py`, tests `backend/tests/test_usage_report.py`.
 
