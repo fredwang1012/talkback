@@ -495,11 +495,14 @@ class SpeakRequest(BaseModel):
 async def speak(req: SpeakRequest, request: Request):
     if not voices.is_known_voice(req.voice):
         raise HTTPException(400, f"Unknown voice '{req.voice}'.")
-    tts_text = emotion.tts_input(req.text, emotion.valid(req.emotion))
+    text = emotion.strip_tags(req.text)   # answer / recap text: it never carries its own Boson tags
+    if not text:
+        raise HTTPException(400, "Nothing to say.")
+    tts_text = emotion.tts_input(text, emotion.valid(req.emotion))
     if not tts_cache.is_cached(tts_text, req.voice) and not tts_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many new audio requests; wait a moment.")
     try:
-        out = await tts_cache.get_or_create(boson, tts_text, req.voice, req.text)
+        out = await tts_cache.get_or_create(boson, tts_text, req.voice, text)
     except (BosonError, RuntimeError) as e:
         raise boson_http_error(e)
     return {"voice": req.voice, **out}
