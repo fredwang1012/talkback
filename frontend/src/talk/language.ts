@@ -57,14 +57,24 @@ export function clearLanguage(text: string): Detected | null {
   return { code: best.lang.code, name: best.lang.name };
 }
 
-/** The Realtime transcription hint (ISO 639-1) from the reader's recent questions, oldest first: the newest of the last
- * three that is clear decides; English, or nothing clear, gives null (no hint). */
-export function transcriptionHint(recent: string[]): string | null {
+/** The newest clear language of the reader's last three questions (oldest first), as ISO 639-1, or null. */
+function newestClear(recent: string[]): string | null {
   for (const q of recent.slice(-3).reverse()) {
     const d = clearLanguage(q);
-    if (d) return d.code === "en" ? null : d.code;
+    if (d) return d.code;
   }
   return null;
+}
+
+/**
+ * The Realtime transcription hint (ISO 639-1) from the reader's recent questions, oldest first. A wrong hint costs a
+ * whole turn (live: no transcript at all), so it needs the two newest clear questions of the last three to be in the
+ * same language, and not English; anything else gives null (no hint).
+ */
+export function transcriptionHint(recent: string[]): string | null {
+  const clear = recent.slice(-3).map((q) => clearLanguage(q)?.code ?? null).filter((c): c is string => c !== null);
+  const [a, b] = clear.slice(-2);
+  return clear.length >= 2 && a === b && a !== "en" ? a : null;
 }
 
 /** ISO 639-1 (the detector's codes) -> ISO 639-3 for /api/speak `language`; null for English and anything unknown. */
@@ -78,5 +88,6 @@ export function toIso6393(code: string | null | undefined): string | null {
 
 /** The language to voice an answer in (ISO 639-3), when the reader's recent questions are clearly not English. */
 export function answerLanguage(recent: string[]): string | null {
-  return toIso6393(transcriptionHint(recent));
+  const code = newestClear(recent); // the voice follows the newest clear question at once (a wrong guess only sounds odd)
+  return code === "en" ? null : toIso6393(code);
 }

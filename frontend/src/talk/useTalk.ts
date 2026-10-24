@@ -4,7 +4,7 @@ import { MicCapture } from "../audio/capture";
 import { RingPlayer } from "../audio/playback";
 import { spend } from "../spend";
 import type { LogEntry } from "../ui/DebugDrawer";
-import { addNarration, addQuestion, addToolChip, appendSentence, cutHeard, fillNarration, finishAnswer, loadChat, markInterrupted, priorTurns, saveChat, setPendingText, setSources, type ChatMessage } from "./chatLog";
+import { addNarration, addQuestion, addToolChip, appendSentenceTo, cutHeard, fillNarration, finishAnswer, loadChat, markInterrupted, priorTurns, saveChat, setSources, setTextOf, type ChatMessage } from "./chatLog";
 import { createReadAloud, speechParts } from "../reader/readAloud";
 import { answerLanguage, detectLanguage, type Detected } from "./language";
 import { localGateForcedHere } from "./handsFree";
@@ -177,6 +177,9 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     let answerLang: string | null = null; // #135: ISO 639-3 when the reader's questions are clearly not English
     const answerEmotion = createEmotionMemo();
     let rtMsgId: number | undefined;
+    // the answer bubble of the current question (made by onTranscript): text only ever goes into it, never into an
+    // older (interrupted, finished) one, so answers cannot stack in one bubble
+    let liveAnswerId: number | undefined;
     let talk: TalkController | null = null;
     const gate = createPlayingGate((on) => talk?.notePlaying(on));
     const logTiming = (e: TimingEvent) => {
@@ -199,10 +202,10 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         answer: (query, para, speaker, onSentence, signal) => {
           answerVoice = latest.current.voiceFor(speaker);
           answerFaceId = latest.current.faceIdFor(speaker);
-          answerMsgId = pendingId();
+          answerMsgId = liveAnswerId ?? pendingId();
           answerEmotion.clear();
           answerLang = answerLanguage([...priorTurns(msgs.current, speaker).filter((t) => t.role === "user").map((t) => t.text), query]);
-          return streamAnswer(bookId, query, para, speaker, (t, emotion) => { answerEmotion.note(t, emotion); setMessages((m) => appendSentence(m, t)); onSentence(t); }, signal, latest.current.spoilers, priorTurns(msgs.current, speaker), (s) => setMessages((m) => setSources(m, s)));
+          return streamAnswer(bookId, query, para, speaker, (t, emotion) => { answerEmotion.note(t, emotion); const id = answerMsgId; setMessages((m) => appendSentenceTo(m, id, t)); onSentence(t); }, signal, latest.current.spoilers, priorTurns(msgs.current, speaker), (s) => setMessages((m) => setSources(m, s)));
         },
         speaker: createSentenceSpeaker(async (text) => {
           const voice = answerVoice;
@@ -226,12 +229,13 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       serverTurns: !localGateForcedHere(), // #135: hands-free on Boson's turn detection unless ?gate=local
       onState: (st) => { setState(st); if (st !== "answering") setLivePaused(false); if (["listening", "retrieving", "answering"].includes(st)) { replayer.current?.stop(); narration.current?.stop(); } if (["reading", "talk-idle", "resuming"].includes(st)) { setMessages(finishAnswer); resetIfSpeakerChanged.current(); } if (st === "listening") resetIfSpeakerChanged.current(); },
       onToast: setToast,
-      onCaption: (text) => { setCaption(text); if (!viaGemini && text) setMessages((m) => setPendingText(m, text)); },
+      onCaption: (text) => { setCaption(text); if (!viaGemini && text) setMessages((m) => setTextOf(m, liveAnswerId, text)); },
       onSpeaking: setSpeaking,
       onTiming: logTiming,
       onTranscript: (text) => {
         setQuestion(text); setLanguage(detectLanguage(text));
         setMessages((m) => addQuestion(m, text, latest.current.speakerId, via.current));
+        liveAnswerId = pendingId(); // the new empty answer bubble of this question
         via.current = "voice";
       },
       onLatency: (l) => { setLatency(l); console.info("[talk] latency", l); },

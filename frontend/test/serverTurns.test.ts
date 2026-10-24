@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TalkClient, captionAt, sessionConfig, turnDetection, type MicLike, type PlayerLike, type SocketLike } from "../src/talk/TalkClient";
-import { FAST_FAIL_MS, TalkController, type ReaderControl, type SessionEvent, type TalkState } from "../src/talk/TalkController";
+import { MIN_TURN_MS, TalkController, failWaitMs, type ReaderControl, type SessionEvent, type TalkState } from "../src/talk/TalkController";
 import { localGateForced } from "../src/talk/handsFree";
 import { addQuestion, cutHeard, markInterrupted, setPendingText } from "../src/talk/chatLog";
 
@@ -385,16 +385,17 @@ describe("TalkController on Boson turn detection (#135)", () => {
     expect(l.asked).toEqual(["What is the capital of France?"]);
   });
 
-  it("barge-in: the server's speech_started plus clear local speech cuts the character off and keeps the words heard", async () => {
+  it("barge-in: clear local speech over the character cuts it off at once and keeps the words heard (the server cannot hear it: the mic is held)", async () => {
     const l = loop();
     await handsFreeOn(l);
     await speakTurn(l, "Who is Alice?");
     await characterSpeaks(l);
     expect(l.talk.state).toBe("answering");
+    await l.level(0.03, 400); // what the echo canceller leaves of the character
     l.player.played = 1000;
-    await l.level(0.2, 500); // the reader speaks over the character, clearly
-    expect(l.talk.state).toBe("answering"); // the local level alone never starts a server-mode turn
-    l.ws().recv({ type: "input_audio_buffer.speech_started", item_id: "u2" });
+    await l.level(0.2, 300); // the reader speaks over the character, clearly
+    expect(l.talk.state).toBe("listening");
+    l.ws().recv({ type: "input_audio_buffer.speech_started", item_id: "u2" }); // the server hears the reader: the same turn
     await settle();
     expect(l.talk.state).toBe("listening");
     expect(l.interrupted()).toBe(1);
@@ -421,7 +422,7 @@ describe("TalkController on Boson turn detection (#135)", () => {
     expect(l.interrupted()).toBe(0);
   });
 
-  it("echo guard: speech the server heard first is confirmed once the local level is clearly speech", async () => {
+  it("echo guard: a server speech_started over the character is not a barge-in; clear local speech is", async () => {
     const l = loop();
     await handsFreeOn(l);
     await speakTurn(l, "Who is Alice?");
@@ -429,30 +430,35 @@ describe("TalkController on Boson turn detection (#135)", () => {
     l.ws().recv({ type: "input_audio_buffer.speech_started", item_id: "u2" });
     await settle();
     expect(l.talk.state).toBe("answering");
+    await l.level(0.03, 400);
     await l.level(0.2, 500);
     expect(l.talk.state).toBe("listening");
     expect(l.interrupted()).toBe(1);
   });
 
-  it("fast failure: a committed turn without a transcript ends in well under the old 6 s", async () => {
+  it("failure: a real committed turn without a transcript ends after the scaled wait, well under the old 6 s", async () => {
     const l = loop();
     await handsFreeOn(l);
     l.ws().recv({ type: "input_audio_buffer.speech_started", item_id: "u1" });
+    await settle();
+    await l.level(0.2, 1000); // a second of real speech
     l.ws().recv({ type: "input_audio_buffer.speech_stopped", item_id: "u1" });
     l.ws().recv({ type: "input_audio_buffer.committed", item_id: "u1" });
-    await l.advance(FAST_FAIL_MS - 100);
+    await l.advance(failWaitMs(1000) - 100);
     expect(l.toasts).toEqual([]);
     await l.advance(200);
     expect(l.toasts).toEqual(["I didn't catch that. Try again."]);
-    expect(FAST_FAIL_MS).toBeLessThanOrEqual(1500);
+    expect(failWaitMs(1000)).toBeLessThan(6000);
     expect(l.talk.state).toBe("reading");
     expect(l.reader.log.at(-1)).toBe("resumeAt:4");
   });
 
-  it("fast failure: an empty transcript ends the turn at once", async () => {
+  it("failure: an empty transcript of a real turn ends it at once", async () => {
     const l = loop();
     await handsFreeOn(l);
     l.ws().recv({ type: "input_audio_buffer.speech_started", item_id: "u1" });
+    await settle();
+    await l.level(0.2, MIN_TURN_MS + 200);
     l.ws().recv({ type: "input_audio_buffer.speech_stopped", item_id: "u1" });
     l.ws().recv({ type: "input_audio_buffer.committed", item_id: "u1" });
     l.ws().recv({ type: "conversation.item.input_audio_transcription.completed", item_id: "u1", transcript: "  " });
@@ -497,8 +503,8 @@ describe("TalkController on Boson turn detection (#135)", () => {
     expect(l.ws().types()).toContain("input_audio_buffer.commit");
     expect(td(l.ws())).toBeNull();
     l.ws().recv({ type: "input_audio_buffer.committed", item_id: "u1" });
-    await l.advance(FAST_FAIL_MS + 1000);
-    expect(l.toasts).toEqual([]); // still waiting: the fast failure is for server turns only
+    await l.advance(failWaitMs(600) + 1000);
+    expect(l.toasts).toEqual([]); // still waiting: the shorter wait is for server turns only
     l.ws().recv({ type: "conversation.item.input_audio_transcription.completed", item_id: "u1", transcript: "A long question?" });
     await settle();
     await up;
@@ -519,18 +525,24 @@ describe("TalkController on Boson turn detection (#135)", () => {
     expect(l.toasts).toEqual(["I didn't catch that. Try again."]);
   });
 
-  it("language hint: clearly Spanish questions set the transcription language; a failed turn clears it", async () => {
+  it("language hint: two clearly Spanish questions set the transcription language; a failed turn clears it", async () => {
     const l = loop();
     await handsFreeOn(l);
-    await speakTurn(l, "¿Quién escribió esta carta y por qué?");
+    await speakTurn(l, "¿Por qué la reina está tan enfadada con el gato?");
+    l.ws().recv({ type: "response.created", response: { id: "r0" } });
+    l.ws().recv({ type: "response.done", response: { id: "r0", status: "completed", output: [] } });
+    await settle();
+    await speakTurn(l, "¿Quién escribió esta carta y por qué?", "u1b");
     expect(l.ws().sent).toContainEqual({ type: "session.update", session: { audio: { input: { transcription: { model: "higgs-stt-3.1", language: "es" } } } } });
     l.ws().recv({ type: "response.created", response: { id: "r1" } });
     l.ws().recv({ type: "response.done", response: { id: "r1", status: "completed", output: [] } });
     await settle();
     l.ws().recv({ type: "input_audio_buffer.speech_started", item_id: "u2" });
+    await settle();
+    await l.level(0.2, 1000);
     l.ws().recv({ type: "input_audio_buffer.speech_stopped", item_id: "u2" });
     l.ws().recv({ type: "input_audio_buffer.committed", item_id: "u2" });
-    await l.advance(FAST_FAIL_MS + 100); // live: a wrong hint can swallow the transcript entirely
+    await l.advance(failWaitMs(1000) + 100); // live: a wrong hint can swallow the transcript entirely
     expect(l.ws().sent.at(-1)).toEqual({ type: "session.update", session: { audio: { input: { transcription: { model: "higgs-stt-3.1", language: null } } } } });
   });
 });

@@ -14,16 +14,25 @@ describe("clearLanguage (#135): only a confident guess steers transcription", ()
   });
 });
 
-describe("transcriptionHint (#135)", () => {
-  it("the newest clear question decides; English (or nothing clear) gives no hint", () => {
+describe("transcriptionHint (#135): only after two clearly non-English questions", () => {
+  const es = "¿Quién escribió esta carta y por qué?";
+  const es2 = "¿Por qué la reina está tan enfadada con el gato?";
+  it("one Spanish question is not enough (a wrong hint swallows the next transcript entirely)", () => {
     expect(transcriptionHint([])).toBeNull();
     expect(transcriptionHint(["What do you make of this?"])).toBeNull();
-    expect(transcriptionHint(["What is this?", "¿Quién escribió esta carta y por qué?"])).toBe("es");
-    expect(transcriptionHint(["¿Quién escribió esta carta y por qué?", "Alice"])).toBe("es"); // unclear: the earlier one stands
-    expect(transcriptionHint(["¿Quién escribió esta carta y por qué?", "Who wrote the letter and why is it here?"])).toBeNull();
+    expect(transcriptionHint(["What is this?", es])).toBeNull();
+    expect(transcriptionHint([es])).toBeNull();
+  });
+  it("two clear questions in the same language set it; an unclear one in between does not break it", () => {
+    expect(transcriptionHint([es, es2])).toBe("es");
+    expect(transcriptionHint([es, "Alice", es2])).toBe("es");
+  });
+  it("English, or two different languages, as the newest clear ones give no hint", () => {
+    expect(transcriptionHint([es, es2, "Who wrote the letter and why is it here?"])).toBeNull();
+    expect(transcriptionHint([es, "Qui a écrit cette lettre et pourquoi est-elle là ?"])).toBeNull();
   });
   it("looks at the last three questions only", () => {
-    expect(transcriptionHint(["¿Quién escribió esta carta y por qué?", "Alice", "Bob", "Carol"])).toBeNull();
+    expect(transcriptionHint([es, es2, "Alice", "Bob", "Carol"])).toBeNull();
   });
 });
 
