@@ -161,6 +161,35 @@ def test_owner_marker_must_match_even_for_owner_only_ids(pu):
     assert (settings.data_dir / "books" / "u-alice-1" / "book.json").exists()
 
 
+def test_an_upload_still_being_ingested_is_never_resume_deleted(client, tmp_path):
+    """No book.json yet (ingest in flight) must not look like a half-finished delete."""
+    bid = "u-inflight-0000abcd"
+    d = tmp_path / "books" / bid
+    d.mkdir(parents=True)
+    (d / "status.json").write_text('{"status": "processing"}')
+    main._upload_status[bid] = {"status": "processing"}
+    try:
+        assert client.delete(f"/api/books/{bid}").status_code == 409
+        main._upload_status.pop(bid)   # even with no in-memory status (no tombstone, no book.json): refused
+        assert client.delete(f"/api/books/{bid}").status_code == 409
+        assert d.is_dir() and (d / "status.json").exists()
+    finally:
+        main._upload_status.pop(bid, None)
+
+
+def test_a_failed_local_delete_leaves_a_tombstone_and_resumes(client, tmp_path, monkeypatch):
+    bid = upload(client)
+    import shutil
+    real = shutil.rmtree
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+    assert client.delete(f"/api/books/{bid}").status_code == 202
+    assert (tmp_path / "books" / bid / "deleting.json").exists()   # local backend too
+    main._delete_status.clear()   # as after a restart: only the tombstone on disk says "resume"
+    monkeypatch.setattr(shutil, "rmtree", real)
+    assert client.delete(f"/api/books/{bid}").status_code == 202
+    assert not (tmp_path / "books" / bid).exists()
+
+
 def test_refused_while_vertex_indexing(client, tmp_path):
     bid = upload(client)
     main._upload_status[bid] = {"status": "ready", "index": {"state": "running", "done": 400, "total": 3000}}

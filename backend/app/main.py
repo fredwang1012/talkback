@@ -891,8 +891,10 @@ async def delete_book(book_id: str, background: BackgroundTasks):
     book_dir = settings.data_dir / "books" / book_id
     if not book_dir.is_dir():
         raise HTTPException(404, "Book not found")
-    resuming = not (book_dir / "book.json").is_file()   # an earlier delete failed part-way: finish it
-    if not resuming and _book_busy(book_id):
+    # A resume needs the persisted tombstone (or this process's record of a failed delete). A folder without book.json
+    # and without a tombstone is an upload still being ingested: never delete that from under its job.
+    resuming = (book_dir / "deleting.json").is_file() or book_id in _delete_status
+    if _book_busy(book_id) or not (resuming or (book_dir / "book.json").is_file()):
         raise HTTPException(409, "This book is still being processed; try again when it finishes.")
     # Claim synchronously (no await since the checks): blocks a concurrent kind change / enrichment / second delete.
     _kind_claims.add(book_id)
@@ -925,10 +927,11 @@ def _tombstone_book(book_id: str) -> list[str]:
             ids = [i for i in json.loads(tomb.read_text(encoding="utf-8")) if isinstance(i, str)]
         except (OSError, ValueError):
             ids = []
-    elif settings.retrieval_backend == "vertex":
-        from .gcp.indexing import datapoint_ids
-        book = books.load_book(book_id)
-        ids = datapoint_ids(book) if book else []
+    else:   # written first, for every backend: it is what marks a resumable delete
+        if settings.retrieval_backend == "vertex":
+            from .gcp.indexing import datapoint_ids
+            book = books.load_book(book_id)
+            ids = datapoint_ids(book) if book else []
         tmp = tomb.with_name(tomb.name + ".tmp")
         tmp.write_text(json.dumps(ids), encoding="utf-8")
         tmp.replace(tomb)
