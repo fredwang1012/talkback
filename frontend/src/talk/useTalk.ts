@@ -38,11 +38,12 @@ type Args = {
   autoResume: boolean;
   health: Health | null;
   faces?: Record<string, VoiceFace>;
+  spoilers?: boolean; // full-book mode: the reader allows spoilers (novels only)
   lipSync?: boolean; // render each answer sentence as a lip-synced clip of the voice's face (~10 s per sentence)
 };
 
 /** Owns the Talk session for the reader screen. The real mic, speaker and socket are created once per book. */
-export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, faces = {}, lipSync: wantLipSync = false }: Args): TalkUi {
+export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, faces = {}, lipSync: wantLipSync = false, spoilers = false }: Args): TalkUi {
   const [state, setState] = useState<TalkState>("reading");
   const [caption, setCaption] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -56,8 +57,8 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   const logSeq = useRef(0);
   const controller = useRef<TalkController | null>(null);
   const viaGemini = answersViaGemini(health);
-  const latest = useRef({ reader, voiceFor, speakerId, faces, wantLipSync });
-  latest.current = { reader, voiceFor, speakerId, faces, wantLipSync };
+  const latest = useRef({ reader, voiceFor, speakerId, faces, wantLipSync, spoilers });
+  latest.current = { reader, voiceFor, speakerId, faces, wantLipSync, spoilers };
 
   useEffect(() => {
     if (!enabled) return;
@@ -84,12 +85,12 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         play: () => latest.current.reader.play(),
         resumeAt: (i) => latest.current.reader.resumeAt(i),
       },
-      retrieve: (query, para, speaker) => fetchRetrieve(bookId, query, para, speaker),
+      retrieve: (query, para, speaker) => fetchRetrieve(bookId, query, para, speaker, latest.current.spoilers),
       ...(viaGemini ? {
         // the voice is fixed when the answer starts, so a mid-answer speaker switch cannot change it
         answer: (query, para, speaker, onSentence, signal) => {
           answerVoice = latest.current.voiceFor(speaker);
-          return streamAnswer(bookId, query, para, speaker, onSentence, signal);
+          return streamAnswer(bookId, query, para, speaker, onSentence, signal, latest.current.spoilers);
         },
         speaker: createSentenceSpeaker(async (text) => {
           const voice = answerVoice;

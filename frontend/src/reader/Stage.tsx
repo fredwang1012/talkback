@@ -23,6 +23,8 @@ type Props = {
   faces: Record<string, VoiceFace>; // voice id -> face, for cloned voices that have one
   voiceFor: (speakerId: string) => string;
   readingVoice: string | null; // voice reading aloud right now in read mode
+  spoilers: boolean; // full-book mode (novels): answers may use the whole book
+  onSpoilers: (on: boolean) => void;
   lipSync: boolean;
   onLipSync: (on: boolean) => void;
 };
@@ -86,11 +88,12 @@ function Waveform() {
   );
 }
 
-export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, mode, onMode, pinned, needsCode, onCode, onOpenLab, faces, voiceFor, readingVoice, lipSync, onLipSync }: Props) {
+export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, mode, onMode, pinned, needsCode, onCode, onOpenLab, faces, voiceFor, readingVoice, spoilers, onSpoilers, lipSync, onLipSync }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
   const { met, locked } = splitCharacters(book.characters, para);
   const speaker = met.find((c) => c.id === speakerId);
   const tutor = book.kind === "textbook";
+  const fullBook = !tutor && spoilers;
   const name = speaker?.name ?? (tutor ? "Tutor" : "Narrator");
   const blurb = speaker ? speaker.persona : tutor ? "Explains the chapter in plain words. Ask about anything." : book.narrator?.is_character
     ? `Tells the story as ${book.characters.find((c) => c.id === book.narrator?.is_character)?.name ?? "a character"}.`
@@ -134,10 +137,20 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
       </div>
       {talk.speaking && <Waveform />}
 
-      <div className="badge">
-        <strong>{speaker ? `${name} knows` : "Story position:"}</strong> up to paragraph {para + 1}.
-        {locked.length > 0 && <> {locked.length} more {locked.length === 1 ? "character appears" : "characters appear"} later.</>}
+      <div className={`badge${fullBook ? " spoilers-on" : ""}`}>
+        {fullBook
+          ? <><strong>Full book — spoilers on.</strong> {speaker ? name : "The narrator"} may reveal anything from the whole book.</>
+          : <>
+              <strong>{speaker ? `${name} knows` : "Story position:"}</strong> up to paragraph {para + 1}.
+              {locked.length > 0 && <> {locked.length} more {locked.length === 1 ? "character appears" : "characters appear"} later.</>}
+            </>}
       </div>
+      {!tutor && (
+        <button className="spoiler-toggle" aria-pressed={spoilers} onClick={() => onSpoilers(!spoilers)}
+                title="Let answers use the whole book, including what comes later">
+          Spoilers: {spoilers ? "on" : "off"}
+        </button>
+      )}
 
       <section aria-label="Who to talk to">
         <ul className="cast-list">

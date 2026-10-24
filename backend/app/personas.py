@@ -40,6 +40,33 @@ Always reply in the language the reader used.
 ### Passages the reader has already read
 {passages}"""
 
+FULL_BOOK_NOTE = """The reader has chosen to allow spoilers. You know the whole of "{title}" and the earlier books of the series; answer from all of it freely and in detail, including how things turn out and what is revealed later.
+This story may be famous, but you know ONLY the notes and passages below: never use anything else you may know about it. If they do not answer the question, say plainly that you do not know.
+"""
+
+CHARACTER_FULL_TEMPLATE = """You are {name} from "{title}", chatting with a reader who has paused the story.
+Speak as {name}: {persona}
+Keep replies to two to four spoken sentences. No lists, no markdown, no stage directions.
+""" + FULL_BOOK_NOTE + """Do not invent plot facts that are not in the notes. Stay in character.
+Always reply in the language the reader used.
+
+### Story notes
+{story_so_far}
+
+### Passages
+{passages}"""
+
+NOVEL_NARRATOR_FULL_TEMPLATE = """You are the narrator of "{title}", chatting with a reader who has paused the story. Stay calm and vivid.
+Keep replies to two to four spoken sentences. No lists, no markdown, no stage directions.
+""" + FULL_BOOK_NOTE + """Do not invent plot facts that are not in the notes.
+Always reply in the language the reader used.
+
+### Story notes
+{story_so_far}
+
+### Passages
+{passages}"""
+
 
 def format_passages(passages: list[dict]) -> str:
     if not passages:
@@ -50,19 +77,19 @@ def format_passages(passages: list[dict]) -> str:
 
 
 def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages: list[dict],
-                       limit: int = MAX_INSTRUCTIONS_CHARS) -> str:
+                       limit: int = MAX_INSTRUCTIONS_CHARS, *, spoilers: bool = False) -> str:
     """Render the Talk prompt for `speaker_id` ("narrator" or a character id). Raises KeyError for unknown ids."""
     text_passages = format_passages(passages)
     story = story_so_far.strip() or "(the story has only just begun)"
     if book.kind == "textbook":
         out = NARRATOR_TEMPLATE.format(title=book.title, passages=text_passages)
     elif speaker_id == "narrator":
-        out = NOVEL_NARRATOR_TEMPLATE.format(title=book.title, story_so_far=story, passages=text_passages)
+        out = (NOVEL_NARRATOR_FULL_TEMPLATE if spoilers else NOVEL_NARRATOR_TEMPLATE).format(title=book.title, story_so_far=story, passages=text_passages)
     else:
         character = next((c for c in book.characters if c.id == speaker_id), None)
         if character is None:
             raise KeyError(speaker_id)
-        out = CHARACTER_TEMPLATE.format(name=character.name, title=book.title, persona=character.persona,
+        out = (CHARACTER_FULL_TEMPLATE if spoilers else CHARACTER_TEMPLATE).format(name=character.name, title=book.title, persona=character.persona,
                                         story_so_far=story, passages=text_passages)
     return out[:limit]
 
@@ -70,7 +97,9 @@ def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages:
 ANSWER_SUFFIX = "\n\nYour reply is spoken aloud word for word, so write only the words to be spoken."
 
 
-def build_answer_prompt(book: Book, speaker_id: str, story_so_far: str, passages: list[dict], query: str) -> tuple[str, str]:
+def build_answer_prompt(book: Book, speaker_id: str, story_so_far: str, passages: list[dict], query: str,
+                        *, spoilers: bool = False) -> tuple[str, str]:
     """(system, user) for the answer model: the Talk prompt for `speaker_id` plus a spoken-output rule; user is the question."""
-    system = build_instructions(book, speaker_id, story_so_far, passages, MAX_ANSWER_PROMPT_CHARS - len(ANSWER_SUFFIX))
+    system = build_instructions(book, speaker_id, story_so_far, passages, MAX_ANSWER_PROMPT_CHARS - len(ANSWER_SUFFIX),
+                                spoilers=spoilers)
     return system + ANSWER_SUFFIX, query

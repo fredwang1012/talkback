@@ -209,6 +209,7 @@ class RetrieveRequest(BaseModel):
     reader_para: int = Field(ge=0)
     speaker_id: str = "narrator"
     k: int = Field(default=4, ge=1, le=8)
+    spoilers: bool = False  # full-book mode (novels): reader allows spoilers; default stays spoiler-safe
 
 
 @lru_cache(maxsize=1)
@@ -279,8 +280,9 @@ async def retrieve(req: RetrieveRequest, request: Request):
     if not retrieve_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many lookups; wait a moment.")
     book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para)
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, **_series_context(book))
-    out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"])
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, spoilers=req.spoilers,
+                                    **_series_context(book))
+    out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"], spoilers=req.spoilers)
     out["persona"] = speaker.persona if speaker else None
     return out
 
@@ -304,10 +306,12 @@ async def answer(req: RetrieveRequest, request: Request):
         raise HTTPException(429, "Too many questions; wait a moment.")
     book, _, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para)
     t0 = time.monotonic()
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, **_series_context(book))
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, spoilers=req.spoilers,
+                                    **_series_context(book))
     t_retrieved = time.monotonic()
     retrieve_ms = int((t_retrieved - t0) * 1000)
-    system, user = build_answer_prompt(book, req.speaker_id, out["story_so_far"], out["passages"], req.query)
+    system, user = build_answer_prompt(book, req.speaker_id, out["story_so_far"], out["passages"], req.query,
+                                        spoilers=req.spoilers)
 
     async def stream():
         first_ms = None

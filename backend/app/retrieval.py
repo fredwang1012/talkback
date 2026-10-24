@@ -132,13 +132,18 @@ def is_eligible(c: Chunk, book: Book, reader_para: int, earlier: frozenset[str])
     return c.para_end <= reader_para
 
 
+def final_summary(book: Book) -> str:
+    """The book's last (whole-book) summary: only used in full-book (spoilers on) mode."""
+    return max(book.summaries, key=lambda s: s.upto_para).text if book.summaries else ""
+
+
 def _finish(book: Book, index, found: list[Chunk], reader_para: int, spoiler_safe: bool,
-            earlier: frozenset[str] = frozenset(), recap: str = "") -> dict:
+            earlier: frozenset[str] = frozenset(), recap: str = "", full_book: bool = False) -> dict:
     """Shared post-search step: recent passage, char cap, story summary (with the earlier books' recap)."""
     if spoiler_safe:  # backstop: enforce the spoiler invariant whatever the index returned
         found = [c for c in found if is_eligible(c, book, reader_para, earlier)]
-    else:
-        found = [c for c in found if not c.book_id or c.book_id == book.id]
+    else:  # textbook, or full-book mode (novel, spoilers on): the whole book, plus earlier books if any
+        found = [c for c in found if not c.book_id or c.book_id == book.id or (full_book and c.book_id in earlier)]
     passages = []
     for c in found:
         p = {"para_start": c.para_start, "para_end": c.para_end, "text": c.text}
@@ -167,29 +172,37 @@ def _finish(book: Book, index, found: list[Chunk], reader_para: int, spoiler_saf
     story = latest_summary(book, reader_para) if spoiler_safe else ""
     if spoiler_safe and recap:
         story = f"Earlier books:\n{recap}\n\nThis book so far:\n{story or '(just started)'}"
+    elif full_book:  # whole-book note (the last summary) plus the earlier books' recap
+        whole = final_summary(book)
+        parts = ([f"Earlier books:\n{recap}"] if recap else []) + ([f"Whole book:\n{whole}"] if whole else [])
+        story = "\n\n".join(parts)
     return {"passages": passages, "story_so_far": story, "mode": index.mode, "reader_para": reader_para}
 
 
-def _clamp(book: Book, reader_para: int) -> tuple[bool, int]:
-    return book.kind == "novel", max(0, min(reader_para, len(book.paragraphs) - 1))
+def _clamp(book: Book, reader_para: int, spoilers: bool = False) -> tuple[bool, int]:
+    """(spoiler_safe, clamped para). Full-book mode (`spoilers`) only applies to novels."""
+    return book.kind == "novel" and not spoilers, max(0, min(reader_para, len(book.paragraphs) - 1))
 
 
-def retrieve(book: Book, index: Index, query: str, reader_para: int, k: int = 4) -> dict:
+def retrieve(book: Book, index: Index, query: str, reader_para: int, k: int = 4, *, spoilers: bool = False) -> dict:
     """Passages (cap MAX_PASSAGE_CHARS) + story_so_far for the Talk prompt."""
-    spoiler_safe, reader_para = _clamp(book, reader_para)
+    spoiler_safe, reader_para = _clamp(book, reader_para, spoilers)
     found = index.search(query, reader_para, k, spoiler_safe=spoiler_safe)
-    return _finish(book, index, found, reader_para, spoiler_safe)
+    return _finish(book, index, found, reader_para, spoiler_safe, full_book=book.kind == "novel" and spoilers)
 
 
 async def aretrieve(book: Book, index, query: str, reader_para: int, k: int = 4, *,
-                    earlier: frozenset[str] = frozenset(), recap: str = "") -> dict:
+                    earlier: frozenset[str] = frozenset(), recap: str = "",
+                    spoilers: bool = False) -> dict:
     """Async `retrieve`: same output; awaits index.asearch when present, else runs the sync search in a thread.
 
     `earlier`: ids of the series books before this one (fully eligible); `recap`: their closing summaries.
+    `spoilers`: full-book mode (novels only): the whole book and the earlier books are eligible.
     """
-    spoiler_safe, reader_para = _clamp(book, reader_para)
+    spoiler_safe, reader_para = _clamp(book, reader_para, spoilers)
     if hasattr(index, "asearch"):
         found = await index.asearch(query, reader_para, k, spoiler_safe=spoiler_safe)
     else:
         found = await asyncio.to_thread(index.search, query, reader_para, k, spoiler_safe=spoiler_safe)
-    return _finish(book, index, found, reader_para, spoiler_safe, earlier, recap)
+    return _finish(book, index, found, reader_para, spoiler_safe, earlier, recap,
+                   full_book=book.kind == "novel" and spoilers)

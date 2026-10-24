@@ -65,6 +65,10 @@ browser, so one choice covers all seven books. Audio is made on demand; nothing 
   summary plus the new paragraphs only, so no summary ever saw later text.
 - Characters can be talked to only after they have appeared (`first_para`; 0 if met in an earlier book).
 - Checked by `preprocess/eval_spoilers.py` (questions written by Sonnet, answered by the real `/api/answer`, judged by Opus).
+- Full-book mode: `/api/retrieve` and `/api/answer` accept `spoilers: true` (default false, so every existing client stays
+  spoiler-safe). For a novel it makes the whole book and the earlier books eligible (the Vector Search filter becomes
+  current book OR earlier books), uses the book's last summary as "Whole book:", and switches to the full-book persona
+  prompts. Textbooks ignore the flag, and the Reader toggle ("Spoilers: off / on") is stored per book in localStorage.
 
 ## Preprocessing pipeline (`scripts/run_all.py`)
 

@@ -122,11 +122,11 @@ export type RetrieveResponse = {
   reader_para: number;
 };
 
-export async function fetchRetrieve(bookId: string, query: string, readerPara: number, speakerId: string): Promise<RetrieveResponse> {
+export async function fetchRetrieve(bookId: string, query: string, readerPara: number, speakerId: string, spoilers = false): Promise<RetrieveResponse> {
   const res = await timedFetch("/api/retrieve", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId }),
+    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId, ...(spoilers ? { spoilers: true } : {}) }),
   }, 10000);
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
@@ -141,12 +141,12 @@ export async function fetchRetrieve(bookId: string, query: string, readerPara: n
  */
 export async function streamAnswer(
   bookId: string, query: string, readerPara: number, speakerId: string,
-  onSentence: (text: string) => void, signal?: AbortSignal,
+  onSentence: (text: string) => void, signal?: AbortSignal, spoilers = false,
 ): Promise<void> {
   const res = await timedFetch("/api/answer", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId }),
+    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId, ...(spoilers ? { spoilers: true } : {}) }),
     signal,
   }, 20000);
   if (!res.ok) {

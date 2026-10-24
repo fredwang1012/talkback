@@ -22,13 +22,13 @@ class VectorStoreError(Exception):
 
 
 def spoiler_filter(book_id: str, reader_para: int | None, earlier: list[str] | None = None) -> dict:
-    """Novel filter when reader_para is given (para_end <= reader_para), else book-only (textbooks).
+    """Novel filter when reader_para is given (para_end <= reader_para), else the whole book (textbooks, full-book mode).
 
     `earlier`: ids of the series books before this one; their chunks are eligible in full ($in / $or verified live).
     """
     book = {"book_id": {"$eq": book_id}}
-    if reader_para is None:
-        return book
+    if reader_para is None:  # textbook (no earlier), or full-book mode: the whole book, plus earlier books if given
+        return {"$or": [{"book_id": {"$in": list(earlier)}}, book]} if earlier else book
     current = {"$and": [book, {"para_end": {"$lte": reader_para}}]}
     if not earlier:
         return current

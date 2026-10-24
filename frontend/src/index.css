@@ -164,6 +164,13 @@ button:disabled { cursor: not-allowed; }
 
 .badge { border-left: 3px solid var(--brass); padding: 4px 0 4px 12px; color: var(--ink-soft); font-size: 0.9rem; line-height: 1.45; }
 .badge strong { color: var(--ink); font-weight: 600; }
+.badge.spoilers-on { border-left-color: var(--seal-bright); }
+.spoiler-toggle {
+  align-self: flex-start; padding: 5px 12px; border-radius: var(--radius); font-size: 0.85rem;
+  border: 1px solid var(--brass-soft); background: transparent; color: var(--ink-soft); cursor: pointer;
+}
+.spoiler-toggle[aria-pressed="true"] { border-color: var(--seal-bright); color: var(--ink); background: var(--ground-raised); }
+.spoiler-toggle:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
 .cast-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .cast-list button {

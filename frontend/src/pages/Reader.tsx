@@ -7,6 +7,7 @@ import PlayerBar from "../reader/PlayerBar";
 import RecapPanel from "../reader/RecapPanel";
 import { ReaderEngine, type AudioLike } from "../reader/ReaderEngine";
 import Stage from "../reader/Stage";
+import { loadSpoilers, saveSpoilers } from "../reader/spoilers";
 import VoiceLab from "../reader/VoiceLab";
 import { spend, type SpendSnapshot } from "../spend";
 import { useTalk } from "../talk/useTalk";
@@ -39,6 +40,8 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [faces, setFaces] = useState<Record<string, VoiceFace>>({});
   const [lipSync, setLipSync] = useState(() => { try { return localStorage.getItem("talkback:lipsync") === "1"; } catch { return false; } });
+  const [spoilers, setSpoilers] = useState(() => loadSpoilers(bookId));
+  useEffect(() => setSpoilers(loadSpoilers(bookId)), [bookId]);
   const overridesRef = useRef<Record<string, string>>({});
   overridesRef.current = overrides;
   const [spendNow, setSpendNow] = useState<SpendSnapshot>(spend.snapshot());
@@ -115,6 +118,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     health,
     faces,
     lipSync,
+    spoilers: spoilers && book?.kind === "novel",
     voiceFor,
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
@@ -265,6 +269,7 @@ export default function Reader({ bookId }: { bookId: string }) {
                pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
                needsCode={needsCode} onCode={(c) => { setAccessToken(c); setCode(c); }} onOpenLab={() => setLabOpen(true)}
                faces={faces} voiceFor={voiceFor} readingVoice={mode === "read" ? readingVoice : null}
+               spoilers={spoilers} onSpoilers={(on) => { setSpoilers(on); saveSpoilers(bookId, on); }}
                lipSync={lipSync} onLipSync={(on) => { setLipSync(on); try { localStorage.setItem("talkback:lipsync", on ? "1" : "0"); } catch { /* storage blocked */ } }} />
       </div>
       {labOpen && (
