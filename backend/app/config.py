@@ -44,8 +44,9 @@ class Settings(BaseSettings):
     # /api/public/*, Gemini only. PUBLIC_API_URL (client side, set in .env.example) points a local app at it.
     public_api: bool = False
     public_api_url: str = ""
-    public_book_cap_usd: float = 4.0            # refuse a book whose estimate is above this
+    public_book_cap_usd: float = 1.5            # refuse a book whose estimate is above this
     public_total_cap_usd: float = 10.0          # cumulative enrichment spend, persisted
+    public_ip_daily_cap_usd: float = 2.0        # enrichment estimates per client address per UTC day, persisted
     public_answer_daily_cap_usd: float = 2.0    # Gemini answers per UTC day, persisted
 
     @property
