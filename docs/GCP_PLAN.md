@@ -109,7 +109,7 @@ Cloud Run instance warm only during the demo.
 ### You (needs your login or approval)
 
 - [x] **G1** `gcloud auth application-default login` so the local backend can call Vertex.
-- [ ] **G2** Service account and roles (blocked for Claude by the permission check; run it
+- [x] **G2** Service account and roles (blocked for Claude by the permission check; run it
       yourself or allow it):
       ```powershell
       $P='frederick-talkback'; $SA="talkback-api@$P.iam.gserviceaccount.com"

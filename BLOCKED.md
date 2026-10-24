@@ -16,7 +16,7 @@ Standing rule: do **not** use the Anthropic key until told (user instruction, 20
 
 ## 1b. GCP backend (see docs/GCP_PLAN.md)
 - ~~G1~~ done 2026-10-17.
-- G2 service account `talkback-api` + roles: IAM grants were refused by Claude's permission check; commands are in the plan.
+- ~~G2~~ done 2026-10-17 (talkback-api: aiplatform.user, vectorsearch.admin, secretmanager.secretAccessor, logging.logWriter, bucket objectAdmin, self tokenCreator).
 - G3 hard $50 stop (billing-disable function) needs your approval; alerts exist now.
 - G4 Boson key into Secret Manager.
 
