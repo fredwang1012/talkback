@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { fetchRecap, speak, type Recap } from "../api";
 import { spend } from "../spend";
-import { createSentenceSpeaker, type SentenceSpeaker } from "../talk/sentencePlayer";
+import { createSentenceSpeaker } from "../talk/sentencePlayer";
+import { createReadAloud } from "./readAloud";
 
 /** /api/speak takes at most 400 characters, so the recap is spoken a few sentences at a time. */
 export function speechParts(text: string, max = 380): string[] {
@@ -25,10 +26,19 @@ type Props = { bookId: string; para: number; voice: string | null; onClose: () =
 export default function RecapPanel({ bookId, para, voice, onClose }: Props) {
   const [recap, setRecap] = useState<Recap | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [speaking, setSpeaking] = useState(false);
   const [more, setMore] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const speaker = useRef<SentenceSpeaker | null>(null);
+  const [playing, setPlaying] = useState<string | null>(null);
+  const readAloud = useRef<ReturnType<typeof createReadAloud> | null>(null);
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+  if (!readAloud.current) {
+    readAloud.current = createReadAloud(() => createSentenceSpeaker(async (text) => {
+      const r = await speak(text, voiceRef.current ?? "");
+      spend.addTts(text.length);
+      return r;
+    }), setPlaying, (e) => setError(e instanceof Error ? e.message : String(e)));
+  }
 
   useEffect(() => { closeRef.current?.focus(); }, []);
   useEffect(() => {
@@ -37,34 +47,20 @@ export default function RecapPanel({ bookId, para, voice, onClose }: Props) {
       .catch((e: Error) => { if (live) setError(e.message); });
     return () => { live = false; };
   }, [bookId, para]);
-  useEffect(() => () => speaker.current?.stop(), []);
+  useEffect(() => () => readAloud.current?.stop(), []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  async function readAloud() {
-    if (!recap?.text || !voice) return;
-    if (speaking) { speaker.current?.stop(); setSpeaking(false); return; }
-    const s = createSentenceSpeaker(async (text) => {
-      const r = await speak(text, voice);
-      spend.addTts(text.length);
-      return r;
-    });
-    speaker.current = s;
-    setSpeaking(true);
+  function toggle(key: string, text: string) {
+    if (!voice || !text) return;
     setError(null);
-    try {
-      const parts = speechParts(recap.text);
-      parts.slice(1).forEach((p) => s.prefetch(p)); // the later parts synthesise while the first plays
-      for (const p of parts) await s.play(p);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (speaker.current === s) setSpeaking(false);
-    }
+    readAloud.current?.toggle(key, speechParts(text));
   }
+
+  const earlierText = (more && recap?.earlier_full ? recap.earlier_full : recap?.earlier) ?? "";
 
   return (
     <section className="lab recap" role="dialog" aria-modal="false" aria-labelledby="recap-title">
@@ -81,15 +77,20 @@ export default function RecapPanel({ bookId, para, voice, onClose }: Props) {
           : "Nothing to recap yet — keep reading."}</p>)}
       {recap?.text && voice && (
         <div className="lab-row">
-          <button className="primary" onClick={() => void readAloud()} aria-pressed={speaking}>
-            {speaking ? "Stop" : "Read aloud"}
+          <button className="primary" onClick={() => toggle("recap", recap.text)} aria-pressed={playing === "recap"}>
+            {playing === "recap" ? "Stop" : "Read aloud"}
           </button>
         </div>
       )}
       {recap?.earlier && (
         <details className="recap-earlier">
           <summary>Earlier books</summary>
-          <p className="recap-text">{more && recap.earlier_full ? recap.earlier_full : recap.earlier}</p>
+          <p className="recap-text">{earlierText}</p>
+          {voice && (
+            <button className="recap-more" aria-pressed={playing === "earlier"} onClick={() => toggle("earlier", earlierText)}>
+              {playing === "earlier" ? "Stop" : "Read aloud"}
+            </button>
+          )}
           {recap.earlier_full && recap.earlier_full !== recap.earlier && (
             <button className="recap-more" aria-expanded={more} onClick={() => setMore(!more)}>
               {more ? "Less" : "More"}
