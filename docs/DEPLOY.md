@@ -18,9 +18,11 @@ with its roles, bucket `gs://frederick-talkback-data`.
    printf %s "$TALKBACK_ACCESS_TOKEN" | gcloud secrets create talkback-access-token --data-file=- --project frederick-talkback
    ```
 2. `scripts/deploy_cloudrun.sh` prints its plan and does nothing; `scripts/deploy_cloudrun.sh --yes` runs it:
-   - syncs `data/books` (skipping `u-*` user uploads) and `data/portraits` (top-level files only, not the per-person
-     folders) to the bucket with `gcloud storage rsync`. `data/uploads` and `data/samples` are never synced and
-     nothing is deleted from the bucket (it also holds books uploaded via the deployed app);
+   - refuses a dirty git tree unless `--allow-dirty` is passed;
+   - syncs `data/books` (skipping `u-*` user uploads) to the bucket with `gcloud storage rsync`. Portraits,
+     `data/uploads` and `data/samples` are never synced and nothing is deleted from the bucket (it also holds books
+     uploaded via the deployed app). Portraits are personal: upload any you want public by hand, e.g.
+     `gcloud storage cp data/portraits/<file> gs://frederick-talkback-data/portraits/`;
    - builds `us-central1-docker.pkg.dev/frederick-talkback/talkback/api:<git short sha>` with Cloud Build;
    - deploys service `talkback` with `RETRIEVAL_BACKEND=vertex`, the secrets as `BOSON_API_KEY` and
      `TALKBACK_ACCESS_TOKEN`, and the bucket mounted at `/app/data` (the whole data dir).
@@ -39,9 +41,11 @@ page. Share the code only with people you want spending your credit. The setting
 ### Per-IP rate limits behind Cloud Run
 
 Behind Cloud Run every request's socket peer is a Google front end, which would put all visitors in one rate-limit
-bucket. The container therefore runs uvicorn with `--proxy-headers --forwarded-allow-ips='*'`, so `client_ip` sees the
-real client from `X-Forwarded-For`. That is only safe because Cloud Run is the sole ingress: do not reuse this CMD
-behind a setup where clients can reach the container directly.
+bucket. The service sets `TRUST_PROXY=true`, and `client_ip` then uses the **right-most** `X-Forwarded-For` entry,
+which is the one Cloud Run's front end appends. Entries to its left are client-supplied and ignored, so spoofing the
+header does not dodge the limits. uvicorn's `--proxy-headers` is deliberately not used (it trusts the leftmost entry).
+Only set `TRUST_PROXY` when a trusted proxy is the sole ingress. Buckets keep at most 10,000 keys (oldest evicted).
+`/api/retrieve` is gated by the access token and limited to 30/min per IP because it calls paid Vertex services.
 
 ### CORS
 

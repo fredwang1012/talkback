@@ -17,5 +17,6 @@ COPY --from=web /web/dist frontend/dist
 # data/ is not in the image: mount a volume (Cloud Run: the GCS bucket) at /app/data.
 ENV DATA_DIR=/app/data PORT=8000
 EXPOSE 8000
-# Cloud Run is the only ingress, so trusting X-Forwarded-For is safe; without it every client_ip is Google's front end.
-CMD ["sh", "-c", "uv run --frozen --no-dev --project backend uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*'"]
+# No uvicorn proxy-header flags: they would trust a client-supplied leftmost X-Forwarded-For. The app reads the
+# right-most entry itself when TRUST_PROXY=true (set on Cloud Run). --no-sync skips the env check for fast cold starts.
+CMD ["sh", "-c", "uv run --frozen --no-dev --no-sync --project backend uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]

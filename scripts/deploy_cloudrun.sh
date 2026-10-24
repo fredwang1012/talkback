@@ -14,20 +14,35 @@ cd "$(dirname "$0")/.."
 TAG="$(git rev-parse --short HEAD)"
 IMAGE="${REPO}/api:${TAG}"
 
-if [[ "${1:-}" != "--yes" ]]; then
+YES=0
+ALLOW_DIRTY=0
+for arg in "$@"; do
+  case "${arg}" in
+    --yes) YES=1 ;;
+    --allow-dirty) ALLOW_DIRTY=1 ;;
+    *) echo "Unknown argument: ${arg}" >&2; exit 2 ;;
+  esac
+done
+
+if [[ "${YES}" -ne 1 ]]; then
   cat <<EOF
 This script deploys Talkback to Cloud Run. Nothing has been done yet. It will:
-  1. Check that the Secret Manager secrets boson-api-key and talkback-access-token exist (stops with the create command if not).
-  2. Sync public data to gs://${BUCKET}:
+  1. Refuse to continue if the git tree is dirty (unless --allow-dirty), so the image tag matches the code.
+  2. Check that the Secret Manager secrets boson-api-key and talkback-access-token exist (stops with the create command if not).
+  3. Sync public book data to gs://${BUCKET}:
        data/books     -> gs://${BUCKET}/books      (skipping u-* user uploads)
-       data/portraits -> gs://${BUCKET}/portraits  (top-level files only; per-person subfolders skipped)
-     data/uploads and data/samples are never synced. Nothing is deleted from the bucket.
-  3. gcloud builds submit --tag ${IMAGE}
-  4. gcloud run deploy ${SERVICE} in ${REGION} as ${SA}
-       RETRIEVAL_BACKEND=vertex, bucket mounted at /app/data, min 0 / max 2 instances, 1Gi, 1 CPU, 300 s timeout,
-       --allow-unauthenticated (paid endpoints are gated by the TALKBACK_ACCESS_TOKEN secret)
+     Portraits, data/uploads and data/samples are never synced. Nothing is deleted from the bucket.
+  4. gcloud builds submit --tag ${IMAGE}
+  5. gcloud run deploy ${SERVICE} in ${REGION} as ${SA}
+       RETRIEVAL_BACKEND=vertex, TRUST_PROXY=true, bucket mounted at /app/data, min 0 / max 2 instances, 1Gi, 1 CPU,
+       300 s timeout, --allow-unauthenticated (paid endpoints are gated by the TALKBACK_ACCESS_TOKEN secret)
 Re-run with --yes to proceed.
 EOF
+  exit 1
+fi
+
+if [[ "${ALLOW_DIRTY}" -ne 1 && -n "$(git status --porcelain)" ]]; then
+  echo "Git tree is dirty; commit or stash first, or pass --allow-dirty (the image tag ${TAG} will not match the code)." >&2
   exit 1
 fi
 
@@ -52,11 +67,11 @@ if [[ "${missing}" -ne 0 ]]; then
   exit 1
 fi
 
-# 2. Sync public data. The whole data/ dir is the bucket mount on Cloud Run.
+# 3. Sync public data. The whole data/ dir is the bucket mount on Cloud Run.
 #    --exclude is a regex on the path relative to the source. No --delete-unmatched-destination-objects:
 #    the bucket also holds books uploaded through the deployed app.
 gcloud storage rsync --recursive --exclude='^u-.*' "data/books" "gs://${BUCKET}/books"
-gcloud storage rsync --recursive --exclude='.*/.*' "data/portraits" "gs://${BUCKET}/portraits"
+# Portraits are not synced (per-person folders are personal); upload them by hand if wanted, see docs/DEPLOY.md.
 
 # 3. Build.
 gcloud builds submit --project "${PROJECT}" --tag "${IMAGE}" .
@@ -67,7 +82,7 @@ gcloud run deploy "${SERVICE}" \
   --region "${REGION}" \
   --image "${IMAGE}" \
   --service-account "${SA}" \
-  --set-env-vars "RETRIEVAL_BACKEND=vertex,GCP_PROJECT=${PROJECT},GCP_REGION=${REGION},CORS_ORIGINS=http://localhost:5173" \
+  --set-env-vars "RETRIEVAL_BACKEND=vertex,TRUST_PROXY=true,GCP_PROJECT=${PROJECT},GCP_REGION=${REGION},CORS_ORIGINS=http://localhost:5173" \
   --set-secrets "BOSON_API_KEY=boson-api-key:latest,TALKBACK_ACCESS_TOKEN=talkback-access-token:latest" \
   --execution-environment gen2 \
   --add-volume "name=data,type=cloud-storage,bucket=${BUCKET}" \

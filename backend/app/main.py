@@ -61,7 +61,16 @@ clone_bucket = TokenBucket(capacity=5, per_seconds=60)
 answer_bucket = TokenBucket(capacity=20, per_seconds=60)  # every /api/answer call spends Gemini credit
 
 
+retrieve_bucket = TokenBucket(capacity=30, per_seconds=60)  # vertex retrieval spends embedding + search credit
+
+
 def client_ip(request: Request) -> str:
+    """Peer address. With TRUST_PROXY (Cloud Run is the only ingress) use the right-most X-Forwarded-For entry:
+    the front end appends the real client there, while anything to its left is client-supplied and spoofable."""
+    if settings.trust_proxy:
+        parts = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+        if parts:
+            return parts[-1]
     return request.client.host if request.client else "unknown"
 
 
@@ -217,8 +226,10 @@ def _resolve_talk(book_id: str, speaker_id: str, reader_para: int):
     return book, speaker, reader_para
 
 
-@app.post("/api/retrieve")
-async def retrieve(req: RetrieveRequest):
+@app.post("/api/retrieve", dependencies=[Depends(require_access)])
+async def retrieve(req: RetrieveRequest, request: Request):
+    if not retrieve_bucket.allow(client_ip(request)):
+        raise HTTPException(429, "Too many lookups; wait a moment.")
     book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para)
     out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k)
     out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"])

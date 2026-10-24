@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     # Optional shared secret. When set, endpoints that spend Boson credit require header X-Talkback-Token.
     # Env var is TALKBACK_ACCESS_TOKEN (README, DEPLOY.md); plain ACCESS_TOKEN still works.
     access_token: str = Field(default="", validation_alias=AliasChoices("TALKBACK_ACCESS_TOKEN", "ACCESS_TOKEN"))
+    # True only behind a trusted proxy (Cloud Run): client_ip then uses the right-most X-Forwarded-For entry.
+    trust_proxy: bool = False
     # Comma-separated browser origins allowed by CORS (the single-container deploy is same-origin and needs none).
     cors_origins: str = "http://localhost:5173"
     # Google Cloud (Vertex AI). retrieval_backend="local" keeps today's BM25 + e5 behaviour.

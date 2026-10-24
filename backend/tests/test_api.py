@@ -45,6 +45,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "token_bucket", TokenBucket(3, 60))
     monkeypatch.setattr(main, "tts_bucket", TokenBucket(1000, 60))   # fresh limiter state per test
     monkeypatch.setattr(main, "clone_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(main, "retrieve_bucket", TokenBucket(1000, 60))
     monkeypatch.setattr(settings, "access_token", "")
     calls = {"n": 0}
 
@@ -278,3 +279,14 @@ def test_align_tag_residue_merged_into_first_word():
         ["emotioncontemplationprosodypitchlowTo", "Sherlock", "Holmes", "she", "is", "always", "the", "woman"])]
     out = align_timestamps(words, plain)
     assert [plain[o["char_start"]:o["char_end"]] for o in out] == plain.rstrip(".").split() [:-1] + ["woman."]
+
+
+def test_retrieve_is_gated_and_rate_limited(env, monkeypatch):
+    client, _ = env
+    body = {"book_id": "demo", "query": "King", "reader_para": 1, "speaker_id": "holmes"}
+    monkeypatch.setattr(settings, "access_token", "letmein")
+    assert client.post("/api/retrieve", json=body).status_code == 401
+    h = {"X-Talkback-Token": "letmein"}
+    monkeypatch.setattr(main, "retrieve_bucket", TokenBucket(1, 60))
+    assert client.post("/api/retrieve", json=body, headers=h).status_code == 200
+    assert client.post("/api/retrieve", json=body, headers=h).status_code == 429
