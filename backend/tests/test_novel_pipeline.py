@@ -707,7 +707,7 @@ def test_vertex_indexing_runs_in_the_index_stage(client, monkeypatch):
     monkeypatch.setattr(indexing, "index_book", fake_index)
     book_id = upload(client).json()["book_id"]
     assert client.get(f"/api/books/{book_id}/status").json()["enrich"]["status"] == "done"
-    assert len(calls) == 2 and calls[0][1] == 0 and calls[1][1] > 0  # narrator-only at ingest, enriched at the end
+    assert len(calls) == 1 and calls[0][1] == 0   # indexed once at ingest; the complete index is not rebuilt at the end
 
 
 # ---------- preprocess scripts: LLM_PROVIDER switch ----------
