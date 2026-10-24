@@ -2,6 +2,7 @@
 # Build the image with Cloud Build and deploy it to Cloud Run. See docs/DEPLOY.md.
 # Refuses to do anything without --yes. Never reads .env and never prints a secret value.
 set -euo pipefail
+export MSYS_NO_PATHCONV=1  # Git Bash on Windows would rewrite /app/data into a Windows path
 
 PROJECT=frederick-talkback
 REGION=us-central1
