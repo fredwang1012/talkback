@@ -3,12 +3,12 @@
 ## 90-second script
 
 1. (0:00) Open the library. One line: "Talkback reads books aloud and answers questions by voice, without spoilers."
-2. (0:10) Pick Alice's Adventures in Wonderland (ships with the repo; the Harry Potter books need your own PDF). Jump to a chapter listed for it below.
+2. (0:10) Pick Alice's Adventures in Wonderland (ships with the repo; the Harry Potter questions below need the owner's private copy, which is not in the repo). Jump to a chapter listed for it below.
 3. (0:20) Press play and let a few sentences read aloud; point out the sentence highlighting following the voice.
-4. (0:35) Push-to-talk one "already read" question from the list below. The answer comes from the text so far.
+4. (0:35) Push-to-talk (hold Space) or, with Hands-free on, just ask one "already read" question from the list below. The answer comes from the text so far.
 5. (0:50) Push-to-talk one "future" question. The app declines rather than spoil the story.
-6. (1:05) Open the character picker, switch to the suggested character and ask their in-character question; the answer is in their voice.
-7. (1:20) Optional: switch to the cloned narrator voice with face for a closing line.
+6. (1:05) Open the "Talk to" picker, switch to the suggested character and ask their in-character question; the answer is in their voice.
+7. (1:20) Optional: in Character Control, clone a voice (or pick one) with a face and switch the narrator to it for a closing line.
 
 ## Questions per book
 

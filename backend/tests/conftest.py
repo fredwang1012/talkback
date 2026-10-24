@@ -66,6 +66,7 @@ def _fresh_gemini_pacer(monkeypatch):
     """The shared Gemini limiter is process state (a 429 in one test would slow the next): each test gets its own."""
     from app import pacer
     monkeypatch.setattr(pacer, "shared", pacer.Pacer())
+    monkeypatch.setattr(pacer, "_by_model", {})
 
 
 @pytest.fixture(autouse=True)
@@ -81,3 +82,9 @@ def _never_reach_real_google(monkeypatch):
             raise RuntimeError("tests must not create a real google-genai client; inject a fake")
 
     monkeypatch.setattr(genai, "Client", _NoRealGoogle)
+
+
+@pytest.fixture(autouse=True)
+def _no_local_upload_embedding_unless_a_test_says_otherwise(monkeypatch):
+    """Uploads would load the real multilingual-e5 model (download, CPU) in the background: tests use a fake."""
+    monkeypatch.setattr(settings, "local_embed_uploads", False, raising=False)

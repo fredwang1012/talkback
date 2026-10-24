@@ -3,6 +3,8 @@
 Spoiler invariant (novels): the query filter AND a post-filter here both enforce para_end <= reader_para for the
 book being read; earlier books of the same series (`earlier`, id -> title) are eligible in full.
 The store never post-filters, so this class is the guarantee.
+Every hit must also belong to this book (or a listed earlier book) in the query filter and the post-filter, so
+datapoints a delete could not remove (app/gcp/orphans.py) are never returned: book ids are never reused.
 """
 import asyncio
 

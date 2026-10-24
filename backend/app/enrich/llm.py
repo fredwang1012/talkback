@@ -1,12 +1,13 @@
-"""One small LLM interface for the upload pipeline and the preprocess scripts: Claude or Gemini 2.5 Flash.
+"""One small LLM interface for the upload pipeline and the preprocess scripts: Gemini on Vertex (the default) or Claude.
 
 `LLM.complete_json(system, user, schema_model, tier)` returns a validated pydantic object. Tiers: "fast" (Haiku /
-Gemini Flash) and "smart" (Sonnet / Gemini Flash). With Claude, an out-of-credit error (insufficient_quota, billing,
+the Gemini enrichment model) and "smart" (Sonnet / the same Gemini model). With Claude, an out-of-credit error (insufficient_quota, billing,
 402, "credit balance is too low"), auth errors (401/403) and persistent overload/5xx switch the rest of the job to
-Gemini; Claude being unavailable never breaks an upload. Token usage is priced per provider and reported through `on_usage`.
+Gemini; Claude being unavailable never breaks an upload. Token usage is priced per model and reported through `on_usage`.
 """
 import asyncio
 import logging
+import time
 from typing import Callable, Protocol, TypeVar
 
 from pydantic import BaseModel
@@ -19,12 +20,18 @@ log = logging.getLogger("talkback.enrich")
 T = TypeVar("T", bound=BaseModel)
 
 # $ per 1M tokens (input, output). Claude prices as in preprocess/llm.py (prompts under 100K tokens).
-# Gemini 2.5 Flash: $0.30 input / $2.50 output, the figures used by scripts/usage.py (estimates, not a billing source).
 CLAUDE_MODELS = {"fast": "claude-haiku-5-5", "smart": "claude-sonnet-5-5"}
 PRICES: dict[str, dict[str, tuple[float, float]]] = {
     "claude": {"fast": (0.10, 0.50), "smart": (2.00, 10.00)},
-    "gemini": {"fast": (0.30, 2.50), "smart": (0.30, 2.50)},
 }
+# Gemini on Vertex AI, standard (online) text prices per 1M tokens, the same below and above 200K input tokens
+# (cloud.google.com/vertex-ai/generative-ai/pricing, read 2026-10-24). Priced by the model that ran, whatever the tier.
+# Longest prefix wins ("gemini-2.5-flash-lite-001" is Flash-Lite); an unknown model is priced as 2.5 Flash.
+GEMINI_PRICES: dict[str, tuple[float, float]] = {
+    "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+}
+GEMINI_DEFAULT_PRICE = GEMINI_PRICES["gemini-2.5-flash"]
 CHARS_PER_TOKEN = 3.5  # prose, measured roughly on the HP books (~3 to 4)
 
 
@@ -64,14 +71,30 @@ class Provider(Protocol):
     async def complete(self, system: str, user: str, schema: dict, tier: str, max_tokens: int, effort: str) -> Raw: ...
 
 
-def price_usd(provider: str, tier: str, in_tokens: int, out_tokens: int) -> float:
-    pin, pout = PRICES[provider][tier]
+def enrich_gemini_model() -> str:
+    """The Gemini model book processing runs on (GeminiProvider's default)."""
+    return settings.enrich_gemini_model or settings.gemini_model
+
+
+def gemini_prices(model: str) -> tuple[float, float]:
+    """($ input, $ output) per 1M tokens for a Gemini model id (a "publishers/google/models/" path is fine)."""
+    name = model.rsplit("/", 1)[-1].lower()
+    best = max((k for k in GEMINI_PRICES if name.startswith(k)), key=len, default=None)
+    return GEMINI_PRICES[best] if best else GEMINI_DEFAULT_PRICE
+
+
+def price_usd(provider: str, tier: str, in_tokens: int, out_tokens: int, *, model: str | None = None) -> float:
+    """Cost of a call. Gemini is priced by `model` (default: the enrichment model), Claude by tier."""
+    if provider == "gemini":
+        pin, pout = gemini_prices(model or enrich_gemini_model())
+    else:
+        pin, pout = PRICES[provider][tier]
     return (in_tokens * pin + out_tokens * pout) / 1e6
 
 
-def estimate_usd(provider: str, tier: str, in_chars: float, out_tokens: float) -> float:
-    """Cost of in_chars of input and out_tokens of output in total."""
-    return price_usd(provider, tier, int(in_chars / CHARS_PER_TOKEN), int(out_tokens))
+def estimate_usd(provider: str, tier: str, in_chars: float, out_tokens: float, *, model: str | None = None) -> float:
+    """Cost of in_chars of input and out_tokens of output in total (Gemini: at `model`, default the enrichment model)."""
+    return price_usd(provider, tier, int(in_chars / CHARS_PER_TOKEN), int(out_tokens), model=model)
 
 
 def unavailable_reason(exc: BaseException) -> str | None:
@@ -153,22 +176,73 @@ class ClaudeProvider:
         return Raw(text=text, in_tokens=n_in, out_tokens=n_out, model=model)
 
 
+class _CutOff(Exception):
+    """Gemini stopped at max_output_tokens (finish_reason MAX_TOKENS): the JSON is incomplete."""
+
+
+class _TooLong(RuntimeError):
+    """A reply still cut off after the doubled retry (a RuntimeError, as callers have always seen it)."""
+
+
 class GeminiProvider:
-    """Gemini 2.5 Flash on Vertex AI (project and region from settings), JSON output."""
+    """Gemini on Vertex AI (the enrichment model, ENRICH_GEMINI_MODEL or GEMINI_MODEL; project and region from settings),
+    JSON output.
+
+    When the enrichment model differs from GEMINI_MODEL, GEMINI_MODEL is the fallback: a call the enrichment model keeps
+    refusing with 429s (Vertex shared capacity is per model) or keeps cutting off for length is sent to the fallback,
+    and for COOL_S after a 429 give-up every call goes straight to the fallback."""
     name = "gemini"
     RETRIES = pacing.BACKGROUND["attempts"]   # 6 attempts: 429s, 5xx and network errors, backoff to 30 s + jitter
+    PRIMARY_ATTEMPTS = 3   # with a fallback, give up on a throttled enrichment model after ~3-6 s of backoff
+    COOL_S = 60.0
     priority: pacing.Priority = "background"     # queued behind Talk answers and translations in the shared pacer
 
-    def __init__(self, client=None, model: str | None = None, sleep=None, pacer: "pacing.Pacer | None" = None):
+    def __init__(self, client=None, model: str | None = None, sleep=None, pacer: "pacing.Pacer | None" = None,
+                 fallback: str | None = None, clock=time.monotonic):
         if client is None:
             from google import genai
             client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
         self.client = client
-        self.model = model or settings.enrich_gemini_model or settings.gemini_model
+        self.model = model or enrich_gemini_model()
+        self.fallback = fallback if fallback is not None else (
+            settings.gemini_model if settings.gemini_model and settings.gemini_model != self.model else "")
         self._sleep = sleep
         self._pacer = pacer
+        self._clock = clock
+        self._cool_until = 0.0
+
+    MAX_TOKENS_CAP = 16000   # a reply cut off for length is retried once with twice the room, up to this
 
     async def complete(self, system, user, schema, tier, max_tokens, effort) -> Raw:
+        if not self.fallback:
+            return await self._complete_model(self.model, system, user, schema, max_tokens, self.RETRIES)
+        if self._clock() < self._cool_until:
+            return await self._complete_model(self.fallback, system, user, schema, max_tokens, self.RETRIES)
+        try:
+            return await self._complete_model(self.model, system, user, schema, max_tokens, self.PRIMARY_ATTEMPTS)
+        except Exception as e:
+            cut = isinstance(e, _TooLong)
+            if not cut and not pacing.is_rate_limited(e):
+                raise
+            if not cut:
+                self._cool_until = self._clock() + self.COOL_S
+            log.warning("%s %s; sending this call to %s", self.model, "cut off twice" if cut else "rate limited", self.fallback)
+            return await self._complete_model(self.fallback, system, user, schema, max_tokens, self.RETRIES)
+
+    async def _complete_model(self, model, system, user, schema, max_tokens, attempts) -> Raw:
+        try:
+            return await self._complete_once(model, system, user, schema, max_tokens, attempts)
+        except _CutOff:
+            bigger = min(max_tokens * 2, self.MAX_TOKENS_CAP)
+            if bigger <= max_tokens:
+                raise _TooLong(f"{model} hit max_tokens={max_tokens}") from None
+            log.warning("gemini reply cut off at max_tokens=%d; retrying with %d", max_tokens, bigger)
+            try:
+                return await self._complete_once(model, system, user, schema, bigger, attempts)
+            except _CutOff:
+                raise _TooLong(f"{model} hit max_tokens={bigger}") from None
+
+    async def _complete_once(self, model, system, user, schema, max_tokens, attempts) -> Raw:
         from google.genai import types
         # Gemini 3 rejects thinking_budget; drop it and retry once when the model says so.
         thinking = True
@@ -184,15 +258,15 @@ class GeminiProvider:
         async def once():
             nonlocal thinking
             try:
-                return await self.client.aio.models.generate_content(model=self.model, contents=user, config=config())
+                return await self.client.aio.models.generate_content(model=model, contents=user, config=config())
             except Exception as e:
                 if not thinking or "Thinking budget is not supported" not in str(e):
                     raise
                 thinking = False
-            return await self.client.aio.models.generate_content(model=self.model, contents=user, config=config())
+            return await self.client.aio.models.generate_content(model=model, contents=user, config=config())
 
-        resp = await (self._pacer or pacing.shared).call(once, priority=self.priority, what="gemini call",
-                                                         attempts=self.RETRIES, sleep=self._sleep)
+        resp = await (self._pacer or pacing.for_model(model)).call(once, priority=self.priority, what="gemini call",
+                                                                   attempts=attempts, sleep=self._sleep)
         meta = getattr(resp, "usage_metadata", None)
         n_in = (getattr(meta, "prompt_token_count", 0) or 0) if meta else 0
         n_out = ((getattr(meta, "candidates_token_count", 0) or 0)
@@ -200,10 +274,10 @@ class GeminiProvider:
         cands = getattr(resp, "candidates", None) or []
         reason = str(getattr(cands[0], "finish_reason", "") or "") if cands else ""
         if any(w in reason for w in ("SAFETY", "PROHIBITED", "BLOCKLIST")) or (not cands and getattr(resp, "prompt_feedback", None)):
-            raise LLMRefusal(f"{self.model} refused ({reason})")
+            raise LLMRefusal(f"{model} refused ({reason})")
         if "MAX_TOKENS" in reason:
-            raise RuntimeError(f"{self.model} hit max_tokens={max_tokens}")
-        return Raw(text=resp.text or "", in_tokens=n_in, out_tokens=n_out, model=self.model)
+            raise _CutOff(n_in, n_out)
+        return Raw(text=resp.text or "", in_tokens=n_in, out_tokens=n_out, model=model)
 
 
 UsageHook = Callable[[str, str, int, int, float], None]  # provider, model, in_tokens, out_tokens, usd
@@ -212,7 +286,7 @@ UsageHook = Callable[[str, str, int, int, float], None]  # provider, model, in_t
 class LLM:
     """Provider switch with a concurrency limit, usage metering and automatic Claude -> Gemini fallback."""
 
-    def __init__(self, primary: str = "claude", providers: dict[str, Provider] | None = None, *,
+    def __init__(self, primary: str = "gemini", providers: dict[str, Provider] | None = None, *,
                  concurrency: int | None = None, on_usage: UsageHook | None = None, fallback: bool = True):
         self.providers: dict[str, Provider] = providers if providers is not None else {}
         self.active = primary
@@ -233,7 +307,7 @@ class LLM:
         return self.providers[name]
 
     def _record(self, provider: str, tier: str, raw: Raw) -> None:
-        usd = price_usd(provider, tier, raw.in_tokens, raw.out_tokens)
+        usd = price_usd(provider, tier, raw.in_tokens, raw.out_tokens, model=raw.model)
         self.usd += usd
         self.calls += 1
         self.tokens_in += raw.in_tokens

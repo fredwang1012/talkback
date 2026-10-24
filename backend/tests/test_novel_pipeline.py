@@ -832,3 +832,92 @@ def test_a_textbook_upload_skips_the_early_series_check(client, monkeypatch):
     monkeypatch.setattr(main, "_start_series_early", lambda book_id: seen.append(book_id))
     upload(client, kind="textbook")
     assert seen == []
+
+
+def test_gemini_reply_cut_off_for_length_is_retried_with_twice_the_room():
+    caps = []
+
+    def resp(reason, text):
+        return type("R", (), {"text": text, "candidates": [type("C", (), {"finish_reason": reason})()],
+                              "usage_metadata": type("M", (), {"prompt_token_count": 10, "candidates_token_count": 5,
+                                                               "thoughts_token_count": 0})()})()
+
+    class Models:
+        async def generate_content(self, model, contents, config):
+            caps.append(config.max_output_tokens)
+            return resp("MAX_TOKENS", '{"summ') if len(caps) == 1 else resp("STOP", '{"summary":"ok"}')
+
+    client = type("Cl", (), {"aio": type("A", (), {"models": Models()})()})()
+    llm = LLM("gemini", {"gemini": GeminiProvider(client)})
+    out = asyncio.run(llm.complete_json("sys", "usr", sum_mod.NoteResult, "smart", max_tokens=4000))
+    assert out.summary == "ok" and len(caps) == 2 and caps[1] > caps[0]
+
+
+def test_gemini_reply_cut_off_twice_still_fails():
+    class Models:
+        async def generate_content(self, model, contents, config):
+            return type("R", (), {"text": "{", "candidates": [type("C", (), {"finish_reason": "MAX_TOKENS"})()],
+                                  "usage_metadata": None})()
+
+    client = type("Cl", (), {"aio": type("A", (), {"models": Models()})()})()
+    with pytest.raises(RuntimeError, match="max_tokens"):
+        asyncio.run(GeminiProvider(client).complete("sys", "usr", {}, "smart", 4000, "low"))
+
+
+# ---------- Flash-Lite -> Flash fallback (Vertex capacity is per model) ----------
+
+def _fake_gemini(behaviour):
+    """A client whose generate_content asks behaviour(model, n) for (finish_reason, text) or an exception to raise."""
+    seen = []
+
+    class Models:
+        async def generate_content(self, model, contents, config):
+            seen.append(model)
+            out = behaviour(model, sum(1 for m in seen if m == model))
+            if isinstance(out, BaseException):
+                raise out
+            reason, text = out
+            return type("R", (), {"text": text, "candidates": [type("C", (), {"finish_reason": reason})()],
+                                  "usage_metadata": None})()
+
+    return type("Cl", (), {"aio": type("A", (), {"models": Models()})()})(), seen
+
+
+class _Throttled(Exception):
+    status_code = 429
+
+
+def test_rate_limited_enrichment_model_falls_back_to_the_main_model_then_cools_down():
+    async def nosleep(_s):
+        pass
+    t = [0.0]
+    client, seen = _fake_gemini(lambda m, n: _Throttled("RESOURCE_EXHAUSTED") if m == "lite" else ("STOP", '{"a":1}'))
+    p = GeminiProvider(client, model="lite", fallback="flash", sleep=nosleep, clock=lambda: t[0])
+    raw = asyncio.run(p.complete("s", "u", {}, "fast", 4000, "low"))
+    assert raw.model == "flash" and seen.count("lite") == GeminiProvider.PRIMARY_ATTEMPTS and seen[-1] == "flash"
+    asyncio.run(p.complete("s", "u", {}, "fast", 4000, "low"))   # cooling down: straight to the fallback
+    assert seen.count("lite") == GeminiProvider.PRIMARY_ATTEMPTS
+    t[0] = GeminiProvider.COOL_S + 1                               # cooled: the enrichment model is tried again
+    asyncio.run(p.complete("s", "u", {}, "fast", 4000, "low"))
+    assert seen.count("lite") == 2 * GeminiProvider.PRIMARY_ATTEMPTS
+
+
+def test_reply_cut_off_twice_goes_to_the_main_model():
+    client, seen = _fake_gemini(lambda m, n: ("MAX_TOKENS", "{") if m == "lite" else ("STOP", '{"a":1}'))
+    raw = asyncio.run(GeminiProvider(client, model="lite", fallback="flash").complete("s", "u", {}, "smart", 8000, "low"))
+    assert raw.model == "flash" and seen == ["lite", "lite", "flash"]
+
+
+def test_other_errors_do_not_fall_back_and_no_fallback_when_models_match():
+    client, seen = _fake_gemini(lambda m, n: ValueError("bad schema"))
+    with pytest.raises(ValueError):
+        asyncio.run(GeminiProvider(client, model="lite", fallback="flash").complete("s", "u", {}, "fast", 4000, "low"))
+    assert seen == ["lite"]
+    assert GeminiProvider(client, model=settings.gemini_model).fallback == ""
+
+
+def test_each_model_has_its_own_pacer():
+    from app import pacer
+    assert pacer.for_model(settings.gemini_model) is pacer.shared and pacer.for_model("") is pacer.shared
+    lite = pacer.for_model("gemini-2.5-flash-lite")
+    assert lite is not pacer.shared and pacer.for_model("gemini-2.5-flash-lite") is lite

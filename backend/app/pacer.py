@@ -250,3 +250,15 @@ class Pacer:
 
 
 shared = Pacer()
+_by_model: dict[str, Pacer] = {}
+
+
+def for_model(model: str | None) -> Pacer:
+    """The limiter for one Gemini model. Each model has its own Vertex capacity, so a Flash-Lite 429 storm from book
+    processing must not throttle Flash answers. The main model (GEMINI_MODEL) uses `shared`, as every other call site does."""
+    if not model or model == settings.gemini_model:
+        return shared
+    p = _by_model.get(model)
+    if p is None:
+        p = _by_model[model] = Pacer()
+    return p

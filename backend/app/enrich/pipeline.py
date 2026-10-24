@@ -215,7 +215,7 @@ async def enrich_textbook(book_id: str, report: Report, *, llm: LLM | None = Non
         await asyncio.shield(asyncio.to_thread(spend.flush))
     if out:
         await asyncio.to_thread(tb_mod.save_summaries, book_id, list(out))
-    report(status="refused" if capped else "error", stage=state["stage"], message=msg)   # a cap stop is final: no retry
+    report(status="refused" if capped else "error", stage=state["stage"], message=msg)   # a cap stop: not retried automatically; the reader may retry once the caps allow
     return False
 
 
@@ -349,7 +349,7 @@ async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Inde
         raise
     except SpendLimit as e:
         log.warning("enrichment of %s stopped in %s: %s", book_id, state["stage"], e)
-        report(status="refused", stage=state["stage"], message=BUDGET_USED if "budget" in str(e) else TOO_LONG)  # final: no retry
+        report(status="refused", stage=state["stage"], message=BUDGET_USED if "budget" in str(e) else TOO_LONG)  # no automatic retry; a manual retry re-checks the caps
     except Exception as e:
         log.warning("enrichment of %s failed in %s: %s at %s", book_id, state["stage"], type(e).__name__, where(e))
         report(status="error", stage=state["stage"], message=FAILED)

@@ -2,7 +2,8 @@
 
 Usage: uv run --project backend python preprocess/index.py --book hp1-sorcerers-stone [--no-embed] [--blurbs]
 - Default: chunks + embeddings, no LLM calls.
-- --blurbs: ask Haiku 5.5 for a one-sentence context_blurb per chunk (uses the Anthropic key; off by default).
+- --blurbs: ask the LLM (LLM_PROVIDER, Gemini by default; Haiku 5.5 with claude) for a one-sentence context_blurb per
+  chunk (paid; off by default).
 BM25 is rebuilt from chunks.json at load time, so only chunks and embeddings are stored.
 """
 import argparse

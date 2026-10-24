@@ -241,7 +241,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 1,
@@ -317,7 +318,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 2,
@@ -387,7 +389,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 3,
@@ -429,7 +432,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 4,
@@ -487,7 +491,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 5,
@@ -537,7 +542,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 6,
@@ -563,7 +569,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 7,
@@ -589,7 +596,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 8,
@@ -615,7 +623,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 9,
@@ -641,7 +650,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 10,
@@ -667,7 +677,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 11,
@@ -707,7 +718,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 12,
@@ -747,7 +759,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 13,
@@ -787,7 +800,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 14,
@@ -827,7 +841,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 15,
@@ -861,7 +876,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 16,
@@ -943,7 +959,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 17,
@@ -997,7 +1014,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 18,
@@ -1051,7 +1069,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 19,
@@ -1091,7 +1110,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 20,
@@ -1173,7 +1193,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 21,
@@ -1213,7 +1234,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 22,
@@ -1239,7 +1261,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 23,
@@ -1309,7 +1332,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 24,
@@ -1377,7 +1401,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 25,
@@ -1417,7 +1442,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 26,
@@ -1457,7 +1483,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 27,
@@ -1497,7 +1524,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 28,
@@ -1551,7 +1579,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 29,
@@ -1605,7 +1634,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 30,
@@ -1659,7 +1689,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 31,
@@ -1693,7 +1724,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 32,
@@ -1747,7 +1779,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 33,
@@ -1801,7 +1834,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 34,
@@ -1841,7 +1875,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 35,
@@ -1867,7 +1902,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 36,
@@ -1945,7 +1981,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 37,
@@ -1999,7 +2036,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 38,
@@ -2061,7 +2099,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 39,
@@ -2101,7 +2140,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 40,
@@ -2155,7 +2195,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 41,
@@ -2195,7 +2236,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 42,
@@ -2271,7 +2313,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 43,
@@ -2311,7 +2354,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 44,
@@ -2351,7 +2395,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 45,
@@ -2377,7 +2422,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 46,
@@ -2403,7 +2449,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 47,
@@ -2457,7 +2504,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 48,
@@ -2511,7 +2559,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 49,
@@ -2567,7 +2616,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 50,
@@ -2665,7 +2715,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 51,
@@ -2705,7 +2756,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 52,
@@ -2759,7 +2811,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 53,
@@ -2799,7 +2852,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 54,
@@ -2825,7 +2879,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 55,
@@ -2879,7 +2934,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 56,
@@ -2905,7 +2961,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 57,
@@ -2945,7 +3002,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 58,
@@ -2999,7 +3057,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 59,
@@ -3025,7 +3084,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 60,
@@ -3065,7 +3125,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 61,
@@ -3119,7 +3180,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 62,
@@ -3173,7 +3235,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 63,
@@ -3227,7 +3290,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 64,
@@ -3253,7 +3317,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 65,
@@ -3315,7 +3380,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 66,
@@ -3369,7 +3435,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 67,
@@ -3403,7 +3470,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 68,
@@ -3443,7 +3511,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 69,
@@ -3497,7 +3566,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 70,
@@ -3523,7 +3593,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 71,
@@ -3549,7 +3620,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 72,
@@ -3575,7 +3647,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 73,
@@ -3601,7 +3674,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 74,
@@ -3627,7 +3701,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 75,
@@ -3695,7 +3770,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 76,
@@ -3735,7 +3811,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 77,
@@ -3777,7 +3854,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 78,
@@ -3825,7 +3903,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 79,
@@ -3893,7 +3972,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 80,
@@ -3935,7 +4015,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 81,
@@ -3989,7 +4070,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 82,
@@ -4023,7 +4105,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 83,
@@ -4049,7 +4132,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 84,
@@ -4083,7 +4167,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 85,
@@ -4109,7 +4194,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 86,
@@ -4149,7 +4235,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 87,
@@ -4183,7 +4270,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 88,
@@ -4231,7 +4319,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 89,
@@ -4293,7 +4382,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 90,
@@ -4327,7 +4417,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 91,
@@ -4393,7 +4484,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 92,
@@ -4427,7 +4519,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 93,
@@ -4481,7 +4574,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 94,
@@ -4539,7 +4633,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 95,
@@ -4565,7 +4660,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 96,
@@ -4591,7 +4687,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 97,
@@ -4617,7 +4714,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 98,
@@ -4643,7 +4741,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 99,
@@ -4669,7 +4768,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 100,
@@ -4709,7 +4809,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 101,
@@ -4763,7 +4864,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 102,
@@ -4803,7 +4905,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 103,
@@ -4843,7 +4946,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 104,
@@ -4897,7 +5001,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 105,
@@ -4951,7 +5056,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 106,
@@ -4991,7 +5097,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 107,
@@ -5045,7 +5152,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 108,
@@ -5071,7 +5179,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 109,
@@ -5133,7 +5242,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 110,
@@ -5159,7 +5269,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 111,
@@ -5227,7 +5338,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 112,
@@ -5253,7 +5365,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 113,
@@ -5371,7 +5484,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 114,
@@ -5425,7 +5539,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 115,
@@ -5493,7 +5608,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 116,
@@ -5561,7 +5677,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 117,
@@ -5615,7 +5732,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 118,
@@ -5685,7 +5803,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 119,
@@ -5711,7 +5830,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 120,
@@ -5773,7 +5893,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 121,
@@ -5799,7 +5920,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 122,
@@ -5825,7 +5947,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 123,
@@ -5907,7 +6030,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 124,
@@ -5961,7 +6085,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 125,
@@ -6023,7 +6148,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 126,
@@ -6077,7 +6203,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 127,
@@ -6145,7 +6272,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 128,
@@ -6171,7 +6299,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 129,
@@ -6225,7 +6354,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 130,
@@ -6275,7 +6405,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 131,
@@ -6333,7 +6464,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 132,
@@ -6389,7 +6521,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 133,
@@ -6471,7 +6604,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 134,
@@ -6539,7 +6673,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 135,
@@ -6593,7 +6728,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 136,
@@ -6619,7 +6755,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 137,
@@ -6669,7 +6806,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 138,
@@ -6719,7 +6857,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 139,
@@ -6813,7 +6952,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 140,
@@ -6855,7 +6995,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 141,
@@ -6945,7 +7086,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 142,
@@ -6985,7 +7127,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 143,
@@ -7019,7 +7162,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 144,
@@ -7087,7 +7231,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 145,
@@ -7135,7 +7280,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 146,
@@ -7189,7 +7335,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 147,
@@ -7243,7 +7390,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 148,
@@ -7283,7 +7431,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 149,
@@ -7345,7 +7494,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 150,
@@ -7385,7 +7535,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 151,
@@ -7447,7 +7598,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 152,
@@ -7473,7 +7625,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 153,
@@ -7541,7 +7694,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 154,
@@ -7595,7 +7749,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 155,
@@ -7649,7 +7804,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 156,
@@ -7675,7 +7831,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 157,
@@ -7745,7 +7902,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 158,
@@ -7807,7 +7965,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 159,
@@ -7889,7 +8048,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 160,
@@ -7931,7 +8091,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 161,
@@ -7999,7 +8160,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 162,
@@ -8075,7 +8237,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 163,
@@ -8115,7 +8278,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 164,
@@ -8169,7 +8333,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 165,
@@ -8209,7 +8374,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 166,
@@ -8263,7 +8429,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 167,
@@ -8317,7 +8484,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 168,
@@ -8371,7 +8539,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 169,
@@ -8413,7 +8582,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 170,
@@ -8447,7 +8617,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 171,
@@ -8513,7 +8684,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 172,
@@ -8587,7 +8759,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 173,
@@ -8661,7 +8834,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 174,
@@ -8695,7 +8869,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 175,
@@ -8721,7 +8896,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 176,
@@ -8747,7 +8923,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 177,
@@ -8773,7 +8950,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 178,
@@ -8815,7 +8993,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 179,
@@ -8841,7 +9020,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 180,
@@ -8867,7 +9047,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 181,
@@ -8909,7 +9090,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 182,
@@ -8935,7 +9117,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 183,
@@ -8985,7 +9168,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 184,
@@ -9043,7 +9227,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 185,
@@ -9085,7 +9270,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 186,
@@ -9111,7 +9297,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 187,
@@ -9137,7 +9324,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 188,
@@ -9191,7 +9379,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 189,
@@ -9217,7 +9406,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 190,
@@ -9251,7 +9441,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 191,
@@ -9277,7 +9468,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 192,
@@ -9333,7 +9525,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 193,
@@ -9381,7 +9574,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 194,
@@ -9449,7 +9643,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 195,
@@ -9527,7 +9722,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 196,
@@ -9567,7 +9763,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 197,
@@ -9621,7 +9818,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 198,
@@ -9647,7 +9845,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 199,
@@ -9701,7 +9900,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 200,
@@ -9755,7 +9955,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 201,
@@ -9809,7 +10010,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 202,
@@ -9835,7 +10037,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 203,
@@ -9875,7 +10078,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 204,
@@ -9915,7 +10119,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 205,
@@ -9955,7 +10160,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 206,
@@ -10009,7 +10215,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 207,
@@ -10051,7 +10258,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 208,
@@ -10105,7 +10313,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 209,
@@ -10147,7 +10356,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 210,
@@ -10189,7 +10399,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 211,
@@ -10315,7 +10526,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 212,
@@ -10349,7 +10561,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 213,
@@ -10417,7 +10630,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 214,
@@ -10457,7 +10671,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 215,
@@ -10511,7 +10726,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 216,
@@ -10565,7 +10781,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 217,
@@ -10633,7 +10850,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 218,
@@ -10687,7 +10905,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 219,
@@ -10727,7 +10946,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 220,
@@ -10809,7 +11029,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 221,
@@ -10849,7 +11070,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 222,
@@ -10889,7 +11111,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 223,
@@ -10915,7 +11138,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 224,
@@ -10969,7 +11193,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 225,
@@ -11009,7 +11234,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 226,
@@ -11071,7 +11297,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 227,
@@ -11139,7 +11366,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 228,
@@ -11165,7 +11393,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 229,
@@ -11205,7 +11434,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 230,
@@ -11295,7 +11525,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 231,
@@ -11349,7 +11580,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 232,
@@ -11403,7 +11635,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 233,
@@ -11457,7 +11690,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 234,
@@ -11483,7 +11717,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 235,
@@ -11517,7 +11752,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 236,
@@ -11543,7 +11779,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 237,
@@ -11569,7 +11806,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 238,
@@ -11661,7 +11899,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 239,
@@ -11715,7 +11954,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 240,
@@ -11741,7 +11981,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 241,
@@ -11775,7 +12016,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 242,
@@ -11801,7 +12043,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 243,
@@ -11855,7 +12098,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 244,
@@ -11909,7 +12153,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 245,
@@ -11963,7 +12208,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 246,
@@ -11989,7 +12235,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 247,
@@ -12057,7 +12304,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 248,
@@ -12099,7 +12347,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 249,
@@ -12173,7 +12422,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 250,
@@ -12223,7 +12473,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 251,
@@ -12345,7 +12596,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 252,
@@ -12393,7 +12645,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 253,
@@ -12455,7 +12708,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 254,
@@ -12495,7 +12749,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 255,
@@ -12557,7 +12812,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 256,
@@ -12611,7 +12867,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 257,
@@ -12665,7 +12922,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 258,
@@ -12733,7 +12991,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 259,
@@ -12767,7 +13026,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 260,
@@ -12821,7 +13081,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 261,
@@ -12847,7 +13108,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 262,
@@ -12901,7 +13163,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 263,
@@ -12941,7 +13204,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 264,
@@ -12997,7 +13261,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 265,
@@ -13023,7 +13288,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 266,
@@ -13065,7 +13331,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 267,
@@ -13099,7 +13366,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 268,
@@ -13153,7 +13421,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 269,
@@ -13195,7 +13464,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 270,
@@ -13263,7 +13533,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 271,
@@ -13289,7 +13560,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 272,
@@ -13329,7 +13601,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 273,
@@ -13355,7 +13628,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 274,
@@ -13397,7 +13671,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 275,
@@ -13431,7 +13706,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 276,
@@ -13471,7 +13747,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 277,
@@ -13605,7 +13882,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 278,
@@ -13645,7 +13923,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 279,
@@ -13699,7 +13978,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 280,
@@ -13733,7 +14013,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 281,
@@ -13801,7 +14082,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 282,
@@ -13855,7 +14137,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 283,
@@ -13881,7 +14164,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 284,
@@ -13935,7 +14219,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 285,
@@ -13961,7 +14246,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 286,
@@ -14037,7 +14323,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 287,
@@ -14129,7 +14416,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 288,
@@ -14197,7 +14485,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 289,
@@ -14289,7 +14578,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 290,
@@ -14367,7 +14657,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 291,
@@ -14407,7 +14698,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 292,
@@ -14469,7 +14761,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 293,
@@ -14509,7 +14802,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 294,
@@ -14603,7 +14897,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 295,
@@ -14643,7 +14938,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 296,
@@ -14705,7 +15001,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 297,
@@ -14781,7 +15078,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 298,
@@ -14835,7 +15133,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 299,
@@ -14897,7 +15196,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 300,
@@ -14939,7 +15239,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 301,
@@ -14997,7 +15298,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 302,
@@ -15039,7 +15341,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 303,
@@ -15097,7 +15400,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 304,
@@ -15145,7 +15449,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 305,
@@ -15207,7 +15512,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 306,
@@ -15273,7 +15579,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 307,
@@ -15339,7 +15646,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 308,
@@ -15389,7 +15697,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 309,
@@ -15439,7 +15748,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 310,
@@ -15497,7 +15807,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 311,
@@ -15565,7 +15876,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 312,
@@ -15605,7 +15917,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 313,
@@ -15659,7 +15972,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 314,
@@ -15685,7 +15999,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 315,
@@ -15753,7 +16068,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 316,
@@ -15795,7 +16111,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 317,
@@ -15843,7 +16160,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 318,
@@ -15877,7 +16195,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 319,
@@ -15917,7 +16236,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 320,
@@ -16001,7 +16321,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 321,
@@ -16027,7 +16348,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 322,
@@ -16067,7 +16389,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 323,
@@ -16121,7 +16444,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 324,
@@ -16161,7 +16485,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 325,
@@ -16215,7 +16540,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 326,
@@ -16269,7 +16595,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 327,
@@ -16323,7 +16650,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 328,
@@ -16371,7 +16699,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 329,
@@ -16397,7 +16726,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 330,
@@ -16423,7 +16753,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 331,
@@ -16449,7 +16780,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 332,
@@ -16475,7 +16807,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 333,
@@ -16501,7 +16834,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 334,
@@ -16527,7 +16861,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 335,
@@ -16561,7 +16896,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 336,
@@ -16619,7 +16955,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 337,
@@ -16695,7 +17032,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 338,
@@ -16771,7 +17109,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 339,
@@ -16847,7 +17186,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 340,
@@ -16901,7 +17241,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 341,
@@ -16935,7 +17276,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 342,
@@ -16989,7 +17331,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 343,
@@ -17043,7 +17386,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 344,
@@ -17097,7 +17441,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 345,
@@ -17165,7 +17510,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 346,
@@ -17291,7 +17637,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 347,
@@ -17325,7 +17672,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 348,
@@ -17365,7 +17713,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 349,
@@ -17427,7 +17776,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 350,
@@ -17467,7 +17817,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 351,
@@ -17525,7 +17876,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 352,
@@ -17551,7 +17903,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 353,
@@ -17577,7 +17930,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 354,
@@ -17603,7 +17957,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 355,
@@ -17629,7 +17984,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 356,
@@ -17655,7 +18011,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 357,
@@ -17681,7 +18038,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 358,
@@ -17715,7 +18073,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 359,
@@ -17769,7 +18128,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 360,
@@ -17851,7 +18211,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 361,
@@ -17905,7 +18266,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 362,
@@ -17931,7 +18293,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 363,
@@ -17985,7 +18348,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 364,
@@ -18019,7 +18383,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 365,
@@ -18053,7 +18418,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 366,
@@ -18121,7 +18487,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 367,
@@ -18155,7 +18522,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 368,
@@ -18217,7 +18585,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 369,
@@ -18259,7 +18628,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 370,
@@ -18317,7 +18687,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 371,
@@ -18373,7 +18744,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 372,
@@ -18399,7 +18771,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 373,
@@ -18457,7 +18830,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 374,
@@ -18499,7 +18873,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 375,
@@ -18553,7 +18928,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 376,
@@ -18593,7 +18969,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 377,
@@ -18627,7 +19004,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 378,
@@ -18653,7 +19031,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 379,
@@ -18693,7 +19072,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 380,
@@ -18733,7 +19113,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 381,
@@ -18787,7 +19168,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 382,
@@ -18841,7 +19223,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 383,
@@ -18911,7 +19294,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 384,
@@ -18965,7 +19349,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 385,
@@ -18991,7 +19376,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 386,
@@ -19025,7 +19411,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 387,
@@ -19079,7 +19466,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 388,
@@ -19105,7 +19493,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 389,
@@ -19159,7 +19548,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 390,
@@ -19227,7 +19617,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 391,
@@ -19281,7 +19672,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 392,
@@ -19335,7 +19727,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 393,
@@ -19375,7 +19768,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 394,
@@ -19409,7 +19803,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 395,
@@ -19449,7 +19844,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 396,
@@ -19491,7 +19887,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 397,
@@ -19517,7 +19914,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 398,
@@ -19571,7 +19969,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 399,
@@ -19613,7 +20012,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 400,
@@ -19647,7 +20047,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 401,
@@ -19729,7 +20130,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 402,
@@ -19769,7 +20171,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 403,
@@ -19823,7 +20226,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 404,
@@ -19849,7 +20253,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 405,
@@ -19903,7 +20308,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 406,
@@ -19929,7 +20335,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 407,
@@ -19983,7 +20390,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 408,
@@ -20037,7 +20445,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 409,
@@ -20099,7 +20508,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 410,
@@ -20153,7 +20563,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 411,
@@ -20207,7 +20618,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 412,
@@ -20247,7 +20659,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 413,
@@ -20309,7 +20722,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 414,
@@ -20363,7 +20777,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 415,
@@ -20417,7 +20832,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 416,
@@ -20457,7 +20873,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 417,
@@ -20497,7 +20914,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 418,
@@ -20523,7 +20941,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 419,
@@ -20577,7 +20996,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 420,
@@ -20627,7 +21047,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 421,
@@ -20703,7 +21124,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 422,
@@ -20743,7 +21165,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 423,
@@ -20783,7 +21206,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 424,
@@ -20879,7 +21303,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 425,
@@ -20933,7 +21358,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 426,
@@ -20987,7 +21413,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 427,
@@ -21041,7 +21468,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 428,
@@ -21095,7 +21523,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 429,
@@ -21149,7 +21578,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 430,
@@ -21189,7 +21619,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 431,
@@ -21243,7 +21674,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 432,
@@ -21297,7 +21729,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 433,
@@ -21367,7 +21800,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 434,
@@ -21407,7 +21841,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 435,
@@ -21433,7 +21868,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 436,
@@ -21509,7 +21945,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 437,
@@ -21559,7 +21996,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 438,
@@ -21607,7 +22045,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 439,
@@ -21647,7 +22086,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 440,
@@ -21709,7 +22149,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 441,
@@ -21735,7 +22176,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 442,
@@ -21777,7 +22219,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 443,
@@ -21839,7 +22282,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 444,
@@ -21873,7 +22317,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 445,
@@ -21965,7 +22410,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 446,
@@ -21991,7 +22437,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 447,
@@ -22045,7 +22492,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 448,
@@ -22111,7 +22559,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 449,
@@ -22161,7 +22610,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 450,
@@ -22203,7 +22653,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 451,
@@ -22229,7 +22680,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 452,
@@ -22255,7 +22707,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 453,
@@ -22289,7 +22742,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 454,
@@ -22363,7 +22817,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 455,
@@ -22397,7 +22852,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 456,
@@ -22431,7 +22887,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 457,
@@ -22489,7 +22946,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 458,
@@ -22543,7 +23001,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 459,
@@ -22583,7 +23042,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 460,
@@ -22645,7 +23105,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 461,
@@ -22707,7 +23168,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 462,
@@ -22785,7 +23247,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 463,
@@ -22839,7 +23302,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 464,
@@ -22909,7 +23373,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 465,
@@ -22935,7 +23400,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 466,
@@ -23003,7 +23469,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 467,
@@ -23065,7 +23532,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 468,
@@ -23119,7 +23587,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 469,
@@ -23177,7 +23646,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 470,
@@ -23227,7 +23697,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 471,
@@ -23269,7 +23740,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 472,
@@ -23311,7 +23783,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 473,
@@ -23379,7 +23852,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 474,
@@ -23433,7 +23907,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 475,
@@ -23501,7 +23976,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 476,
@@ -23527,7 +24003,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 477,
@@ -23561,7 +24038,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 478,
@@ -23615,7 +24093,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 479,
@@ -23657,7 +24136,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 480,
@@ -23691,7 +24171,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 481,
@@ -23733,7 +24214,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 482,
@@ -23767,7 +24249,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 483,
@@ -23835,7 +24318,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 484,
@@ -23877,7 +24361,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 485,
@@ -23951,7 +24436,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 486,
@@ -24005,7 +24491,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 487,
@@ -24059,7 +24546,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 488,
@@ -24085,7 +24573,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 489,
@@ -24119,7 +24608,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 490,
@@ -24161,7 +24651,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 491,
@@ -24215,7 +24706,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 492,
@@ -24283,7 +24775,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 493,
@@ -24317,7 +24810,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 494,
@@ -24359,7 +24853,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 495,
@@ -24385,7 +24880,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 496,
@@ -24425,7 +24921,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 497,
@@ -24479,7 +24976,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 498,
@@ -24521,7 +25019,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 499,
@@ -24579,7 +25078,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 500,
@@ -24633,7 +25133,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 501,
@@ -24687,7 +25188,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 502,
@@ -24727,7 +25229,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 503,
@@ -24781,7 +25284,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 504,
@@ -24835,7 +25339,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 505,
@@ -24903,7 +25408,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 506,
@@ -24929,7 +25435,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 507,
@@ -24955,7 +25462,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 508,
@@ -24995,7 +25503,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 509,
@@ -25049,7 +25558,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 510,
@@ -25089,7 +25599,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 511,
@@ -25115,7 +25626,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 512,
@@ -25325,7 +25837,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 513,
@@ -25381,7 +25894,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 514,
@@ -25407,7 +25921,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 515,
@@ -25461,7 +25976,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 516,
@@ -25543,7 +26059,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 517,
@@ -25601,7 +26118,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 518,
@@ -25627,7 +26145,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 519,
@@ -25681,7 +26200,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 520,
@@ -25735,7 +26255,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 521,
@@ -25789,7 +26310,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 522,
@@ -25863,7 +26385,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 523,
@@ -25897,7 +26420,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 524,
@@ -25923,7 +26447,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 525,
@@ -25977,7 +26502,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 526,
@@ -26031,7 +26557,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 527,
@@ -26117,7 +26644,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 528,
@@ -26171,7 +26699,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 529,
@@ -26225,7 +26754,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 530,
@@ -26279,7 +26809,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 531,
@@ -26333,7 +26864,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 532,
@@ -26401,7 +26933,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 533,
@@ -26451,7 +26984,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 534,
@@ -26485,7 +27019,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 535,
@@ -26539,7 +27074,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 536,
@@ -26565,7 +27101,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 537,
@@ -26627,7 +27164,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 538,
@@ -26701,7 +27239,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 539,
@@ -26735,7 +27274,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 540,
@@ -26769,7 +27309,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 541,
@@ -26811,7 +27352,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 542,
@@ -26865,7 +27407,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 543,
@@ -26923,7 +27466,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 544,
@@ -26957,7 +27501,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 545,
@@ -26997,7 +27542,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 546,
@@ -27023,7 +27569,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 547,
@@ -27049,7 +27596,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 548,
@@ -27115,7 +27663,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 549,
@@ -27141,7 +27690,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 550,
@@ -27195,7 +27745,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 551,
@@ -27221,7 +27772,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 552,
@@ -27261,7 +27813,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 553,
@@ -27303,7 +27856,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 554,
@@ -27345,7 +27899,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 555,
@@ -27395,7 +27950,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 556,
@@ -27429,7 +27985,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 557,
@@ -27455,7 +28012,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 558,
@@ -27481,7 +28039,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 559,
@@ -27507,7 +28066,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 560,
@@ -27533,7 +28093,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 561,
@@ -27575,7 +28136,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 562,
@@ -27631,7 +28193,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 563,
@@ -27657,7 +28220,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 564,
@@ -27711,7 +28275,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 565,
@@ -27753,7 +28318,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 566,
@@ -27811,7 +28377,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 567,
@@ -27845,7 +28412,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 568,
@@ -27871,7 +28439,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 569,
@@ -27905,7 +28474,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 570,
@@ -27939,7 +28509,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 571,
@@ -27997,7 +28568,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 572,
@@ -28063,7 +28635,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 573,
@@ -28137,7 +28710,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 574,
@@ -28211,7 +28785,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 575,
@@ -28237,7 +28812,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 576,
@@ -28291,7 +28867,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 577,
@@ -28333,7 +28910,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 578,
@@ -28387,7 +28965,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 579,
@@ -28413,7 +28992,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 580,
@@ -28439,7 +29019,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 581,
@@ -28493,7 +29074,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 582,
@@ -28533,7 +29115,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 583,
@@ -28559,7 +29142,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 584,
@@ -28585,7 +29169,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 585,
@@ -28639,7 +29224,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 586,
@@ -28665,7 +29251,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 587,
@@ -28735,7 +29322,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 588,
@@ -28777,7 +29365,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 589,
@@ -28831,7 +29420,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 590,
@@ -28881,7 +29471,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 591,
@@ -28931,7 +29522,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 592,
@@ -28985,7 +29577,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 593,
@@ -29019,7 +29612,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 594,
@@ -29045,7 +29639,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 595,
@@ -29071,7 +29666,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 596,
@@ -29097,7 +29693,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 597,
@@ -29155,7 +29752,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 598,
@@ -29197,7 +29795,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 599,
@@ -29239,7 +29838,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 600,
@@ -29273,7 +29873,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 601,
@@ -29299,7 +29900,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 602,
@@ -29369,7 +29971,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 603,
@@ -29409,7 +30012,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 604,
@@ -29471,7 +30075,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 605,
@@ -29539,7 +30144,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 606,
@@ -29621,7 +30227,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 607,
@@ -29647,7 +30254,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 608,
@@ -29701,7 +30309,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 609,
@@ -29787,7 +30396,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 610,
@@ -29841,7 +30451,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 611,
@@ -29895,7 +30506,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 612,
@@ -29957,7 +30569,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 613,
@@ -30059,7 +30672,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 614,
@@ -30085,7 +30699,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 615,
@@ -30155,7 +30770,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 616,
@@ -30195,7 +30811,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 617,
@@ -30263,7 +30880,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 618,
@@ -30303,7 +30921,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 619,
@@ -30343,7 +30962,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 620,
@@ -30445,7 +31065,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 621,
@@ -30499,7 +31120,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 622,
@@ -30569,7 +31191,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 623,
@@ -30633,7 +31256,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 624,
@@ -30675,7 +31299,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 625,
@@ -30709,7 +31334,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 626,
@@ -30823,7 +31449,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 627,
@@ -30849,7 +31476,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 628,
@@ -30931,7 +31559,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 629,
@@ -30981,7 +31610,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 630,
@@ -31007,7 +31637,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 631,
@@ -31049,7 +31680,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 632,
@@ -31089,7 +31721,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 633,
@@ -31143,7 +31776,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 634,
@@ -31177,7 +31811,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 635,
@@ -31227,7 +31862,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 636,
@@ -31261,7 +31897,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 637,
@@ -31311,7 +31948,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 638,
@@ -31345,7 +31983,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 639,
@@ -31379,7 +32018,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 640,
@@ -31405,7 +32045,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 641,
@@ -31431,7 +32072,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 642,
@@ -31485,7 +32127,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 643,
@@ -31519,7 +32162,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 644,
@@ -31569,7 +32213,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 645,
@@ -31603,7 +32248,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 646,
@@ -31653,7 +32299,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 647,
@@ -31711,7 +32358,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 648,
@@ -31793,7 +32441,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 649,
@@ -31827,7 +32476,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 650,
@@ -31853,7 +32503,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 651,
@@ -31893,7 +32544,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 652,
@@ -31971,7 +32623,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 653,
@@ -32011,7 +32664,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 654,
@@ -32065,7 +32719,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 655,
@@ -32119,7 +32774,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 656,
@@ -32145,7 +32801,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 657,
@@ -32199,7 +32856,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 658,
@@ -32261,7 +32919,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 659,
@@ -32301,7 +32960,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 660,
@@ -32355,7 +33015,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 661,
@@ -32409,7 +33070,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 662,
@@ -32463,7 +33125,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 663,
@@ -32517,7 +33180,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 664,
@@ -32557,7 +33221,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 665,
@@ -32635,7 +33300,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 666,
@@ -32689,7 +33355,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 667,
@@ -32759,7 +33426,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 668,
@@ -32813,7 +33481,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 669,
@@ -32867,7 +33536,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 670,
@@ -32893,7 +33563,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 671,
@@ -32919,7 +33590,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 672,
@@ -32969,7 +33641,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 673,
@@ -32995,7 +33668,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 674,
@@ -33049,7 +33723,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 675,
@@ -33075,7 +33750,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 676,
@@ -33129,7 +33805,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 677,
@@ -33197,7 +33874,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 678,
@@ -33231,7 +33909,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 679,
@@ -33265,7 +33944,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 680,
@@ -33299,7 +33979,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 681,
@@ -33367,7 +34048,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 682,
@@ -33417,7 +34099,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 683,
@@ -33459,7 +34142,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 684,
@@ -33533,7 +34217,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 685,
@@ -33573,7 +34258,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 686,
@@ -33607,7 +34293,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 687,
@@ -33633,7 +34320,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 688,
@@ -33687,7 +34375,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 689,
@@ -33757,7 +34446,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 690,
@@ -33783,7 +34473,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 691,
@@ -33837,7 +34528,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 692,
@@ -33877,7 +34569,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 693,
@@ -33903,7 +34596,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 694,
@@ -33967,7 +34661,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 695,
@@ -34017,7 +34712,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 696,
@@ -34067,7 +34763,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 697,
@@ -34165,7 +34862,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 698,
@@ -34191,7 +34889,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 699,
@@ -34217,7 +34916,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 700,
@@ -34243,7 +34943,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 701,
@@ -34269,7 +34970,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 702,
@@ -34295,7 +34997,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 703,
@@ -34321,7 +35024,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 704,
@@ -34347,7 +35051,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 705,
@@ -34381,7 +35086,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 706,
@@ -34451,7 +35157,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 707,
@@ -34493,7 +35200,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 708,
@@ -34541,7 +35249,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 709,
@@ -34575,7 +35284,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 710,
@@ -34601,7 +35311,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 711,
@@ -34627,7 +35338,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 712,
@@ -34653,7 +35365,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 713,
@@ -34721,7 +35434,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 714,
@@ -34775,7 +35489,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 715,
@@ -34801,7 +35516,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 716,
@@ -34827,7 +35543,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 717,
@@ -34895,7 +35612,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 718,
@@ -34949,7 +35667,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 719,
@@ -34975,7 +35694,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 720,
@@ -35001,7 +35721,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 721,
@@ -35027,7 +35748,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 722,
@@ -35053,7 +35775,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 723,
@@ -35079,7 +35802,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 724,
@@ -35147,7 +35871,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 725,
@@ -35173,7 +35898,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 726,
@@ -35207,7 +35933,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 727,
@@ -35249,7 +35976,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 728,
@@ -35333,7 +36061,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 729,
@@ -35359,7 +36088,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 730,
@@ -35385,7 +36115,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 731,
@@ -35411,7 +36142,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 732,
@@ -35437,7 +36169,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 733,
@@ -35463,7 +36196,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 734,
@@ -35531,7 +36265,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 735,
@@ -35581,7 +36316,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 736,
@@ -35671,7 +36407,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 737,
@@ -35697,7 +36434,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 738,
@@ -35723,7 +36461,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 739,
@@ -35749,7 +36488,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 740,
@@ -35775,7 +36515,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 741,
@@ -35817,7 +36558,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 742,
@@ -35879,7 +36621,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 743,
@@ -35941,7 +36684,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 744,
@@ -35983,7 +36727,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 745,
@@ -36025,7 +36770,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 746,
@@ -36097,7 +36843,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 747,
@@ -36205,7 +36952,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 748,
@@ -36259,7 +37007,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 749,
@@ -36313,7 +37062,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 750,
@@ -36367,7 +37117,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 751,
@@ -36421,7 +37172,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 752,
@@ -36461,7 +37213,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 753,
@@ -36487,7 +37240,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 754,
@@ -36541,7 +37295,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 755,
@@ -36595,7 +37350,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 756,
@@ -36621,7 +37377,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 757,
@@ -36683,7 +37440,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 758,
@@ -36709,7 +37467,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 759,
@@ -36763,7 +37522,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 760,
@@ -36789,7 +37549,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 761,
@@ -36875,7 +37636,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 762,
@@ -36917,7 +37679,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 763,
@@ -36943,7 +37706,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 764,
@@ -37013,7 +37777,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 765,
@@ -37067,7 +37832,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 766,
@@ -37121,7 +37887,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 767,
@@ -37147,7 +37914,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 768,
@@ -37173,7 +37941,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 769,
@@ -37227,7 +37996,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 770,
@@ -37253,7 +38023,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 771,
@@ -37279,7 +38050,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 772,
@@ -37305,7 +38077,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 773,
@@ -37359,7 +38132,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 774,
@@ -37385,7 +38159,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 775,
@@ -37427,7 +38202,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 776,
@@ -37461,7 +38237,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 777,
@@ -37487,7 +38264,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 778,
@@ -37541,7 +38319,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 779,
@@ -37589,7 +38368,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 780,
@@ -37651,7 +38431,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 781,
@@ -37705,7 +38486,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 782,
@@ -37775,7 +38557,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 783,
@@ -37829,7 +38612,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 784,
@@ -37855,7 +38639,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 785,
@@ -37881,7 +38666,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 786,
@@ -37907,7 +38693,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 787,
@@ -37969,7 +38756,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 788,
@@ -38009,7 +38797,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 789,
@@ -38035,7 +38824,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 790,
@@ -38117,7 +38907,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 791,
@@ -38143,7 +38934,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 792,
@@ -38205,7 +38997,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 793,
@@ -38273,7 +39066,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 794,
@@ -38341,7 +39135,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 795,
@@ -38381,7 +39176,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 796,
@@ -38435,7 +39231,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 797,
@@ -38497,7 +39294,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 798,
@@ -38551,7 +39349,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 799,
@@ -38605,7 +39404,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 800,
@@ -38659,7 +39459,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 801,
@@ -38685,7 +39486,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 802,
@@ -38727,7 +39529,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 803,
@@ -38753,7 +39556,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 804,
@@ -38807,7 +39611,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 805,
@@ -38833,7 +39638,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 806,
@@ -38895,7 +39701,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 807,
@@ -38949,7 +39756,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 808,
@@ -39003,7 +39811,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 809,
@@ -39029,7 +39838,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 810,
@@ -39083,7 +39893,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 811,
@@ -39137,7 +39948,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 812,
@@ -39207,7 +40019,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 813,
@@ -39233,7 +40046,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 814,
@@ -39295,7 +40109,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 815,
@@ -39357,7 +40172,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 816,
@@ -39397,7 +40213,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 817,
@@ -39451,7 +40268,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 818,
@@ -39505,7 +40323,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 819,
@@ -39545,7 +40364,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 820,
@@ -39585,7 +40405,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 821,
@@ -39625,7 +40446,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 822,
@@ -39665,7 +40487,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 823,
@@ -39719,7 +40542,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 824,
@@ -39785,7 +40609,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 825,
@@ -39855,7 +40680,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 826,
@@ -39917,7 +40743,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 827,
@@ -39957,7 +40784,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 828,
@@ -40025,7 +40853,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 829,
@@ -40079,7 +40908,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 830,
@@ -40133,7 +40963,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 831,
@@ -40187,7 +41018,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 832,
@@ -40241,7 +41073,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 833,
@@ -40309,7 +41142,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 834,
@@ -40377,7 +41211,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 835,
@@ -40417,7 +41252,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 836,
@@ -40487,7 +41323,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 837,
@@ -40569,7 +41406,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 838,
@@ -40609,7 +41447,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 839,
@@ -40719,7 +41558,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 840,
@@ -40759,7 +41599,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 841,
@@ -40785,7 +41626,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 842,
@@ -40853,7 +41695,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 843,
@@ -40969,7 +41812,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 844,
@@ -41023,7 +41867,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 845,
@@ -41077,7 +41922,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 846,
@@ -41103,7 +41949,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 847,
@@ -41157,7 +42004,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 848,
@@ -41235,7 +42083,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 849,
@@ -41319,7 +42168,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 850,
@@ -41359,7 +42209,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 851,
@@ -41409,7 +42260,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 852,
@@ -41435,7 +42287,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 853,
@@ -41519,7 +42372,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 854,
@@ -41545,7 +42399,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 855,
@@ -41585,7 +42440,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 856,
@@ -41633,7 +42489,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 857,
@@ -41723,7 +42580,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 858,
@@ -41777,7 +42635,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 859,
@@ -41819,7 +42678,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 860,
@@ -41859,7 +42719,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 861,
@@ -41913,7 +42774,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 862,
@@ -41939,7 +42801,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 863,
@@ -41965,7 +42828,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 864,
@@ -41991,7 +42855,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 865,
@@ -42017,7 +42882,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 866,
@@ -42043,7 +42909,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 867,
@@ -42069,7 +42936,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 868,
@@ -42095,7 +42963,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 869,
@@ -42121,7 +42990,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 870,
@@ -42263,7 +43133,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 871,
@@ -42305,7 +43176,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 872,
@@ -42359,7 +43231,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 873,
@@ -42465,7 +43338,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 874,
@@ -42535,7 +43409,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 875,
@@ -42613,7 +43488,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 876,
@@ -42697,7 +43573,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 877,
@@ -42779,7 +43656,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 878,
@@ -42851,7 +43729,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 879,
@@ -42905,7 +43784,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 880,
@@ -42975,7 +43855,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 881,
@@ -43045,7 +43926,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 882,
@@ -43095,7 +43977,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 883,
@@ -43121,7 +44004,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 884,
@@ -43147,7 +44031,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 885,
@@ -43173,7 +44058,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 886,
@@ -43199,7 +44085,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 887,
@@ -43249,7 +44136,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 888,
@@ -43283,7 +44171,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 889,
@@ -43337,7 +44226,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 890,
@@ -43371,7 +44261,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 891,
@@ -43433,7 +44324,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 892,
@@ -43459,7 +44351,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 893,
@@ -43499,7 +44392,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 894,
@@ -43553,7 +44447,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 895,
@@ -43593,7 +44488,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 896,
@@ -43647,7 +44543,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 897,
@@ -43723,7 +44620,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 898,
@@ -43749,7 +44647,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 899,
@@ -43803,7 +44702,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 900,
@@ -43857,7 +44757,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 901,
@@ -43919,7 +44820,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 902,
@@ -43969,7 +44871,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 903,
@@ -43995,7 +44898,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 904,
@@ -44021,7 +44925,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 905,
@@ -44047,7 +44952,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 906,
@@ -44073,7 +44979,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 907,
@@ -44099,7 +45006,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 908,
@@ -44125,7 +45033,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 909,
@@ -44151,7 +45060,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 910,
@@ -44177,7 +45087,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 911,
@@ -44295,7 +45206,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 912,
@@ -44361,7 +45273,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 913,
@@ -44387,7 +45300,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 914,
@@ -44445,7 +45359,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   },
   {
    "idx": 915,
@@ -44503,7 +45418,8 @@
    ],
    "kind": null,
    "math": null,
-   "inline_math": []
+   "inline_math": [],
+   "figure": null
   }
  ],
  "characters": [
@@ -44798,5 +45714,5 @@
  "series": null,
  "series_index": null,
  "series_checked": [],
- "chunk_rules": 2
+ "chunk_rules": 3
 }

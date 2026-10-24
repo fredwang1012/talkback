@@ -78,3 +78,18 @@ def test_dotted_section_numbers():
     assert normalize_for_tts("See section 5.3.1 for details.") == "See section five point three point one for details."
     assert normalize_for_tts("Section 2.1.1.4 here") == "Section two point one point one point four here"
     assert normalize_for_tts("pi is 3.14 roughly") == "pi is three.fourteen roughly"  # ordinary decimals untouched
+
+
+def test_may_change_is_a_safe_precheck_for_normalization():
+    """Whenever may_change says no, normalize_for_tts leaves the text exactly as it is (checked on every committed
+    book paragraph and some edge cases)."""
+    import json
+    from pathlib import Path
+    from app.textnorm import may_change, normalize_for_tts
+    texts = ["a/b and w/o", "x² + y", "α beta", "Mr. Smith-Jones (aged) — fine; ok!", "{a}", "p\u0338=q", "x^2", "100"]
+    for f in sorted((Path(__file__).resolve().parents[2] / "data" / "books").glob("*/book.json")):
+        texts += [p["text"] for p in json.loads(f.read_text(encoding="utf-8"))["paragraphs"]]
+    for t in texts:
+        if not may_change(t):
+            assert normalize_for_tts(t) == t, t[:80]
+    assert may_change("a/b") and may_change("x²") and may_change("100") and not may_change("Plain words, only.")

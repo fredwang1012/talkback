@@ -365,8 +365,13 @@ def llm_user(book: Book, batch: list[Decision]) -> str:
     return f"Cast:\n{cast}\n\n" + "\n\n".join(blocks)
 
 
-def llm_estimate(items: list[tuple[Book, list[Decision]]], in_price: float = 0.30, out_price: float = 2.50) -> dict:
-    """Rough Gemini Flash cost (USD per 1M tokens in/out) of attributing the given ambiguous lines (~4 chars/token)."""
+def llm_estimate(items: list[tuple[Book, list[Decision]]], in_price: float | None = None,
+                 out_price: float | None = None) -> dict:
+    """Rough Gemini cost of attributing the given ambiguous lines (~4 chars/token). Prices are USD per 1M tokens
+    in/out; by default those of the enrichment model (enrich.llm.gemini_prices)."""
+    if in_price is None or out_price is None:
+        from .llm import enrich_gemini_model, gemini_prices
+        in_price, out_price = gemini_prices(enrich_gemini_model())
     chars = out_tokens = calls = 0
     for book, ds in items:
         for i in range(0, len(ds), LLM_BATCH):

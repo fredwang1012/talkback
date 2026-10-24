@@ -65,12 +65,12 @@ def test_upsert_409_deletes_and_retries_once():
 
     def handler(req):
         calls.append((req.method, req.url.path))
-        if req.method == "POST" and calls.count(("POST", req.url.path)) == 1:
+        if req.url.path.endswith(":batchCreate") and calls.count(("POST", req.url.path)) == 1:
             return httpx.Response(409, json={"error": "exists"})
         return httpx.Response(200, json={})
     run(make(handler).upsert([obj(1), obj(2)]))
-    assert [c[0] for c in calls] == ["POST", "DELETE", "DELETE", "POST"]
-    assert calls[1][1].endswith("/dataObjects/b__1")
+    assert [c[0] for c in calls] == ["POST", "POST", "POST"]
+    assert calls[1][1].endswith("/dataObjects:batchDelete")
 
 
 def test_upsert_409_twice_raises():
@@ -81,16 +81,61 @@ def test_upsert_409_twice_raises():
     assert e.value.status == 409
 
 
-def test_delete_ignores_404_raises_other():
+def test_delete_uses_batch_delete_in_chunks_of_1000():
+    """POST {collection}/dataObjects:batchDelete, body {"requests": [{"name": <full DataObject name>}]}, at most
+    1000 per batch (Vector Search 2.0 REST reference)."""
+    bodies = []
+
+    def handler(req):
+        assert req.method == "POST" and str(req.url) == f"{BASE}/dataObjects:batchDelete"
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, json={})
+    ids = [f"b__{i}" for i in range(2500)]
+    assert run(make(handler).delete(ids)) == []
+    assert [len(b["requests"]) for b in bodies] == [1000, 1000, 500]
+    assert bodies[0]["requests"][0] == {"name": f"{COLL}/dataObjects/b__0"}
+
+
+def test_delete_falls_back_per_object_and_404_is_success():
     urls = []
 
     def handler(req):
         urls.append((req.method, str(req.url)))
         return httpx.Response(404)
-    run(make(handler).delete(["a", "b"]))
-    assert urls == [("DELETE", f"{BASE}/dataObjects/a"), ("DELETE", f"{BASE}/dataObjects/b")]
-    with pytest.raises(VectorStoreError):
-        run(make(lambda req: httpx.Response(403, text="no")).delete(["a"]))
+    assert run(make(handler).delete(["a", "b"])) == []
+    assert urls == [("POST", f"{BASE}/dataObjects:batchDelete"),
+                    ("DELETE", f"{BASE}/dataObjects/a"), ("DELETE", f"{BASE}/dataObjects/b")]
+
+
+def test_delete_never_raises_and_returns_the_refused_ids(caplog):
+    """One refusal does not cancel the rest: every id is tried, the refused ones come back, the log names the status
+    and counts only (never the response text or the ids)."""
+    def handler(req):
+        if req.method == "POST":
+            return httpx.Response(500, text="secret body")
+        if req.url.path.endswith(("/b__3", "/b__7")):
+            return httpx.Response(429, text="secret body")
+        if req.url.path.endswith("/b__5"):
+            raise httpx.ConnectError("c", request=req)
+        return httpx.Response(200, json={})
+    ids = [f"b__{i}" for i in range(10)]
+    with caplog.at_level("WARNING"):
+        refused = run(make(handler).delete(ids))
+    assert sorted(refused) == ["b__3", "b__5", "b__7"]
+    text = caplog.text
+    assert "3 of 10 refused" in text and "429" in text
+    assert "secret" not in text and "b__3" not in text
+
+
+def test_delete_429_backs_off_longer():
+    from app.gcp import vectorstore
+    sleeps = []
+
+    def handler(req):
+        return httpx.Response(429) if req.method == "DELETE" else httpx.Response(400)
+    assert run(make(handler, sleeps).delete(["a"])) == ["a"]
+    retry_sleeps = [s for s in sleeps if s >= vectorstore.DELETE_429_PAUSE_S]
+    assert len(retry_sleeps) >= vectorstore.MAX_RETRIES
 
 
 def test_vector_search_shape_and_parse():
@@ -221,7 +266,14 @@ def test_delete_runs_requests_concurrently_but_bounded():
         state["now"] -= 1
         state["seen"].append(str(req.url).rsplit("/", 1)[1])
         return httpx.Response(404 if len(state["seen"]) % 3 == 0 else 200, json={})
+
+    async def routed(req):
+        if req.method == "POST":   # batchDelete refused: the per-object fallback runs
+            return httpx.Response(400)
+        return await handler(req)
     ids = [f"b__{i}" for i in range(200)]
-    run(make(handler).delete(ids))
+    sleeps = []
+    assert run(make(routed, sleeps).delete(ids)) == []
     assert sorted(state["seen"]) == sorted(ids)
-    assert 1 < state["max"] <= vectorstore.DELETE_CONCURRENCY
+    assert 1 < state["max"] <= vectorstore.DELETE_CONCURRENCY <= 4
+    assert len([s for s in sleeps if s >= vectorstore.DELETE_GAP_S]) >= len(ids)   # every request is paced

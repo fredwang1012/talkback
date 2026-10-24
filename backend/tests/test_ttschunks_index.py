@@ -50,7 +50,17 @@ def test_a_changed_section_list_is_seen_by_single_paragraph_calls():
 
 @pytest.mark.parametrize("path", sorted(BOOKS.glob("*/book.json")), ids=lambda p: p.parent.name)
 def test_committed_books_rechunk_to_their_stored_chunks(path):
+    """Identical output, except (a book saved before CHUNK_RULES_VERSION 3, which the server re-chunks on load) in the
+    paragraphs that v3 fixed: a stored chunk whose spoken text, numbers spelled out, was over MAX_CHARS."""
+    import re
+    from app.textnorm import normalize_for_tts
+    from app.ttschunks import CHUNK_RULES_VERSION, MAX_CHARS
     book = Book.model_validate_json(path.read_text(encoding="utf-8"))
-    stored = json.dumps([[c.model_dump() for c in p.tts_chunks] for p in book.paragraphs])
+    stale_v3 = (book.chunk_rules or 0) < 3 <= CHUNK_RULES_VERSION
+    stored = [[c.model_dump() for c in p.tts_chunks] for p in book.paragraphs]
+    over = {i for i, p in enumerate(book.paragraphs)
+            if any(len(normalize_for_tts(re.sub(r"<\|[^|]*\|>", "", c.tts_text))) > MAX_CHARS for c in p.tts_chunks)}
     rechunk_book(book)
-    assert json.dumps([[c.model_dump() for c in p.tts_chunks] for p in book.paragraphs]) == stored
+    now = [[c.model_dump() for c in p.tts_chunks] for p in book.paragraphs]
+    changed = {i for i, (a, b) in enumerate(zip(stored, now)) if a != b}
+    assert changed <= (over if stale_v3 else set())
