@@ -249,3 +249,31 @@ def test_run_enrichment_skips_in_flight_and_already_enriched(client):
     finally:
         main._enrich_jobs.discard(book_id)
     assert client.fake.calls.count("MainCast") == n
+
+
+FIRST_PERSON_NOVEL = "\n\n".join(
+    "I walked down to the harbour and she followed me. \"Do you remember?\" she asked. I told her I did, and she smiled."
+    for _ in range(40))
+
+TEXTBOOK_PLAIN = "CHAPTER 8\nPhotosynthesis\nLearning Objectives\n\n" + "\n\n".join(
+    f"8.{i} Light reactions\n\nFor example, chlorophyll absorbs light. Figure 8.{i} shows the pathway.\n\n"
+    f"Figure 8.{i} The thylakoid membrane.\n\nTable 8.{i} Key enzymes.\n\n1. Define a photosystem."
+    for i in range(1, 8))
+
+
+def test_heuristic_more_signals():
+    assert detect_mod.heuristic(FIRST_PERSON_NOVEL)[0] == "novel"
+    kind, conf = detect_mod.heuristic(TEXTBOOK_PLAIN)
+    assert kind == "textbook" and conf >= 0.7
+
+
+def test_hesitant_llm_loses_to_confident_heuristic():
+    fake = KindProvider("novel", 0.55)
+    out = asyncio.run(detect_mod.detect_kind(TEXTBOOK_PLAIN, llm=llm_for(fake)))
+    assert out[0] == "textbook" and out[2] == "heuristic"
+    # a confident LLM still wins
+    fake = KindProvider("novel", 0.9)
+    assert asyncio.run(detect_mod.detect_kind(TEXTBOOK_PLAIN, llm=llm_for(fake)))[0] == "novel"
+    # a hesitant LLM that agrees is kept
+    fake = KindProvider("textbook", 0.55)
+    assert asyncio.run(detect_mod.detect_kind(TEXTBOOK_PLAIN, llm=llm_for(fake))) == ("textbook", 0.55, "llm")
