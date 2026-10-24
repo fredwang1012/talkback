@@ -166,7 +166,7 @@ def test_embed_retries_429_and_5xx_then_succeeds():
     sleeps = []
     emb._sleep = sleeps.append
     assert emb.embed_query("hi").shape == (768,)
-    assert sleeps == [1.0, 2.0]
+    assert len(sleeps) == 2 and 0.5 <= sleeps[0] <= 1.0 and 1.0 <= sleeps[1] <= 2.0   # backoff with jitter
 
 
 def test_embed_does_not_retry_client_errors_and_gives_up():

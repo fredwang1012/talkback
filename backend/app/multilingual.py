@@ -12,7 +12,11 @@ import logging
 import re
 from collections import OrderedDict
 
+from . import retrying
 from .config import settings
+
+RETRY_ATTEMPTS = 2     # translation is on the question's critical path: one retry, a short wait
+RETRY_BASE_S = 0.3
 
 _SCRIPTS = [
     ("ja", "Japanese", re.compile(r"[぀-ヿ]")),
@@ -101,14 +105,20 @@ async def translate(text: str) -> str:
         _client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
     config = types.GenerateContentConfig(system_instruction=TRANSLATE_SYSTEM, temperature=0, max_output_tokens=200,
                                          thinking_config=types.ThinkingConfig(thinking_budget=0))
-    try:
-        resp = await _client.aio.models.generate_content(model=settings.gemini_model, contents=text, config=config)
-    except Exception as e:
-        if "thinking" not in str(e).lower():
-            raise
-        # models that always think reject a zero budget: let it think, with room for the hidden thoughts
-        config = types.GenerateContentConfig(system_instruction=TRANSLATE_SYSTEM, temperature=0, max_output_tokens=2048)
-        resp = await _client.aio.models.generate_content(model=settings.gemini_model, contents=text, config=config)
+
+    async def once():
+        nonlocal config
+        try:
+            return await _client.aio.models.generate_content(model=settings.gemini_model, contents=text, config=config)
+        except Exception as e:
+            if "thinking" not in str(e).lower():
+                raise
+            # models that always think reject a zero budget: let it think, with room for the hidden thoughts
+            config = types.GenerateContentConfig(system_instruction=TRANSLATE_SYSTEM, temperature=0, max_output_tokens=2048)
+        return await _client.aio.models.generate_content(model=settings.gemini_model, contents=text, config=config)
+
+    # one quick retry of a network blip, short enough to fit the caller's TRANSLATE_TIMEOUT_S
+    resp = await retrying.retry_async(once, what="translation", attempts=RETRY_ATTEMPTS, base=RETRY_BASE_S, cap=RETRY_BASE_S)
     meta = getattr(resp, "usage_metadata", None)
     if meta is not None:
         usage.record("llm", settings.gemini_model, prompt_tokens=meta.prompt_token_count or 0,

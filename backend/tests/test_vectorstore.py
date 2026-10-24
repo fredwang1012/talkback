@@ -133,7 +133,7 @@ def test_retry_5xx_then_success_and_exhaustion():
         n["c"] += 1
         return httpx.Response(503) if n["c"] < 3 else httpx.Response(200, json={"results": []})
     assert run(make(flaky, sleeps).vector_search([1.0], {}, 1)) == []
-    assert n["c"] == 3 and sleeps == [0.5, 1.0]
+    assert n["c"] == 3 and len(sleeps) == 2 and 0.25 <= sleeps[0] <= 0.5 and 0.5 <= sleeps[1] <= 1.0   # jittered backoff
 
     n["c"] = 0
     sleeps.clear()

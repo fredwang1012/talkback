@@ -6,8 +6,8 @@ from typing import AsyncIterator, Callable
 from google import genai
 from google.genai import types
 
+from .. import retrying, websearch
 from ..config import settings
-from .. import websearch
 from . import usage
 
 log = logging.getLogger(__name__)
@@ -27,6 +27,8 @@ def _split(buf: str) -> tuple[list[str], str]:
 
 
 class GeminiAnswerer:
+    _sleep = None   # retry backoff sleep (asyncio.sleep; tests swap it)
+
     def __init__(self, client=None, model: str | None = None):
         self.client = client or genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
         self.model = model or settings.gemini_model
@@ -41,7 +43,9 @@ class GeminiAnswerer:
         `web_search` adds the Grounding with Google Search tool (callers decide when: websearch.allowed). The web links
         it used are reported once, after the last sentence, through `on_sources` (only when there are any), and
         Google's Search Suggestions markup (search_entry_point.rendered_content, unmodified) through `on_suggestions`. If the
-        grounded request is refused before it starts, the answer is retried once without the tool."""
+        grounded request is refused before it starts, the answer is retried once without the tool. A transient error
+        (network, 429, 5xx) before the first token is retried with backoff; once a token was spoken the stream is not
+        replayed."""
         def config(thinking: bool, grounded: bool):
             return types.GenerateContentConfig(
                 system_instruction=system, max_output_tokens=700,
@@ -49,7 +53,7 @@ class GeminiAnswerer:
                 **({"tools": [types.Tool(google_search=types.GoogleSearch())]} if grounded else {}),
             )
 
-        async def start(grounded: bool):
+        async def open_stream(grounded: bool):
             try:
                 return await self.client.aio.models.generate_content_stream(
                     model=self.model, contents=user, config=config(True, grounded))
@@ -59,6 +63,17 @@ class GeminiAnswerer:
                 return await self.client.aio.models.generate_content_stream(
                     model=self.model, contents=user, config=config(False, grounded))
 
+        async def start(grounded: bool):
+            """The stream and its first chunk (None when it is empty), with the retries: nothing was yielded yet."""
+            async def once():
+                it = (await open_stream(grounded)).__aiter__()
+                try:
+                    first = await it.__anext__()
+                except StopAsyncIteration:
+                    first = None
+                return it, first
+            return await retrying.retry_async(once, what="answer", sleep=self._sleep)
+
         buf = ""
         meta = None
         sources: list[dict] = []
@@ -66,14 +81,21 @@ class GeminiAnswerer:
         grounded = web_search
         try:
             try:
-                stream = await start(grounded)
+                it, first = await start(grounded)
             except Exception as e:
                 if not grounded:
                     raise
                 log.warning("grounded answer refused (%s); answering without web search", type(e).__name__)
                 grounded = False
-                stream = await start(False)
-            async for chunk in stream:
+                it, first = await start(False)
+
+            async def rest():
+                if first is not None:
+                    yield first
+                    async for c in it:
+                        yield c
+
+            async for chunk in rest():
                 if getattr(chunk, "usage_metadata", None) is not None:
                     meta = chunk.usage_metadata
                 if grounded:

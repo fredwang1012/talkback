@@ -5,6 +5,7 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
+from .. import retrying
 from ..config import settings
 from .auth import get_token
 
@@ -64,13 +65,21 @@ class VectorStore:
         self._sleep = sleep
 
     async def _send(self, method: str, url: str, json: Any = None) -> httpx.Response:
-        """Send with retries on 429/5xx; returns the final response without raising on HTTP status."""
+        """Send with retries (backoff + jitter) on 429/5xx and on network errors (httpx ReadError, ConnectError,
+        timeouts...); returns the final response without raising on HTTP status. The last network error is raised."""
         for attempt in range(MAX_RETRIES + 1):
             headers = {"Authorization": f"Bearer {self._token_fn()}",
                        "x-goog-user-project": settings.gcp_project}
-            resp = await self._http().request(method, url, json=json, headers=headers)
+            try:
+                resp = await self._http().request(method, url, json=json, headers=headers)
+            except httpx.TransportError as e:
+                if attempt >= MAX_RETRIES:
+                    raise
+                log.warning("vector search request failed (%s); retry %d/%d", type(e).__name__, attempt + 1, MAX_RETRIES)
+                await self._sleep(retrying.backoff(attempt))
+                continue
             if (resp.status_code == 429 or resp.status_code >= 500) and attempt < MAX_RETRIES:
-                await self._sleep(0.5 * 2**attempt)
+                await self._sleep(retrying.backoff(attempt))
                 continue
             return resp
         raise AssertionError("unreachable")

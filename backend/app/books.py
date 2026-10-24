@@ -1,18 +1,21 @@
 """Read books produced by the preprocess pipeline from data/books/<id>/book.json."""
 import logging
 import os
+import random
 import re
 import threading
 import time
 import uuid
 from pathlib import Path
 from concurrent.futures import Future, ThreadPoolExecutor, wait
+from typing import Callable, TypeVar
 
 from .config import settings
 from .schema import Book
 from .ttschunks import CHUNK_RULES_VERSION, needs_rechunk, rechunk_book
 
 log = logging.getLogger(__name__)
+T = TypeVar("T")
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
@@ -48,7 +51,7 @@ def load_book(book_id: str) -> Book | None:
     hit = _cache.get(key)
     if hit and hit[0] == stamp:
         return hit[1]
-    book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+    book = Book.model_validate_json(read_bytes(path))
     for c in book.characters:
         c.portrait = c.portrait or portrait_url(book_id, c.id)
     if book.narrator:
@@ -87,7 +90,7 @@ def _upgrade(key: str, path, stamp: tuple[int, int]) -> bool:
     try:
         if _stamp(path) != stamp:
             return False
-        book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+        book = Book.model_validate_json(read_bytes(path))
         if not needs_rechunk(book):
             return False
         before = book.chunk_rules
@@ -242,16 +245,37 @@ def write_lock(path) -> threading.RLock:
         return lock
 
 
-def _replace(tmp: Path, path: Path) -> None:
-    """os.replace; on Windows a reader that has book.json open makes it fail for a moment, so retry briefly."""
-    for attempt in range(20):
+REPLACE_WAIT_S = 3.0   # how long a Windows os.replace keeps trying while another handle holds the file
+
+
+def retry_permission(fn: Callable[[], T], total_s: float = REPLACE_WAIT_S) -> T:
+    """Run `fn`, retrying a Windows PermissionError with backoff (+ jitter) for up to about `total_s` seconds.
+
+    On Windows a file cannot be replaced or truncated while another handle (a reader, the indexer, an antivirus scan of
+    the fresh temp file) has it open; the handle is normally gone within milliseconds. Other platforms never retry."""
+    waited, attempt = 0.0, 0
+    while True:
         try:
-            os.replace(tmp, path)
-            return
+            return fn()
         except PermissionError:
-            if os.name != "nt" or attempt == 19:
+            if os.name != "nt" or waited >= total_s:
                 raise
-            time.sleep(0.01 * (attempt + 1))
+            delay = min(0.5, 0.01 * 2 ** attempt) * (0.75 + 0.5 * random.random())
+            time.sleep(delay)
+            waited += delay
+            attempt += 1
+
+
+def _replace(tmp: Path, path: Path) -> None:
+    """os.replace; on Windows a reader that has book.json open makes it fail for a moment, so retry (see retry_permission)."""
+    retry_permission(lambda: os.replace(tmp, path))
+
+
+def read_bytes(path: Path) -> bytes:
+    """Read a whole file (open, read, close): no handle outlives the call, so a writer's os.replace is never blocked
+    for longer than the read itself."""
+    with open(path, "rb") as f:
+        return f.read()
 
 
 def save_book(path, book: Book) -> None:
@@ -276,7 +300,7 @@ def update_book(path, change) -> Book:
     object), which is then saved. Returns the saved book."""
     path = Path(path)
     with write_lock(path):
-        book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+        book = Book.model_validate_json(read_bytes(path))
         change(book)
         save_book(path, book)
     return book

@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     upload_llm: Literal["claude", "gemini"] = "claude"   # developer-only; claude falls back to gemini when out of credit
     upload_confirm: bool = False      # testing mode: show the estimate and wait for POST /api/books/{id}/enrich
     upload_concurrency: int = 24      # parallel LLM calls during enrichment
-    enrich_parallel: int = 3          # uploads processed at the same time (each with upload_concurrency calls)
+    enrich_parallel: int = 1000       # uploads processed at the same time: no practical limit; lower it if Gemini rate limits bite
     upload_book_cap_usd: float = 4.0      # refuse a book whose estimate is above this
     upload_total_cap_usd: float = 15.0    # hard stop on cumulative upload enrichment spend (data/usage)
 
