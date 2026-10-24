@@ -166,3 +166,43 @@ def test_rrf_ordering_and_dedup():
     assert [o["data"]["chunk_id"] for o in out] == ["y", "x", "w", "z"]
     assert rrf([]) == []
     assert [o["data"]["chunk_id"] for o in rrf([[it("p"), it("q")], [it("q"), it("p")]])] == ["p", "q"]
+
+
+def test_text_search_4xx_is_warned_other_failures_are_not(caplog):
+    f = spoiler_filter("b", None)
+    with caplog.at_level("DEBUG", logger="talkback.gcp.vectorstore"):
+        assert run(make(lambda r: httpx.Response(400, text="bad")).text_search("hi", f, 3)) == []
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+    caplog.clear()
+    with caplog.at_level("DEBUG", logger="talkback.gcp.vectorstore"):
+        assert run(make(lambda r: httpx.Response(200, text="not json")).text_search("hi", f, 3)) == []
+    assert not any(r.levelname == "WARNING" for r in caplog.records)
+
+
+def test_owned_client_is_reused_within_a_loop_and_replaced_across_loops(monkeypatch):
+    import asyncio
+
+    import httpx
+
+    from app.gcp import vectorstore
+
+    made = []
+
+    class FakeClient:
+        def __init__(self, **kw):
+            made.append(self)
+
+        async def request(self, method, url, json=None, headers=None):
+            return httpx.Response(200, json={"results": []}, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(vectorstore.httpx, "AsyncClient", FakeClient)
+    vs = vectorstore.VectorStore("projects/p/locations/l/collections/c", token_fn=lambda: "t")
+
+    async def two_searches():
+        await vs.vector_search([0.0], {}, 1)
+        await vs.vector_search([0.0], {}, 1)
+
+    asyncio.run(two_searches())
+    assert len(made) == 1, "keep-alive: one client per loop"
+    asyncio.run(two_searches())
+    assert len(made) == 2, "a closed loop's client is never reused"

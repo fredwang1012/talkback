@@ -103,3 +103,24 @@ def test_usage_never_raises(monkeypatch, tmp_path):
     f.write_text("x")
     monkeypatch.setattr(settings, "data_dir", f)  # cache dir cannot be created under a file
     usage.record("embed", "m", chars=1)
+
+
+def test_usage_also_emits_a_log_line_even_if_the_file_fails(monkeypatch, tmp_path, caplog):
+    f = tmp_path / "file"
+    f.write_text("x")
+    monkeypatch.setattr(settings, "data_dir", f)
+    with caplog.at_level("INFO", logger="talkback.usage"):
+        usage.record("embed", "m", chars=7)
+    rec = [json.loads(r.getMessage()) for r in caplog.records if r.name == "talkback.usage"]
+    assert rec and rec[0]["kind"] == "embed" and rec[0]["chars"] == 7
+
+
+def test_record_never_touches_the_real_usage_log(monkeypatch):
+    from tests.conftest import REAL_DATA_DIR
+
+    monkeypatch.setattr(settings, "data_dir", REAL_DATA_DIR)  # worst case: a test that forgot to redirect
+    real = REAL_DATA_DIR / "cache" / "usage.jsonl"
+    before = (real.stat().st_size, real.stat().st_mtime_ns) if real.exists() else None
+    usage.record("boson_avatar", "m", seconds=1)
+    after = (real.stat().st_size, real.stat().st_mtime_ns) if real.exists() else None
+    assert after == before

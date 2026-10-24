@@ -22,10 +22,10 @@ Pending: needs BOSON_API_KEY (probes a–f in brief §9 M0).
 
 ### Probe: TTS (a, b) (2026-10-17 18:27)
 - plain marcus: 10892 bytes, content-type audio/mpeg
-- tagged+timestamps: keys=['audio', 'input', 'response_format', 'timestamps']; input echoed='<|emotion:contemplation|><|prosody:pitch_low|>To Sherlock Holmes she is always the woman.'
-- timestamp words: ['emotioncontemplationprosodypitchlowTo', 'Sherlock', 'Holmes', 'she', 'is', 'always', 'the', 'woman']
+- tagged+timestamps: keys=['audio', 'input', 'response_format', 'timestamps']; input echoed='<|emotion:contemplation|><|prosody:pitch_low|>To Harry Quill the lantern road is always the longest.'
+- timestamp words: ['emotioncontemplationprosodypitchlowTo', 'Harry', 'Quill', 'the', 'lantern', 'road', 'is', 'always', 'the', 'longest']
 - tag tokens appear in timestamps: True
-- number text timestamps: ['It', 'was', 'the', 'twentieth', 'of', 'March', '1888', 'at', 'Mr', "Holmes's", 'rooms']
+- number text timestamps: ['It', 'was', 'the', 'twentieth', 'of', 'March', '1888', 'at', 'Mr', "Quill's", 'rooms']
 - timestamps for one word: null
 - timestamps for french: null
 - timestamps for mandarin: 9 entries
@@ -50,10 +50,10 @@ Pending: needs BOSON_API_KEY (probes a–f in brief §9 M0).
 
 ### Probe: TTS (a, b) (2026-10-17 18:29)
 - plain marcus: 11948 bytes, content-type audio/mpeg
-- tagged+timestamps: keys=['audio', 'input', 'response_format', 'timestamps']; input echoed='<|emotion:contemplation|><|prosody:pitch_low|>To Sherlock Holmes she is always the woman.'
-- timestamp words: ['emotioncontemplationprosodypitchlowTo', 'Sherlock', 'Holmes', 'she', 'is', 'always', 'the', 'woman']
+- tagged+timestamps: keys=['audio', 'input', 'response_format', 'timestamps']; input echoed='<|emotion:contemplation|><|prosody:pitch_low|>To Harry Quill the lantern road is always the longest.'
+- timestamp words: ['emotioncontemplationprosodypitchlowTo', 'Harry', 'Quill', 'the', 'lantern', 'road', 'is', 'always', 'the', 'longest']
 - tag tokens appear in timestamps: True
-- number text timestamps: ['It', 'was', 'the', 'twentieth', 'of', 'March', '1888', 'at', 'Mr', "Holmes's", 'rooms']
+- number text timestamps: ['It', 'was', 'the', 'twentieth', 'of', 'March', '1888', 'at', 'Mr', "Quill's", 'rooms']
 - timestamps for one word: null
 - timestamps for french: null
 - timestamps for mandarin: 9 entries
@@ -76,7 +76,7 @@ Pending: needs BOSON_API_KEY (probes a–f in brief §9 M0).
 ### Probe: Realtime manual turns (d, e) (2026-10-17 18:30)
 - question audio: 4.3 s of PCM16 @24k
 - first session.update acked with: session.created
-- commit -> transcription.completed: 657 ms; transcript='Holmes, what do you make of this visitor who came to your door tonight?'
+- commit -> transcription.completed: 657 ms; transcript='Harry, what do you make of this visitor who came to your door tonight?'
 - response.create -> first audio delta: 718 ms
 - answer transcript (should be pirate-y): 'Arrr, hello there, matey!'
 - commit during active response -> error: {"type": "voice_output_task_ongoing", "code": null, "message": "Voice output task is ongoing. Skipping.", "param": null, "event_id": "d84cb31f-e12a-40f7-903b-445d02488a0d"}

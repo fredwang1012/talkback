@@ -7,10 +7,43 @@ type Props = {
   word?: { charStart: number; charEnd: number } | null;
 };
 
-/** Renders the book with each TTS chunk as a clickable sentence span; the active one is lit. */
+/** Index of the section containing paragraph `para` (sections are ordered by start_para). */
+export function sectionIndexAt(book: Book, para: number): number {
+  let at = 0;
+  book.sections.forEach((s, i) => { if (s.start_para <= para) at = i; });
+  return at;
+}
+
+/** Paragraph range [start, end) of section `i`. */
+export function sectionRange(book: Book, i: number): [number, number] {
+  const start = book.sections[i]?.start_para ?? 0;
+  const end = book.sections[i + 1]?.start_para ?? book.paragraphs.length;
+  return [start, end];
+}
+
+/**
+ * Renders the chapter being read, with each TTS chunk as a clickable sentence span; the active one is lit.
+ * Only one chapter is in the DOM: a whole novel is ~10,000 spans, too many to re-render on every spoken word.
+ */
 function BookText({ book, chunks, index, onPick, word }: Props) {
   const indexById = new Map(chunks.map((c, i) => [c.id, i]));
   const sectionAt = new Map(book.sections.map((s) => [s.start_para, s]));
+  const current = sectionIndexAt(book, chunks[index]?.para ?? 0);
+  const [from, to] = sectionRange(book, current);
+  const goTo = (i: number) => {
+    const [start] = sectionRange(book, i);
+    const first = chunks.findIndex((c) => c.para >= start);
+    if (first >= 0) onPick(first);
+  };
+  const chapterNav = book.sections.length > 1 && (
+    <nav className="chapter-nav" aria-label="Chapters">
+      <button disabled={current === 0} onClick={() => goTo(current - 1)}>Previous chapter</button>
+      <select aria-label="Go to chapter" value={current} onChange={(e) => goTo(Number(e.target.value))}>
+        {book.sections.map((s, i) => <option key={s.id} value={i}>{s.title || `Part ${i + 1}`}</option>)}
+      </select>
+      <button disabled={current >= book.sections.length - 1} onClick={() => goTo(current + 1)}>Next chapter</button>
+    </nav>
+  );
 
   return (
     <article>
@@ -18,7 +51,8 @@ function BookText({ book, chunks, index, onPick, word }: Props) {
         <h1>{book.title}</h1>
         <p>by {book.author}</p>
       </header>
-      {book.paragraphs.map((p) => {
+      {chapterNav}
+      {book.paragraphs.slice(from, to).map((p) => {
         const parts: React.ReactNode[] = [];
         let cursor = 0;
         for (const c of p.tts_chunks) {
@@ -48,6 +82,7 @@ function BookText({ book, chunks, index, onPick, word }: Props) {
           </Fragment>
         );
       })}
+      {chapterNav}
     </article>
   );
 }

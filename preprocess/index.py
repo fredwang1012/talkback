@@ -1,6 +1,6 @@
 """index: retrieval chunks (+ optional context blurbs) and multilingual-e5-small embeddings -> data/books/<id>/index/.
 
-Usage: uv run --project backend python preprocess/index.py --book scandal-in-bohemia [--no-embed] [--blurbs]
+Usage: uv run --project backend python preprocess/index.py --book hp1-sorcerers-stone [--no-embed] [--blurbs]
 - Default: chunks + embeddings, no LLM calls.
 - --blurbs: ask Haiku 5.5 for a one-sentence context_blurb per chunk (uses the Anthropic key; off by default).
 BM25 is rebuilt from chunks.json at load time, so only chunks and embeddings are stored.

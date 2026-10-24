@@ -39,18 +39,18 @@ def test_portraits_and_cover_are_picked_up_when_the_files_exist(client, tmp_path
     d = tmp_path / "books" / "demo"
     book = Book.model_validate_json((d / "book.json").read_text(encoding="utf-8"))
     from app.schema import Character, Narrator
-    book.characters = [Character(id="holmes", name="Holmes", first_para=0, voice="oliver", persona="x"),
-                       Character(id="watson", name="Watson", first_para=0, voice="marcus", persona="y")]
+    book.characters = [Character(id="harry", name="Harry", first_para=0, voice="oliver", persona="x"),
+                       Character(id="pell", name="Pell", first_para=0, voice="marcus", persona="y")]
     book.narrator = Narrator(voice="marcus")
     (d / "book.json").write_text(book.model_dump_json(), encoding="utf-8")
     pdir = tmp_path / "portraits" / "demo"
     pdir.mkdir(parents=True)
-    (pdir / "holmes.png").write_bytes(b"png")
+    (pdir / "harry.png").write_bytes(b"png")
     (pdir / "narrator.webp").write_bytes(b"webp")
     (pdir / "cover.jpg").write_bytes(b"jpg")
     got = client.get("/api/books/demo").json()
     by_id = {c["id"]: c["portrait"] for c in got["characters"]}
-    assert by_id == {"holmes": "/portraits/demo/holmes.png", "watson": None}
+    assert by_id == {"harry": "/portraits/demo/harry.png", "pell": None}
     assert got["narrator"]["portrait"] == "/portraits/demo/narrator.webp"
     assert client.get("/api/books").json()[0]["cover"] == "/portraits/demo/cover.jpg"
 
@@ -67,3 +67,20 @@ def test_avatar_endpoints_list_and_serve_only_existing_clips(client, tmp_path):
     for bad in ("..", "a%2F..%2Fb", "x" * 200):
         assert client.get(f"/api/avatar/{bad}", params={"book": "demo"}).status_code == 404
     assert client.get("/api/avatar/p3c0", params={"book": "../demo"}).status_code == 404
+
+
+def test_get_book_is_gzipped_when_accepted_and_follows_file_changes(client, tmp_path):
+    r = client.get("/api/books/demo", headers={"Accept-Encoding": "gzip"})
+    assert r.headers["content-encoding"] == "gzip" and r.json()["title"] == "Demo"  # httpx decodes it
+    raw = client.get("/api/books/demo", headers={"Accept-Encoding": "identity"})
+    assert "content-encoding" not in raw.headers and raw.json()["title"] == "Demo"
+    book = Book.model_validate_json((tmp_path / "books/demo/book.json").read_text(encoding="utf-8"))
+    book.title = "Changed title"
+    (tmp_path / "books/demo/book.json").write_text(book.model_dump_json(), encoding="utf-8")
+    assert client.get("/api/books/demo").json()["title"] == "Changed title"
+
+
+def test_get_book_needs_the_access_code_when_one_is_set(client, monkeypatch):
+    monkeypatch.setattr(settings, "access_token", "s3cret")
+    assert client.get("/api/books/demo").status_code == 401
+    assert client.get("/api/books/demo", headers={"X-Talkback-Token": "s3cret"}).status_code == 200

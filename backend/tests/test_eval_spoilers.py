@@ -18,7 +18,7 @@ def make_book(n=60) -> Book:
     paras = [Paragraph(idx=i, section_id="s1", text=f"Paragraph {i} mentions marker{i} and the clue{i} of the case.") for i in range(n)]
     return Book(id="b", title="T", author="A", kind="novel", license="x",
                 sections=[Section(id="s1", title="I.", start_para=0)], paragraphs=paras,
-                characters=[Character(id="holmes", name="Holmes", aliases=["Holmes"], first_para=20, voice="oliver", persona="Terse.")],
+                characters=[Character(id="harry", name="Harry", aliases=["Harry"], first_para=20, voice="oliver", persona="Terse.")],
                 narrator=Narrator(voice="marcus"))
 
 
@@ -60,7 +60,7 @@ def test_real_retrieval_never_trips_the_structural_check_at_any_position():
     book, fn = make_book(), None
     fn = retrieve_for(book)
     for pos in range(0, 60, 7):
-        for q in ("How does it end?", "what is clue59", "who is Holmes"):
+        for q in ("How does it end?", "what is clue59", "who is Harry"):
             assert not structural_leak(fn(q, pos, "narrator")["passages"], pos), (pos, q)
 
 
@@ -79,7 +79,7 @@ def test_full_flow_with_fake_models_counts_leaks_and_accuracy():
     cases = run(generate_cases(book, [10, 30], fake))
     assert len(cases) == 4
     pick_speakers(book, cases)
-    assert all(c.speaker == "narrator" for c in cases if c.reader_para < 20)  # Holmes not met yet
+    assert all(c.speaker == "narrator" for c in cases if c.reader_para < 20)  # Harry not met yet
     retrieve = retrieve_for(book)
     done = [run(run_case(book, c, retrieve, fake)) for c in cases]
     stats = summarize(done)
@@ -96,3 +96,21 @@ def test_report_lists_a_flagged_leak():
     assert stats["llm_leaks"] == 1
     report = render_report(book, [leaky], stats)
     assert "Leaks to review" in report and "Who did it?" in report and "named X" in report
+
+
+def test_earlier_book_passages_are_not_structural_leaks():
+    from eval_spoilers import structural_leak
+    assert not structural_leak([{"para_start": 500, "para_end": 900, "text": "x", "book": "Book 1"}], 10)
+    assert structural_leak([{"para_start": 5, "para_end": 11, "text": "x"}], 10)
+
+
+def test_question_context_is_bounded_and_includes_the_ending():
+    from eval_spoilers import ENDING_CHARS, READ_WINDOW, UNREAD_WINDOW, question_context
+    from app.schema import Book, Paragraph, Section
+    paras = [Paragraph(idx=i, section_id="s1", text=f"p{i} " + "x" * 995) for i in range(200)]
+    paras[-1].text = "THE ENDING " + "y" * 900
+    book = Book(id="b", title="T", author="A", kind="novel", license="x", sections=[Section(id="s1", title="", start_para=0)],
+                paragraphs=paras)
+    read, unread = question_context(book, 30)
+    assert len(read) <= READ_WINDOW and "p30 " in read and "p31 " not in read
+    assert len(unread) <= UNREAD_WINDOW + ENDING_CHARS + 20 and "p31 " in unread and "THE ENDING" in unread

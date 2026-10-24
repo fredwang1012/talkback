@@ -344,3 +344,9 @@ def test_merge_lines_dehyphenates_and_splits():
     lines = [L("an exam-", 72, 300, 100, 110, 72, 300, 0, False), L("ple. Done.", 72, 300, 111, 121, 72, 300, 0, False),
              L("New one.", 92, 300, 122, 132, 72, 300, 0, False)]
     assert ingest_upload.merge_lines(lines) == ["an example. Done.", "New one."]
+
+
+def test_absurdly_long_content_length_is_400(client, monkeypatch):
+    monkeypatch.setattr(main, "upload_bucket", BoomBucket())
+    headers = [("content-type", "multipart/form-data; boundary=b"), ("content-length", "9" * 13)]
+    assert asyncio.run(drive(headers, [b"--b--"]))[0] == 400

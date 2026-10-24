@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchRealtimeKey, fetchRetrieve, speak, streamAnswer } from "../api";
+import { fetchRealtimeKey, fetchRetrieve, lipSync, speak, streamAnswer, type Health, type VoiceFace } from "../api";
 import { MicCapture } from "../audio/capture";
 import { RingPlayer } from "../audio/playback";
 import { spend } from "../spend";
@@ -9,8 +9,8 @@ import { createSentenceSpeaker } from "./sentencePlayer";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
 import { TalkController, type Latency, type ReaderControl, type TalkState } from "./TalkController";
 
-/** true: Gemini (via /api/answer) writes the answer and Boson TTS speaks it; false: Realtime answers itself. */
-export const ANSWER_VIA_GEMINI = true;
+/** Gemini (via /api/answer) writes the answer and Boson TTS speaks it only when the server says so; else Realtime answers itself. */
+export const answersViaGemini = (health: Health | null): boolean => health?.answer_backend === "gemini";
 
 export type TalkUi = {
   state: TalkState;
@@ -21,6 +21,7 @@ export type TalkUi = {
   speaking: boolean;
   question: string;
   language: Detected | null;
+  clip: string | null; // lip-synced video of the sentence being spoken, when lip-sync is on
   logs: LogEntry[];
   pttDown: () => void;
   pttUp: () => void;
@@ -35,10 +36,13 @@ type Args = {
   speakerId: string;
   voiceFor: (speakerId: string) => string;
   autoResume: boolean;
+  health: Health | null;
+  faces?: Record<string, VoiceFace>;
+  lipSync?: boolean; // render each answer sentence as a lip-synced clip of the voice's face (~10 s per sentence)
 };
 
 /** Owns the Talk session for the reader screen. The real mic, speaker and socket are created once per book. */
-export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume }: Args): TalkUi {
+export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, faces = {}, lipSync: wantLipSync = false }: Args): TalkUi {
   const [state, setState] = useState<TalkState>("reading");
   const [caption, setCaption] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -47,11 +51,13 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   const [speaking, setSpeaking] = useState(false);
   const [question, setQuestion] = useState("");
   const [language, setLanguage] = useState<Detected | null>(null);
+  const [clip, setClip] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const logSeq = useRef(0);
   const controller = useRef<TalkController | null>(null);
-  const latest = useRef({ reader, voiceFor, speakerId });
-  latest.current = { reader, voiceFor, speakerId };
+  const viaGemini = answersViaGemini(health);
+  const latest = useRef({ reader, voiceFor, speakerId, faces, wantLipSync });
+  latest.current = { reader, voiceFor, speakerId, faces, wantLipSync };
 
   useEffect(() => {
     if (!enabled) return;
@@ -79,13 +85,21 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         resumeAt: (i) => latest.current.reader.resumeAt(i),
       },
       retrieve: (query, para, speaker) => fetchRetrieve(bookId, query, para, speaker),
-      ...(ANSWER_VIA_GEMINI ? {
+      ...(viaGemini ? {
         // the voice is fixed when the answer starts, so a mid-answer speaker switch cannot change it
         answer: (query, para, speaker, onSentence, signal) => {
           answerVoice = latest.current.voiceFor(speaker);
           return streamAnswer(bookId, query, para, speaker, onSentence, signal);
         },
-        speaker: createSentenceSpeaker((text) => speak(text, answerVoice)),
+        speaker: createSentenceSpeaker(async (text) => {
+          const voice = answerVoice;
+          const r = await speak(text, voice);
+          if (latest.current.wantLipSync && latest.current.faces[voice]) {
+            try { return { ...r, video_url: await lipSync(r.audio_url, voice) }; }
+            catch { /* render failed: the speaking loop stands in */ }
+          }
+          return r;
+        }, undefined, setClip),
       } : {}),
       voiceFor: (id) => latest.current.voiceFor(id),
       onState: setState,
@@ -97,13 +111,13 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     });
     controller.current = talk;
     return () => { talk.dispose(); client.close(); controller.current = null; setState("reading"); setSpeaking(false); };
-  }, [bookId, enabled]);
+  }, [bookId, enabled, viaGemini]);
 
   useEffect(() => { controller.current?.setAutoResume(autoResume); }, [autoResume, enabled]);
   useEffect(() => { void controller.current?.setSpeaker(speakerId); }, [speakerId, enabled]);
 
   return {
-    state, caption, toast, level, latency, speaking, question, language, logs,
+    state, caption, toast, level, latency, speaking, question, language, clip, logs,
     pttDown: useCallback(() => { void controller.current?.pttDown(); }, []),
     pttUp: useCallback(() => { void controller.current?.pttUp(); }, []),
     setSpeaker: useCallback((id: string) => { void controller.current?.setSpeaker(id); }, []),

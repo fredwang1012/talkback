@@ -146,10 +146,10 @@ def pdf_to_text(data: bytes) -> str:
                         x0, y0, x1, y1 = ln["bbox"]
                         lines.append((t, x0, y0, x1, y1))
                         total += len(t) + 1
+                        if total > MAX_CHARS:  # checked per line so extraction stops as soon as the cap is crossed
+                            raise UploadError("The document has too much text (5 million characters maximum).")
                 if lines:
                     blocks.append(lines)
-            if total > MAX_CHARS:
-                raise UploadError("The document has too much text (5 million characters maximum).")
             pages.append(blocks)
 
     def key(block):

@@ -1,6 +1,8 @@
 /**
  * Speaks answer sentences one clip at a time. `prefetch` starts synthesis early (the controller asks for the
  * next sentence while the current one plays); `play` resolves when the clip ends; `stop` halts it (barge-in).
+ * When synthesis also returns a lip-synced `video_url`, `onClip` gets it as the audio starts and null when it ends,
+ * so the face can play that video (muted) in step with the sound.
  */
 
 export interface SentenceSpeaker {
@@ -16,11 +18,14 @@ export interface AudioLike {
   pause(): void;
 }
 
+type Clip = { audio_url: string; video_url?: string | null };
+
 export function createSentenceSpeaker(
-  speak: (text: string) => Promise<{ audio_url: string }>,
+  speak: (text: string) => Promise<Clip>,
   createAudio: (url: string) => AudioLike = (url) => new Audio(url) as unknown as AudioLike,
+  onClip: (videoUrl: string | null) => void = () => {},
 ): SentenceSpeaker {
-  const pending = new Map<string, Promise<{ audio_url: string }>>();
+  const pending = new Map<string, Promise<Clip>>();
   let current: { audio: AudioLike; settle: () => void } | null = null;
   let epoch = 0; // bumped by stop(), so a clip that was still synthesising never starts
 
@@ -39,16 +44,18 @@ export function createSentenceSpeaker(
     async play(text) {
       const my = epoch;
       const p = synth(text);
-      let res: { audio_url: string };
+      let res: Clip;
       try { res = await p; } finally { pending.delete(text); }
       if (my !== epoch) return;
       await new Promise<void>((resolve, reject) => {
         const audio = createAudio(res.audio_url);
-        const settle = () => { if (current?.audio === audio) current = null; resolve(); };
+        const settle = () => { if (current?.audio === audio) current = null; onClip(null); resolve(); };
+        const fail = (e: Error) => { if (current?.audio === audio) current = null; onClip(null); reject(e); };
         current = { audio, settle };
         audio.onended = settle;
-        audio.onerror = () => { if (current?.audio === audio) current = null; reject(new Error("Could not play the answer audio.")); };
-        Promise.resolve(audio.play()).catch((e) => { if (current?.audio === audio) current = null; reject(e instanceof Error ? e : new Error(String(e))); });
+        audio.onerror = () => fail(new Error("Could not play the answer audio."));
+        onClip(res.video_url ?? null);
+        Promise.resolve(audio.play()).catch((e) => fail(e instanceof Error ? e : new Error(String(e))));
       });
     },
     stop() {

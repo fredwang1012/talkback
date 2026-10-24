@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { cloneVoice, fetchVoices, type Book } from "../api";
+import { cloneVoice, fetchVoiceFaces, fetchVoices, type Book, type VoiceFace } from "../api";
 
 export const PRESETS = ["chloe", "eleanor", "jake", "marcus", "nora", "oliver"];
 const SCRIPT =
@@ -13,15 +13,17 @@ type Props = {
   onPreview: (speaker: string, voice: string) => void;
   audioAvailable: boolean;
   onClose: () => void;
+  onFaces?: (faces: Record<string, VoiceFace>) => void;
 };
 
 /** Cast panel (a voice per speaker) and Voice lab (clone your own voice, with consent). */
-export default function VoiceLab({ book, overrides, onOverride, onPreview, audioAvailable, onClose }: Props) {
+export default function VoiceLab({ book, overrides, onOverride, onPreview, audioAvailable, onClose, onFaces }: Props) {
   const [cloned, setCloned] = useState<Record<string, string>>({});
   const [transcript, setTranscript] = useState(SCRIPT);
   const [name, setName] = useState("");
   const [consent, setConsent] = useState(false);
   const [clip, setClip] = useState<{ blob: Blob; filename: string } | null>(null);
+  const [face, setFace] = useState<File | null>(null);
   const [recording, setRecording] = useState(false);
   const [status, setStatus] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -58,8 +60,9 @@ export default function VoiceLab({ book, overrides, onOverride, onPreview, audio
     setBusy(true);
     setStatus(null);
     try {
-      const out = await cloneVoice(clip.blob, clip.filename, transcript, name.trim(), consent);
+      const out = await cloneVoice(clip.blob, clip.filename, transcript, name.trim(), consent, face);
       setCloned((c) => ({ ...c, [out.name]: out.voice }));
+      if (out.face) fetchVoiceFaces().then((f) => onFaces?.(f)).catch(() => {});
       setStatus({ kind: "ok", text: `Created "${out.name}". Pick it for any speaker above.` });
     } catch (e) {
       setStatus({ kind: "error", text: e instanceof Error ? e.message : String(e) });
@@ -68,7 +71,7 @@ export default function VoiceLab({ book, overrides, onOverride, onPreview, audio
     }
   }
 
-  const options = [...PRESETS.map((v) => ({ value: v, label: v })), ...Object.entries(cloned).map(([n, v]) => ({ value: v, label: `${n} (your voice)` }))];
+  const options = [...PRESETS.map((v) => ({ value: v, label: v })), ...Object.entries(cloned).map(([n, v]) => ({ value: v, label: `${n} (cloned)` }))];
   const canSubmit = !!clip && consent && name.trim().length > 0 && transcript.trim().length > 0 && !busy && audioAvailable;
 
   return (
@@ -111,11 +114,16 @@ export default function VoiceLab({ book, overrides, onOverride, onPreview, audio
           </label>
         </div>
         {clip && <p className="empty-note">Ready: {clip.filename} ({Math.round(clip.blob.size / 1024)} KB)</p>}
+        <label className="file">
+          Add a face (optional): a portrait shown whenever this voice speaks
+          <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setFace(e.target.files?.[0] ?? null)} />
+        </label>
+        {face && <p className="empty-note">Face: {face.name}</p>}
         <label htmlFor="lab-name">Name this voice</label>
         <input id="lab-name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} />
         <label className="consent">
           <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
-          This is my voice, or I have permission to clone it.
+          This is my voice (and face), or I have permission to clone them.
         </label>
         <button className="primary" disabled={!canSubmit} onClick={submit}>{busy ? "Creating…" : "Create voice"}</button>
         {status && <p role={status.kind === "error" ? "alert" : "status"} className={`lab-${status.kind}`}>{status.text}</p>}

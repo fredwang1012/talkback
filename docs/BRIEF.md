@@ -36,8 +36,8 @@ Differentiators (these are what we pitch, so they must work):
 5. Optional: **custom voices** (voice cloning from a short clip with an explicit consent checkbox) and **avatars** (talking-head video in read mode).
 
 Demo content (both free to use):
-- Novel: *The Adventures of Sherlock Holmes*, story 1 "A Scandal in Bohemia" (Project Gutenberg #1661, public domain, plain text at `https://www.gutenberg.org/cache/epub/1661/pg1661.txt`). Watson is the first-person narrator, which makes the narrator a character too.
-- Textbook: OpenStax *Biology 2e*, Chapter 8 "Photosynthesis" (CC BY 4.0, attribution required in UI). Try fetching from openstax.org; if the page is JS-rendered or blocked, stop and ask me to paste the text into `data/raw/biology2e_ch8.txt`.
+- Content: the Harry Potter series only (7 books, ids `hp1-sorcerers-stone` ... `hp7-deathly-hallows`), ingested from the owner's own PDF at `data/uploads/harry-potter-collection.pdf` (gitignored). The books are copyrighted: never commit them.
+- Earlier sample books were removed; the app contains only the Harry Potter series.
 
 The ingestion pipeline must be generic (any `.txt` I drop into `data/raw/` with a small YAML metadata file), but the demo uses the two above.
 
@@ -144,18 +144,18 @@ talkback/
 
 ```jsonc
 {
-  "id": "scandal-in-bohemia",
-  "title": "A Scandal in Bohemia",
-  "author": "Arthur Conan Doyle",
+  "id": "hp1-sorcerers-stone",
+  "title": "Harry Potter and the Sorcerer's Stone",
+  "author": "J. K. Rowling",
   "kind": "novel",                 // "novel" | "textbook"
-  "license": "Public domain (Project Gutenberg #1661)",
+  "license": "Owner's own copy (copyrighted, never committed)",
   "attribution": null,             // required string for CC BY content
   "sections": [{ "id": "s1", "title": "I.", "start_para": 0 }],
   "paragraphs": [
     {
       "idx": 0,
       "section_id": "s1",
-      "text": "To Sherlock Holmes she is always the woman. ...",   // verbatim source text
+      "text": "An example opening sentence. ...",   // verbatim source text
       "segments": [                  // verbatim partition of `text` by speaker
         { "speaker": "narrator", "text": "...", "emotion": "contemplation" }
       ],
@@ -164,7 +164,7 @@ talkback/
           "id": "p0c0",
           "speaker": "narrator",
           "voice": "marcus",
-          "tts_text": "<|emotion:contemplation|>To Sherlock Holmes she is always the woman.",
+          "tts_text": "<|emotion:contemplation|>An example opening sentence.",
           "char_start": 0, "char_end": 43   // offsets into paragraph.text for highlighting
         }
       ]
@@ -172,14 +172,14 @@ talkback/
   ],
   "characters": [
     {
-      "id": "holmes", "name": "Sherlock Holmes", "aliases": ["Holmes"],
+      "id": "hagrid", "name": "Rubeus Hagrid", "aliases": ["Hagrid"],
       "first_para": 3,
       "voice": "oliver", "voice_tags": "<|prosody:pitch_low|>",
       "persona": "≤ 3 sentences: personality, speaking style, verbal tics",
-      "portrait": "portraits/holmes.png"
+      "portrait": "portraits/hagrid.png"
     }
   ],
-  "narrator": { "id": "narrator", "voice": "marcus", "is_character": "watson" },
+  "narrator": { "id": "narrator", "voice": "marcus", "is_character": null },
   "summaries": [ { "upto_para": 19, "text": "Story so far, written using only paragraphs 0..19" } ]
 }
 ```
@@ -198,9 +198,9 @@ Haiku 5.5 specifics (from its migration guide): do **not** send `temperature`, `
 
 Scripts (each idempotent, each with `--book <id>`):
 
-1. `ingest.py`: read `data/raw/<name>.txt` + `<name>.meta.yaml` (title, author, kind, license, attribution, start/end markers). Strip Gutenberg header/footer, normalize whitespace and curly quotes, split sections and paragraphs. For the Sherlock demo, extract only "A Scandal in Bohemia".
+1. `ingest.py`: read `data/raw/<name>.txt` + `<name>.meta.yaml` (title, author, kind, license, attribution, start/end markers). Strip headers/footers, normalize whitespace and curly quotes, split sections and paragraphs. The Harry Potter books are produced from the owner's PDF.
 2. `cast.py` (Sonnet): read the whole text; output characters with aliases, `first_para`, a ≤ 3-sentence persona, and a voice assignment from the available presets (narrator gets its own voice; differentiate same-gender characters with `voice_tags` like `pitch_low`/`pitch_high`). Write to `book.json`. I will review and edit the casting by hand.
-3. `segment.py` (Haiku): for each paragraph, given the cast list and the previous 3 paragraphs as context, output `segments` (speaker id or `narrator`, verbatim text, one emotion from the allowed list or null). **Validate:** concatenating segment texts must equal the paragraph text after whitespace normalization. If not, retry once, then fall back to a single narrator segment. Speech tags ("said Holmes") belong to the narrator.
+3. `segment.py` (Haiku): for each paragraph, given the cast list and the previous 3 paragraphs as context, output `segments` (speaker id or `narrator`, verbatim text, one emotion from the allowed list or null). **Validate:** concatenating segment texts must equal the paragraph text after whitespace normalization. If not, retry once, then fall back to a single narrator segment. Speech tags ("said Hagrid") belong to the narrator.
 4. `chunk_tts.py` (no LLM): split each segment into TTS chunks ≤ 280 chars on sentence boundaries (handle "Mr.", "Mrs.", "Dr.", "St.", initials, ellipses, quotes); if one sentence exceeds 280, split at the last comma/semicolon. Build `tts_text` = voice tags + emotion tag + lightly normalized text. Record `char_start/char_end`. Unit tests: every chunk ≤ 280 chars of spoken text, verbatim coverage of the paragraph, no empty chunks.
 5. `summaries.py` (Sonnet): rolling "story so far" summaries every ~10 paragraphs and at every section end, each written **only from text up to `upto_para`** (pass only that prefix, never the whole book). ≤ 120 words each.
 6. `index.py`: build retrieval chunks; generate a one-sentence `context_blurb` per chunk with Haiku (situating it in the story, using only preceding text); embed with `intfloat/multilingual-e5-small` via sentence-transformers (prefix `passage: ` for chunks and `query: ` for queries; normalize vectors). Also build a BM25 index (`rank_bm25`). Multilingual embeddings are what make Mandarin or Spanish questions retrieve English passages.
@@ -315,10 +315,10 @@ Always reply in the language the listener used.
 Keep these templates in one file with unit tests that render them for fixtures. Total instructions ≤ ~8,000 characters.
 
 ### 7.5 UI
-- **Library**: two cards (Sherlock, Biology). Attribution footer for OpenStax ("Biology 2e by OpenStax, CC BY 4.0", link).
+- **Library**: one card per Harry Potter book (7 books).
 - **Reader view**: left = text (sections, paragraphs, active word highlight, dimmed future text optional); right = **Stage** panel: current speaker portrait (or avatar video when available), speaker name, mode toggle **Read / Talk**, character picker (only characters already introduced; a lock icon with "not met yet" for the rest is a nice touch), big mic button, captions.
 - **Bottom player bar**: play/pause, prev/next sentence, speed, full-cast toggle, auto-resume toggle, position "¶ 42 / 160".
-- **Spoiler badge** on the Stage: "Holmes knows up to ¶ 42".
+- **Spoiler badge** on the Stage: "Hagrid knows up to ¶ 42".
 - **Cast panel** (drawer): per speaker voice dropdown (presets + cloned voices), "preview" button (short TTS sample), portrait.
 - **Voice lab** (drawer, stretch): record or upload 5–30 s, transcript field (pre-filled with a script the user reads aloud), consent checkbox ("This is my voice, or I have permission to clone it"), Create voice.
 - **Debug drawer** from the tutorial, toggled with `` ` ``.
@@ -332,7 +332,7 @@ Keep these templates in one file with unit tests that render them for fixtures. 
 - **Latency budget for the core loop** (PTT release → first answer audio): target < 2.0 s. Log each stage (commit→transcript, retrieve, response.create→first delta) to the Debug drawer and `NOTES.md`.
 - **Resilience**: every network call has a timeout; read mode keeps playing if Talk fails; Talk failures show a toast and resume reading.
 - **Cost guard**: show a running estimate of Boson spend this session in the Debug drawer (TTS chars × rate, Realtime minutes × rate). Remind me in `README.md` to set a monthly cap in the Boson workspace.
-- **Demo mode**: `?demo=1` loads Sherlock at a preset position (just after Holmes reads the King's letter), forces pre-rendered audio only, and pins the character to Holmes.
+- **Demo mode**: `?demo=1` loads Harry Potter book 1 at a preset position, forces pre-rendered audio only, and pins the character to Hagrid.
 - **Tests**: backend pytest, frontend vitest (ReaderEngine, TalkController with a fake RealtimeClient, chunker). CI not needed.
 - **Docs**: `README.md` with setup (uv + npm), env vars, preprocessing commands in order, run commands, and a 90-second demo script.
 
@@ -345,7 +345,7 @@ Keep these templates in one file with unit tests that render them for fixtures. 
 - `scripts/probe_*.py` that verify against the live API: (a) TTS with a preset voice, with tags, with `timestamps: true` (print the timestamp words, and check whether tag tokens appear in them); (b) list which preset names work (`chloe, eleanor, jake, marcus, nora, oliver, berlinda, default`); (c) mint a client secret; (d) Realtime manual-turn flow from Python: send ~3 s of synthesized speech (generate it with TTS, convert to 24 kHz PCM), commit, confirm `input_audio_transcription.completed` arrives and measure its latency, then `response.create` with custom `response.instructions` and confirm the answer follows them; (e) mid-session `session.update` changing `audio.output.voice`: accepted? audible? (f) create-voice body with `description` works and which response field holds the id.
 - Acceptance: all probes pass or their failure modes are documented with a chosen workaround.
 
-**M1 — Preprocess Sherlock** (`ingest`, `cast`, `segment`, `chunk_tts`, `summaries`, `index`). Acceptance: `book.json` validates against a pydantic schema; segment verbatim check passes for ≥ 95% of paragraphs (rest fall back to narrator); I review the cast file.
+**M1 — Preprocess the Harry Potter books** (`ingest`, `cast`, `segment`, `chunk_tts`, `summaries`, `index`). Acceptance: `book.json` validates against a pydantic schema; segment verbatim check passes for ≥ 95% of paragraphs (rest fall back to narrator); I review the cast file.
 
 **M2 — Backend core** (`/api/books`, `/api/tts` + cache + timestamp alignment, `/api/realtime/token`, `/api/retrieve` + spoiler invariant tests). Acceptance: pytest green; curl a chunk twice and the second call is a cache hit.
 
@@ -355,7 +355,7 @@ Keep these templates in one file with unit tests that render them for fixtures. 
 
 **M5 — Spoiler safety** (character gating in UI, `eval_spoilers.py`). Acceptance: 0 leaks on the eval set; report saved to `NOTES.md`.
 
-**M6 — Textbook mode** (ingest OpenStax ch. 8, narrator/tutor persona, attribution). Acceptance: reading and Q&A work on the textbook; tutor answers are grounded.
+**M6 — Further books** (ingest the remaining Harry Potter books). Acceptance: reading and Q&A work on every book.
 
 **M7 — Multilingual** (verify Mandarin, Spanish, French questions retrieve the right passages via e5 and get answers in the same language; add a small language indicator from the transcript). Acceptance: 5 scripted multilingual questions answered correctly.
 
@@ -368,11 +368,11 @@ Keep these templates in one file with unit tests that render them for fixtures. 
 ---
 
 ## 10. The 90-second demo script (build toward this)
-1. Open Talkback → Sherlock (demo mode). Full-cast reading starts: Watson narrates, Holmes and the King each in their own voice, words highlighting.
-2. Hold Space mid-scene: "Holmes, what do you make of this visitor?" → Holmes answers in character from what we've read; reading resumes from the same sentence.
-3. Hold Space and ask in Mandarin: "你觉得这封信是谁写的?" → Holmes answers in Mandarin.
-4. Ask "How does this end?" → Holmes refuses in character ("Data, my dear reader, I have not yet got it"). Point at the spoiler badge.
-5. Switch to Biology → narrator explains photosynthesis; ask a follow-up; it answers grounded in the chapter.
+1. Open Talkback → Harry Potter book 1 (demo mode). Full-cast reading starts: the narrator, Hagrid and others each in their own voice, words highlighting.
+2. Hold Space mid-scene: "Hagrid, what do you make of this visitor?" → Hagrid answers in character from what we've read; reading resumes from the same sentence.
+3. Hold Space and ask in Mandarin: "你觉得这封信是谁写的?" → Hagrid answers in Mandarin.
+4. Ask "How does this end?" → Hagrid refuses in character. Point at the spoiler badge.
+5. Switch to another book in the Library and repeat a question there.
 6. (Stretch) Cast panel → swap the narrator to my own cloned voice → it keeps reading in my voice.
 
 Start now with plan mode and Milestone 0.

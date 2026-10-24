@@ -53,19 +53,20 @@ Each script takes `--book <id>`, prints a cost estimate first, and asks before s
 
 ```bash
 cd backend
-uv run python ../preprocess/ingest.py     --book scandal-in-bohemia   # text -> paragraphs
-uv run python ../preprocess/cast.py       --book scandal-in-bohemia   # Anthropic: characters, personas, voices (review the result!)
-uv run python ../preprocess/segment.py    --book scandal-in-bohemia   # Anthropic Haiku: who speaks each part, with emotions
-uv run python ../preprocess/chunk_tts.py  --book scandal-in-bohemia   # TTS chunks of at most 280 characters
-uv run python ../preprocess/summaries.py  --book scandal-in-bohemia   # Anthropic: "story so far" notes (prefix-only)
-uv run python ../preprocess/index.py      --book scandal-in-bohemia   # retrieval index; add --blurbs to use Anthropic
-uv run python ../preprocess/prerender_tts.py --book scandal-in-bohemia # Boson: ~$0.70 for the whole story
-uv run python ../preprocess/eval_spoilers.py --book scandal-in-bohemia --dry-run   # M5 leak test (Anthropic); drop --dry-run to run
+uv run python ../preprocess/ingest.py     --book hp1-sorcerers-stone   # text -> paragraphs
+uv run python ../preprocess/cast.py       --book hp1-sorcerers-stone   # Anthropic: characters, personas, voices (review the result!)
+uv run python ../preprocess/segment.py    --book hp1-sorcerers-stone   # Anthropic Haiku: who speaks each part, with emotions
+uv run python ../preprocess/chunk_tts.py  --book hp1-sorcerers-stone   # TTS chunks of at most 280 characters
+uv run python ../preprocess/summaries.py  --book hp1-sorcerers-stone   # Anthropic: "story so far" notes (prefix-only)
+uv run python ../preprocess/index.py      --book hp1-sorcerers-stone   # retrieval index; add --blurbs to use Anthropic
+uv run python ../preprocess/prerender_tts.py --book hp1-sorcerers-stone # Boson: prerender audio (check the estimate first)
+uv run python ../preprocess/eval_spoilers.py --book hp1-sorcerers-stone --dry-run   # M5 leak test (Anthropic); drop --dry-run to run
 ```
 
-Textbook (Biology 2e chapter 8): paste the chapter text into `data/raw/biology2e_ch8.txt` (blank line between
-paragraphs, `8.1 Title` lines for sections), then run `ingest.py`, `cast.py` (no LLM: one tutor voice), `chunk_tts.py`,
-`index.py` and `prerender_tts.py` with `--book biology-2e-ch8`.
+The app contains only the Harry Potter series (7 books: `hp1-sorcerers-stone`, `hp2-chamber-of-secrets`,
+`hp3-prisoner-of-azkaban`, `hp4-goblet-of-fire`, `hp5-order-of-the-phoenix`, `hp6-half-blood-prince`,
+`hp7-deathly-hallows`). They are ingested from your own PDF at `data/uploads/harry-potter-collection.pdf`
+(gitignored). The books are copyrighted: `data/uploads/` and `data/books/hp*/` are never committed.
 
 Optional extras: portraits go in `data/portraits/<book>/<character-id>.png` (also `narrator` and `cover`); the Stage and
 cast list pick them up automatically. Avatars: `scripts/probe_avatar.py`, then `preprocess/prerender_avatar.py`.
@@ -82,15 +83,15 @@ backend to get audio and Talk mode.
 
 ## The 90-second demo
 
-Run `prerender_tts.py` first, then open `http://localhost:5173/?demo=1#/read/scandal-in-bohemia`. Demo mode starts just
-after Holmes reads the King's letter, plays pre-rendered audio only (no live synthesis, so no surprises), and pins the
-character to Holmes.
+Run `prerender_tts.py` first, then open `http://localhost:5173/?demo=1#/read/hp1-sorcerers-stone`. Demo mode starts just
+at a preset point in book 1, plays pre-rendered audio only (no live synthesis, so no surprises), and pins the
+character to Hagrid.
 
 1. Press play. The narrator and characters read in their own voices, the current word lit as it is spoken.
-2. Hold Space mid-scene and ask: "Holmes, what do you make of this visitor?" He answers in character from what has been
+2. Hold Space mid-scene and ask: "Hagrid, what do you make of this visitor?" He answers in character from what has been
    read, then the reading resumes from the same sentence.
 3. Hold Space and ask in Mandarin: "你觉得这封信是谁写的？" The answer comes back in Mandarin.
-4. Ask "How does this end?" Holmes declines in character. Point at the badge: he only knows up to the current paragraph.
+4. Ask "How does this end?" Hagrid declines in character. Point at the badge: he only knows up to the current paragraph.
 5. Open the Voices panel, create a voice from your own recording (consent box required), assign it to the narrator, and
    keep reading in your voice.
 
@@ -109,8 +110,7 @@ Deployment notes: `docs/DEPLOY.md`.
 
 ## Credits and licences
 
-*A Scandal in Bohemia* is public domain (Project Gutenberg #1661). The textbook chapter is from
-[Biology 2e by OpenStax](https://openstax.org/details/books/biology-2e), licensed CC BY 4.0. Audio and realtime code in
+The Harry Potter books are copyrighted and are used only from the owner's own copy; they are not distributed with this repository. Audio and realtime code in
 `frontend/src/audio` and parts of `src/realtime` are adapted from
 [boson-ai/higgs-realtime-tutorial](https://github.com/boson-ai/higgs-realtime-tutorial) (Apache-2.0); see
 `frontend/THIRD_PARTY_NOTICES.md`.

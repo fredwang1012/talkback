@@ -1,8 +1,17 @@
 .env
+**/.env
+.env.*
 **/node_modules
 **/.venv
+**/__pycache__
+**/.pytest_cache
 frontend/dist
-data/cache
+# data/ is never baked into the image: on Cloud Run the bucket is mounted at /app/data
+# (uploads, samples, personal portraits and user books must not ship in an image)
+data
 scripts/captures
+logs
+*.log
 .git
 .playwright-mcp
+.superpowers

@@ -17,7 +17,7 @@ Expected spend for the test round is a few dollars:
 | Item | Rough cost |
 |---|---|
 | Gemini 2.5 Flash answers (~1k tokens in, ~150 out) | ~$0.0007 per question |
-| gemini-embedding-001, whole Sherlock story (~10k words) | < $0.01 |
+| gemini-embedding-001, one short novel chapter set (~10k words) | < $0.01 |
 | Vector Search 2.0 collection, KNN, usage-based | pennies at this size |
 | Cloud Run, scale to zero | free tier covers a demo |
 | Cloud Storage, a few hundred MB | < $0.05/month |
@@ -54,7 +54,7 @@ Cloud Run min-instances left on for days, the RAG Engine LLM parser on large PDF
      `{"$and":[{"book_id":{"$eq":B}},{"para_end":{"$lte":P}}]}`.
      This keeps today's paragraph-level rule; chapter-level gating would be weaker.
    - Hybrid: vector search plus text search, merged with Reciprocal Rank Fusion, so names
-     like "Irene Adler" match exactly.
+     like "Hagrid" match exactly.
    - We embed ourselves with `gemini-embedding-001` (768-d, verified working) instead of
      auto-embeddings, because filtered vector search is the documented path.
    - Not chosen: RAG Engine (fixed-size chunks with no idea of paragraphs, so spoiler gating
@@ -129,19 +129,19 @@ Cloud Run instance warm only during the demo.
 
 ### Code (Claude, next)
 
-- [ ] **C1** `backend/app/gcp/`: `embed.py` (gemini-embedding-001), `vectorstore.py`
+- [x] **C1** `backend/app/gcp/`: `embed.py` (gemini-embedding-001), `vectorstore.py`
       (Vector Search 2.0 search + batch upsert), `llm.py` (Gemini via `google-genai`,
       `vertexai=True`). Settings: `GCP_PROJECT`, `GCP_REGION`, `RETRIEVAL_BACKEND=local|vertex`.
-- [ ] **C2** `scripts/index_vertex.py`: push existing `chunks` for a book into the collection.
-- [ ] **C3** Retrieval switch: `/api/retrieve` uses Vector Search when `RETRIEVAL_BACKEND=vertex`.
+- [x] **C2** `scripts/index_vertex.py`: push existing `chunks` for a book into the collection.
+- [x] **C3** Retrieval switch: `/api/retrieve` uses Vector Search when `RETRIEVAL_BACKEND=vertex`.
       Spoiler property tests run against both backends (fake client for Vertex).
-- [ ] **C4** `POST /api/answer`: retrieve → Gemini → streamed sentences. Frontend Talk mode
+- [x] **C4** `POST /api/answer`: retrieve → Gemini → streamed sentences. Frontend Talk mode
       plays them through Boson TTS in the character voice; old path behind a flag.
-- [ ] **C5** Upload: `/api/uploads` (signed URL), `/api/books/ingest` (PyMuPDF → book.json →
+- [x] **C5** Upload: `/api/uploads` (signed URL), `/api/books/ingest` (PyMuPDF → book.json →
       chunks → embed → upsert), status polling; Library page "Add a book" button.
-- [ ] **C6** Deploy: Cloud Build → Artifact Registry → Cloud Run with the bucket volume,
+- [x] **C6** Deploy: Cloud Build → Artifact Registry → Cloud Run with the bucket volume,
       Secret Manager env, CORS for localhost, max-instances 2, min-instances 0.
-- [ ] **C7** Cost log: every Gemini/embedding call logs tokens; `scripts/usage.py` totals
+- [x] **C7** Cost log: every Gemini/embedding call logs tokens; `scripts/usage.py` totals
       them so spend is visible between billing updates (billing data lags up to a day).
 
 ### Later (real project, ~$800)

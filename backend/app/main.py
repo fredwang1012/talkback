@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import gzip
+import hashlib
 import json
 import logging
 import re
@@ -12,7 +14,7 @@ from typing import Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -45,13 +47,22 @@ app = FastAPI(title="Talkback", lifespan=lifespan)
 app.add_middleware(UploadSizeLimit)  # added before CORS so CORS headers still wrap its 4xx replies
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=settings.cors_origin_list,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-(settings.data_dir / "cache").mkdir(parents=True, exist_ok=True)
-app.mount("/media", StaticFiles(directory=settings.data_dir / "cache"), name="media")
+(settings.data_dir / "cache" / "tts").mkdir(parents=True, exist_ok=True)
+# Only the TTS audio is public: the rest of data/cache holds the usage log and the LLM cache.
+app.mount("/media/tts", StaticFiles(directory=settings.data_dir / "cache" / "tts"), name="media")
+
+
+def _lipsync_dir() -> Path:
+    return settings.data_dir / "cache" / "avatar" / "talk"
+
+
+_lipsync_dir().mkdir(parents=True, exist_ok=True)
+app.mount("/media/avatar", StaticFiles(directory=_lipsync_dir()), name="lipsync")
 app.mount("/portraits", StaticFiles(directory=settings.data_dir / "portraits", check_dir=False), name="portraits")
 
 boson = BosonClient()
@@ -61,7 +72,16 @@ clone_bucket = TokenBucket(capacity=5, per_seconds=60)
 answer_bucket = TokenBucket(capacity=20, per_seconds=60)  # every /api/answer call spends Gemini credit
 
 
+retrieve_bucket = TokenBucket(capacity=30, per_seconds=60)  # vertex retrieval spends embedding + search credit
+
+
 def client_ip(request: Request) -> str:
+    """Peer address. With TRUST_PROXY (Cloud Run is the only ingress) use the right-most X-Forwarded-For entry:
+    the front end appends the real client there, while anything to its left is client-supplied and spoofable."""
+    if settings.trust_proxy:
+        parts = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+        if parts:
+            return parts[-1]
     return request.client.host if request.client else "unknown"
 
 
@@ -87,7 +107,8 @@ def boson_http_error(e: BosonError | RuntimeError) -> HTTPException:
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "boson_key_set": bool(settings.boson_api_key), "access_required": bool(settings.access_token)}
+    return {"ok": True, "boson_key_set": bool(settings.boson_api_key), "access_required": bool(settings.access_token),
+            "answer_backend": settings.effective_answer_backend}
 
 
 @app.get("/api/books")
@@ -95,12 +116,23 @@ def get_books():
     return books.list_books()
 
 
-@app.get("/api/books/{book_id}", response_model=Book)
-def get_book(book_id: str):
+_book_bodies: dict[str, tuple[Book, bytes, bytes]] = {}  # book id -> (book object, json, gzipped json)
+
+
+@app.get("/api/books/{book_id}", response_model=Book, dependencies=[Depends(require_access)])
+def get_book(book_id: str, accept_encoding: str = Header(default="")):
+    """The full book. Gated like the paid endpoints: a public deployment must not hand out a copyrighted text.
+    Serialised and gzipped once per book version (a novel is several MB of JSON)."""
     book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
-    return book
+    cached = _book_bodies.get(book_id)
+    if cached is None or cached[0] is not book:  # load_book returns a new object when book.json changes
+        body = book.model_dump_json().encode()
+        cached = _book_bodies[book_id] = (book, body, gzip.compress(body, compresslevel=6))
+    if "gzip" in accept_encoding.lower():
+        return Response(cached[2], media_type="application/json", headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+    return Response(cached[1], media_type="application/json")
 
 
 # ---------- realtime key ----------
@@ -174,7 +206,8 @@ def _index_for(book_id: str) -> retrieval.Index:
     book = books.load_book(book_id)
     if settings.retrieval_backend == "vertex":
         from .gcp.vertex_index import VertexIndex
-        return VertexIndex(book, _LazyEmbedder(), _LazyStore())
+        earlier = {b.id: b.title for b in books.earlier_in_series(book)}
+        return VertexIndex(book, _LazyEmbedder(), _LazyStore(), earlier)
     index_dir = settings.data_dir / "books" / book_id / "index"
     if (index_dir / "chunks.json").exists():
         return retrieval.Index.load(index_dir, embedder=_embedder())
@@ -203,6 +236,12 @@ def _embedder():
         return None
 
 
+def _series_context(book: Book) -> dict:
+    """Keyword args for retrieval.aretrieve: earlier books of the series are fully known to the reader."""
+    earlier = books.earlier_in_series(book)
+    return {"earlier": frozenset(b.id for b in earlier), "recap": books.series_recap(book)}
+
+
 def _resolve_talk(book_id: str, speaker_id: str, reader_para: int):
     """Shared 404/403 checks for talk endpoints: returns (book, speaker or None, clamped reader_para)."""
     book = books.load_book(book_id)
@@ -217,10 +256,12 @@ def _resolve_talk(book_id: str, speaker_id: str, reader_para: int):
     return book, speaker, reader_para
 
 
-@app.post("/api/retrieve")
-async def retrieve(req: RetrieveRequest):
+@app.post("/api/retrieve", dependencies=[Depends(require_access)])
+async def retrieve(req: RetrieveRequest, request: Request):
+    if not retrieve_bucket.allow(client_ip(request)):
+        raise HTTPException(429, "Too many lookups; wait a moment.")
     book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para)
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k)
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, **_series_context(book))
     out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"])
     out["persona"] = speaker.persona if speaker else None
     return out
@@ -245,7 +286,7 @@ async def answer(req: RetrieveRequest, request: Request):
         raise HTTPException(429, "Too many questions; wait a moment.")
     book, _, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para)
     t0 = time.monotonic()
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k)
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, **_series_context(book))
     t_retrieved = time.monotonic()
     retrieve_ms = int((t_retrieved - t0) * 1000)
     system, user = build_answer_prompt(book, req.speaker_id, out["story_so_far"], out["passages"], req.query)
@@ -430,6 +471,54 @@ def list_avatars(book_id: str):
     return sorted(p.stem for p in d.glob("*.mp4")) if d.is_dir() else []
 
 
+_TTS_URL = re.compile(r"^/media/tts/([0-9a-f]{64})\.mp3$")
+avatar_bucket = TokenBucket(capacity=12, per_seconds=60)  # every render spends Boson avatar credit
+_avatar_locks: dict[str, asyncio.Lock] = {}
+
+
+class LipSyncRequest(BaseModel):
+    audio_url: str = Field(max_length=120)
+    voice: str = Field(max_length=120)
+
+
+@app.post("/api/avatar/talk", dependencies=[Depends(require_access)])
+async def lipsync(req: LipSyncRequest, request: Request):
+    """Lip-synced clip of one answer sentence: the voice's face speaking that cached TTS audio (~10 s to render).
+
+    Only audio this server synthesised (/media/tts/<key>.mp3) and only voices with a face are accepted; clips are
+    cached by audio key, so the same sentence never renders twice.
+    """
+    m = _TTS_URL.match(req.audio_url)
+    face = voices.face_path(req.voice) if voices.is_known_voice(req.voice) else None
+    if not m or face is None:
+        raise HTTPException(400, "Lip-sync needs audio from /api/speak and a voice that has a face.")
+    audio = settings.data_dir / "cache" / "tts" / f"{m.group(1)}.mp3"
+    if not audio.is_file():
+        raise HTTPException(404, "That audio is not cached.")
+    key = f"{m.group(1)}-{hashlib.sha256(face.read_bytes()).hexdigest()[:16]}"
+    clip = _lipsync_dir() / f"{key}.mp4"
+    lock = _avatar_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        if not clip.is_file():
+            if not avatar_bucket.allow(client_ip(request)):
+                raise HTTPException(429, "Too many lip-sync renders; wait a moment.")
+            data = audio.read_bytes()
+            try:
+                vid = await boson.create_video(base64.b64encode(face.read_bytes()).decode(), base64.b64encode(data).decode(),
+                                               image_mime=voices.FACE_EXTS[face.suffix.lstrip(".").lower()],
+                                               seconds=len(data) / 16000)  # 128 kbit/s mp3
+                await boson.wait_video(vid, interval=1, timeout=120)
+                video = await boson.download_video(vid)
+            except (BosonError, RuntimeError) as e:
+                raise boson_http_error(e)
+            clip.parent.mkdir(parents=True, exist_ok=True)
+            tmp = clip.with_suffix(".tmp")
+            tmp.write_bytes(video)
+            tmp.replace(clip)
+    _avatar_locks.pop(key, None)
+    return {"video_url": f"/media/avatar/{clip.name}"}
+
+
 @app.get("/api/avatar/{chunk_id}")
 def avatar(chunk_id: str, book: str):
     if not (_SAFE_NAME.match(chunk_id) and _SAFE_NAME.match(book)):
@@ -444,12 +533,17 @@ def avatar(chunk_id: str, book: str):
 
 @app.post("/api/voices/clone", dependencies=[Depends(require_access)])
 async def clone_voice(request: Request, audio: UploadFile = File(...), transcript: str = Form(..., max_length=2000),
-                      name: str = Form(..., max_length=60), consent: str = Form("false")):
+                      name: str = Form(..., max_length=60), consent: str = Form("false"),
+                      face: UploadFile | None = File(None)):
     if not clone_bucket.allow(client_ip(request)):
         raise HTTPException(429, "Too many voice uploads; wait a moment.")
     data = await audio.read(voices.MAX_BYTES + 1)  # bounded read: never buffer an unbounded upload
+    image = await face.read(voices.MAX_FACE_BYTES + 1) if face is not None else None
+    face_ext = Path(face.filename or "").suffix if face is not None else ""
     try:
         voices.validate_clone_request(data, transcript, name, consent)
+        if image is not None and (len(image) > voices.MAX_FACE_BYTES or face_ext.lower().lstrip(".") not in voices.FACE_EXTS):
+            raise voices.VoiceInputError("The face must be a PNG, JPEG or WebP image of at most 5 MB.")
     except voices.VoiceInputError as e:
         raise HTTPException(400, str(e))
     try:
@@ -457,12 +551,19 @@ async def clone_voice(request: Request, audio: UploadFile = File(...), transcrip
     except (BosonError, RuntimeError) as e:
         raise boson_http_error(e)
     voices.save_voice(name, voice_id)
-    return {"voice": voice_id, "name": name}
+    face_url = voices.save_face(voice_id, image, face_ext) if image is not None else None
+    return {"voice": voice_id, "name": name, "face": face_url}
 
 
 @app.get("/api/voices")
 def list_voices():
     return voices.load_voices()
+
+
+@app.get("/api/voices/faces")
+def list_voice_faces():
+    """voice id -> portrait URL for cloned voices that have a face (shown for any speaker using that voice)."""
+    return voices.load_faces()
 
 
 # ---------- single-service deploy: serve the built frontend from the same origin (no CORS, one container) ----------

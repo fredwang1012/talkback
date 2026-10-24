@@ -28,8 +28,16 @@ scripts/captures/*.log
 # Personal / copyrighted material: never commit
 data/uploads/
 data/books/u-*/
-data/portraits/*/
+data/books/hp*/
+data/portraits/*
+!data/portraits/.gitkeep
+data/raw/*
+!data/raw/.gitkeep
 data/samples/
 data/voices.json
+data/voice_faces.json
 logs/
 *.log
+
+# access code for the deployed app (share it with visitors; never commit)
+.talkback-access-code

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Book, Health } from "../api";
+import type { Book, Health, VoiceFace } from "../api";
 import type { TalkUi } from "../talk/useTalk";
 import type { TalkState } from "../talk/TalkController";
 import { splitCharacters } from "./position";
@@ -20,6 +20,11 @@ type Props = {
   needsCode: boolean;
   onCode: (code: string) => void;
   onOpenLab: () => void;
+  faces: Record<string, VoiceFace>; // voice id -> face, for cloned voices that have one
+  voiceFor: (speakerId: string) => string;
+  readingVoice: string | null; // voice reading aloud right now in read mode
+  lipSync: boolean;
+  onLipSync: (on: boolean) => void;
 };
 
 const STATUS: Record<TalkState, string> = {
@@ -38,6 +43,19 @@ function Face({ src, name }: { src: string | null; name: string }) {
       {src ? <img src={src} alt="" /> : name.charAt(0)}
     </span>
   );
+}
+
+/** A muted looping clip of a voice's face (speaking or idle). */
+function FaceLoop({ src }: { src: string }) {
+  return <video key={src} src={src} muted loop autoPlay playsInline preload="auto" />;
+}
+
+/** The face for the medallion: a lip-synced clip, else the speaking loop while speaking, else the idle loop or portrait. */
+function FaceView({ face, speaking, clip }: { face: VoiceFace; speaking: boolean; clip: string | null }) {
+  if (clip) return <video key={clip} src={clip} muted autoPlay playsInline />; // the audio element plays the sound
+  if (speaking && face.talk) return <FaceLoop src={face.talk} />;
+  if (face.idle) return <FaceLoop src={face.idle} />;
+  return <img src={face.image} alt="" />;
 }
 
 /** Muted on purpose: the page's own audio element stays the single source of sound, so it cannot double up. */
@@ -68,7 +86,7 @@ function Waveform() {
   );
 }
 
-export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, mode, onMode, pinned, needsCode, onCode, onOpenLab }: Props) {
+export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, mode, onMode, pinned, needsCode, onCode, onOpenLab, faces, voiceFor, readingVoice, lipSync, onLipSync }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
   const { met, locked } = splitCharacters(book.characters, para);
   const speaker = met.find((c) => c.id === speakerId);
@@ -79,6 +97,10 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
     : "Reads the text as written.";
   const live = talk.state === "listening";
   const portrait = speaker ? speaker.portrait : book.narrator?.portrait ?? null;
+  // In read mode a voice with a face is shown while it reads; otherwise the chosen speaker's voice decides.
+  const readingFace = readingVoice ? faces[readingVoice] : undefined;
+  const face = readingFace ?? faces[voiceFor(speakerId)];
+  const faceSpeaking = readingFace ? true : talk.speaking;
   const thinking = ["transcribing", "retrieving", "answering"].includes(talk.state) && !talk.speaking;
   const pressed = useRef(false); // survives re-renders between press and release
 
@@ -102,6 +124,7 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
       <div className="speaker">
         <div className={`medallion${live ? " live" : ""}${thinking ? " thinking" : ""}${talk.speaking ? " speaking" : ""}`} aria-hidden="true">
           {avatarSrc ? <AvatarVideo src={avatarSrc} playing={avatarPlaying} />
+            : face ? <FaceView face={face} speaking={faceSpeaking} clip={readingFace ? null : talk.clip} />
             : portrait ? <img src={portrait} alt="" /> : <span>{name.charAt(0)}</span>}
         </div>
         <div>
@@ -120,13 +143,13 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
         <ul className="cast-list">
           <li>
             <button aria-pressed={speakerId === "narrator"} disabled={!!pinned} onClick={() => onSpeaker("narrator")}>
-              <span className="who"><Face src={book.narrator?.portrait ?? null} name={tutor ? "Tutor" : "Narrator"} />{tutor ? "Tutor" : "Narrator"}</span> <small>{book.narrator?.voice ?? "voice not set"}</small>
+              <span className="who"><Face src={faces[voiceFor("narrator")]?.image ?? book.narrator?.portrait ?? null} name={tutor ? "Tutor" : "Narrator"} />{tutor ? "Tutor" : "Narrator"}</span> <small>{faces[voiceFor("narrator")] ? "your cloned voice" : voiceFor("narrator")}</small>
             </button>
           </li>
           {met.map((c) => (
             <li key={c.id}>
               <button aria-pressed={speakerId === c.id} disabled={!!pinned && pinned !== c.id} onClick={() => onSpeaker(c.id)}>
-                <span className="who"><Face src={c.portrait} name={c.name} />{c.name}</span> <small>{c.voice}</small>
+                <span className="who"><Face src={faces[voiceFor(c.id)]?.image ?? c.portrait} name={c.name} />{c.name}</span> <small>{faces[voiceFor(c.id)] ? "your cloned voice" : voiceFor(c.id)}</small>
               </button>
             </li>
           ))}
@@ -153,6 +176,12 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
         </form>
       )}
       <button className="link-btn" onClick={onOpenLab}>Voices and cloning</button>
+      {faces[voiceFor(speakerId)] && (
+        <label className="lipsync">
+          <input type="checkbox" checked={lipSync} onChange={(e) => onLipSync(e.target.checked)} />
+          Lip-synced face (answers start about 10 seconds later)
+        </label>
+      )}
 
       <div className="mic">
         <button

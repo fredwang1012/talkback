@@ -5,7 +5,7 @@ import base64
 from _common import BosonClient, BosonError, CAPTURES, flush_notes, note
 
 VOICES = ["chloe", "eleanor", "jake", "marcus", "nora", "oliver", "berlinda", "default"]
-SENTENCE = "To Sherlock Holmes she is always the woman."
+SENTENCE = "To Harry Quill the lantern road is always the longest."
 
 
 async def main() -> None:
@@ -26,7 +26,7 @@ async def main() -> None:
     note(f"tag tokens appear in timestamps: {any('<|' in w['word'] or 'emotion' in w['word'] for w in (words or []))}")
 
     # (a3) numbers with timestamps (normalization is disabled)
-    r = await c.create_speech("It was the twentieth of March, 1888, at Mr. Holmes's rooms.", "marcus", timestamps=True)
+    r = await c.create_speech("It was the twentieth of March, 1888, at Mr. Quill's rooms.", "marcus", timestamps=True)
     note(f"number text timestamps: {[w['word'] for w in (r.json()['timestamps'] or [])]}")
 
     # (a4) null vs [] for tiny / non-English input

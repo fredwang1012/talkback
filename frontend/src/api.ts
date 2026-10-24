@@ -37,6 +37,8 @@ export type Book = {
   paragraphs: Paragraph[];
   characters: Character[];
   narrator: { id: string; voice: string; is_character: string | null; portrait: string | null } | null;
+  series?: string | null;
+  series_index?: number | null;
 };
 export type BookSummary = {
   id: string;
@@ -49,8 +51,10 @@ export type BookSummary = {
   sections: number;
   characters: number;
   cover: string | null;
+  series?: string | null;
+  series_index?: number | null;
 };
-export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean };
+export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean; answer_backend: "gemini" | "realtime" };
 
 /** Sent when the server requires an access code (TALKBACK_ACCESS_TOKEN). Typed in by the visitor, never built in. */
 export function authHeaders(): Record<string, string> {
@@ -79,7 +83,7 @@ export async function timedFetch(url: string, init: RequestInit = {}, timeoutMs 
 }
 
 async function getJson<T>(url: string): Promise<T> {
-  const res = await timedFetch(url);
+  const res = await timedFetch(url, { headers: authHeaders() }); // books may be gated on a public deployment
   if (!res.ok) throw new Error(`${url} failed: ${res.status}`);
   return res.json() as Promise<T>;
 }
@@ -116,7 +120,7 @@ export type RetrieveResponse = {
 export async function fetchRetrieve(bookId: string, query: string, readerPara: number, speakerId: string): Promise<RetrieveResponse> {
   const res = await timedFetch("/api/retrieve", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId }),
   }, 10000);
   if (!res.ok) {
@@ -203,12 +207,14 @@ export async function fetchRealtimeKey(): Promise<string> {
   return ((await res.json()) as { value: string }).value;
 }
 
-export type CloneResult = { voice: string; name: string };
+export type CloneResult = { voice: string; name: string; face: string | null };
 
 /** Registers a custom voice. The server refuses without explicit consent. */
-export async function cloneVoice(audio: Blob, filename: string, transcript: string, name: string, consent: boolean): Promise<CloneResult> {
+export async function cloneVoice(audio: Blob, filename: string, transcript: string, name: string, consent: boolean,
+  face?: File | null): Promise<CloneResult> {
   const form = new FormData();
   form.append("audio", audio, filename);
+  if (face) form.append("face", face, face.name);
   form.append("transcript", transcript);
   form.append("name", name);
   form.append("consent", consent ? "true" : "false");
@@ -280,6 +286,24 @@ export async function pollBookStatus(
   return null;
 }
 export const fetchVoices = () => getJson<Record<string, string>>("/api/voices");
+
+/** A cloned voice's face: portrait plus optional muted loops (speaking, idle). Shown for any speaker using the voice. */
+export type VoiceFace = { image: string; talk: string | null; idle: string | null };
+export const fetchVoiceFaces = () => getJson<Record<string, VoiceFace>>("/api/voices/faces");
+
+/** Lip-synced clip of one answer sentence (the face speaking that exact audio). Takes ~10 s to render. */
+export async function lipSync(audioUrl: string, voice: string): Promise<string> {
+  const res = await timedFetch("/api/avatar/talk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ audio_url: audioUrl, voice }),
+  }, 120000);
+  if (!res.ok) {
+    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    throw new Error(detail ?? `Lip-sync failed (${res.status})`);
+  }
+  return ((await res.json()) as { video_url: string }).video_url;
+}
 
 /** Chunk ids that have a pre-rendered avatar clip (stretch feature). Empty when there are none or the call fails. */
 export async function fetchAvatars(bookId: string): Promise<string[]> {

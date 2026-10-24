@@ -104,7 +104,6 @@ export default function Library() {
   const load = () => fetchBooks().then(setBooks).catch((e: Error) => setError(e.message));
   useEffect(() => { load(); }, []);
 
-  const hasTextbook = books?.some((b) => b.kind === "textbook") ?? false;
 
   return (
     <main className="library">
@@ -138,28 +137,13 @@ export default function Library() {
               </div>
             </a>
           ))}
-          {!hasTextbook && (
-            <div className="volume volume-closed" aria-disabled="true">
-              <div>
-                <h2>Biology 2e, chapter 8</h2>
-                <p className="by">OpenStax</p>
-              </div>
-              <div>
-                <ul className="facts">
-                  <li>Photosynthesis, explained by a narrator you can interrupt.</li>
-                </ul>
-                <div className="open">Needs the chapter text in data/raw</div>
-              </div>
-            </div>
-          )}
         </section>
       )}
 
       <AddBook onReady={load} />
 
       <p className="licence">
-        Fiction is public domain from Project Gutenberg. The Biology chapter comes from{" "}
-        <a href="https://openstax.org/details/books/biology-2e">Biology 2e by OpenStax</a>, licensed CC BY 4.0.
+        The Harry Potter series is ingested from your own copy and stays on this machine; it is never committed or shared.
       </p>
     </main>
   );

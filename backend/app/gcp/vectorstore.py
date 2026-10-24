@@ -21,12 +21,18 @@ class VectorStoreError(Exception):
         self.status, self.message = status, message
 
 
-def spoiler_filter(book_id: str, reader_para: int | None) -> dict:
-    """Novel filter when reader_para is given (para_end <= reader_para), else book-only (textbooks)."""
+def spoiler_filter(book_id: str, reader_para: int | None, earlier: list[str] | None = None) -> dict:
+    """Novel filter when reader_para is given (para_end <= reader_para), else book-only (textbooks).
+
+    `earlier`: ids of the series books before this one; their chunks are eligible in full ($in / $or verified live).
+    """
     book = {"book_id": {"$eq": book_id}}
     if reader_para is None:
         return book
-    return {"$and": [book, {"para_end": {"$lte": reader_para}}]}
+    current = {"$and": [book, {"para_end": {"$lte": reader_para}}]}
+    if not earlier:
+        return current
+    return {"$or": [{"book_id": {"$in": list(earlier)}}, current]}
 
 
 def rrf(lists: list[list[dict]], key: str = "chunk_id", k: int = 60) -> list[dict]:
@@ -53,6 +59,7 @@ class VectorStore:
         self._base = f"{BASE_URL}/{collection_path}"
         self._token_fn = token_fn
         self._client = client
+        self._owned: tuple[asyncio.AbstractEventLoop, httpx.AsyncClient] | None = None
         self._sleep = sleep
 
     async def _send(self, method: str, url: str, json: Any = None) -> httpx.Response:
@@ -60,16 +67,22 @@ class VectorStore:
         for attempt in range(MAX_RETRIES + 1):
             headers = {"Authorization": f"Bearer {self._token_fn()}",
                        "x-goog-user-project": settings.gcp_project}
-            if self._client is not None:
-                resp = await self._client.request(method, url, json=json, headers=headers)
-            else:
-                async with httpx.AsyncClient(timeout=60) as c:
-                    resp = await c.request(method, url, json=json, headers=headers)
+            resp = await self._http().request(method, url, json=json, headers=headers)
             if (resp.status_code == 429 or resp.status_code >= 500) and attempt < MAX_RETRIES:
                 await self._sleep(0.5 * 2**attempt)
                 continue
             return resp
         raise AssertionError("unreachable")
+
+    def _http(self) -> httpx.AsyncClient:
+        """The injected client, else one keep-alive client per event loop (a fresh TLS handshake per search cost
+        ~0.3 s; a client cannot be reused once its loop is closed, e.g. scripts that run several loops)."""
+        if self._client is not None:
+            return self._client
+        loop = asyncio.get_running_loop()
+        if self._owned is None or self._owned[0] is not loop:
+            self._owned = (loop, httpx.AsyncClient(timeout=60))
+        return self._owned[1]
 
     @staticmethod
     def _error(resp: httpx.Response) -> VectorStoreError:
@@ -124,5 +137,9 @@ class VectorStore:
             resp = await self._call("POST", f"{self._base}/dataObjects:search", body)
             return self._parse(resp.json())
         except (VectorStoreError, httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as e:
-            log.debug("text search failed, returning no results: %s", e)
+            status = getattr(e, "status", None)
+            if isinstance(status, int) and 400 <= status < 500:
+                log.warning("text search rejected (HTTP %s), returning no results: %s", status, e)
+            else:
+                log.debug("text search failed, returning no results: %s", e)
             return []

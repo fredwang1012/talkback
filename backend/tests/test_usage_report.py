@@ -157,3 +157,62 @@ def test_realtime_token_mint_records_a_session(tmp_path, monkeypatch):
     assert TestClient(main.app).post("/api/realtime/token").status_code == 200
     recs = lines(tmp_path)
     assert len(recs) == 1 and recs[0]["kind"] == "boson_realtime_session" and recs[0]["sessions"] == 1
+
+
+# ---------- avatar, voice clone, abandoned stream ----------
+
+def test_avatar_and_clone_recorded_after_success(tmp_path, monkeypatch):
+    import httpx
+    from app.boson import BosonClient
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "boson_api_key", "k")
+
+    def handler(req):
+        if req.url.path == "/v1/videos":
+            return httpx.Response(200, json={"id": "vid1"})
+        if req.url.path == "/v1/audio/voices":
+            return httpx.Response(200, json={"voice": "v1"})
+        return httpx.Response(500, json={"error": {"type": "api_error", "message": "x"}})
+
+    c = BosonClient(transport=httpx.MockTransport(handler))
+    assert asyncio.run(c.create_video("aW1n", "YXVk", seconds=12.5)) == "vid1"
+    assert asyncio.run(c.create_voice("YXVk", "text")) == "v1"
+    recs = lines(tmp_path)
+    assert [(r["kind"], r["model"]) for r in recs] == [("boson_avatar", "higgs-avatar"), ("boson_voice_clone", "boson-voice-clone")]
+    assert recs[0]["seconds"] == 12.5 and recs[1]["clones"] == 1
+
+
+def test_avatar_pricing_and_clone_counts():
+    rows = [{"ts": "2026-10-19T00:00:00+00:00", "kind": "boson_avatar", "model": "higgs-avatar", "seconds": 30},
+            {"ts": "2026-10-19T00:00:00+00:00", "kind": "boson_avatar", "model": "higgs-avatar", "chars": 900},
+            {"ts": "2026-10-19T00:00:00+00:00", "kind": "boson_voice_clone", "model": "boson-voice-clone", "clones": 1}]
+    s = report.summarize(rows)["boson"]
+    assert s["cost"] == pytest.approx(0.04 + 0.08)  # 30 s, then 900 chars = 60 s
+    assert s["models"][("boson_voice_clone", "boson-voice-clone")]["clones"] == 1
+
+
+async def test_abandoned_gemini_stream_still_logs_usage(tmp_path, monkeypatch):
+    from app.gcp.llm import GeminiAnswerer
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    meta = SimpleNamespace(prompt_token_count=9, candidates_token_count=3)
+
+    def make(chunks):
+        async def gen_stream(model, contents, config):
+            async def gen():
+                for c in chunks:
+                    yield c
+            return gen()
+        return GeminiAnswerer(client=SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content_stream=gen_stream))))
+
+    stream = make([SimpleNamespace(text="One. Two. ", usage_metadata=meta)]).stream_sentences("s", "u")
+    assert await stream.__anext__() == "One."
+    await stream.aclose()  # consumer stops after the first sentence
+    recs = lines(tmp_path)
+    assert len(recs) == 1 and recs[0]["prompt_tokens"] == 9 and recs[0]["output_tokens"] == 3
+
+    stream = make([SimpleNamespace(text="Hi. ", usage_metadata=None)]).stream_sentences("s", "u")
+    await stream.__anext__()
+    await stream.aclose()
+    assert len(lines(tmp_path)) == 1  # no metadata seen: nothing recorded

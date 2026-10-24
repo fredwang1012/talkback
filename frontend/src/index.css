@@ -278,3 +278,11 @@ button:disabled { cursor: not-allowed; }
   .drawer { display: none; } /* a debug aid toggled with the backtick key; there is no such key on a phone */
   .stage { padding-bottom: 200px; }
 }
+
+/* chapter navigation (one chapter is rendered at a time) and the lip-sync toggle */
+.chapter-nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0 20px; font-family: var(--font-ui); font-size: 0.9rem; }
+.chapter-nav button, .chapter-nav select { background: var(--ground-raised); color: var(--ink); border: 1px solid var(--brass-soft); border-radius: var(--radius); padding: 6px 10px; font: inherit; }
+.chapter-nav select { flex: 1; min-width: 0; max-width: 100%; }
+.chapter-nav button:disabled { opacity: 0.45; }
+.chapter-nav button:focus-visible, .chapter-nav select:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.lipsync { display: flex; gap: 8px; align-items: flex-start; font-size: 0.88rem; color: var(--ink-soft); }

@@ -2,13 +2,14 @@
 
 Usage (from talkback/):
   python scripts/run_all.py --plan                 # show what would run and what is blocked, run nothing
-  python scripts/run_all.py                        # Boson stages only (probes, prerender); Anthropic stages are skipped
-  python scripts/run_all.py --anthropic            # also cast, segment, summaries, blurbs, spoiler eval
+  python scripts/run_all.py                        # Boson probes and the free stages; Anthropic stages are skipped
+  python scripts/run_all.py --anthropic            # also summaries, cast, segment, spoiler eval
   python scripts/run_all.py --anthropic --yes      # no pauses, and accept spend estimates over $5
 
 Stops at the first failing stage. Stages whose key is missing are reported as blocked, never run.
 Anthropic stages need --anthropic on purpose: they spend credit, so they never run by accident.
-After `cast` it pauses so you can review data/books/<id>/book.json (unless --yes).
+After `cast` it pauses so you can review data/books/hp*/book.json (unless --yes).
+Read-mode audio is synthesised on demand and cached; there is no prerender stage (the series is ~6 M characters).
 Standard library only, so it runs under any Python 3.
 """
 import argparse
@@ -20,15 +21,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-NOVEL = "scandal-in-bohemia"
-TEXTBOOK = "biology-2e-ch8"
+PDF = "data/uploads/harry-potter-collection.pdf"
+SERIES = "harry-potter"
+BOOKS = ["hp1-sorcerers-stone", "hp2-chamber-of-secrets", "hp3-prisoner-of-azkaban", "hp4-goblet-of-fire",
+         "hp5-order-of-the-phoenix", "hp6-half-blood-prince", "hp7-deathly-hallows"]
+EVAL_BOOK = "hp3-prisoner-of-azkaban"  # mid-series: earlier books are fair game, this one is spoiler-gated
 
 
 @dataclass
 class Stage:
     name: str
     needs: str | None  # "boson", "anthropic" or None
-    cmd: list[str]  # run with `uv run --project backend python ...` unless it starts with "!"
+    cmd: list[str]  # run with `uv run --project backend python ...`
     why: str
     pause_after: str | None = None
 
@@ -44,32 +48,30 @@ def read_env(path: Path) -> dict[str, str]:
     return out
 
 
-def build_plan(has_textbook_text: bool) -> list[Stage]:
+def each(flag: str) -> list[str]:
+    return [x for b in BOOKS for x in (flag, b)]
+
+
+def build_plan(has_pdf: bool) -> list[Stage]:
     py = lambda *a: list(a)  # noqa: E731
     stages = [
         Stage("probe-secret", "boson", py("scripts/probe_secret.py"), "M0: ephemeral key prefix and expiry"),
         Stage("probe-tts", "boson", py("scripts/probe_tts.py"), "M0: timestamps, tags, voices"),
         Stage("probe-voice", "boson", py("scripts/probe_voice.py"), "M0: voice clone response shape"),
         Stage("probe-realtime", "boson", py("scripts/probe_realtime.py"), "M0: manual turns, instructions, voice change, latency"),
-        Stage("cast", "anthropic", py("preprocess/cast.py", "--book", NOVEL), "Sonnet casts the novel",
-              pause_after=f"Review the cast in data/books/{NOVEL}/book.json (voices, personas, first_para), then continue."),
-        Stage("segment", "anthropic", py("preprocess/segment.py", "--book", NOVEL), "Haiku splits paragraphs by speaker"),
-        Stage("chunk-novel", None, py("preprocess/chunk_tts.py", "--book", NOVEL), "TTS chunks from the segments"),
-        Stage("summaries", "anthropic", py("preprocess/summaries.py", "--book", NOVEL), "prefix-only story-so-far notes"),
-        Stage("index-novel", None, py("preprocess/index.py", "--book", NOVEL), "retrieval index (local embeddings)"),
-        Stage("blurbs", "anthropic", py("preprocess/index.py", "--book", NOVEL, "--blurbs"), "context blurbs for retrieval (optional)"),
-        Stage("prerender-novel", "boson", py("preprocess/prerender_tts.py", "--book", NOVEL), "Boson TTS for every chunk, about $0.7"),
-        Stage("eval-spoilers", "anthropic", py("preprocess/eval_spoilers.py", "--book", NOVEL, "--notes"), "M5: 0 leaks target"),
     ]
-    if has_textbook_text:
-        stages += [
-            Stage("ingest-textbook", None, py("preprocess/ingest.py", "--book", TEXTBOOK), "Biology ch. 8 into paragraphs"),
-            Stage("cast-textbook", None, py("preprocess/cast.py", "--book", TEXTBOOK), "tutor narrator, no LLM"),
-            Stage("segment-textbook", "anthropic", py("preprocess/segment.py", "--book", TEXTBOOK, "--emphasis"), "awe/enthusiasm picks"),
-            Stage("chunk-textbook", None, py("preprocess/chunk_tts.py", "--book", TEXTBOOK), "TTS chunks"),
-            Stage("index-textbook", None, py("preprocess/index.py", "--book", TEXTBOOK), "retrieval index"),
-            Stage("prerender-textbook", "boson", py("preprocess/prerender_tts.py", "--book", TEXTBOOK), "Boson TTS for the chapter"),
-        ]
+    if has_pdf:
+        stages.append(Stage("ingest", None, py("preprocess/ingest_series.py", "--pdf", PDF, "--skip-existing"),
+                            "split the collection PDF into 7 books (existing books are kept)"))
+    stages += [
+        Stage("summaries", "anthropic", py("preprocess/summaries.py", *each("--book")), "incremental story-so-far notes, Sonnet"),
+        Stage("cast", "anthropic", py("preprocess/cast.py", "--series", SERIES), "one Sonnet call casts the whole series",
+              pause_after="Review the cast in data/books/hp*/book.json (voices, personas, first_para), then continue."),
+        Stage("segment", "anthropic", py("preprocess/segment.py", *each("--book")), "Haiku splits dialogue by speaker"),
+        Stage("chunk", None, py("preprocess/chunk_tts.py", *each("--book")), "TTS chunks from the segments"),
+        Stage("index-vertex", None, py("scripts/index_vertex.py", *each("--book")), "embed + upsert into Vector Search (GCP)"),
+        Stage("eval-spoilers", "anthropic", py("preprocess/eval_spoilers.py", "--book", EVAL_BOOK, "--notes"), "M5: 0 leaks target"),
+    ]
     return stages
 
 
@@ -96,7 +98,7 @@ def uv_path() -> str:
 
 def command_for(stage: Stage, assume_yes: bool) -> list[str]:
     cmd = [uv_path(), "run", "--project", "backend", "python", *stage.cmd]
-    spends = stage.needs in ("anthropic", "boson") and stage.name.startswith(("prerender", "segment", "summaries", "eval", "cast"))
+    spends = stage.needs in ("anthropic", "boson") and stage.name.startswith(("segment", "summaries", "eval", "cast"))
     if assume_yes and spends and stage.name != "cast":
         cmd.append("--yes")
     return cmd
@@ -113,15 +115,15 @@ def main() -> int:
 
     env = read_env(ROOT / ".env")
     keys = key_state(env, args.anthropic)
-    stages = build_plan((ROOT / "data/raw/biology2e_ch8.txt").exists())
+    stages = build_plan((ROOT / PDF).exists())
     if args.only:
         stages = [s for s in stages if s.name in args.only]
     stages = [s for s in stages if s.name not in args.skip]
 
     print(f"BOSON_API_KEY: {'set' if keys['boson'] else 'missing'}; ANTHROPIC_API_KEY: "
           f"{'set' if env.get('ANTHROPIC_API_KEY') else 'missing'} ({'allowed' if args.anthropic else 'not allowed without --anthropic'})")
-    if not (ROOT / "data/raw/biology2e_ch8.txt").exists():
-        print("note: data/raw/biology2e_ch8.txt is missing, so the textbook stages are not in the plan")
+    if not (ROOT / PDF).exists():
+        print(f"note: {PDF} is missing, so the ingest stage is not in the plan")
     print()
     runnable: list[Stage] = []
     for s in stages:

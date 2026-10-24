@@ -2,6 +2,7 @@
 
 HARD INVARIANT (novels): a passage is eligible only if para_end <= reader_para, and the story-so-far summary used
 has upto_para <= reader_para. This is enforced here, on the server, and never delegated to the client or the model.
+Series: passages from books BEFORE this one in the same series are always eligible (the reader has finished them).
 """
 import asyncio
 import json
@@ -39,6 +40,8 @@ class Chunk:
     para_end: int
     text: str
     context_blurb: str = ""
+    book_id: str = ""     # set only for passages from an earlier book of the series ("" = the book being read)
+    book_title: str = ""
 
 
 def make_chunks(book: Book, size: int = 3, overlap: int = 1) -> list[Chunk]:
@@ -122,18 +125,38 @@ def latest_summary(book: Book, reader_para: int) -> str:
     return max(ok, key=lambda s: s.upto_para).text if ok else ""
 
 
-def _finish(book: Book, index, found: list[Chunk], reader_para: int, spoiler_safe: bool) -> dict:
-    """Shared post-search step: recent passage, char cap, story summary."""
+def is_eligible(c: Chunk, book: Book, reader_para: int, earlier: frozenset[str]) -> bool:
+    """Spoiler rule: anything from an earlier book of the series, or this book up to reader_para."""
+    if c.book_id and c.book_id != book.id:
+        return c.book_id in earlier
+    return c.para_end <= reader_para
+
+
+def _finish(book: Book, index, found: list[Chunk], reader_para: int, spoiler_safe: bool,
+            earlier: frozenset[str] = frozenset(), recap: str = "") -> dict:
+    """Shared post-search step: recent passage, char cap, story summary (with the earlier books' recap)."""
     if spoiler_safe:  # backstop: enforce the spoiler invariant whatever the index returned
-        found = [c for c in found if c.para_end <= reader_para]
-    passages = [{"para_start": c.para_start, "para_end": c.para_end, "text": c.text} for c in found]
+        found = [c for c in found if is_eligible(c, book, reader_para, earlier)]
+    else:
+        found = [c for c in found if not c.book_id or c.book_id == book.id]
+    passages = []
+    for c in found:
+        p = {"para_start": c.para_start, "para_end": c.para_end, "text": c.text}
+        if c.book_id and c.book_id != book.id:
+            p["book"] = c.book_title or c.book_id
+        passages.append(p)
     recent = recent_passage(book, reader_para)
-    if recent and not any(p["para_start"] <= recent["para_start"] and p["para_end"] >= recent["para_end"] for p in passages):
+    if recent and not any("book" not in p and p["para_start"] <= recent["para_start"] and p["para_end"] >= recent["para_end"]
+                          for p in passages):
         passages.append(recent)
-    passages.sort(key=lambda p: p["para_start"])
-    # hard cap: drop the passages furthest from the reader first, never the recent one
+    passages.sort(key=lambda p: ("book" not in p, p["para_start"]))  # earlier books first, then this book in order
+
+    def distance(p: dict) -> float:
+        return float("inf") if "book" in p else abs(reader_para - p["para_end"])
+
+    # hard cap: drop the passages furthest from the reader first (earlier books count as furthest), never the recent one
     while sum(len(p["text"]) for p in passages) > MAX_PASSAGE_CHARS and len(passages) > 1:
-        victim = max((p for p in passages if p is not recent), key=lambda p: abs(reader_para - p["para_end"]), default=None)
+        victim = max((p for p in passages if p is not recent), key=distance, default=None)
         if victim is None:
             break
         passages.remove(victim)
@@ -142,6 +165,8 @@ def _finish(book: Book, index, found: list[Chunk], reader_para: int, spoiler_saf
         p["text"] = p["text"][: max(0, MAX_PASSAGE_CHARS - total)]
         total += len(p["text"])
     story = latest_summary(book, reader_para) if spoiler_safe else ""
+    if spoiler_safe and recap:
+        story = f"Earlier books:\n{recap}\n\nThis book so far:\n{story or '(just started)'}"
     return {"passages": passages, "story_so_far": story, "mode": index.mode, "reader_para": reader_para}
 
 
@@ -156,11 +181,15 @@ def retrieve(book: Book, index: Index, query: str, reader_para: int, k: int = 4)
     return _finish(book, index, found, reader_para, spoiler_safe)
 
 
-async def aretrieve(book: Book, index, query: str, reader_para: int, k: int = 4) -> dict:
-    """Async `retrieve`: same output; awaits index.asearch when present, else runs the sync search in a thread."""
+async def aretrieve(book: Book, index, query: str, reader_para: int, k: int = 4, *,
+                    earlier: frozenset[str] = frozenset(), recap: str = "") -> dict:
+    """Async `retrieve`: same output; awaits index.asearch when present, else runs the sync search in a thread.
+
+    `earlier`: ids of the series books before this one (fully eligible); `recap`: their closing summaries.
+    """
     spoiler_safe, reader_para = _clamp(book, reader_para)
     if hasattr(index, "asearch"):
         found = await index.asearch(query, reader_para, k, spoiler_safe=spoiler_safe)
     else:
         found = await asyncio.to_thread(index.search, query, reader_para, k, spoiler_safe=spoiler_safe)
-    return _finish(book, index, found, reader_para, spoiler_safe)
+    return _finish(book, index, found, reader_para, spoiler_safe, earlier, recap)

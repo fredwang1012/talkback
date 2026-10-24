@@ -52,7 +52,8 @@ def test_filter_and_top_k_passed_to_store():
     store = FakeStore([row(1)])
     run(VertexIndex(make_book(), FakeEmbedder(), store).asearch("q", 10, 4))
     flt = {"$and": [{"book_id": {"$eq": "b"}}, {"para_end": {"$lte": 10}}]}
-    assert store.calls == [("vector", flt, 16), ("text", flt, 16)]
+    assert sorted(store.calls, key=lambda c: c[0]) == [("text", flt, 16), ("vector", flt, 16)]
+    assert store.calls[0][0] == "text", "text search starts before the embedding is ready"
 
 
 def test_textbook_path_has_no_para_filter_and_no_post_filter():
