@@ -311,3 +311,24 @@ def test_retry_respects_upload_enrich_off(rig, monkeypatch):
     assert r.status_code == 409 and r.json()["detail"] == main.ENRICH_OFF
     assert not rig.fake.calls
 
+
+
+def test_enrichment_runs_up_to_enrich_parallel_books_at_once():
+    import asyncio as _a
+    sem = _a.Semaphore(max(1, settings.enrich_parallel))
+    assert settings.enrich_parallel >= 2
+
+    async def run():
+        active = peak = 0
+
+        async def job():
+            nonlocal active, peak
+            async with sem:
+                active += 1
+                peak = max(peak, active)
+                await _a.sleep(0.01)
+                active -= 1
+        await _a.gather(*(job() for _ in range(5)))
+        return peak
+    assert _a.run(run()) == settings.enrich_parallel
+    assert isinstance(main._enrich_lock, _a.Semaphore)

@@ -744,7 +744,7 @@ def _set_enrich(book_id: str, **fields) -> None:
     _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", enrich=enrich, index=_mem_index(book_id), **extra)
 
 
-_enrich_lock = asyncio.Lock()  # one enrichment at a time (cost control and rate limits)
+_enrich_lock = asyncio.Semaphore(max(1, settings.enrich_parallel))  # ENRICH_PARALLEL uploads at a time (rate limits)
 
 
 async def _enrich_indexer(book: Book) -> None:
