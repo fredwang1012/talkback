@@ -5,7 +5,8 @@
  *  - the voice position comes from an `AudioClock` anchored when the audio really starts and advanced by the wall
  *    clock; the raw `currentTime` only nudges it gently (or re-anchors it after a real jump such as a seek);
  *  - the measured drift is smoothed (EMA);
- *  - inside a dead-band nothing changes; outside it the video's playbackRate is nudged (clamped) so it catches up
+ *  - inside a dead-band nothing changes (with hysteresis: enter below 0.75x, leave above 1.25x, so a drift hovering
+ *    at the edge does not flip the rate); outside it the video's playbackRate is nudged (clamped) so it catches up
  *    without a frame jump; only a large drift triggers a seek, and never more often than the cooldown.
  */
 export interface DriftOptions {
@@ -55,6 +56,7 @@ export class DriftController {
   private ema: number | null = null;
   private lastSeekAt = -Infinity;
   private rate = 1;
+  private inBand = true;
 
   constructor(opts: Partial<DriftOptions> = {}) { this.opts = { ...DEFAULT_DRIFT, ...opts }; }
 
@@ -63,7 +65,7 @@ export class DriftController {
   setStartOffset(s: number) { this.opts.startOffsetS = s; }
 
   /** Forget history, e.g. when a new clip starts or after the video was moved. */
-  reset() { this.ema = null; this.rate = 1; }
+  reset() { this.ema = null; this.rate = 1; this.inBand = true; }
 
   /** videoTime and audioTime in seconds (audioTime should come from AudioClock). */
   update(videoTime: number, audioTime: number, nowMs: number): DriftAction {
@@ -74,10 +76,11 @@ export class DriftController {
     const d = this.ema;
 
     if (Math.abs(d) > o.hardSeekS && Math.abs(raw) > o.hardSeekS && nowMs - this.lastSeekAt >= o.seekCooldownMs) {
-      this.lastSeekAt = nowMs; this.ema = null; this.rate = 1;
+      this.lastSeekAt = nowMs; this.ema = null; this.rate = 1; this.inBand = true;
       return { kind: "seek", to: Math.max(0, target), rate: 1 };
     }
-    if (Math.abs(d) < o.deadBandS) {
+    this.inBand = Math.abs(d) < o.deadBandS * (this.inBand ? 1.25 : 0.75);
+    if (this.inBand) {
       if (this.rate !== 1) { this.rate = 1; return { kind: "rate", rate: 1 }; }
       return { kind: "none", rate: 1 };
     }

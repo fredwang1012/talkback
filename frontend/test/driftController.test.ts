@@ -17,6 +17,18 @@ describe("DriftController", () => {
     expect(a.rate).toBeGreaterThan(1);
     expect(a.rate).toBeLessThanOrEqual(1.08);
   });
+  it("has hysteresis: a drift hovering around the dead-band edge does not flip the rate", () => {
+    const c = new DriftController({ emaAlpha: 1 });
+    const kinds: string[] = [];
+    let t = 0;
+    for (const d of [0.035, 0.045, 0.036, 0.044, 0.038, 0.046]) kinds.push(c.update(1 + d, 1, (t += 100)).kind);
+    expect(kinds.every((k) => k === "none")).toBe(true); // never left the band (exit is above 0.05 s)
+    expect(c.update(1.06, 1, (t += 100)).kind).toBe("rate"); // out
+    const back: number[] = [];
+    for (const d of [0.045, 0.036, 0.044]) back.push(c.update(1 + d, 1, (t += 100)).rate);
+    expect(back.every((r) => r < 1)).toBe(true); // stays nudging until below 0.03 s
+    expect(c.update(1.02, 1, (t += 100))).toEqual({ kind: "rate", rate: 1 });
+  });
   it("returns the rate to 1 once back in the dead-band", () => {
     const c = new DriftController({ emaAlpha: 1 });
     c.update(1.2, 1, 0);
