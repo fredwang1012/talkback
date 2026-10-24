@@ -1,3 +1,4 @@
+import { isAutoplayBlock, TAP_TO_PLAY } from "../audio/mediaErrors";
 import type { FlatChunk } from "./position";
 
 export type WordTiming = { start: number; end: number; char_start: number; char_end: number };
@@ -136,6 +137,7 @@ export class ReaderEngine {
     } catch (e) {
       if (gen !== this.gen) return;
       this.wantPlay = false;
+      if (isAutoplayBlock(e)) { this.set("paused", TAP_TO_PLAY); return; } // autoplay policy: wait for a tap, not an error
       this.set("error", e instanceof Error ? e.message : String(e));
     }
   }
@@ -156,7 +158,11 @@ export class ReaderEngine {
     if (this.state === "playing" || this.chunks.length === 0) return;
     this.wantPlay = true;
     if (this.state === "paused" && this.current) {
-      void this.current.audio.play().then(() => this.set("playing"), (e) => this.set("error", String(e)));
+      void this.current.audio.play().then(() => this.set("playing"), (e) => {
+        this.wantPlay = false;
+        if (isAutoplayBlock(e)) this.set("paused", TAP_TO_PLAY);
+        else this.set("error", e instanceof Error ? e.message : String(e));
+      });
       return;
     }
     if (this.state === "ended") this.index = 0;

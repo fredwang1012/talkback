@@ -1,3 +1,4 @@
+import { isAutoplayBlock } from "../audio/mediaErrors";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getAccessToken, setAccessToken } from "../accessToken";
 import {
@@ -44,6 +45,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const stopTalkRef = useRef<() => void>(() => {});
   const [word, setWord] = useState<{ charStart: number; charEnd: number } | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
+  const [audioNotice, setAudioNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const demo = useMemo(() => isDemo(), []);
   const [code, setCode] = useState(getAccessToken());
@@ -118,6 +120,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       setPlaying(s.state === "playing" || s.state === "loading");
       setLoading(s.state === "loading");
       setAudioError(s.state === "error" ? s.error : null);
+      setAudioNotice(s.state === "paused" ? s.error : null);
     });
     const meter = new AudioLevelMeter();
     meterRef.current = meter;
@@ -291,8 +294,11 @@ export default function Reader({ bookId }: { bookId: string }) {
     try {
       const r = await fetchTts(bookId, chunk.id, voice);
       if (!r.cached) spend.addTts(chunk.tts_text.length);
-      void new Audio(r.audio_url).play();
-    } catch (e) { setAudioError(e instanceof Error ? e.message : String(e)); }
+      await new Audio(r.audio_url).play();
+    } catch (e) {
+      if (isAutoplayBlock(e)) setAudioNotice("Tap the preview button again to hear the voice. Your browser needs a fresh click.");
+      else setAudioError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   useEffect(() => {
@@ -376,7 +382,7 @@ export default function Reader({ bookId }: { bookId: string }) {
         para={para} totalParas={book.paragraphs.length}
         atStart={index === 0} atEnd={index >= last}
         hasCast={book.characters.length > 0}
-        audioAvailable={audioAvailable} audioError={audioError}
+        audioAvailable={audioAvailable} audioError={audioError} audioNotice={audioNotice}
       />}
     </>
   );
