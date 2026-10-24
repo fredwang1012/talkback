@@ -1066,6 +1066,8 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
     textbook -> novel starts enrichment (same caps and UPLOAD_CONFIRM behaviour as an upload) unless the book already
     has its characters; novel -> textbook keeps the characters in the file (the UI ignores them) and writes the
     textbook recap notes (same caps) only when the book has no summaries at all.
+    A PDF is read again so display equations and inline formulas that were dropped while it was a novel come back, and
+    their pictures are cropped.
     """
     users.guard_book(book_id)
     if not book_id.startswith("u-"):
@@ -1086,10 +1088,23 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
     _kind_claims.add(book_id)
     try:
         book = book.model_copy(deep=True)  # load_book's result is cached and must not be mutated
-        book.kind = body.kind
+        pdf_bytes = None
+        pdf = ingest_upload.upload_path(book_id, ".pdf")
+        if body.kind == "textbook" and pdf.is_file():
+            try:
+                pdf_bytes = pdf.read_bytes()
+                book = await asyncio.to_thread(ingest_upload.restore_as_textbook, book, pdf_bytes)
+            except Exception as e:  # still move the shelf; the text they already have stays
+                logging.getLogger(__name__).warning("textbook restore failed: %s", type(e).__name__)
+                pdf_bytes = None
+                book.kind = body.kind
+        else:
+            book.kind = body.kind
         await asyncio.to_thread(books.save_book, settings.data_dir / "books" / book_id / "book.json", book)
         _index_for.cache_clear()
         _set_status(book_id, "ready", kind=body.kind)
+        if pdf_bytes is not None and any(p.kind == "math" or p.inline_math for p in book.paragraphs):
+            _start_equations(book_id, pdf_bytes)
         # a novel's own summaries are kept when it moves to Textbooks (recap then uses them as before)
         needs = not book.characters if body.kind == "novel" else not book.summaries
         if settings.upload_enrich and needs:

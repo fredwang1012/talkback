@@ -377,9 +377,12 @@ def _deco_anchor(spans: list[dict], base: float) -> float:
     """The row a math-only fragment belongs to. A root, sum or delimiter font reports its baseline near the top of a
     box far taller than the glyph, so the middle of the ink is where it actually sits."""
     real = [s for s in spans if s["text"].strip()]
-    if real and all(_BIG_OP_FONT.search(s["font"]) for s in real):
-        inks = [_span_ink(s) for s in real]
-        return (min(b[1] for b in inks) + max(b[3] for b in inks)) / 2
+    ops = [s for s in real if _BIG_OP_FONT.search(s["font"])]
+    if ops:
+        # the raw box, not a band around the reported baseline: that baseline sits at the top of a tall
+        # delimiter, and a band around it lands on the sentence above. An exponent drawn beside the
+        # delimiter must not pull the anchor back up to that baseline.
+        return (min(s["bbox"][1] for s in ops) + max(s["bbox"][3] for s in ops)) / 2
     return base
 
 
@@ -1324,6 +1327,28 @@ def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_
                 sections=sections, paragraphs=paragraphs, narrator=Narrator(voice=NARRATOR_VOICE))
     rechunk_book(book)  # stamps Book.chunk_rules
     return book
+
+
+def restore_as_textbook(book: Book, data: bytes) -> Book:
+    """Re-read a PDF that was stored as a novel, so its equations come back, and refresh the retrieval index.
+
+    A paper the detector calls a novel is stored with every formula turned into plain text. Moving it to Textbooks
+    cannot recover the pictures from that text; the original file is read again. Characters already on the book stay.
+    Summaries do not: their paragraph numbers belong to the old text.
+    """
+    detected = book.kind_detected.model_dump() if book.kind_detected else None
+    rebuilt = build_book(book.id, book.title, book.author, "textbook", extract_text(data, ".pdf"), detected)
+    rebuilt.license = book.license
+    rebuilt.attribution = book.attribution
+    rebuilt.characters = book.characters
+    rebuilt.narrator = book.narrator
+    rebuilt.series = book.series
+    rebuilt.series_index = book.series_index
+    for p in rebuilt.paragraphs:
+        p.tts_chunks = chunk_paragraph(p, rebuilt)
+    chunks = retrieval.make_chunks(rebuilt)
+    retrieval.save_index(settings.data_dir / "books" / book.id / "index", chunks, None)
+    return rebuilt
 
 
 def process_upload(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str,

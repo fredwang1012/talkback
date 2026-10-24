@@ -119,6 +119,25 @@ def test_two_glyphs_can_join_the_same_sentence():
     assert "formula" in text and "⎨" in text and "!" in text
 
 
+def test_a_delimiter_under_the_line_is_not_cropped_into_the_sentence():
+    """The bracket's reported baseline is near the sentence; the glyph itself hangs into the equation below."""
+    def S(text, font, x, y, size=10.0, box=None):
+        span = {"text": text, "font": font, "size": size, "origin": (x, y),
+                "bbox": (x, y - size, x + 8 * len(text), y + 2)}
+        if box:
+            span["bbox"] = box
+        return span
+    sentence = [S("as a function of a tradeoff factor ", "CMR10", 50, 275),
+                S("α", "CMMI10", 250, 275)]
+    bracket = [S("\x14", "CMEX10", 200, 285, box=(200, 282, 212, 294)),
+               S("2", "CMR6", 212, 287, size=6.0, box=(212, 283, 218, 289))]
+    groups = [[[sentence, 275.0]], [[bracket, 285.0]]]
+    _attach_deco_rows(groups)
+    sentence_text = "".join(s["text"] for s in groups[0][0][0])
+    assert "\x14" not in sentence_text
+    assert groups[1][0] is not None
+
+
 def test_a_tall_delimiter_stays_with_the_equation_under_it():
     """A display equation's brackets are their own block, and the font baseline sits nearer the sentence above
     than the equation. The bracket belongs to the equation, not inside "a 95% chance"."""

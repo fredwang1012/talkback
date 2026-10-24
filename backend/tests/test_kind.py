@@ -202,6 +202,30 @@ def test_textbook_to_novel_respects_caps_and_confirm(client, monkeypatch):
     assert client.post(f"/api/books/{other}/enrich").status_code == 202
 
 
+def test_a_novel_pdf_gets_its_equations_back_when_moved_to_textbooks(client, monkeypatch):
+    import pymupdf as fitz
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_textbox(fitz.Rect(72, 60, 500, 150),
+                        "Plants convert light into sugars and store them for later use by the cell.", fontsize=11)
+    page.insert_text((200, 200), "y = b + a x + e", fontsize=11, fontname="symb")
+    page.insert_text((470, 200), "(3.4)", fontsize=11)
+    page.insert_textbox(fitz.Rect(72, 240, 500, 330),
+                        "A second paragraph explains how those sugars are broken down again.", fontsize=11)
+    started = []
+    monkeypatch.setattr(main, "_start_equations", lambda book_id, data: started.append(book_id))
+    r = client.post("/api/books/upload", files={"file": ("paper.pdf", doc.tobytes())},
+                    data={"title": "Paper", "author": "Me", "kind": "novel"})
+    book_id = r.json()["book_id"]
+    before = client.get(f"/api/books/{book_id}").json()
+    assert all(p["kind"] != "math" for p in before["paragraphs"])
+    assert client.post(f"/api/books/{book_id}/kind", json={"kind": "textbook"}).status_code == 202
+    after = client.get(f"/api/books/{book_id}").json()
+    assert after["kind"] == "textbook"
+    assert any(p["kind"] == "math" and p["math"]["number"] == "3.4" for p in after["paragraphs"])
+    assert started == [book_id]
+
+
 def test_novel_to_textbook_keeps_characters(client):
     book_id = upload(client, kind="novel").json()["book_id"]
     assert client.get(f"/api/books/{book_id}").json()["characters"]

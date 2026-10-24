@@ -214,6 +214,7 @@ button:disabled { cursor: not-allowed; }
 .para .math-inline .katex { font-size: 1.05em; }
 .para .math-inline-img {
   display: inline-block; vertical-align: middle; width: auto; max-width: 100%;
+  padding: 0; box-sizing: content-box;  /* the height is the picture; the KaTeX padding must not shrink it */
   filter: var(--math-img-filter); mix-blend-mode: var(--math-img-blend);
 }
 .para .sentence .math-inline-img.word { background: none; padding: 0; outline: 2px solid var(--brass); outline-offset: 1px; }

@@ -688,6 +688,12 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   their ink, so they stay on the equation and "a 95% chance" is left as a sentence. Once a glyph is appended, that
   sentence stays a prose row: reclassifying it deleted the sentence and the next glyph crashed extraction
   (`TypeError` on the CQL paper; short excerpts never hit a second glyph on the same line).
+- A paper the heuristic calls a novel is stored with formulas flattened to text (only textbooks keep them). Moving
+  that PDF to Textbooks reads the file again and crops the pictures; the kind flag alone left the flat text in place.
+- An inline crop's height is the picture. The padding that keeps a KaTeX limit off the next line was also on the
+  image, and with border-box it shrank the picture to about two thirds. A tall delimiter is placed by the middle
+  of its real box: a band around its reported baseline (the top of the glyph) glued the brackets of the equation
+  below into the sentence, and that crop showed up as a tiny second copy of the line.
 - ISLR excerpt: 184 inline formulas (79 distinct crops), all read (e.g. "\hat{\beta}_1", "beta one hat"). CQL paper:
   49. Limits: a formula that pymupdf splits over several text lines (a stacked sum's limits, a hat set on its own
   line) is marked only in part; ligature glyphs such as "coe!cients" are a separate extraction issue.
