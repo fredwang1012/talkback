@@ -374,6 +374,9 @@ export class ReaderEngine {
       for (const [k, e] of [...this.entries]) {
         if (e.speed === tag) continue;
         if (e.loaded && e.loaded === this.current) continue; // keeps playing; its clip stays with it
+        // the chunk being started (loading, in its clip gate, or chained after the previous one ended) is awaited by
+        // startChunk: dropping it would pause the audio it is about to play. It plays in its tag at the matching rate.
+        if (k === this.index && this.wantPlay) continue;
         this.dropEntry(k, e);
       }
     }
