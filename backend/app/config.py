@@ -10,13 +10,13 @@ ROOT = Path(__file__).resolve().parents[2]  # talkback/
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore")
 
-    boson_api_key: str = ""
-    anthropic_api_key: str = ""
+    boson_api_key: str = Field(default="", repr=False)   # never in a repr (tracebacks, test output)
+    anthropic_api_key: str = Field(default="", repr=False)
     boson_base_url: str = "https://api.boson.ai"
     data_dir: Path = ROOT / "data"
     # Optional shared secret. When set, endpoints that spend Boson credit require header X-Talkback-Token.
     # Env var is TALKBACK_ACCESS_TOKEN (README, DEPLOY.md); plain ACCESS_TOKEN still works.
-    access_token: str = Field(default="", validation_alias=AliasChoices("TALKBACK_ACCESS_TOKEN", "ACCESS_TOKEN"))
+    access_token: str = Field(default="", repr=False, validation_alias=AliasChoices("TALKBACK_ACCESS_TOKEN", "ACCESS_TOKEN"))
     # True only behind a trusted proxy (Cloud Run): client_ip then uses the right-most X-Forwarded-For entry.
     trust_proxy: bool = False
     # Comma-separated browser origins allowed by CORS (the single-container deploy is same-origin and needs none).

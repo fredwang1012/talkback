@@ -801,10 +801,31 @@ async def _retry_failed_indexes() -> None:
             book = await asyncio.to_thread(books.load_book, book_id)
             if book is None:
                 continue
+            _settle_index_only_failure(book_id, book)
             chunks = await asyncio.to_thread(load_chunks, book)
             await _index_in_background(book, chunks)   # never raises; records done or error in status.json
+            if (book_status_or_empty(book_id).get("index") or {}).get("state") == "done":
+                en = book_status_or_empty(book_id).get("enrich") or {}
+                if en.get("status") == "done" and en.get("message") == enrich_pipeline.INDEX_PENDING:
+                    _set_enrich(book_id, status="done", stage="done", progress=1.0, message=enrich_pipeline.READY)
     except Exception as e:
         logging.getLogger(__name__).warning("retrying failed indexes failed: %s", type(e).__name__)
+
+
+def book_status_or_empty(book_id: str) -> dict:
+    """The stored status without the per-user guard (startup work has no request identity)."""
+    try:
+        return _upload_status.get(book_id) or ingest_upload.read_status(book_id) or {}
+    except Exception:
+        return {}
+
+
+def _settle_index_only_failure(book_id: str, book) -> None:
+    """A book an older version marked "stopped early" only because its last step (indexing) failed: its characters
+    and recap are saved, so it is done; search uses basic mode until the index is rebuilt."""
+    en = book_status_or_empty(book_id).get("enrich") or {}
+    if en.get("status") == "error" and en.get("stage") == "index" and book.characters and book.summaries:
+        _set_enrich(book_id, status="done", stage="done", progress=1.0, message=enrich_pipeline.INDEX_PENDING)
 
 
 MAX_ENRICH_RETRIES = 3          # user retries per book (persisted in status.json as enrich_retries)
