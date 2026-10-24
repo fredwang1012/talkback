@@ -435,6 +435,7 @@ def test_startup_settles_an_old_index_only_failure_as_done(monkeypatch, tmp_path
     from types import SimpleNamespace
     calls = []
     monkeypatch.setattr(main, "_set_enrich", lambda bid, **f: calls.append((bid, f)))
+    monkeypatch.setattr(main.settings, "retrieval_backend", "vertex")
     monkeypatch.setattr(main, "_upload_status", {"u-x-00000000": {"enrich": {"status": "error", "stage": "index"}}})
     book = SimpleNamespace(characters=[1], summaries=[1])
     main._settle_index_only_failure("u-x-00000000", book)
@@ -450,3 +451,16 @@ def test_settings_repr_never_shows_secrets():
     s = Settings(boson_api_key="bai-SECRET123", anthropic_api_key="sk-ant-SECRET", access_token="tok-SECRET")
     text = repr(s) + str(s)
     assert "SECRET" not in text
+
+
+def test_settle_says_ready_when_the_index_is_already_rebuilt(monkeypatch):
+    from app import main
+    from app.enrich import pipeline
+    from types import SimpleNamespace
+    calls = []
+    monkeypatch.setattr(main.settings, "retrieval_backend", "vertex")
+    monkeypatch.setattr(main, "_set_enrich", lambda bid, **f: calls.append(f["message"]))
+    monkeypatch.setattr(main, "_upload_status", {"u-x-00000000": {"enrich": {"status": "error", "stage": "index"},
+                                                                  "index": {"state": "done"}}})
+    main._settle_index_only_failure("u-x-00000000", SimpleNamespace(characters=[1], summaries=[1]))
+    assert calls == [pipeline.READY]

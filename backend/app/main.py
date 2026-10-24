@@ -791,6 +791,7 @@ def _failed_indexes() -> list[str]:
 async def _retry_failed_indexes() -> None:
     """Startup: rebuild the Vertex index of books whose last indexing failed, at most MAX_STARTUP_REINDEX of them and
     once per start (a book that fails again waits for the next start). Never raises."""
+    await asyncio.to_thread(_settle_all_index_only_failures)
     if settings.retrieval_backend != "vertex":
         return
     try:
@@ -820,12 +821,30 @@ def book_status_or_empty(book_id: str) -> dict:
         return {}
 
 
+def _settle_all_index_only_failures() -> None:
+    """Startup: every upload an older version left "stopped early" at the index step, whatever its index state now."""
+    for path in sorted((settings.data_dir / "books").glob("u-*/status.json")):
+        book_id = path.parent.name
+        try:
+            en = (ingest_upload.read_status(book_id) or {}).get("enrich") or {}
+            if en.get("status") != "error" or en.get("stage") != "index":
+                continue
+            book = books.load_book(book_id)
+            if book is not None:
+                _settle_index_only_failure(book_id, book)
+        except Exception as e:
+            logging.getLogger(__name__).warning("settling %s failed: %s", book_id, type(e).__name__)
+
+
 def _settle_index_only_failure(book_id: str, book) -> None:
     """A book an older version marked "stopped early" only because its last step (indexing) failed: its characters
     and recap are saved, so it is done; search uses basic mode until the index is rebuilt."""
     en = book_status_or_empty(book_id).get("enrich") or {}
     if en.get("status") == "error" and en.get("stage") == "index" and book.characters and book.summaries:
-        _set_enrich(book_id, status="done", stage="done", progress=1.0, message=enrich_pipeline.INDEX_PENDING)
+        indexed = ((book_status_or_empty(book_id).get("index") or {}).get("state") == "done"
+                   or settings.retrieval_backend != "vertex")
+        _set_enrich(book_id, status="done", stage="done", progress=1.0,
+                    message=enrich_pipeline.READY if indexed else enrich_pipeline.INDEX_PENDING)
 
 
 MAX_ENRICH_RETRIES = 3          # user retries per book (persisted in status.json as enrich_retries)
