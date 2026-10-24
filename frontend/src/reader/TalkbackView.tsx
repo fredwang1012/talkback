@@ -86,7 +86,8 @@ export default function TalkbackView({
 
   const press = () => { if (!held.current) { held.current = true; talk.pttDown(); } };
   const release = () => { if (held.current) { held.current = false; talk.pttUp(); } };
-  const remembered = priorTurns(talk.messages, speakerId, 99).length;
+  // only what is given back to the character counts: a fresh session and the Gemini answer get the last HISTORY_TURNS lines
+  const remembered = priorTurns(talk.messages, speakerId).length;
   const busy = line === "thinking" || line === "speaking";
 
   const send = () => {
@@ -185,7 +186,7 @@ export default function TalkbackView({
           </div>
           <div className="tb-actions">
             {remembered > 0 && (
-              <span className="remembers" title="This chat is kept for this browser tab and given back to the character, so follow-up questions work">
+              <span className="remembers" title="This chat is kept for this browser tab and its latest lines with this character are given back to them, so follow-up questions work">
                 {name} remembers this chat ({remembered} {remembered === 1 ? "line" : "lines"})
               </span>
             )}

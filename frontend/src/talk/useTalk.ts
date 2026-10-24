@@ -132,6 +132,20 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   }
   const clientRef = useRef<TalkClient | null>(null);
   const viaGemini = answersViaGemini(health);
+  // Each character has their own memory (priorTurns is per speaker). A Realtime session holds every turn said in it,
+  // so after a speaker switch it is dropped once no answer is in progress: the next press opens a session seeded with
+  // that character's own turns (historyProvider), instead of one carrying the other character's chat (or none of theirs).
+  const viaGeminiRef = useRef(viaGemini);
+  viaGeminiRef.current = viaGemini;
+  const sessionSpeaker = useRef(speakerId);
+  const resetIfSpeakerChanged = useRef(() => {});
+  resetIfSpeakerChanged.current = () => {
+    const c = controller.current;
+    if (!c || viaGeminiRef.current || sessionSpeaker.current === latest.current.speakerId) return;
+    if (!["reading", "talk-idle", "resuming"].includes(c.state)) return; // an answer is in progress: after it ends
+    sessionSpeaker.current = latest.current.speakerId;
+    clientRef.current?.resetConversation();
+  };
   const latest = useRef({ reader, voiceFor, speakerId, faceIdFor, narratorFaceId, spoilers, tools });
   latest.current = { reader, voiceFor, speakerId, faceIdFor, narratorFaceId, spoilers, tools };
 
@@ -200,7 +214,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       },
       onToolRun: (chip) => setMessages((m) => addToolChip(m, chip)),
       onInterrupted: () => setMessages(markInterrupted),
-      onState: (st) => { setState(st); if (st !== "answering") setLivePaused(false); if (["listening", "retrieving", "answering"].includes(st)) { replayer.current?.stop(); narration.current?.stop(); } if (["reading", "talk-idle", "resuming"].includes(st)) setMessages(finishAnswer); },
+      onState: (st) => { setState(st); if (st !== "answering") setLivePaused(false); if (["listening", "retrieving", "answering"].includes(st)) { replayer.current?.stop(); narration.current?.stop(); } if (["reading", "talk-idle", "resuming"].includes(st)) { setMessages(finishAnswer); resetIfSpeakerChanged.current(); } },
       onToast: setToast,
       onCaption: (text) => { setCaption(text); if (!viaGemini && text) setMessages((m) => setPendingText(m, text)); },
       onSpeaking: setSpeaking,
@@ -230,7 +244,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
 
   useEffect(() => { controller.current?.setAutoResume(autoResume); }, [autoResume, enabled]);
   useEffect(() => { controller.current?.setTalkback(talkback); }, [talkback, enabled]);
-  useEffect(() => { void controller.current?.setSpeaker(speakerId); }, [speakerId, enabled]);
+  useEffect(() => { resetIfSpeakerChanged.current(); void controller.current?.setSpeaker(speakerId); }, [speakerId, enabled]);
   // the same speaker with a different resolved voice must reach an open realtime session too
   const voiceKey = voiceFor(speakerId);
   useEffect(() => { void controller.current?.refreshVoice(); }, [voiceKey, enabled]);
