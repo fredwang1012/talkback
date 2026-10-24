@@ -36,11 +36,8 @@ export interface TalkSession {
   ensureOpen(voice: string): Promise<void>;
   /** Switch the voice of an open session (reconnects if the server rejects mid-session changes). */
   setVoice(voice: string): Promise<void>;
-  /**
-   * Start streaming mic audio; audio captured while the socket is still connecting is buffered then sent.
-   * `voiceStarted`: the hands-free voice gate opened the turn, so the pre-roll from before it goes first (#114).
-   */
-  startMic(voiceStarted?: boolean): Promise<void>;
+  /** Start streaming mic audio; audio captured while the socket is still connecting is buffered then sent. */
+  startMic(): Promise<void>;
   /** Stop the mic. With `discard`, drop what was captured instead of keeping it for a commit. */
   stopMic(discard?: boolean): Promise<void>;
   commit(): void;
@@ -276,7 +273,7 @@ export class TalkController {
       : Promise.resolve();
     const connecting = this.d.session.ensureOpen(this.d.voiceFor(this.speakerId)).catch((e: unknown) => this.fail(turn, e));
     this.opening = Promise.all([interrupting, connecting]).then(() => undefined);
-    try { await this.d.session.startMic(handsFree); } catch (e) { this.fail(turn, e, micErrorMessage(e)); }
+    try { await this.d.session.startMic(); } catch (e) { this.fail(turn, e, micErrorMessage(e)); }
   }
 
   async pttUp(): Promise<void> {
