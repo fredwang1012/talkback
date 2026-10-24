@@ -24,7 +24,7 @@ function chunkMs(b64: string): number {
 /** Short and behavioural: the role comes from per-response instructions (brief 3.4 prompting lesson). */
 export const SESSION_INSTRUCTIONS =
   "You are a spoken reading companion. Follow the instructions given with each response. Speak naturally; no markdown. " +
-  "When the reader asks you to act on the book (jump, read a chapter, pause, resume, voices, speed, recap, bookmark, cast), call the tool, then confirm in one short sentence.";
+  "When the reader asks you to act on the book (move, read, repeat, find a topic, pause, speed, recap, bookmark), call the tool, then confirm in one short sentence.";
 
 export interface SocketLike {
   readyState: number;
