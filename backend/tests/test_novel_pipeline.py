@@ -887,7 +887,16 @@ class _Throttled(Exception):
     status_code = 429
 
 
-def test_rate_limited_enrichment_model_falls_back_to_the_main_model_then_cools_down():
+def test_rate_limited_enrichment_model_waits_by_default():
+    async def nosleep(_s):
+        pass
+    client, seen = _fake_gemini(lambda m, n: _Throttled("RESOURCE_EXHAUSTED") if m == "lite" and n < 4 else ("STOP", '{"a":1}'))
+    raw = asyncio.run(GeminiProvider(client, model="lite", fallback="flash", sleep=nosleep).complete("s", "u", {}, "fast", 4000, "low"))
+    assert raw.model == "lite" and "flash" not in seen   # no switch to the pricier model just because Flash-Lite is busy
+
+
+def test_rate_limited_enrichment_model_falls_back_when_enabled_then_cools_down(monkeypatch):
+    monkeypatch.setattr(settings, "enrich_fallback_on_429", True)
     async def nosleep(_s):
         pass
     t = [0.0]

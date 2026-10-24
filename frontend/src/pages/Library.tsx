@@ -135,7 +135,7 @@ function JobCard({ j, onConfirm, onDismiss }: { j: UploadJob; onConfirm: (j: Upl
       {progress !== undefined && <progress max={100} value={pct(progress)} aria-label={`${j.title}: ${jobLine(j)}`} />}
       {j.phase === "confirm" && (
         <button type="button" className="volume-move" onClick={() => onConfirm(j)}>
-          {j.status?.enrich?.summaries_only ? "Write recap notes" : "Process with characters"} (~${(j.estimate ?? 0).toFixed(2)})
+          {j.status?.enrich?.summaries_only ? "Write recap notes" : "Process with characters"}
         </button>
       )}
       {j.bookId && j.phase !== "error" && j.status?.status === "ready" && <a className="job-open" href={`#/read/${j.bookId}`}>Open</a>}

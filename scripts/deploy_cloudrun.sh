@@ -94,5 +94,5 @@ gcloud run deploy "${SERVICE}" \
   --add-volume "name=data,type=cloud-storage,bucket=${BUCKET}" \
   --add-volume-mount "volume=data,mount-path=/app/data" \
   --min-instances 0 --max-instances 1 --no-cpu-throttling \
-  --memory 1Gi --cpu 1 --timeout 300 \
+  --memory 2Gi --cpu 1 --timeout 300 \
   --no-allow-unauthenticated --iap
