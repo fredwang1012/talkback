@@ -16,7 +16,7 @@ from typing import Awaitable, Callable
 from pydantic import BaseModel, ConfigDict
 
 from ..schema import Book, Summary
-from .llm import SpendLimit
+from .llm import LLMRefusal, SpendLimit
 from .tasks import gather_or_cancel
 
 log = logging.getLogger("talkback.enrich")
@@ -122,8 +122,13 @@ def estimate_calls(book: Book) -> tuple[int, int, int]:
     return notes, max(0, len(us) - 1), chars
 
 
-async def build_summaries(book: Book, call: CallFn, on_progress: Callable[[float], None] | None = None) -> list[Summary]:
-    """All notes run concurrently (the caller's `call` bounds the parallelism), then the condensations, also concurrently."""
+async def build_summaries(book: Book, call: CallFn, on_progress: Callable[[float], None] | None = None,
+                          stats: dict | None = None) -> list[Summary]:
+    """All notes run concurrently (the caller's `call` bounds the parallelism), then the condensations, also concurrently.
+
+    A note whose call failed (network, refusal, bad JSON...) gets one more pass after the others, once the provider's
+    own retries are spent; a note still missing is skipped (its checkpoint has no summary) and counted in
+    `stats["skipped"]`, so the book still finishes with the notes that landed."""
     us = units(book)
     total = sum(len(u.checkpoints) for u in us) + max(0, len(us) - 1)
     done = 0
@@ -132,11 +137,12 @@ async def build_summaries(book: Book, call: CallFn, on_progress: Callable[[float
         nonlocal done
         done += 1
         if on_progress and total:
-            on_progress(done / total)
+            on_progress(min(1.0, done / total))
 
     notes: dict[tuple[int, int], str] = {}  # (unit index, checkpoint para) -> note
+    failed: list[tuple[int, Unit, int]] = []
 
-    async def note(ui: int, u: Unit, c: int) -> None:
+    async def note(ui: int, u: Unit, c: int, last: bool) -> None:
         try:
             r = await call(TIER, NOTE_SYSTEM, note_user(book, u, c), NoteResult, max_tokens=1000, effort="low")
             text = trim_words(r.summary, NOTE_WORDS + 30)
@@ -144,11 +150,23 @@ async def build_summaries(book: Book, call: CallFn, on_progress: Callable[[float
                 notes[(ui, c)] = text
         except SpendLimit:
             raise  # stops the stage: siblings are cancelled
-        except Exception as e:  # refusal/out of tokens/bad JSON/provider failure: this checkpoint is skipped
-            log.warning("summary note skipped (%s)", type(e).__name__)
+        except Exception as e:  # out of tokens/bad JSON/provider failure: this checkpoint is tried once more
+            if last or isinstance(e, LLMRefusal):   # a refusal would only be refused again
+                log.warning("summary note skipped (%s)", type(e).__name__)
+            else:
+                log.warning("summary note failed (%s); retrying after the others", type(e).__name__)
+                failed.append((ui, u, c))
+                return
         tick()
 
-    await gather_or_cancel(note(ui, u, c) for ui, u in enumerate(us) for c in u.checkpoints)
+    await gather_or_cancel(note(ui, u, c, False) for ui, u in enumerate(us) for c in u.checkpoints)
+    if failed:
+        await gather_or_cancel(note(ui, u, c, True) for ui, u, c in failed)
+    skipped = sum(1 for ui, u in enumerate(us) for c in u.checkpoints if (ui, c) not in notes)
+    if stats is not None:
+        stats["skipped"] = skipped
+    if skipped:
+        log.warning("%d of %d summary notes skipped", skipped, total - max(0, len(us) - 1))
 
     def end_note(ui: int) -> str | None:
         """The unit's end note; if that call failed, its latest earlier checkpoint (still only earlier text)."""

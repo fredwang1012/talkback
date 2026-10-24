@@ -61,9 +61,11 @@ async def lifespan(_: FastAPI):
     await asyncio.to_thread(users.migrate_on_startup)  # PER_USER only; never raises
     task = asyncio.create_task(asyncio.to_thread(_warm_up))
     resume = asyncio.create_task(_resume_enrichments())   # no job survives a restart: pick up the interrupted ones
+    reindex = asyncio.create_task(_retry_failed_indexes())   # Vertex indexes a transient error left in state "error"
     yield
     task.cancel()
     resume.cancel()
+    reindex.cancel()
 
 
 app = FastAPI(title="Talkback", lifespan=lifespan, dependencies=[Depends(users.bind_identity)])
@@ -720,8 +722,7 @@ async def _index_in_background(book: Book, chunks) -> None:
     except Exception as e:  # the book stays readable and keeps the BM25 fallback
         if book_id not in _deleted:
             logging.getLogger(__name__).warning("vertex indexing failed: %s", type(e).__name__)
-            final = {"state": "error", "done": 0, "total": total,
-                     "message": "Search indexing failed; using basic search."}
+            final = {"state": "error", "done": 0, "total": total, "message": INDEX_FAILED_MESSAGE}
     finally:
         _index_jobs.discard(book_id)
         _index_for.cache_clear()
@@ -747,8 +748,13 @@ def _set_enrich(book_id: str, **fields) -> None:
 _enrich_lock = asyncio.Semaphore(max(1, settings.enrich_parallel))  # ENRICH_PARALLEL uploads at a time (rate limits)
 
 
+INDEX_FAILED_MESSAGE = "Search indexing failed; using basic search."
+
+
 async def _enrich_indexer(book: Book) -> None:
-    """Final stage: refresh the Vertex index with the speakers (the local index needs no change)."""
+    """Final stage: refresh the Vertex index with the speakers (the local index needs no change). A failure (after the
+    store's and embedder's own retries) is recorded as index state "error", so retrieval falls back to BM25 and the
+    next start retries it (_retry_failed_indexes); it is then raised for the pipeline, which finishes the book anyway."""
     if settings.retrieval_backend == "vertex":
         from .gcp.indexing import index_book, load_chunks
         embedder, store = _vertex_deps()
@@ -759,8 +765,46 @@ async def _enrich_indexer(book: Book) -> None:
         try:
             async with _index_slot():
                 await index_book(book, chunks, embedder, store)
+        except Exception as e:
+            if book.id not in _deleted:
+                logging.getLogger(__name__).warning("vertex re-indexing failed: %s", type(e).__name__)
+                _set_index(book.id, state="error", done=0, total=len(chunks), message=INDEX_FAILED_MESSAGE)
+            raise
         finally:
             _index_jobs.discard(book.id)
+            _index_for.cache_clear()
+
+
+MAX_STARTUP_REINDEX = 20   # failed indexes retried per start (each is a paid embedding job)
+
+
+def _failed_indexes() -> list[str]:
+    """Uploads whose status.json says the Vertex index failed (a transient error at upload or enrichment time)."""
+    out = []
+    for path in sorted((settings.data_dir / "books").glob("u-*/status.json")):
+        book_id = path.parent.name
+        if books._ID.match(book_id) and ((ingest_upload.read_status(book_id) or {}).get("index") or {}).get("state") == "error":
+            out.append(book_id)
+    return out
+
+
+async def _retry_failed_indexes() -> None:
+    """Startup: rebuild the Vertex index of books whose last indexing failed, at most MAX_STARTUP_REINDEX of them and
+    once per start (a book that fails again waits for the next start). Never raises."""
+    if settings.retrieval_backend != "vertex":
+        return
+    try:
+        from .gcp.indexing import load_chunks
+        for book_id in (await asyncio.to_thread(_failed_indexes))[:MAX_STARTUP_REINDEX]:
+            if book_id in _deleted or book_id in _index_jobs:
+                continue
+            book = await asyncio.to_thread(books.load_book, book_id)
+            if book is None:
+                continue
+            chunks = await asyncio.to_thread(load_chunks, book)
+            await _index_in_background(book, chunks)   # never raises; records done or error in status.json
+    except Exception as e:
+        logging.getLogger(__name__).warning("retrying failed indexes failed: %s", type(e).__name__)
 
 
 MAX_ENRICH_RETRIES = 3          # user retries per book (persisted in status.json as enrich_retries)

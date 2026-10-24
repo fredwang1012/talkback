@@ -24,7 +24,7 @@ from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 
-from . import retrieval
+from . import books, retrieval
 from .config import settings
 from .parsing import CODE_MARK, EQ_MARK, EQ_SEP, FIGURE_MARK, HEADING_MARK, inline_marker, parse, strip_inline
 from .schema import Book, Narrator, Paragraph, Section
@@ -1612,7 +1612,7 @@ def render_equations(book_id: str, data: bytes, stop=lambda: False) -> dict[str,
     import pymupdf
     path = _book_json(book_id)
     try:
-        book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+        book = Book.model_validate_json(books.read_bytes(path))
     except (OSError, ValueError):
         return {}
     eqs = [p for p in book.paragraphs if p.kind == "math" and p.math is not None][:EQ_MAX_BOOK]
@@ -1711,7 +1711,7 @@ def render_inline(book_id: str, data: bytes, stop=lambda: False) -> tuple[dict[s
     import pymupdf
     path = _book_json(book_id)
     try:
-        book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+        book = Book.model_validate_json(books.read_bytes(path))
     except (OSError, ValueError):
         return {}, {}
     groups: dict[tuple, list] = {}
@@ -1758,7 +1758,7 @@ def update_equations(book_id: str, fields: dict[str, dict]) -> int:
     path = _book_json(book_id)
     with books.write_lock(path):   # read-modify-write: shared with every other book.json writer
         try:
-            book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+            book = Book.model_validate_json(books.read_bytes(path))
         except (OSError, ValueError):
             return 0
         n = 0
@@ -1823,8 +1823,13 @@ def write_status(book_id: str, status: str, message: str | None = None, enrich: 
             out[k] = v
     d = settings.data_dir / "books" / book_id
     d.mkdir(parents=True, exist_ok=True)
-    (d / "status.json").write_text(json.dumps(out), encoding="utf-8")
+    _write_status_file(d / "status.json", out)
     return out
+
+
+def _write_status_file(path: Path, st: dict) -> None:
+    """status.json is small and polled by the UI; a Windows PermissionError (another handle on it) is retried briefly."""
+    books.retry_permission(lambda: path.write_text(json.dumps(st), encoding="utf-8"))
 
 
 def save_status(book_id: str, st: dict) -> bool:
@@ -1832,7 +1837,7 @@ def save_status(book_id: str, st: dict) -> bool:
     d = settings.data_dir / "books" / book_id
     if not d.is_dir():
         return False
-    (d / "status.json").write_text(json.dumps(st), encoding="utf-8")
+    _write_status_file(d / "status.json", st)
     return True
 
 
@@ -1840,8 +1845,8 @@ def read_status(book_id: str) -> dict | None:
     path = settings.data_dir / "books" / book_id / "status.json"
     if path.is_file():
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except ValueError:
+            return json.loads(books.read_bytes(path))
+        except (ValueError, OSError):   # half-written, or gone between is_file and the read
             return None
     return None
 

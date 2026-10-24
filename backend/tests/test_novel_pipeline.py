@@ -563,7 +563,9 @@ def test_pipeline_error_leaves_book_readable_with_plain_message(data_dir):
         raise ValueError("secret internals")
 
     ok, events, _ = run_pipeline("u-test-aaaaaaaa", indexer=broken_indexer)
-    assert not ok and events[-1] == {"status": "error", "stage": "index", "message": pipeline.FAILED}
+    # the index is the last stage and everything is saved by then: the book finishes with basic search (test_resilience)
+    assert ok and events[-1]["status"] == "done" and events[-1]["message"] == pipeline.INDEX_PENDING
+    assert "secret" not in json.dumps(events)
     book = saved(data_dir)  # every earlier stage had landed
     assert [c.id for c in book.characters] == ["alice", "bob"] and book.summaries
 

@@ -316,7 +316,7 @@ def test_retry_respects_upload_enrich_off(rig, monkeypatch):
 def test_enrichment_runs_up_to_enrich_parallel_books_at_once():
     import asyncio as _a
     sem = _a.Semaphore(max(1, settings.enrich_parallel))
-    assert settings.enrich_parallel >= 2
+    assert settings.enrich_parallel >= 1000   # no practical limit on parallel uploads (each book bounded by upload_concurrency)
 
     async def run():
         active = peak = 0
@@ -330,5 +330,5 @@ def test_enrichment_runs_up_to_enrich_parallel_books_at_once():
                 active -= 1
         await _a.gather(*(job() for _ in range(5)))
         return peak
-    assert _a.run(run()) == settings.enrich_parallel
+    assert _a.run(run()) == min(5, settings.enrich_parallel)
     assert isinstance(main._enrich_lock, _a.Semaphore)

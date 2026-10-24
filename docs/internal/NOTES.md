@@ -1183,3 +1183,28 @@ was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-
 - Not changed, for a person to check: the "interrupted" label on an answer whose full text is on screen but whose
   voice is still queued (text streams ahead of TTS; speaking then is a real barge-in), and the barge-in bar relative to
   the speaker echo (max(0.10, 2.5 x echo median) can be out of reach of a normal voice on a laptop mic with speakers).
+
+## Upload enrichment resilience to transient failures (fix/enrich-resilience, 2026-10-24)
+- Seen on Windows with Gemini on Vertex: `enrichment ... failed in summaries: PermissionError at books.py _replace`
+  (a reader or an antivirus scan holding book.json / the fresh temp file blocks os.replace for a moment), `summary note
+  skipped (ReadError)` and `enrichment ... failed in index: ReadError` (httpx network blips raised without a `code`, so
+  GeminiProvider's 429/5xx-only retry and the vector store's status-only retry let them through). A book with 10
+  characters and 116 summaries ended as enrich status "error" in stage index.
+- `app/retrying.py`: one policy. Transient = httpx TransportError (ReadError/ConnectError/RemoteProtocolError/
+  timeouts), connection resets, 429, 5xx, google.api_core names (ServiceUnavailable...). Never: 401/402/403,
+  insufficient_quota / billing text, every other 4xx. Equal-jitter exponential backoff, bounded attempts, logs only the
+  exception type. Used by GeminiProvider (5 attempts, base 1 s, cap 30 s), GeminiEmbedder, VectorStore._send (network
+  errors now retried like 429/5xx), GeminiAnswerer (only before the first token: a stream that broke after speaking
+  is not replayed), multilingual.translate (2 attempts, 0.3 s, inside its 4 s timeout). Textbook notes, equations and
+  series checks go through GeminiProvider and inherit it.
+- Pipeline: the index stage never fails the run (everything is saved by then); a failed (re)index reports done with
+  `INDEX_PENDING` ("search uses basic mode until the index is rebuilt") and `index_failed: true`. main._enrich_indexer
+  records index state "error", retrieval falls back to BM25, and `_retry_failed_indexes` (startup, at most
+  MAX_STARTUP_REINDEX=20 books, once per start) rebuilds them through _index_in_background. A checkpoint that cannot be
+  written is retried at the next stage; the last one before indexing must land (else the usual FAILED error).
+  Summaries: notes whose call failed get a second pass; still-missing ones are counted (`notes_skipped`, "N recap notes
+  could not be written." in the done message; the frontend shows it like the degraded note).
+- books.retry_permission: Windows PermissionError retried with backoff for ~3 s (os.replace in save_book, status.json
+  writes). book.json / status.json reads use read_bytes (open-read-close; pydantic validates bytes).
+- ENRICH_PARALLEL default 3 -> 1000 (no practical limit on parallel uploads; each book still bounded by
+  UPLOAD_CONCURRENCY=24 LLM calls; 429s are retried with jitter). Lower it if Gemini rate limits bite.
