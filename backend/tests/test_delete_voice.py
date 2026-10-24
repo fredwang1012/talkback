@@ -97,15 +97,15 @@ def test_cast_falls_back_to_auto_after_deleting_voice_or_face(env, boson):  # no
                                  .replace('"id":"demo"', '"id":"u-mine-1"'), encoding="utf-8")
     fid = client.get("/api/faces").json()[0]["id"]
     standalone = client.post("/api/faces", data={"name": "Ana"}, files={"image": ("a.png", PNG, "image/png")}).json()["id"]
-    body = {"main": ["harry"], "narrator": {"voice": "voice_abc", "face": fid},
+    body = {"main": ["harry"], "narrator": {"voice": "voice_abc", "tags": None, "face": fid},
             "characters": {"harry": {"voice": "voice_abc", "face": standalone}}}
-    assert client.put("/api/books/u-mine-1/cast", json=body).json()["narrator"] == {"voice": "voice_abc", "face": fid}
+    assert client.put("/api/books/u-mine-1/cast", json=body).json()["narrator"] == {"voice": "voice_abc", "tags": None, "face": fid}
     client.delete("/api/voices/voice_abc")
     cast = client.get("/api/books/u-mine-1/cast").json()
-    assert cast["narrator"] == {"voice": None, "face": None}
-    assert cast["characters"]["harry"] == {"voice": None, "face": standalone}
+    assert cast["narrator"] == {"voice": None, "tags": None, "face": None}
+    assert cast["characters"]["harry"] == {"voice": None, "tags": None, "face": standalone}
     client.delete(f"/api/faces/{standalone}")
-    assert client.get("/api/books/u-mine-1/cast").json()["characters"]["harry"] == {"voice": None, "face": None}
+    assert client.get("/api/books/u-mine-1/cast").json()["characters"]["harry"] == {"voice": None, "tags": None, "face": None}
     # the round trip the UI does (send the loaded cast back) is accepted
     assert client.put("/api/books/u-mine-1/cast", json=client.get("/api/books/u-mine-1/cast").json()).status_code == 200
 

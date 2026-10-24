@@ -2,7 +2,7 @@ import { micErrorMessage } from "../audio/mediaErrors";
 import { useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { animateFace, cloneVoice, deleteFace, deleteVoice, uploadFace, type Book, type Cast, type Face } from "../api";
 import {
-  PRESETS, bookVoice, castRows, castFace, castVoice, effectiveMode, isNovel, oneVoiceOverride, runAnimate, withAssignment, type ReadingStyle,
+  PRESETS, bookVoice, castRows, castFace, castVoice, PITCH_SPEED, BOOK_TAGS, voiceSummary, tagLabel, effectiveMode, isNovel, oneVoiceOverride, runAnimate, withAssignment, type ReadingStyle,
 } from "./castLogic";
 
 export { PRESETS };
@@ -198,12 +198,22 @@ export default function VoiceLab({ book, cast, onCast, castError, style, onStyle
               const value = (r.id === "narrator" ? cast.narrator : cast.characters[r.id])?.voice ?? "";
               return (
                 <li key={r.id} className="cast-row">
-                  <span className="cast-name">{r.name}</span>
+                  <span className="cast-name">{r.name}<small className="cast-uses"> uses {voiceSummary(book, cast, r.id)}</small></span>
                   <label className="sr-only" htmlFor={`voice-${r.id}`}>{r.name} voice</label>
                   <select id={`voice-${r.id}`} value={value} onChange={(e) => onCast(withAssignment(cast, r.id, { voice: e.target.value || null }))}>
                     <option value="">Book default ({bookVoice(book, r.id)})</option>
                     {voiceOptions(value, false)}
                   </select>
+                  {r.id === "narrator" ? <span /> : (
+                    <>
+                      <label className="sr-only" htmlFor={`tags-${r.id}`}>{r.name} pitch and speed</label>
+                      <select id={`tags-${r.id}`} value={cast.characters[r.id]?.tags ?? BOOK_TAGS}
+                        onChange={(e) => onCast(withAssignment(cast, r.id, { tags: e.target.value === BOOK_TAGS ? null : e.target.value }))}>
+                        <option value={BOOK_TAGS}>Book default ({tagLabel(book.characters.find((c) => c.id === r.id)?.voice_tags)})</option>
+                        {PITCH_SPEED.map((t) => <option key={t.value || "none"} value={t.value}>{t.label}</option>)}
+                      </select>
+                    </>
+                  )}
                   <label className="sr-only" htmlFor={`face-${r.id}`}>{r.name} face</label>
                   <select id={`face-${r.id}`} value={castFace(cast, r.id) ?? ""} onChange={(e) => onCast(withAssignment(cast, r.id, { face: e.target.value || null }))}>
                     {faceOptions(castFace(cast, r.id))}

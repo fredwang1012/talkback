@@ -99,6 +99,35 @@ export function talkFaceId(cast: Cast, choice: TalkChoice, id: string, voice: st
 
 // ---------- saving ----------
 
+/** Pitch / speed tags a character can carry (the backend's VOICE_TAGS). */
+export const PITCH_SPEED: { value: string; label: string }[] = [
+  { value: "", label: "Normal pitch and speed" },
+  { value: "<|prosody:pitch_low|>", label: "Lower pitch" },
+  { value: "<|prosody:pitch_high|>", label: "Higher pitch" },
+  { value: "<|prosody:speed_slow|>", label: "Slower" },
+  { value: "<|prosody:speed_fast|>", label: "Faster" },
+];
+/** <option> value meaning "no override" (an empty string already means "normal"). */
+export const BOOK_TAGS = "__book";
+export const tagLabel = (tag: string | null | undefined) => PITCH_SPEED.find((t) => t.value === (tag ?? ""))?.label ?? "Normal pitch and speed";
+
+/** The pitch/speed tag in effect for a character: the cast override, else the book's own. */
+export function castTags(book: Book, cast: Cast, id: string): string {
+  const o = cast.characters[id]?.tags;
+  return o ?? book.characters.find((c) => c.id === id)?.voice_tags ?? "";
+}
+
+/** One line saying which voice a speaker uses: "jake, higher pitch" or "custom voice (baked from jake, higher pitch)". */
+export function voiceSummary(book: Book, cast: Cast, id: string): string {
+  const voice = castVoice(book, cast, id);
+  const ch = book.characters.find((c) => c.id === id);
+  if (id === "narrator" || !ch) return voice;
+  const tags = castTags(book, cast, id);
+  const tag = tags ? `, ${tagLabel(tags).toLowerCase()}` : "";
+  if (ch.base_voice && voice === ch.voice) return `custom voice (baked from ${ch.base_voice}, ${tagLabel(ch.base_voice_tags).toLowerCase()})`;
+  return `${voice}${tag}`;
+}
+
 /** `cast` with one speaker's voice/face changed (a full copy, ready for saveCast). */
 export function withAssignment(cast: Cast, id: string, patch: Partial<Cast["narrator"]>): Cast {
   if (id === "narrator") return { ...cast, narrator: { ...cast.narrator, ...patch } };

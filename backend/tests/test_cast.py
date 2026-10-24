@@ -9,8 +9,8 @@ from app.ratelimit import TokenBucket
 from tests.test_api import env  # noqa: F401  (fixture)
 
 PNG = b"\x89PNG\r\n\x1a\nfake"
-EMPTY = {"main": ["harry", "king"], "narrator": {"voice": None, "face": None},
-         "characters": {"harry": {"voice": None, "face": None}, "king": {"voice": None, "face": None}}}
+EMPTY = {"main": ["harry", "king"], "narrator": {"voice": None, "tags": None, "face": None},
+         "characters": {"harry": {"voice": None, "tags": None, "face": None}, "king": {"voice": None, "tags": None, "face": None}}}
 
 
 def test_defaults_for_a_book_without_settings(env):  # noqa: F811
@@ -35,8 +35,9 @@ def test_put_persists_and_round_trips(env):  # noqa: F811
             "characters": {"king": {"voice": "voice_abc", "face": None}}}
     r = client.put("/api/books/demo/cast", json=body)
     assert r.status_code == 200
-    expect = {"main": ["king"], "narrator": {"voice": "nora", "face": fid},
-              "characters": {"harry": {"voice": None, "face": None}, "king": {"voice": "voice_abc", "face": None}}}
+    expect = {"main": ["king"], "narrator": {"voice": "nora", "tags": None, "face": fid},
+              "characters": {"harry": {"voice": None, "tags": None, "face": None},
+                                "king": {"voice": "voice_abc", "tags": None, "face": None}}}
     assert r.json() == expect
     assert client.get("/api/books/demo/cast").json() == expect
     d = settings.data_dir / "books" / "demo"

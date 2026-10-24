@@ -364,7 +364,8 @@ button:disabled { cursor: not-allowed; }
 .recap-earlier summary { cursor: pointer; color: var(--ink-soft); margin-bottom: 8px; }
 
 /* Voices panel: cast table, face library; Talk voice/avatar pickers */
-.lab-cast li.cast-row { grid-template-columns: 1fr 1fr auto; }
+.lab-cast li.cast-row { grid-template-columns: 1.3fr 1fr 1fr 1fr auto; }
+.lab-cast .cast-uses { display: block; opacity: .7; font-weight: normal; }
 .lab-cast .cast-name { grid-column: 1 / -1; font-weight: 600; }
 .face-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .face-list li { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; align-items: center; }

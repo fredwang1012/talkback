@@ -275,13 +275,18 @@ async def tts(req: TtsRequest, request: Request):
                 voice = req.voice_override or cast.voice_for(book, c.speaker) or c.voice
                 if not voices.is_known_voice(voice):
                     raise HTTPException(400, f"Unknown voice '{voice}'.")
-                cached = tts_cache.is_cached(c.tts_text, voice)
+                tts_text = c.tts_text
+                ch = next((x for x in book.characters if x.id == c.speaker), None)
+                tags = cast.tags_for(book, c.speaker) if ch else None
+                if tags is not None and tts_text.startswith(ch.voice_tags):  # the user's pitch/speed replaces the book's
+                    tts_text = tags + tts_text[len(ch.voice_tags):]
+                cached = tts_cache.is_cached(tts_text, voice)
                 if req.cached_only and not cached:
                     raise HTTPException(409, "This line is not pre-rendered yet. Run preprocess/prerender_tts.py before the demo.")
                 if not cached and not tts_bucket.allow(rate_key(request)):
                     raise HTTPException(429, "Too many new audio requests; wait a moment.")
                 try:
-                    out = await tts_cache.get_or_create(boson, c.tts_text, voice, p.text[c.char_start:c.char_end])
+                    out = await tts_cache.get_or_create(boson, tts_text, voice, p.text[c.char_start:c.char_end])
                 except (BosonError, RuntimeError) as e:
                     raise boson_http_error(e)
                 return {"chunk_id": c.id, "voice": voice, **out}

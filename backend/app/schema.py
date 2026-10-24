@@ -62,6 +62,8 @@ class Character(BaseModel):
     first_para: int
     voice: str
     voice_tags: str = ""
+    base_voice: str | None = None  # preset this character was cast with, kept when `voice` becomes a baked custom voice
+    base_voice_tags: str | None = None  # the prosody tags that were baked into that custom voice (see voice_bake.py)
     persona: str
     portrait: str | None = None
     main: bool | None = None  # None = main character; uploaded novels mark minor speakers False

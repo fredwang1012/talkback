@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { animateFace, saveCast, type AnimatedFace, type Book, type Cast, type Face } from "../src/api";
 import {
   castRows, createCastSaver, effectiveMode, migrateOldOverrides, oneVoiceOverride, readingFaceId, runAnimate,
-  talkFaceId, talkVoice, withAssignment, type ReadingStyle,
+  talkFaceId, talkVoice, voiceSummary, withAssignment, type ReadingStyle,
 } from "../src/reader/castLogic";
 import { ReaderEngine, type AudioLike, type TtsResult } from "../src/reader/ReaderEngine";
 import type { FlatChunk } from "../src/reader/position";
@@ -279,5 +279,23 @@ describe("migration of the old series-wide overrides", () => {
     expect(await migrateOldOverrides(novel, blank(), save, mkStore({ [KEY]: "{not json" }))).toBeNull();
     expect(await migrateOldOverrides(novel, blank(), save, null)).toBeNull();
     expect(save).not.toHaveBeenCalled();
+  });
+});
+
+describe("voice summary (#69)", () => {
+  const b = { ...novel, characters: [
+    { id: "dobby", name: "Dobby", voice: "jake", voice_tags: "<|prosody:pitch_high|>" },
+    { id: "baked", name: "Baked", voice: "voice_x", voice_tags: "", base_voice: "jake", base_voice_tags: "<|prosody:pitch_high|>" },
+  ] } as unknown as Book;
+  const c = (): Cast => ({ main: [], narrator: { voice: null, face: null }, characters: {} });
+
+  it("names the preset and its pitch/speed, the cast override first", () => {
+    expect(voiceSummary(b, c(), "dobby")).toBe("jake, higher pitch");
+    const o = withAssignment(c(), "dobby", { tags: "<|prosody:speed_slow|>", voice: "nora" });
+    expect(voiceSummary(b, o, "dobby")).toBe("nora, slower");
+    expect(voiceSummary(b, c(), "narrator")).toBe("marcus");
+  });
+  it("says when the voice is a baked custom voice", () => {
+    expect(voiceSummary(b, c(), "baked")).toBe("custom voice (baked from jake, higher pitch)");
   });
 });

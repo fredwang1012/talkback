@@ -24,6 +24,8 @@ export type Character = {
   first_para: number;
   voice: string;
   voice_tags: string;
+  base_voice?: string | null; // preset the character was cast with, when `voice` is a baked custom voice (scripts/bake_voices.py)
+  base_voice_tags?: string | null;
   persona: string;
   portrait: string | null;
   main?: boolean | null; // false = a minor speaker: read aloud, but not someone to talk to
@@ -474,7 +476,7 @@ export const avatarUrl = (bookId: string, chunkId: string) => `/api/avatar/${enc
 
 /** A saved face. `talk` / `idle` are muted loops that exist only after "Animate"; `voice` binds it to a cloned voice. */
 export type Face = { id: string; name: string; image: string; voice: string | null; talk: string | null; idle: string | null };
-export type Assignment = { voice: string | null; face: string | null };
+export type Assignment = { voice: string | null; face: string | null; tags?: string | null }; // tags: pitch/speed override, "" = none
 export type Cast = { main: string[]; narrator: Assignment; characters: Record<string, Assignment> };
 
 async function readError(res: Response, fallback: string): Promise<Error> {

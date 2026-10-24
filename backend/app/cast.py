@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from . import faces, voices
 from . import users
+from .enrich.cast import VOICE_TAGS
 from .schema import Book
 
 
@@ -19,6 +20,7 @@ class CastError(ValueError):
 
 class Assignment(BaseModel):
     voice: str | None = None
+    tags: str | None = None  # prosody tags (pitch / speed) replacing the character's own; None = the book's
     face: str | None = None
 
 
@@ -54,6 +56,7 @@ def load(book: Book) -> dict:
 def _live(a: Assignment) -> dict:
     """A voice or face that was deleted since the cast was saved falls back to Auto (None)."""
     return {"voice": a.voice if a.voice and voices.is_known_voice(a.voice) else None,
+            "tags": a.tags if a.tags in VOICE_TAGS else None,
             "face": a.face if a.face and faces.face_exists(a.face) else None}
 
 
@@ -62,6 +65,8 @@ def _check(a: Assignment, who: str) -> None:
         raise CastError(f"Unknown voice '{a.voice}' for {who}.")
     if a.face is not None and not faces.face_exists(a.face):
         raise CastError(f"Unknown face '{a.face}' for {who}.")
+    if a.tags is not None and a.tags not in VOICE_TAGS:
+        raise CastError(f"Unknown pitch/speed tag for {who}.")
 
 
 def save(book: Book, new: CastSettings) -> dict:
@@ -87,3 +92,9 @@ def voice_for(book: Book, speaker: str) -> str | None:
     stored = _stored(book.id)
     a = stored.narrator if speaker == "narrator" else stored.characters.get(speaker)
     return a.voice if a and a.voice and voices.is_known_voice(a.voice) else None
+
+
+def tags_for(book: Book, speaker: str) -> str | None:
+    """The cast-chosen pitch/speed tag for a character ("" = none), or None to keep the book's own."""
+    a = _stored(book.id).characters.get(speaker)
+    return a.tags if a and a.tags in VOICE_TAGS else None
