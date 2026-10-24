@@ -86,6 +86,11 @@ describe("delete", () => {
     expect(fetchMock.mock.calls[0][1].method).toBe("DELETE");
   });
 
+  it("treats 404 as already deleted (a retry after the first request timed out but finished)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "Book not found" }), { status: 404 })));
+    await expect(deleteBook("u-x")).resolves.toBeUndefined();
+  });
+
   it("surfaces the server's reason (409 while processing)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "still being processed" }), { status: 409 })));
     await expect(deleteBook("u-x")).rejects.toThrow(/still being processed/);

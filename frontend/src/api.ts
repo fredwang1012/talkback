@@ -247,6 +247,7 @@ export async function cloneVoice(audio: Blob, filename: string, transcript: stri
 /** Permanently deletes an uploaded book (files, search entries, caches). 409 while it is still being processed. */
 export async function deleteBook(id: string): Promise<void> {
   const res = await timedFetch(`/api/books/${encodeURIComponent(id)}`, { method: "DELETE", headers: authHeaders() }, 60000);
+  if (res.status === 404) return; // already gone (e.g. a retry after a timed-out request that still finished)
   if (!res.ok) throw await readError(res, "Could not delete the book");
 }
 
