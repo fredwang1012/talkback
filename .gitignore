@@ -59,3 +59,9 @@ data/faces.json
 data/*.migrated
 data/portraits/
 .claude/
+
+# Per-user runtime state (cast choices, upload hashes, hidden books)
+data/books/*/cast_settings.json
+data/upload_hashes.json
+data/hidden_books.json
+data/users/
