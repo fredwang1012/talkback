@@ -91,8 +91,11 @@ EQ_PNG_MAX = 256 * 1024      # one cropped picture
 EQ_REQUEST_BYTES = 2 * 1024 * 1024
 EQ_BODY_LIMIT = EQ_REQUEST_BYTES * 4 // 3 + 64 * 1024
 EQ_TICKET_TTL = 30 * 60      # an idle ticket is closed (and settled) after this
+EQ_TICKET_START_TTL = 120    # ... or after this when no picture came yet (a held slot costs nothing to hold)
+EQ_MIN_TICKET_USD = 0.02     # each ticket costs its address at least this (opening many tickets is not free)
 EQ_REQUEST_SECONDS = 90.0    # under Cloud Run's 120 s request timeout
-MAX_TICKETS = 4
+MAX_TICKETS = 32
+MAX_TICKETS_PER_IP = 1
 MAX_EQ_REQUESTS = 2
 EQ_ID_PATTERN = r"^[em]\d{1,6}$"     # display equation / inline formula
 
@@ -560,6 +563,8 @@ class Ticket:
         self.id, self.ip, self.remaining, self.estimate_usd = ticket_id, ip, accepted, estimate_usd
         self.usd = 0.0
         self.used = time.monotonic()
+        self.started = False   # a picture request came
+        self.busy = False      # a request is running on it: one at a time, never settled meanwhile
 
 
 _tickets: dict[str, Ticket] = {}
@@ -567,15 +572,20 @@ _eq_running = 0
 
 
 def _close_ticket(t: Ticket) -> None:
-    """Settle the caller's daily cap from the estimate to the real spend (once)."""
+    """Settle the caller's daily cap from the estimate to the real spend, at least EQ_MIN_TICKET_USD (once). Never
+    while a request runs on the ticket (its spend is not final yet)."""
+    if t.busy:
+        return
     if _tickets.pop(t.id, None) is not None:
-        ip_budget.settle(t.ip, t.estimate_usd, t.usd)
+        ip_budget.settle(t.ip, t.estimate_usd, max(t.usd, EQ_MIN_TICKET_USD))
 
 
 def _purge_tickets() -> None:
     now = time.monotonic()
-    for t in [t for t in _tickets.values() if now - t.used > EQ_TICKET_TTL]:
-        _close_ticket(t)
+    for t in list(_tickets.values()):
+        ttl = EQ_TICKET_TTL if t.started else EQ_TICKET_START_TTL
+        if not t.busy and now - t.used > ttl:
+            _close_ticket(t)
 
 
 def _eq_fit(count: int) -> int:
@@ -906,9 +916,11 @@ async def start_equations(req: EqStart, request: Request):
     accepted = _eq_fit(req.count)
     if accepted == 0:
         raise PublicError(402, "book_cap", MSG_BOOK_CAP)
-    est = equations.estimate(accepted)
+    est = max(equations.estimate(accepted), EQ_MIN_TICKET_USD)
     if spend.total_usd() + _reserved_usd() + est > settings.public_total_cap_usd:
         raise PublicError(402, "cap", MSG_TOTAL_CAP)
+    if sum(1 for t in _tickets.values() if t.ip == ip) >= MAX_TICKETS_PER_IP:
+        raise PublicError(429, "ticket_open", "Your address already has equations in progress; try again later.")
     if len(_tickets) >= MAX_TICKETS:
         raise PublicError(429, "busy", "The processing service is busy; try again in a minute.")
     if not ip_budget.charge(ip, est):
@@ -934,17 +946,18 @@ async def read_equations(ticket: str, req: EqRequest, request: Request):
     items = req.decoded()
     if len(items) > t.remaining:
         raise PublicError(422, "too_many", "More pictures than the ticket accepted.")
-    if _eq_running >= MAX_EQ_REQUESTS:
+    if t.busy or _eq_running >= MAX_EQ_REQUESTS:
         raise PublicError(429, "busy", "The processing service is busy; try again in a moment.")
+    # from here to the first await nothing yields: the checks above and these updates are atomic on the event loop
+    t.busy, t.started = True, True
     _eq_running += 1
     t.remaining -= len(items)
     t.used = time.monotonic()
     llm = make_llm("gemini")
     cap = settings.public_book_cap_usd * pipeline.BOOK_CAP_MARGIN
-    base = t.usd
 
     def on_usage(provider: str, model: str, n_in: int, n_out: int, usd: float) -> None:
-        t.usd = base + llm.usd
+        t.usd += usd          # additive: no request can overwrite another's spend
         total = spend.add(t.id, provider, usd, flush_now=False)
         if total >= settings.public_total_cap_usd:
             raise SpendLimit("budget used")
@@ -965,7 +978,7 @@ async def read_equations(ticket: str, req: EqRequest, request: Request):
         log.warning("equation request on %s failed: %s", t.id, type(e).__name__)
     finally:
         _eq_running -= 1
-        t.usd = base + llm.usd
+        t.busy = False
         t.used = time.monotonic()
         if stopped in ("cap", "book_cap") or t.remaining <= 0:
             _close_ticket(t)

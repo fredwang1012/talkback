@@ -963,5 +963,9 @@ the deployed talkback-public-00001 is the Oct 21 code):
   re-cleaned and limited to the ids sent; note says why pictures stay). A 401/403 marks the service unavailable for a
   minute (answers then use Realtime too). All fall back exactly like the local no-GCP path.
 - No new env vars for deploy_public_api.sh (limits are constants). Needs a redeploy of talkback-public.
+- Security review fixes (equation tickets): one running request per ticket (`busy` -> 429), spend added per call
+  (`t.usd += usd`, never overwritten), settle/close/purge never while a request runs; one open ticket per IP (429
+  `ticket_open`), 32 in all, a ticket with no picture expires after 2 minutes, and every ticket costs its address at
+  least $0.02 (so opening tickets cannot be repeated for free).
 - Test note: tests/test_kind.py::test_concurrent_kind_changes_start_only_one_enrichment failed once in a full run and
   passed on every rerun (timing flake, unrelated code path).

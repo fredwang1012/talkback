@@ -147,10 +147,11 @@ Limits, all enforced by the service:
 - Small calls (translate, detect, describe, face box): 30 per IP per minute (face boxes 10 per IP per hour and 100 per
   UTC day in all, persisted in `public_face_calls.json`), counted on the daily answer budget above (worst case
   reserved, real cost settled). Text at most 500 / 3,200 / 6,000 characters; photos PNG/JPEG/WebP up to 5 MB.
-- Equation readings: a ticket (2 per IP per hour) accepts as many pictures as fit under the per-book cap, and its
-  estimate is checked against the cumulative cap and charged to the address's daily cap like a book (settled to the
-  real spend when the ticket closes, stops at a cap, or idles 30 minutes). Then at most 24 PNGs (256 KB each, 2 MB in
-  all) per request, two requests at a time; a cap reached mid-run answers the readings so far with `"stopped"`.
+- Equation readings: a ticket (2 per IP per hour, one open per IP, 32 open in all) accepts as many pictures as fit
+  under the per-book cap, and its estimate (at least $0.02) is checked against the cumulative cap and charged to the
+  address's daily cap like a book (settled to the real spend, at least $0.02, when the ticket closes, stops at a cap,
+  gets no picture within 2 minutes, or idles 30 minutes). Then at most 24 PNGs (256 KB each, 2 MB in all) per request,
+  one request at a time per ticket and two in all; a cap reached mid-run answers the readings so far with `"stopped"`.
 A cap answers `402` and a rate limit or full slot `429`, each with `{"detail", "code"}`. Counters live in the bucket's
 `usage/` folder: `upload_spend.json` (cumulative enrichment), `public_answer_spend.json` (answers, today),
 `public_ip_spend.json` (per address, today). To reset one, delete that file

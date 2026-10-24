@@ -204,7 +204,8 @@ def test_equations_ticket_then_readings(par):
     r = par.post(f"/api/public/equations/{t['ticket']}", json={"items": items("e3")})
     assert r.status_code == 200 and t["ticket"] not in public_api._tickets              # all pictures sent: closed
     assert public_api._reserved_usd() == 0
-    assert public_api.ip_budget.spent("testclient") == pytest.approx(spend.total_usd())   # settled to the real spend
+    settled = max(spend.total_usd(), public_api.EQ_MIN_TICKET_USD)                 # real spend, at least the minimum
+    assert public_api.ip_budget.spent("testclient") == pytest.approx(settled)
     assert par.post(f"/api/public/equations/{t['ticket']}", json={"items": items("e4")}).status_code == 404
 
 
@@ -276,14 +277,74 @@ def test_equations_busy_and_expired_tickets(par, monkeypatch):
     r = par.post(f"/api/public/equations/{t}", json={"items": items("e1")})
     assert r.status_code == 429 and r.json()["code"] == "busy"
     monkeypatch.setattr(public_api, "_eq_running", 0)
-    est = public_api._tickets[t].estimate_usd
     public_api._tickets[t].used -= public_api.EQ_TICKET_TTL + 5
     assert start(par, 1).status_code == 200                           # purging settles the idle ticket
     assert t not in public_api._tickets
-    assert public_api.ip_budget.spent("testclient") < est + public_api._reserved_usd() + 1e-9
-    monkeypatch.setattr(public_api, "MAX_TICKETS", 1)
-    r = start(par, 1)
+
+
+def test_one_open_ticket_per_address_and_a_large_global_limit(par, monkeypatch):
+    monkeypatch.setattr(settings, "trust_proxy", True)
+    a, b = {"x-forwarded-for": "1.1.1.1"}, {"x-forwarded-for": "2.2.2.2"}
+    assert start(par, 2, a).status_code == 200
+    r = start(par, 2, a)
+    assert r.status_code == 429 and r.json()["code"] == "ticket_open"   # one address cannot hold every slot
+    assert start(par, 2, b).status_code == 200
+    assert public_api.MAX_TICKETS >= 16 and public_api.MAX_TICKETS_PER_IP == 1
+    monkeypatch.setattr(public_api, "MAX_TICKETS", 2)
+    r = start(par, 2, {"x-forwarded-for": "3.3.3.3"})
     assert r.status_code == 429 and r.json()["code"] == "busy"
+
+
+def test_a_ticket_without_pictures_expires_quickly(par):
+    t = start(par, 4).json()["ticket"]
+    assert public_api.EQ_TICKET_START_TTL <= 180
+    public_api._tickets[t].used -= public_api.EQ_TICKET_START_TTL + 1
+    public_api._purge_tickets()
+    assert t not in public_api._tickets
+    t2 = start(par, 4).json()["ticket"]                                # used once: the longer idle limit applies
+    assert par.post(f"/api/public/equations/{t2}", json={"items": items("e1")}).status_code == 200
+    public_api._tickets[t2].used -= public_api.EQ_TICKET_START_TTL + 1
+    public_api._purge_tickets()
+    assert t2 in public_api._tickets
+
+
+def test_each_ticket_charges_a_minimum_to_the_address(par, monkeypatch):
+    monkeypatch.setattr(settings, "public_ip_daily_cap_usd", public_api.EQ_MIN_TICKET_USD * 3)
+    for _ in range(3):
+        t = start(par, 1).json()
+        assert t["estimate_usd"] >= public_api.EQ_MIN_TICKET_USD
+        public_api._close_ticket(public_api._tickets[t["ticket"]])     # abandoned: still costs the minimum
+    r = start(par, 1)
+    assert r.status_code == 402 and r.json()["code"] == "ip_cap"
+
+
+def test_one_request_at_a_time_per_ticket_and_spend_adds_up(par, monkeypatch):
+    import httpx
+    use(monkeypatch, ParityFake(delay=0.3))
+    t = start(par, 20).json()["ticket"]
+    url = f"/api/public/equations/{t}"
+
+    async def go():
+        transport = httpx.ASGITransport(app=public_api.app, client=("testclient", 50000))  # the ticket's address
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await asyncio.gather(c.post(url, json={"items": items("e1", "e2")}),
+                                        c.post(url, json={"items": items("e3", "e4")}))
+    codes = sorted(r.status_code for r in asyncio.run(go()))
+    assert codes == [200, 429]
+    assert public_api._tickets[t].usd == pytest.approx(spend.total_usd())
+    use(monkeypatch, ParityFake())
+    assert par.post(url, json={"items": items("e5")}).status_code == 200
+    assert public_api._tickets[t].usd == pytest.approx(spend.total_usd())   # sequential requests add, never overwrite
+
+
+def test_a_busy_ticket_is_never_purged_or_settled(par):
+    t = start(par, 4).json()["ticket"]
+    tk = public_api._tickets[t]
+    tk.busy = True
+    tk.used -= public_api.EQ_TICKET_TTL + 5
+    public_api._purge_tickets()
+    assert t in public_api._tickets
+    tk.busy = False
 
 
 def test_equation_failures_never_leak_or_log(par, monkeypatch, caplog):
