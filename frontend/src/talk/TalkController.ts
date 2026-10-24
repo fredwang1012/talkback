@@ -95,6 +95,12 @@ export interface TalkSession {
   setServerTurns?(on: boolean): void;
   /** #135: remove a turn from the server's conversation (it was the character's echo). Optional. */
   deleteItem?(itemId: string): void;
+  /**
+   * Empty the server's input audio buffer. Live (probe 2026-10-24): with `create_response: false` the server never
+   * clears it itself; every committed turn reuses one item id and is transcribed with all the audio since the last
+   * clear, so a hands-free turn must end with this or the next question carries every earlier one. Optional.
+   */
+  clearInput?(): void;
   /** Server turns: hold the mic (nothing sent) while our own playback could be heard; release it with a pre-roll
    * (ms of the held audio sent first, a barge-in) or without (the held audio is dropped). Optional. */
   setMicHold?(hold: boolean, preRollMs?: number): void;
@@ -160,6 +166,20 @@ export interface TalkDeps {
   tapMs?: number;
 }
 
+/**
+ * The transcripts of one spoken question so far, with the latest one. Live, a server-detected turn is transcribed with
+ * the whole input buffer (everything since our last clear), so when the server splits a question in two, the second
+ * transcript repeats the first: it then replaces what was heard; a transcript of only the new words is appended.
+ */
+export function mergeTranscript(sofar: string[], text: string): string[] {
+  const t = text.trim();
+  if (!t) return sofar;
+  const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const prev = norm(sofar.join(" "));
+  if (prev && norm(t).startsWith(prev)) return [t];
+  return [...sofar, t];
+}
+
 export class TalkController {
   private d: Required<Pick<TalkDeps, "now" | "autoResumeDelayMs" | "transcriptTimeoutMs" | "retrieveTimeoutMs" | "tapMs">> & TalkDeps;
   private _state: TalkState = "reading";
@@ -197,7 +217,6 @@ export class TalkController {
     transcripts: string[]; speaking: boolean; heardSpeech: boolean; stoppedAt: number; startedAt: number;
     voicedMs: number; items: string[]; pressed: boolean; timer: ReturnType<typeof setTimeout> | null;
   } | null = null;
-  private echoItems = new Set<string>(); // server turns that were judged echo: deleted on commit, transcripts ignored
   private micHeld = false; // server turns: the mic is held (the character speaks, or its tail)
   private bargeOpen = false; // the reader cut in (or pressed): the mic stays open until the character speaks again
   private holdTimer: ReturnType<typeof setTimeout> | null = null;
@@ -342,6 +361,7 @@ export class TalkController {
     this.echo.reset();
     this.bargeOpen = false;
     this.emptyTurns = 0;
+    if (on) this.serverGaveUp = false; // a fresh hands-free session gives Boson's turn detection another chance
     if (!on) this.applyHold(false);
     const canServer = !!this.d.serverTurns && !!this.d.session.setServerTurns && !this.serverGaveUp;
     this.serverMode = on && canServer;
@@ -570,13 +590,11 @@ export class TalkController {
     srv.timer = setTimeout(() => { if (this.srv === srv) { srv.timer = null; void this.finishSrv(); } }, ms);
   }
 
-  private markEcho(itemId: string | undefined): void {
-    if (!itemId) return;
-    if (this.echoItems.size > 50) this.echoItems.clear();
-    this.echoItems.add(itemId);
-  }
-
-  /** speech_started: a new question, more of the current one, or (the mic held over the character) stray echo. */
+  /**
+   * speech_started: a new question, more of the current one, or (busy, or the mic held over the character) stray
+   * echo, which is simply ignored: its commit clears the buffer (onCommitted) and its transcript finds no turn. The
+   * item id is no key for that (live, every committed turn carries the same id).
+   */
   private onServerSpeech(itemId: string | undefined): void {
     const srv = this.srv;
     if (srv && (this._state === "listening" || this._state === "transcribing")) { // the same question goes on
@@ -587,10 +605,10 @@ export class TalkController {
       if (this._state === "transcribing") this.set("listening");
       return;
     }
-    if (!["reading", "talk-idle", "answering", "resuming"].includes(this._state)) { this.markEcho(itemId); return; } // busy: not a question we answer
+    if (!["reading", "talk-idle", "answering", "resuming"].includes(this._state)) return; // busy: not a question we answer
     // The mic is held while the character speaks, so the server cannot hear them now; a speech_started anyway is for
     // audio sent before the hold (their first syllable) or stray: echo. A barge-in comes from the local gate (bargeIn).
-    if (this.micHeld || (this.speaking && !this.bargeOpen)) { this.markEcho(itemId); return; }
+    if (this.micHeld || (this.speaking && !this.bargeOpen)) return;
     void this.beginTurn(true, false, true, false, itemId);
   }
 
@@ -604,16 +622,19 @@ export class TalkController {
   }
 
   private onCommitted(itemId: string | undefined): void {
-    if (itemId && this.echoItems.has(itemId)) { this.d.session.deleteItem?.(itemId); return; }
     const srv = this.srv;
-    if (srv && itemId && ["listening", "transcribing"].includes(this._state) && !srv.items.includes(itemId)) srv.items.push(itemId);
+    if (!srv || !["listening", "transcribing"].includes(this._state)) {
+      // a stray turn (echo, a noise while the character speaks or thinks): its audio must not lead the next question
+      this.d.session.clearInput?.();
+      return;
+    }
+    if (itemId && !srv.items.includes(itemId)) srv.items.push(itemId);
   }
 
-  private onServerTranscript(text: string, itemId: string | undefined): void {
-    if (itemId && this.echoItems.has(itemId)) return;
+  private onServerTranscript(text: string, _itemId: string | undefined): void {
     const srv = this.srv;
     if (!srv || !["listening", "transcribing"].includes(this._state)) return;
-    if (text.trim()) srv.transcripts.push(text.trim());
+    srv.transcripts = mergeTranscript(srv.transcripts, text);
     if (srv.speaking) return; // more of the question is coming
     this.armSrv(Math.max(0, srv.stoppedAt + MERGE_MS - this.d.now()));
   }
@@ -623,6 +644,7 @@ export class TalkController {
     const srv = this.srv;
     if (!srv) return;
     this.clearSrv();
+    this.d.session.clearInput?.(); // the question's audio is transcribed: the next question starts from an empty buffer
     const turn = this.turn;
     const query = srv.transcripts.join(" ").trim();
     if (!query) {
@@ -640,11 +662,17 @@ export class TalkController {
     await this.answerQuery(turn, query);
   }
 
+  /** A half-heard server turn is abandoned (a typed question, Stop): its audio must not lead the next question. */
+  private abandonSrv(): void {
+    if (this.srv) this.d.session.clearInput?.();
+    this.clearSrv();
+  }
+
   /** A typed question: the same turn as a spoken one, without the mic. */
   async ask(text: string): Promise<void> {
     const query = text.trim();
     if (!query) return;
-    this.clearSrv();
+    this.abandonSrv();
     this.clearResumeTimer();
     const turn = ++this.turn;
     const wasAnswering = this._state === "answering";
@@ -675,7 +703,7 @@ export class TalkController {
 
   /** Stop speaking and drop the current answer (Stop button). */
   async stop(): Promise<void> {
-    this.clearSrv();
+    this.abandonSrv();
     const viaAnswer = this.run !== null;
     this.cancelAnswer();
     this.turn++;
