@@ -38,7 +38,7 @@ This script deploys the public processing API to Cloud Run. Nothing has been don
   4. gcloud run deploy ${SERVICE} in ${REGION} as ${SA}
        PUBLIC_API=true (only /api/health and /api/public/*: enrich, answer, translate, detect, describe,
        faces/detect, equations; their extra limits are constants in backend/app/public_api.py), UPLOAD_LLM=gemini, TRUST_PROXY=true, USAGE_LOG_FILE=false,
-       PUBLIC_BOOK_CAP_USD=1.5, PUBLIC_TOTAL_CAP_USD=10, PUBLIC_IP_DAILY_CAP_USD=2, PUBLIC_ANSWER_DAILY_CAP_USD=2, no secrets,
+       PUBLIC_*_CAP_USD (default 1000: caps lifted for the hackathon; export lower values, e.g. 1.5/10/2/2, to restore them), no secrets,
        bucket mounted at /app/data (spend counters), min 0 / max 1 instance, no CPU throttling (jobs run between polls),
        1Gi, 1 CPU, 120 s request timeout (jobs are polled, no long request),
        --no-allow-unauthenticated: CLOSED. Nobody can call it until you grant allUsers roles/run.invoker.
@@ -86,7 +86,7 @@ gcloud run deploy "${SERVICE}" \
   --region "${REGION}" \
   --image "${IMAGE}" \
   --service-account "${SA}" \
-  --set-env-vars "PUBLIC_API=true,TRUST_PROXY=true,UPLOAD_LLM=gemini,GCP_PROJECT=${PROJECT},GCP_REGION=${REGION},USAGE_LOG_FILE=false,PUBLIC_BOOK_CAP_USD=1.5,PUBLIC_TOTAL_CAP_USD=10,PUBLIC_IP_DAILY_CAP_USD=2,PUBLIC_ANSWER_DAILY_CAP_USD=2" \
+  --set-env-vars "PUBLIC_API=true,TRUST_PROXY=true,UPLOAD_LLM=gemini,GCP_PROJECT=${PROJECT},GCP_REGION=${REGION},USAGE_LOG_FILE=false,PUBLIC_BOOK_CAP_USD=${PUBLIC_BOOK_CAP_USD:-1000},PUBLIC_TOTAL_CAP_USD=${PUBLIC_TOTAL_CAP_USD:-1000},PUBLIC_IP_DAILY_CAP_USD=${PUBLIC_IP_DAILY_CAP_USD:-1000},PUBLIC_ANSWER_DAILY_CAP_USD=${PUBLIC_ANSWER_DAILY_CAP_USD:-1000}" \
   --execution-environment gen2 \
   --add-volume "name=data,type=cloud-storage,bucket=${BUCKET}" \
   --add-volume-mount "volume=data,mount-path=/app/data" \

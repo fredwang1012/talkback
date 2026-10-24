@@ -1158,11 +1158,12 @@ def book_status(book_id: str):
 @app.post("/api/books/{book_id}/enrich", status_code=202, dependencies=[Depends(require_access)])
 async def start_enrichment(book_id: str, background: BackgroundTasks):
     """Start the character processing: after the reader confirmed it (testing mode, UPLOAD_CONFIRM), or again after it
-    was interrupted or failed (status "error"; only for an upload the caller owns)."""
+    was interrupted, failed or stopped by a spending cap (status "error" / "refused"; only for an upload the caller owns;
+    the caps are checked again, so a refused book only runs once they allow it)."""
     users.guard_book(book_id)
     st = book_status(book_id)
     state = (st.get("enrich") or {}).get("status")
-    retry = state == "error"
+    retry = state in ("error", "refused")   # refused: a cap stop; allowed again once the caps permit (re-checked below)
     if retry:
         users.require_account("Sign in to process books.")
         if not book_id.startswith("u-"):
@@ -1170,7 +1171,7 @@ async def start_enrichment(book_id: str, background: BackgroundTasks):
     # check without an await before the new status is written: a second request then sees the job and gets a 409
     if book_id in _kind_claims or book_id in _enrich_jobs or book_id in _equation_jobs:   # a job or kind change is running
         raise HTTPException(409, "This book is still being processed; try again when it finishes.")
-    if state not in ("awaiting_confirmation", "error"):   # also "refused": a cap stop is final
+    if state not in ("awaiting_confirmation", "error", "refused"):
         raise HTTPException(409, "This book is not waiting for confirmation.")
     if not settings.upload_enrich:   # UPLOAD_ENRICH=false: no paid processing, not even a retry
         raise HTTPException(409, ENRICH_OFF)

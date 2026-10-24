@@ -7,7 +7,7 @@ const pct = (p: number | undefined) => Math.round(Math.max(0, Math.min(1, p ?? 0
 /** The card note for a settled enrichment status: confirm (testing mode), refused, or an interrupted/failed job that can be retried. */
 export function noteFromEnrich(id: string, e: EnrichStatus | undefined): MoveNote | null {
   if (e?.status === "awaiting_confirmation") return { id, text: e.message ?? "Characters, voices and recap need processing.", confirm: e.estimate_usd ?? 0 };
-  if (e?.status === "refused") return { id, text: e.message ?? "Character processing did not run." };
+  if (e?.status === "refused") return { id, text: e.message ?? "Character processing did not run.", retry: true };
   if (e?.status === "error") return { id, text: e.message ?? "Character processing did not run.", retry: true };
   return null;
 }

@@ -221,17 +221,20 @@ def test_retry_per_user_permissions(pu, monkeypatch):  # noqa: F811
 
 # ---------- cap bypass: cap stops are final, the per-book cap is cumulative, retries are limited ----------
 
-def test_cap_stop_is_recorded_as_refused_and_not_retryable(rig, monkeypatch):
+def test_cap_stop_is_recorded_as_refused_and_retry_rechecks_caps(rig, monkeypatch):
     monkeypatch.setattr(settings, "upload_total_cap_usd", 0.0001)   # the first call pushes the total past the cap
     make_book_on_disk(settings.data_dir, book_id=BID)
     ingest_upload.write_status(BID, "ready", enrich={"status": "error", "message": pipeline.FAILED})
     main._upload_status.clear()
+    real_check = pipeline.check_caps
     monkeypatch.setattr(pipeline, "check_caps", lambda *a, **k: None)   # let the job start; the meter then stops it
     assert rig.post(f"/api/books/{BID}/enrich").status_code == 202
     assert st(BID)["status"] == "refused" and st(BID)["message"] == pipeline.BUDGET_USED
     calls = len(rig.fake.calls)
-    assert rig.post(f"/api/books/{BID}/enrich").status_code == 409   # refused: no retry
-    assert len(rig.fake.calls) == calls
+    monkeypatch.setattr(pipeline, "check_caps", real_check)   # the real caps again (still exceeded)
+    r = rig.post(f"/api/books/{BID}/enrich")   # a refused book may be retried, but the caps are checked first
+    assert r.status_code == 202 and r.json()["enrich"]["status"] == "refused"
+    assert len(rig.fake.calls) == calls   # still over the cap: nothing ran
 
 
 def test_per_book_cap_is_cumulative(data_dir, monkeypatch):
