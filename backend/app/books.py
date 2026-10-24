@@ -110,11 +110,13 @@ def series_recap(book: Book, max_words: int = 160, full: bool = False) -> str:
     return "\n".join(parts)
 
 
-def list_books() -> list[dict]:
+def list_books(hidden: bool = False) -> list[dict]:
+    """The caller's library; hidden=True lists only the built-in books the caller hid instead."""
     from . import users
     out = []
+    hidden_ids = users.hidden_books()
     for path in sorted(_books_dir().glob("*/book.json")):
-        if not users.can_see_book(path.parent.name):
+        if not users.can_see_book(path.parent.name) or (path.parent.name in hidden_ids) != hidden:
             continue
         book = load_book(path.parent.name)
         if book is None:

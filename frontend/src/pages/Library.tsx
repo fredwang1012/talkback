@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
-  accountLabel, changeKind, deleteBook, fetchBooks, fetchMe, SIGN_OUT_URL, type Me, MAX_UPLOAD_BYTES, pollBookStatus, pollEnrichment, pollIndexing, indexingLabel, startEnrichment, uploadBook,
+  accountLabel, changeKind, deleteBook, fetchBooks, fetchHiddenBooks, hideBook, restoreBook, type HiddenBook, fetchMe, SIGN_OUT_URL, type Me, MAX_UPLOAD_BYTES, pollBookStatus, pollEnrichment, pollIndexing, indexingLabel, startEnrichment, uploadBook,
   type BookStatus, type BookSummary, type UploadKind,
   enrichDoneNote,
 } from "../api";
 import { clearAccessToken, getAccessToken } from "../accessToken";
-import { canDelete, canMove, groupShelves, kindLabel, moveLabel, moveTarget, seriesTitle } from "../shelves";
+import { canDelete, canMove, groupShelves, hiddenLabel, kindLabel, moveLabel, moveTarget, removeLabel, seriesTitle } from "../shelves";
 
 type UploadState =
   | { phase: "idle" }
@@ -166,9 +166,9 @@ function AddBook({ onReady }: { onReady: () => void }) {
 
 type MoveNote = { id: string; text: string; progress?: number; confirm?: number };
 
-function Volume({ b, busy, note, onMove, onConfirm, onDelete }: {
+function Volume({ b, busy, note, onMove, onConfirm, onDelete, onHide }: {
   b: BookSummary; busy: boolean; note?: MoveNote; onMove: (b: BookSummary) => void; onConfirm: (b: BookSummary) => void;
-  onDelete: (b: BookSummary) => Promise<void>;
+  onDelete: (b: BookSummary) => Promise<void>; onHide: (b: BookSummary) => void;
 }) {
   const [asking, setAsking] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -194,6 +194,12 @@ function Volume({ b, busy, note, onMove, onConfirm, onDelete }: {
         <button type="button" className="volume-move" disabled={busy} onClick={() => onMove(b)}
           aria-label={`${moveLabel(b)}: ${b.title}`}>
           {moveLabel(b)}
+        </button>
+      )}
+      {!canDelete(b) && (
+        <button type="button" className="volume-move volume-delete" disabled={busy} onClick={() => onHide(b)}
+          aria-label={`${removeLabel(b)}: ${b.title}`} title="Remove it from your library. You can restore it below.">
+          {removeLabel(b)}
         </button>
       )}
       {canDelete(b) && !asking && (
@@ -236,10 +242,13 @@ export default function Library() {
   const [moving, setMoving] = useState(false);
   const [hasCode, setHasCode] = useState(() => getAccessToken() !== "");
   const [me, setMe] = useState<Me | null>(null);
+  const [hidden, setHidden] = useState<HiddenBook[]>([]);
+  const [showHidden, setShowHidden] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const load = () => fetchBooks().then(setBooks).catch((e: Error) => setError(e.message));
-  useEffect(() => { load(); fetchMe().then(setMe); }, []);
+  const loadHidden = () => fetchHiddenBooks().then(setHidden).catch(() => setHidden([]));
+  useEffect(() => { load(); loadHidden(); fetchMe().then(setMe); }, []);
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const setNote = (id: string, note: MoveNote | null) =>
@@ -289,6 +298,30 @@ export default function Library() {
     }
   }
 
+  /** Built-in books: gone from the shelf at once (optimistic), restorable from "Hidden books". */
+  async function hide(b: BookSummary) {
+    setBooks((list) => (list ? list.filter((x) => x.id !== b.id) : list));
+    setHidden((h) => [...h.filter((x) => x.id !== b.id), { id: b.id, title: b.title, author: b.author }]);
+    try {
+      await hideBook(b.id);
+    } catch (err) {
+      setHidden((h) => h.filter((x) => x.id !== b.id));
+      await load();
+      setNote(b.id, { id: b.id, text: (err as Error).message });
+    }
+  }
+
+  async function restore(h: HiddenBook) {
+    setHidden((list) => list.filter((x) => x.id !== h.id));
+    try {
+      await restoreBook(h.id);
+    } catch (err) {
+      setHidden((list) => [...list, h]);
+      setError((err as Error).message);
+    }
+    await load();
+  }
+
   async function confirmProcessing(b: BookSummary) {
     const ctl = new AbortController();
     abortRef.current?.abort();
@@ -304,7 +337,7 @@ export default function Library() {
 
   const shelves = books ? groupShelves(books) : null;
   const volume = (b: BookSummary) => (
-    <Volume key={b.id} b={b} busy={moving} note={notes[b.id]} onMove={move} onConfirm={confirmProcessing} onDelete={remove} />
+    <Volume key={b.id} b={b} busy={moving} note={notes[b.id]} onMove={move} onConfirm={confirmProcessing} onDelete={remove} onHide={hide} />
   );
 
   return (
@@ -347,6 +380,24 @@ export default function Library() {
               : <div className="shelf">{shelves.textbooks.map(volume)}</div>}
           </section>
         </>
+      )}
+
+      {hidden.length > 0 && (
+        <section className="hidden-books" aria-label="Hidden books">
+          <button type="button" className="link-btn" aria-expanded={showHidden} onClick={() => setShowHidden((v) => !v)}>
+            {hiddenLabel(hidden.length)} · {showHidden ? "Close" : "Restore"}
+          </button>
+          {showHidden && (
+            <ul>
+              {hidden.map((h) => (
+                <li key={h.id}>
+                  <span>{h.title}{h.author && <span className="by"> · {h.author}</span>}</span>
+                  <button type="button" className="volume-move" onClick={() => restore(h)} aria-label={`Restore: ${h.title}`}>Restore</button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       )}
 
       <AddBook onReady={load} />

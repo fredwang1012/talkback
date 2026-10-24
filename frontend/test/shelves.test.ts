@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { changeKind, deleteBook, type BookSummary } from "../src/api";
-import { canDelete, canMove, groupShelves, kindLabel, moveLabel, moveTarget, seriesTitle } from "../src/shelves";
+import { changeKind, deleteBook, fetchHiddenBooks, hideBook, restoreBook, type BookSummary } from "../src/api";
+import { canDelete, canMove, groupShelves, hiddenLabel, kindLabel, moveLabel, moveTarget, removeKind, removeLabel, seriesTitle } from "../src/shelves";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -72,10 +72,43 @@ describe("changeKind", () => {
 });
 
 describe("delete", () => {
-  it("is offered only for uploaded books", () => {
+  it("is a real delete only for uploaded books", () => {
     expect(canDelete(book("u-mine-1a2b3c4d"))).toBe(true);
     expect(canDelete(book("hp1"))).toBe(false);
     expect(canDelete(book("alice-in-wonderland"))).toBe(false);
+  });
+
+  it("built-in books are hidden instead (every book can be removed)", () => {
+    expect(removeKind(book("u-mine-1a2b3c4d"))).toBe("delete");
+    expect(removeKind(book("hp1"))).toBe("hide");
+    expect(removeKind(book("alice-in-wonderland"))).toBe("hide");
+    expect(removeLabel(book("u-x-1"))).toBe("Delete");
+    expect(removeLabel(book("hp1"))).toBe("Hide");
+  });
+
+  it("labels the hidden-books control", () => {
+    expect(hiddenLabel(0)).toBe("");
+    expect(hiddenLabel(1)).toBe("Hidden books (1)");
+    expect(hiddenLabel(7)).toBe("Hidden books (7)");
+  });
+
+  it("hides, restores and lists hidden books", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ hidden: "hp1" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ restored: "hp1" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "hp1", title: "Stone", author: "J" }]), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await hideBook("hp1");
+    await restoreBook("hp1");
+    expect(await fetchHiddenBooks()).toEqual([{ id: "hp1", title: "Stone", author: "J" }]);
+    expect(fetchMock.mock.calls.map((c) => [c[0], c[1]?.method])).toEqual([
+      ["/api/books/hp1/hide", "POST"], ["/api/books/hp1/restore", "POST"], ["/api/hidden-books", undefined],
+    ]);
+  });
+
+  it("surfaces a refused hide (anonymous visitor)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "Sign in to delete things." }), { status: 403 })));
+    await expect(hideBook("hp1")).rejects.toThrow(/Sign in/);
   });
 
   it("sends DELETE to the book and resolves on success", async () => {

@@ -251,6 +251,20 @@ export async function deleteBook(id: string): Promise<void> {
   if (!res.ok) throw await readError(res, "Could not delete the book");
 }
 
+/** Built-in books (classics, Harry Potter) are hidden for this account instead of deleted; restorable. */
+export async function hideBook(id: string): Promise<void> {
+  const res = await timedFetch(`/api/books/${encodeURIComponent(id)}/hide`, { method: "POST", headers: authHeaders() });
+  if (!res.ok) throw await readError(res, "Could not hide the book");
+}
+
+export async function restoreBook(id: string): Promise<void> {
+  const res = await timedFetch(`/api/books/${encodeURIComponent(id)}/restore`, { method: "POST", headers: authHeaders() });
+  if (!res.ok) throw await readError(res, "Could not restore the book");
+}
+
+export type HiddenBook = { id: string; title: string; author: string };
+export const fetchHiddenBooks = () => getJson<HiddenBook[]>("/api/hidden-books");
+
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 export type BookKind = "novel" | "textbook";
 /** What the upload form can send: "auto" lets the server decide. */

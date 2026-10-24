@@ -218,6 +218,37 @@ def cast_json(book_id: str, ident: Identity | None = None) -> Path:
     return user_root(ident) / "cast" / f"{book_id}.json"
 
 
+def hidden_json(ident: Identity | None = None) -> Path:
+    """Built-in books this account removed from its library (a hide, never a delete of the shared files)."""
+    return user_root(ident) / "hidden_books.json"
+
+
+_hidden_lock = threading.Lock()   # read-modify-write of hidden_books.json (endpoints run in the threadpool)
+
+
+def hidden_books(ident: Identity | None = None) -> set[str]:
+    try:
+        data = json.loads(hidden_json(ident).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    return {b for b in data if isinstance(b, str)} if isinstance(data, list) else set()
+
+
+def set_hidden(book_id: str, hidden: bool, ident: Identity | None = None) -> None:
+    """Add or remove one book id (idempotent, atomic write)."""
+    ident = ident or current()
+    with _hidden_lock:
+        ids = hidden_books(ident)
+        if (book_id in ids) == hidden:
+            return
+        ids = ids | {book_id} if hidden else ids - {book_id}
+        path = hidden_json(ident)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(sorted(ids)), encoding="utf-8")
+        tmp.replace(path)
+
+
 # ---- book access ----
 
 def _owner_marker(book_id: str) -> Path:

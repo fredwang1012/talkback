@@ -167,6 +167,40 @@ def get_books():
     return books.list_books()
 
 
+@app.get("/api/hidden-books")
+def get_hidden_books():
+    """Built-in books the caller hid from the library (restorable)."""
+    return [{"id": b["id"], "title": b["title"], "author": b["author"]} for b in books.list_books(hidden=True)]
+
+
+def _builtin_for_account(book_id: str) -> None:
+    """Hide/restore: a visible built-in book, and (PER_USER) a signed-in account so nobody hides it for everyone."""
+    if not books._ID.match(book_id):
+        raise HTTPException(404, "Book not found")
+    users.guard_book(book_id)
+    users.require_account()
+    if book_id.startswith("u-"):
+        raise HTTPException(403, "Books you uploaded are deleted, not hidden.")
+    if not (settings.data_dir / "books" / book_id / "book.json").is_file():
+        raise HTTPException(404, "Book not found")
+
+
+@app.post("/api/books/{book_id}/hide", dependencies=[Depends(require_access)])
+def hide_book(book_id: str):
+    """Remove a built-in book (classics, Harry Potter) from this account's library. Its files are never touched:
+    they are shared, and their processing was expensive."""
+    _builtin_for_account(book_id)
+    users.set_hidden(book_id, True)
+    return {"hidden": book_id}
+
+
+@app.post("/api/books/{book_id}/restore", dependencies=[Depends(require_access)])
+def restore_book(book_id: str):
+    _builtin_for_account(book_id)
+    users.set_hidden(book_id, False)
+    return {"restored": book_id}
+
+
 _book_bodies: dict[str, tuple[Book, bytes, bytes]] = {}  # book id -> (book object, json, gzipped json)
 
 

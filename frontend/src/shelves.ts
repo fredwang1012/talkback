@@ -27,8 +27,15 @@ export function groupShelves(books: BookSummary[]): Shelves {
 /** Only books you uploaded (ids start with "u-") can be moved. */
 export const canMove = (b: Pick<BookSummary, "id">) => b.id.startsWith("u-");
 
-/** Same rule on the server: only your own uploads can be deleted (the shipped and sample books never). */
+/** Same rule on the server: only your own uploads are really deleted (the shipped and sample books never). */
 export const canDelete = (b: Pick<BookSummary, "id">) => b.id.startsWith("u-");
+
+/** Every book can be removed: uploads are deleted, built-in books are hidden for this account (restorable). */
+export const removeKind = (b: Pick<BookSummary, "id">): "delete" | "hide" => (canDelete(b) ? "delete" : "hide");
+export const removeLabel = (b: Pick<BookSummary, "id">) => (removeKind(b) === "delete" ? "Delete" : "Hide");
+
+/** "Hidden books (N)", or "" when nothing is hidden (the control is not shown). */
+export const hiddenLabel = (n: number) => (n > 0 ? `Hidden books (${n})` : "");
 
 export const moveTarget = (b: Pick<BookSummary, "kind">): BookKind => (b.kind === "textbook" ? "novel" : "textbook");
 
