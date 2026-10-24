@@ -21,7 +21,9 @@ GEMINI_EMBED_PRICES = {"gemini-embedding-001": 0.15}  # $ per 1M input tokens
 CHARS_PER_TOKEN = 4  # the embedder logs characters, so tokens are estimated
 BOSON_TTS_PER_1K_CHARS = 0.015
 
-AVATAR_PER_MINUTE = 0.09  # Higgs Avatar at 640x640, the streamed size (docs.boson.ai/pricing; 640x480 is $0.07)
+# Higgs Avatar $/min by output size (docs.boson.ai/pricing); lines logged before sizes were recorded were 640x640
+AVATAR_PER_MINUTE_BY_SIZE = {"640x640": 0.09, "480x640": 0.07, "640x480": 0.07}
+AVATAR_PER_MINUTE = AVATAR_PER_MINUTE_BY_SIZE["640x640"]
 AVATAR_CHARS_PER_SECOND = 15  # used only when the audio duration was not logged
 
 PROVIDER_OF = {"embed": "gcp", "llm": "gcp", "anthropic": "anthropic",
@@ -88,7 +90,7 @@ def cost_of(row: dict, anthropic_prices: dict | None = None) -> float | None:
             return row.get("chars", 0) / 1000 * BOSON_TTS_PER_1K_CHARS
         if kind == "boson_avatar":
             secs = row["seconds"] if "seconds" in row else row["chars"] / AVATAR_CHARS_PER_SECOND if "chars" in row else None
-            return None if secs is None else secs / 60 * AVATAR_PER_MINUTE
+            return None if secs is None else secs / 60 * AVATAR_PER_MINUTE_BY_SIZE.get(row.get("size"), AVATAR_PER_MINUTE)
         if kind in ("boson_realtime_session", "boson_voice_clone"):
             return 0.0  # pricing unknown: counted only
     except (TypeError, ValueError):

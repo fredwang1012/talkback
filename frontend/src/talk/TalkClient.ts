@@ -3,7 +3,18 @@ import { describeClose, functionCallOutput, historyItem, inputAudioAppend, trunc
 import type { SessionEvent, TalkSession, ToolCall, ToolResult } from "./TalkController";
 import { TOOL_DEFS } from "./tools";
 
-const WS_URL = "wss://api.boson.ai/v1/realtime?model=higgs-realtime-1.5-preview";
+/** The Realtime model (A6): the 1.5 preview by default (live-checked with our exact session config). `?rt=higgs-realtime`
+ * on the page URL picks another for an A/B. If the preview is refused, the page drops to the stable model for good. */
+export const REALTIME_MODEL = "higgs-realtime-1.5-preview";
+export const REALTIME_MODEL_STABLE = "higgs-realtime";
+let fellBackToStable = false;
+export function resetRealtimeFallback(): void { fellBackToStable = false; }
+export function realtimeModel(search: string = typeof location === "undefined" ? "" : location.search): string {
+  if (fellBackToStable) return REALTIME_MODEL_STABLE;
+  const rt = new URLSearchParams(search).get("rt");
+  return rt && /^higgs-realtime[\w.-]*$/.test(rt) ? rt : REALTIME_MODEL;
+}
+export const realtimeUrl = (model: string): string => `wss://api.boson.ai/v1/realtime?model=${encodeURIComponent(model)}`;
 const OPEN = 1; // WebSocket.OPEN, spelled out so tests need no global WebSocket
 /**
  * Hands-free pre-roll (#114): how much mic audio from before the voice gate opened is sent first. The gate reports
@@ -123,14 +134,14 @@ export class ConnectionLimitError extends Error {}
 /** The socket was dropped before it opened (a turn-mode change): openWithBackoff opens the next one at once. */
 class SupersededError extends Error {}
 
-export type SessionOptions = { turnDetection?: Record<string, unknown> | null; language?: string | null };
+export type SessionOptions = { model?: string; turnDetection?: Record<string, unknown> | null; language?: string | null };
 
 export function sessionConfig(voice: string, tools: readonly unknown[] = TOOL_DEFS, opts: SessionOptions = {}): ClientEvent {
   return {
     type: "session.update",
     session: {
       type: "realtime",
-      model: "higgs-realtime-1.5-preview",
+      model: opts.model ?? realtimeModel(),
       instructions: SESSION_INSTRUCTIONS,
       output_modalities: ["audio"],
       tools, // client function tools only: the model asks, the browser acts (see tools.ts)
@@ -190,6 +201,7 @@ export class TalkClient implements TalkSession {
   private vadIndex = 0;
   private sessionServer = false; // the open session was configured with server turn detection
   private sessionAcked = false; // its session.created was seen
+  private sessionModel = REALTIME_MODEL_STABLE; // the Realtime model the open session asked for
   private expectResponse = 0; // response.create calls not yet matched by a response.created
   private language: string | null = null;
   // the character must never hear itself: while held (it speaks, and a short tail after) mic audio is kept, not sent
@@ -257,7 +269,8 @@ export class TalkClient implements TalkSession {
     await new Promise<void>((resolve, reject) => {
       let opened = false;
       const make = this.d.createSocket ?? ((url, protocols) => new WebSocket(url, protocols) as unknown as SocketLike);
-      const ws = make(WS_URL, ["realtime", `bai-client-secret.${key}`]);
+      const model = realtimeModel();
+      const ws = make(realtimeUrl(model), ["realtime", `bai-client-secret.${key}`]);
       this.ws = ws;
       ws.onopen = () => {
         opened = true;
@@ -265,7 +278,8 @@ export class TalkClient implements TalkSession {
         this.sessionAcked = false;
         const turn = this.sessionServer ? turnDetection(VAD_TYPES[this.vadIndex]) : null;
         // the first session.update starts the session; no need to wait for session.created
-        this.send(sessionConfig(voice, this.d.tools, { turnDetection: turn, language: this.language }));
+        this.sessionModel = model;
+        this.send(sessionConfig(voice, this.d.tools, { model, turnDetection: turn, language: this.language }));
         this.seedHistory();
         this.flushPending();
         resolve();
@@ -281,6 +295,10 @@ export class TalkClient implements TalkSession {
         this.resetResponse();
         this.dropOutput = false;
         this.interrupting = false;
+        if (opened && !this.sessionAcked && this.sessionModel !== REALTIME_MODEL_STABLE && ![1000, 1013, 3000, 4429].includes(ev.code)) {
+          fellBackToStable = true; // the preview closed the session before it started: the next one uses the stable model
+          this.d.onLog?.("info", "realtime-model", `${this.sessionModel} closed the session (${ev.code}); using ${REALTIME_MODEL_STABLE} from now on`);
+        }
         if (ev.code === 1013 && !opened) { reject(new ConnectionLimitError(info.message)); return; }
         if (ev.code === 3000 || ev.code === 4429) this.emit({ type: "error", message: info.message });
         else if (ev.code === 1013) this.emit({ type: "error", message: "Boson is at its connection limit. Try again in a moment." });
@@ -376,6 +394,17 @@ export class TalkClient implements TalkSession {
     if (this.turnBusy) { this.sessionRefused = true; this.modeChangeDue = true; return; } // #141: once the answer drained
     this.sessionServer = false;
     this.dropSocket("turn mode fallback");
+    void this.ensureOpen(this.voice).catch((e: unknown) => this.emit({ type: "error", message: e instanceof Error ? e.message : String(e) }));
+  }
+
+  /** The 1.5 preview refused the session (A6): remember it for the page and reopen on the stable model, keeping any audio held for the first turn. */
+  private fallBackToStable(why: string): void {
+    fellBackToStable = true;
+    this.d.onLog?.("info", "realtime-model", `${this.sessionModel} refused (${why}); using ${REALTIME_MODEL_STABLE} from now on`);
+    const held = this.pendingAudio, commit = this.commitWhenOpen;
+    this.dropSocket("model fallback");
+    this.pendingAudio = held;
+    this.commitWhenOpen = commit;
     void this.ensureOpen(this.voice).catch((e: unknown) => this.emit({ type: "error", message: e instanceof Error ? e.message : String(e) }));
   }
 
@@ -670,8 +699,8 @@ export class TalkClient implements TalkSession {
         break;
       case "session.created":
       case "session.updated": {
-        if (!this.sessionServer) break;
         this.sessionAcked = true;
+        if (!this.sessionServer) break;
         const t = (evt.session as { audio?: { input?: { turn_detection?: { type?: string; create_response?: boolean } | null } } } | undefined)?.audio?.input?.turn_detection;
         if (t === undefined) break; // an ack without the audio block says nothing about turns
         if (t && t.create_response !== false) this.refuseServerMode("the server would answer every turn by itself", true);
@@ -771,6 +800,12 @@ export class TalkClient implements TalkSession {
         const err = (evt.error ?? evt) as { type?: string; code?: string | null; message?: string; event_id?: string; param?: string | null };
         if (this.sessionServer && !this.sessionAcked && /turn_detection|vad/i.test(`${err.message ?? ""} ${err.param ?? ""}`)) {
           this.refuseServerMode(err.message ?? "turn detection refused"); // the config was refused (the session closes next)
+          break;
+        }
+        // before the first ack, an error that is not about quota/auth/rate means the preview rejected our session.update
+        if (!this.sessionAcked && this.sessionModel !== REALTIME_MODEL_STABLE && !(typeof err.event_id === "string" && err.event_id.startsWith("seed-"))
+            && !/quota|auth|rate_limit/i.test(`${err.type ?? ""} ${err.code ?? ""}`) && errorCode(evt) !== "response_not_active") {
+          this.fallBackToStable(err.message ?? "session refused"); // the preview refused our session.update
           break;
         }
         if (typeof err.event_id === "string" && err.event_id.startsWith("seed-")) break; // a history item was refused: the chat just starts fresh

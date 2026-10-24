@@ -27,9 +27,9 @@ External services and models:
 | Service | Model / endpoint | Used for |
 |---|---|---|
 | Boson TTS | `higgs-tts-3`, `POST /v1/audio/speech`, mp3, `timestamps: true` (English) | read-aloud chunks, answer sentences, recaps, previews |
-| Boson Realtime | `wss://api.boson.ai/v1/realtime?model=higgs-realtime`, STT `higgs-stt-3.1` | voice questions, Realtime answers, tool calls |
+| Boson Realtime | `wss://api.boson.ai/v1/realtime?model=higgs-realtime-1.5-preview` (falls back to `higgs-realtime` if refused; `?rt=` overrides), STT `higgs-stt-3.1` | voice questions, Realtime answers, tool calls |
 | Boson keys | `POST /v1/realtime/client_secrets` (TTL 600 s) | ephemeral browser key per connection |
-| Boson Avatar | `higgs-avatar`, 640x640, `POST /v1/videos` (+poll) and `POST /v1/videos/stream` (fMP4) | lip-sync clips, talk/idle loops |
+| Boson Avatar | `higgs-avatar`, `AVATAR_SIZE` (default 640x640; 480x640 and 640x480 are cheaper), `POST /v1/videos` (+poll) and `POST /v1/videos/stream` (fMP4) | lip-sync clips, talk/idle loops |
 | Boson voices | `POST /v1/audio/voices`, `DELETE /v1/audio/voices/{id}` | voice cloning |
 | Vertex Gemini | `GEMINI_MODEL` default `gemini-2.5-flash`; processing `ENRICH_GEMINI_MODEL` (deploy sets `gemini-2.5-flash-lite`) | answers, translation, upload enrichment, equations, face box, describe |
 | Vertex embeddings | `gemini-embedding-001`, 768 dims | Vector Search index and queries |

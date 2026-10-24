@@ -1810,7 +1810,9 @@ def _lipsync_inputs(req: LipSyncRequest) -> tuple[Path, Path, str]:
     audio = settings.data_dir / "cache" / "tts" / f"{m.group(1)}.mp3"
     if not audio.is_file():
         raise HTTPException(404, "That audio is not cached.")
-    return audio, face, f"{m.group(1)}-{hashlib.sha256(face.read_bytes()).hexdigest()[:16]}"
+    key = f"{m.group(1)}-{hashlib.sha256(face.read_bytes()).hexdigest()[:16]}"
+    # the size is part of the key (a 3:4 clip is not a 1:1 clip); the default keeps its old key so cached clips stay valid
+    return audio, face, key if settings.avatar_size == "640x640" else f"{key}-{settings.avatar_size}"
 
 
 @app.post("/api/avatar/talk", dependencies=[Depends(require_access)])

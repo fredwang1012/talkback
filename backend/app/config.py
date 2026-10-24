@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     public_ip_daily_cap_usd: float = 2.0        # enrichment estimates per client address per UTC day, persisted
     public_answer_daily_cap_usd: float = 2.0    # Gemini answers per UTC day, persisted
 
+    # Lip-sync output size (docs.boson.ai input-options): 640x640 $0.09/min; 480x640 (3:4 portrait) and 640x480 $0.07/min.
+    avatar_size: Literal["640x640", "480x640", "640x480"] = "640x640"
+
     # Per-account separation for the live Cloud Run deploy (Google sign-in via IAP). Off everywhere else.
     per_user: bool = False
     iap_audience: str = ""        # /projects/PROJECT_NUMBER/locations/REGION/services/SERVICE
