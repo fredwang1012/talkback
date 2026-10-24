@@ -45,7 +45,7 @@ app = FastAPI(title="Talkback", lifespan=lifespan)
 app.add_middleware(UploadSizeLimit)  # added before CORS so CORS headers still wrap its 4xx replies
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=settings.cors_origin_list,
     allow_methods=["*"],
     allow_headers=["*"],
 )

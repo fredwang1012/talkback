@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[2]  # talkback/
@@ -14,7 +15,10 @@ class Settings(BaseSettings):
     boson_base_url: str = "https://api.boson.ai"
     data_dir: Path = ROOT / "data"
     # Optional shared secret. When set, endpoints that spend Boson credit require header X-Talkback-Token.
-    access_token: str = ""
+    # Env var is TALKBACK_ACCESS_TOKEN (README, DEPLOY.md); plain ACCESS_TOKEN still works.
+    access_token: str = Field(default="", validation_alias=AliasChoices("TALKBACK_ACCESS_TOKEN", "ACCESS_TOKEN"))
+    # Comma-separated browser origins allowed by CORS (the single-container deploy is same-origin and needs none).
+    cors_origins: str = "http://localhost:5173"
     # Google Cloud (Vertex AI). retrieval_backend="local" keeps today's BM25 + e5 behaviour.
     gcp_project: str = "frederick-talkback"
     gcp_region: str = "us-central1"
@@ -22,6 +26,10 @@ class Settings(BaseSettings):
     retrieval_backend: Literal["local", "vertex"] = "local"
     gemini_model: str = "gemini-2.5-flash"
     vs_collection: str = "chunks"
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     @property
     def vs_collection_path(self) -> str:
