@@ -152,3 +152,43 @@ def test_recap_sentences_do_not_split_after_abbreviations():
     from app.recap import split_sentences
     assert split_sentences("Prof. Jones taught, e.g. Wendy came. They left.") == [
         "Prof. Jones taught, e.g. Wendy came.", "They left."]
+
+
+_TAGS = re.compile(r"<\|[^|]*\|>")
+
+
+def spoken_len(c) -> int:
+    """Length of what Boson actually reads: tts_text without the control tags."""
+    return len(_TAGS.sub("", c.tts_text))
+
+
+NUMBERS = [
+    # 200 raw chars, ~600 once the numbers are spelled out: one sentence, no commas to split at
+    "The census listed 777,777 farmers 888,888 miners 999,999 sailors 373,737 clerks 474,747 cooks 575,757 smiths "
+    "676,767 weavers 797,979 bakers 898,989 masons and 979,797 carters in the year 1888 alone.",
+    # many short sentences that each fit raw, packed together they overflow once spelled out
+    " ".join(f"Room {n} had {n + 111} chairs." for n in range(311, 331)),
+    # a long sentence with comma clauses, numbers and years
+    ", ".join(f"in 1{n:03d} there were {n * 997:,} ships" for n in range(100, 112)) + ".",
+]
+
+
+@pytest.mark.parametrize("text", NUMBERS)
+def test_spoken_text_after_number_spelling_fits(text):
+    from app.textnorm import normalize_for_tts
+    assert len(normalize_for_tts(text)) > MAX_CHARS   # the case the old raw-length check missed
+    p = Paragraph(idx=0, section_id="s1", text=text)
+    chunks = chunk_paragraph(p, make_book())
+    assert all(spoken_len(c) <= MAX_CHARS for c in chunks), [spoken_len(c) for c in chunks]
+    assert covers(p, chunks)
+    for c in chunks:   # highlighting: each chunk's offsets point at exactly the text it speaks
+        assert _TAGS.sub("", c.tts_text) == normalize_for_tts(p.text[c.char_start:c.char_end])
+    assert all(a.char_end <= b.char_start for a, b in zip(chunks, chunks[1:]))
+
+
+def test_plain_prose_chunks_unchanged_by_the_spoken_length_check():
+    text = " ".join("This is yet another sentence of a rather long paragraph." for _ in range(30))
+    p = Paragraph(idx=0, section_id="s1", text=text)
+    chunks = chunk_paragraph(p, make_book())
+    assert len(chunks) > 1 and all(spoken_len(c) == c.char_end - c.char_start for c in chunks)
+    assert all(len(text[c.char_start:c.char_end]) > MAX_CHARS - 60 for c in chunks[:-1])   # still packed full

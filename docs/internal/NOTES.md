@@ -1255,3 +1255,15 @@ was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-
   five committed public-domain books with the new rules changes 0 of 11,243 chunks, so CHUNK_RULES_VERSION stays 2
   (a bump would rewrite every committed book.json for nothing). Trade-off: "No." and "etc." never end a sentence, so
   "No. I won't." is one TTS chunk / one streamed sentence (harmless: just grouped).
+
+## 280-char limit measured on the spoken text (chore/cleanup-findings, 2026-10-24)
+- `_groups` checked MAX_CHARS on the raw sentence, but Boson reads `normalize_for_tts` output: "777,777" is 7 chars raw
+  and 41 spoken, so number-heavy sentences went over 280. `ttschunks.spoken_len` (inline math read out, then numbers,
+  years and simple math spelled out) now bounds every piece and every packed group; `_fit_pieces` splits at clause,
+  else word boundaries, with the raw window shrunk by the growth ratio, recursively (floor 12 raw chars). Offsets stay
+  raw paragraph offsets, so highlighting is unchanged; tags are still not counted.
+- Committed books: 2 of 3,037 Peter Pan chunks change (one paragraph had a 282-char chunk), 0 in the other four, so
+  CHUNK_RULES_VERSION is now 3 and the server re-chunks each book once (no API call; the changed chunks are re-voiced
+  when played). Rebuilt book.json files are not committed. Re-chunking all five books still takes 1.6 s
+  (`textnorm.may_change`: plain prose with no digit or math character skips normalisation).
+- Seen, not changed: "6:30" is spoken "six:thirty" in that Peter Pan paragraph (times are not normalized).

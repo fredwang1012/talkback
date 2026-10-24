@@ -140,6 +140,15 @@ def speak_math(text: str) -> str:
     return "".join(out)
 
 
+_MAY_CHANGE = re.compile("[0-9̸" + re.escape("".join(sorted(_MATH_CHARS))) + "]")
+
+
+def may_change(text: str) -> bool:
+    """False when normalize_for_tts(text) is certainly `text` itself (no digit and no math character): a cheap
+    pre-check for callers that measure spoken length many times (ttschunks.spoken_len)."""
+    return _MAY_CHANGE.search(text) is not None
+
+
 def normalize_for_tts(text: str) -> str:
     """Light normalization: spoken math, then spell out years and plain integers; leave punctuation and 'Mr.' as is."""
     text = speak_math(text)

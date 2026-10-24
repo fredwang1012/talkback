@@ -4,14 +4,16 @@ import re
 
 from .delivery import SONG_MAX_PARAS, apply_styles, detect_expressive, is_scene_break, speech_tag, sung_from, with_sfx
 from .schema import Book, Paragraph, Segment, TtsChunk
-from .textnorm import normalize_for_tts
+from .textnorm import may_change, normalize_for_tts
 
 MAX_CHARS = 280
 # Bump whenever chunk_paragraph's output can change (tags, pauses, sfx, splitting, normalisation): every book built
 # with a lower Book.chunk_rules is re-chunked once by the server (books.load_book). History:
 #   1: expressive delivery (#73: lead pauses, sfx, expressive_*) and singing (#74). Books without the field are 0.
 #   2: sneeze and humming sound effects (#135).
-CHUNK_RULES_VERSION = 2
+#   3: MAX_CHARS bounds the spoken text after number spelling / normalize_for_tts, not the raw text; "e.g." / "i.e."
+#      never end a sentence.
+CHUNK_RULES_VERSION = 3
 DEFAULT_VOICE = "default"
 log = logging.getLogger("talkback.ttschunks")
 # Honorifics and common abbreviations: a period after one never ends a sentence ("Mr. Darling", "e.g. Wendy").
@@ -161,18 +163,17 @@ def lead_pause(p: Paragraph, book: Book, index: BookIndex | None = None) -> str 
 
 def _groups(p: Paragraph, text: str, base: int) -> list[tuple[int, int]]:
     """Whole sentences packed greedily up to MAX_CHARS (over-long sentences split first), as paragraph offsets.
-    Inline math (#41) is measured by its spoken form."""
+    Measured by what is actually read (spoken_len): inline math (#41) read out, numbers and simple math spelled out."""
     pieces: list[tuple[int, int]] = []
     for s, e in sentence_spans(text):
         if e - s > MAX_CHARS:
             pieces += split_long(text[s:e], base + s)
         else:
             pieces.append((base + s, base + e))
-    if p.inline_math:
-        pieces = [q for s, e in pieces for q in _fit_pieces(p, s, e)]
+    pieces = [q for s, e in pieces for q in _fit_pieces(p, s, e)]
     groups: list[tuple[int, int]] = []
     for s, e in pieces:
-        if groups and len(spoken_text(p, groups[-1][0], e)) <= MAX_CHARS:
+        if groups and spoken_len(p, groups[-1][0], e) <= MAX_CHARS:
             groups[-1] = (groups[-1][0], e)
         else:
             groups.append((s, e))
@@ -243,15 +244,27 @@ def spoken_text(p: Paragraph, s: int, e: int) -> str:
     return text
 
 
+def spoken_len(p: Paragraph, s: int, e: int) -> int:
+    """Length of the text Boson reads for p.text[s:e] (before delivery tags): inline formulas replaced by their
+    reading, then normalize_for_tts (numbers, years, simple math spelled out). This is what MAX_CHARS bounds."""
+    text = spoken_text(p, s, e)
+    return len(normalize_for_tts(text)) if may_change(text) else len(text)
+
+
+_MIN_SPLIT = 12   # never cut a piece into raw windows shorter than this (one long spelled-out number still fits)
+
+
 def _fit_pieces(p: Paragraph, s: int, e: int) -> list[tuple[int, int]]:
-    """Split [s, e) until each piece's spoken text fits in MAX_CHARS."""
-    limit = e - s
-    while len(spoken_text(p, s, e)) > MAX_CHARS and limit > MAX_CHARS // 4:
-        limit -= MAX_CHARS // 8
-        pieces = split_long(p.text[s:e], s, limit)
-        if all(len(spoken_text(p, a, b)) <= MAX_CHARS for a, b in pieces):
-            return pieces
-    return [(s, e)]
+    """Split [s, e) (at clause, else word boundaries) until each piece's spoken length fits in MAX_CHARS. The raw
+    window shrinks in proportion to how much the text grows when spoken ("777,777" -> 41 chars)."""
+    n = spoken_len(p, s, e)
+    if n <= MAX_CHARS or e - s <= _MIN_SPLIT:
+        return [(s, e)]
+    limit = max(_MIN_SPLIT, min(e - s - 1, (e - s) * MAX_CHARS // n))
+    pieces = split_long(p.text[s:e], s, limit)
+    if len(pieces) <= 1:
+        return [(s, e)]
+    return [q for a, b in pieces for q in _fit_pieces(p, a, b)]
 
 
 def chunk_paragraph(p: Paragraph, book: Book, *, expressive: bool = True, index: BookIndex | None = None) -> list[TtsChunk]:
