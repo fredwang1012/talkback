@@ -87,14 +87,14 @@ describe("sentence speaker releases streamed clips", () => {
 
   it("releases after the sentence ends and when stopped before playing", async () => {
     const release = vi.fn();
-    const sp = createSentenceSpeaker(async () => ({ audio_url: "a", video_url: "blob:x", release }), () => {
+    const sp = createSentenceSpeaker(async () => ({ audio_url: "a", openVideo: async () => ({ url: "blob:x", release }) }), () => {
       const a = audio(); setTimeout(() => a.onended?.(), 0); return a;
     });
     await sp.play("hi");
     expect(release).toHaveBeenCalledTimes(1);
 
     const r2 = vi.fn();
-    const sp2 = createSentenceSpeaker(async () => ({ audio_url: "a", video_url: "blob:y", release: r2 }), audio);
+    const sp2 = createSentenceSpeaker(async () => ({ audio_url: "a", openVideo: async () => ({ url: "blob:y", release: r2 }) }), audio);
     sp2.prefetch("later");
     sp2.stop();
     await new Promise((r) => setTimeout(r, 0));

@@ -3,11 +3,11 @@
 export type SpeechConfig = {
   openAbove: number; // level that must be exceeded to start counting towards "speaking"
   closeBelow: number; // level that must be undercut to start counting towards "resting"
-  openMs: number; // how long the level must stay above openAbove
-  closeMs: number; // how long it must stay below closeBelow
+  openMs: number; // how long the level must stay above openAbove (short: attack fast)
+  closeMs: number; // how long it must stay below closeBelow (longer: release slower, so word gaps do not flicker)
 };
 
-export const DEFAULT_SPEECH: SpeechConfig = { openAbove: 0.02, closeBelow: 0.012, openMs: 60, closeMs: 150 };
+export const DEFAULT_SPEECH: SpeechConfig = { openAbove: 0.02, closeBelow: 0.012, openMs: 16, closeMs: 100 };
 
 export type SpeechState = { speaking: boolean; aboveMs: number; belowMs: number };
 export const SPEECH_IDLE: SpeechState = { speaking: false, aboveMs: 0, belowMs: 0 };

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { changeKind, type BookSummary } from "../src/api";
-import { canMove, groupShelves, kindLabel, moveLabel, moveTarget, seriesTitle } from "../src/shelves";
+import { changeKind, deleteBook, type BookSummary } from "../src/api";
+import { canDelete, canMove, groupShelves, kindLabel, moveLabel, moveTarget, seriesTitle } from "../src/shelves";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -68,5 +68,47 @@ describe("changeKind", () => {
   it("surfaces the server message (e.g. 409 while processing)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "still being processed" }), { status: 409 })));
     await expect(changeKind("u-x-1", "novel")).rejects.toThrow("still being processed");
+  });
+});
+
+describe("delete", () => {
+  it("is offered only for uploaded books", () => {
+    expect(canDelete(book("u-mine-1a2b3c4d"))).toBe(true);
+    expect(canDelete(book("hp1"))).toBe(false);
+    expect(canDelete(book("alice-in-wonderland"))).toBe(false);
+  });
+
+  it("sends DELETE to the book and resolves on success", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ deleted: "u-x" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await deleteBook("u-x");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/books/u-x");
+    expect(fetchMock.mock.calls[0][1].method).toBe("DELETE");
+  });
+
+  it("surfaces the server's reason (409 while processing)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "still being processed" }), { status: 409 })));
+    await expect(deleteBook("u-x")).rejects.toThrow(/still being processed/);
+  });
+});
+
+import { dropReferences } from "../src/reader/castLogic";
+import { deleteVoice } from "../src/api";
+
+describe("deleting voices and faces", () => {
+  it("sends DELETE and shows the server's refusal for built-in voices", async () => {
+    const f = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "built-in" }), { status: 403 }));
+    vi.stubGlobal("fetch", f);
+    await expect(deleteVoice("voice_x")).rejects.toThrow(/built-in/);
+    expect(f.mock.calls[0][0]).toBe("/api/voices/voice_x");
+    expect(f.mock.calls[0][1].method).toBe("DELETE");
+  });
+
+  it("drops browser-side choices that pointed at the deleted voice or face", () => {
+    const r = dropReferences({ mode: "one", voice: "v1", face: "f1" }, { voice: "v1", face: "none" }, { voice: "v1" });
+    expect(r.style).toEqual({ mode: "one", voice: null, face: "f1" });
+    expect(r.talk).toEqual({ voice: null, face: "none" });
+    const g = dropReferences({ mode: "cast", voice: "v2", face: "f1" }, { voice: "v2", face: "f1" }, { face: "f1" });
+    expect(g.style.face).toBeNull(); expect(g.talk.face).toBeNull(); expect(g.style.voice).toBe("v2");
   });
 });

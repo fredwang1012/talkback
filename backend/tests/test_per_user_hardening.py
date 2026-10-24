@@ -148,7 +148,7 @@ def test_anonymous_writes_stay_in_public_and_never_touch_accounts(pu):
         assert client.post(f"/api/books/{bid}/enrich").status_code == 404
         assert client.put(f"/api/books/{bid}/cast", json={"main": []}).status_code == 404
     fid = client.get("/api/faces", headers=h(token(ALICE))).json()[0]["id"]
-    assert client.delete(f"/api/faces/{fid}").status_code == 404
+    assert client.delete(f"/api/faces/{fid}").status_code == 403   # anonymous may not delete at all
     assert client.post(f"/api/faces/{fid}/animate").status_code == 404
     after = snapshot(root)
     assert {k: v for k, v in after.items() if k in before} == before   # nothing existing was altered

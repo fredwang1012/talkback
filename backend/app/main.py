@@ -201,7 +201,8 @@ def get_recap(book_id: str, para: int = 0):
     sections = [s for s in book.sections if s.start_para <= para]
     chapter = max(sections, key=lambda s: s.start_para).title if sections else ""
     return {"upto_para": best.upto_para if best else None, "chapter": chapter,
-            "text": best.text if best else "", "earlier": books.series_recap(book)}
+            "text": best.text if best else "", "earlier": books.series_recap(book),
+            "earlier_full": books.series_recap(book, full=True)}
 
 
 # ---------- realtime key ----------
@@ -272,14 +273,25 @@ def _vertex_deps():
     return GeminiEmbedder(), VectorStore(settings.vs_collection_path)
 
 
+def _vertex_index_ready(book_id: str) -> bool:
+    """False while a book's Vertex index is building, failed or was interrupted (retrieval then uses local BM25).
+    Books with no index progress recorded (seeded or indexed offline) are served from Vertex."""
+    idx = (ingest_upload.read_status(book_id) or {}).get("index")
+    return not idx or idx.get("state") == "done"
+
+
 @lru_cache(maxsize=8)
 def _index_for(book_id: str) -> retrieval.Index:
     book = books.load_book(book_id)
-    if settings.retrieval_backend == "vertex":
+    if settings.retrieval_backend == "vertex" and _vertex_index_ready(book_id):
         from .gcp.vertex_index import VertexIndex
         earlier = {b.id: b.title for b in books.earlier_in_series(book)}
         return VertexIndex(book, _LazyEmbedder(), _LazyStore(), earlier)
     index_dir = settings.data_dir / "books" / book_id / "index"
+    if settings.retrieval_backend == "vertex":  # Vertex index still building (or failed): local BM25, same eligibility
+        if (index_dir / "chunks.json").exists():
+            return retrieval.Index.load(index_dir)
+        return retrieval.Index(retrieval.make_chunks(book))
     if (index_dir / "chunks.json").exists():
         return retrieval.Index.load(index_dir, embedder=_embedder())
     return retrieval.Index(retrieval.make_chunks(book))  # BM25-only until the index is built
@@ -483,6 +495,34 @@ def _set_status(book_id: str, status: str, message: str | None = None, **kind_in
     _upload_status[book_id] = ingest_upload.write_status(book_id, status, message, **kind_info)
 
 
+def _set_index(book_id: str, **fields) -> None:
+    """Record the Vertex indexing progress {state, done, total, message?} next to the (ready) status."""
+    _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", index=fields)
+
+
+# One Vertex indexing job at a time across uploads and enrichment: the upload guard is released once a book is
+# published, so without this many uploads could each start a paid embedding job at once.
+_index_lock = asyncio.Lock()
+
+
+async def _index_in_background(book: Book, chunks) -> None:
+    """Index a published book into Vertex; the book is readable (BM25) meanwhile. Never raises."""
+    book_id, total = book.id, len(chunks)
+    try:
+        async with _index_lock:
+            _set_index(book_id, state="running", done=0, total=total)
+            embedder, store = _vertex_deps()
+            from .gcp.indexing import index_book
+            await index_book(book, chunks, embedder, store,
+                             on_progress=lambda done, tot: _set_index(book_id, state="running", done=done, total=tot))
+        _set_index(book_id, state="done", done=total, total=total)
+    except Exception as e:  # the book stays readable and keeps the BM25 fallback
+        logging.getLogger(__name__).warning("vertex indexing failed: %s", type(e).__name__)
+        _set_index(book_id, state="error", done=0, total=total, message="Search indexing failed; using basic search.")
+    finally:
+        _index_for.cache_clear()
+
+
 def _set_enrich(book_id: str, **fields) -> None:
     """Record the novel enrichment sub-status next to the (ready) ingest status."""
     enrich = {k: v for k, v in fields.items() if v is not None}
@@ -497,7 +537,9 @@ async def _enrich_indexer(book: Book) -> None:
     if settings.retrieval_backend == "vertex":
         from .gcp.indexing import index_book, load_chunks
         embedder, store = _vertex_deps()
-        await index_book(book, await asyncio.to_thread(load_chunks, book), embedder, store)
+        chunks = await asyncio.to_thread(load_chunks, book)
+        async with _index_lock:
+            await index_book(book, chunks, embedder, store)
 
 
 _enrich_jobs: set[str] = set()   # books with an enrichment job queued or running
@@ -545,13 +587,15 @@ async def _plan_enrichment(book_id: str, book: Book) -> None:
 
 
 async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str, token: int) -> None:
-    """Background ingest: CPU work in a thread, then (vertex only) index the chunks, then publish book.json.
+    """Background ingest: CPU work in a thread, then publish book.json (readable, local BM25 retrieval), then (vertex
+    only) index the chunks in the background with progress in status.json["index"].
 
-    book.json is written last, so a processing or failed upload is never listed or readable. Never raises.
-    A novel is then enriched (cast, dialogue, summaries) while it is already readable with the narrator.
+    book.json is written after the CPU work, so a processing or failed upload is never listed or readable; a Vertex
+    indexing failure keeps the book readable. Never raises. A novel is then enriched (cast, dialogue, summaries) while it is already readable with the narrator.
     """
     _ingest_guard.mark_started(token)
     ready: Book | None = None
+    chunks: list = []
     try:
         raw, detected = None, None
         if kind == "auto":  # decide novel or textbook from the extracted text
@@ -560,13 +604,11 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
             detected = {"kind": kind, "confidence": confidence, "method": method}
         book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext,
                                                raw, detected)
-        if settings.retrieval_backend == "vertex":
-            from .gcp.indexing import index_book
-            embedder, store = _vertex_deps()
-            await index_book(book, chunks, embedder, store)
-        await asyncio.to_thread(ingest_upload.publish_book, book)
+        await asyncio.to_thread(ingest_upload.publish_book, book)  # readable now; Vertex indexing follows
         _index_for.cache_clear()
         _set_status(book_id, "ready", **({"kind": kind, "kind_detected": detected} if detected else {}))
+        if settings.retrieval_backend == "vertex":
+            _set_index(book_id, state="running", done=0, total=len(chunks))
         ready = book
     except Exception as e:
         ingest_upload.discard_book(book_id)
@@ -577,6 +619,8 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
             _set_status(book_id, "error", "The file could not be processed.")
     finally:
         _ingest_guard.release(token)
+    if ready is not None and settings.retrieval_backend == "vertex":
+        await _index_in_background(ready, chunks)
     if ready is not None and kind == "novel" and settings.upload_enrich:
         try:
             await _plan_enrichment(book_id, ready)
@@ -631,6 +675,8 @@ def book_status(book_id: str):
         elif st and (st.get("enrich") or {}).get("status") == "running":  # restarted mid-enrichment
             st = {"status": "ready", "enrich": {"status": "error", "stage": st["enrich"].get("stage"),
                   "message": "Character processing was interrupted; the book is still readable with the narrator."}}
+        if st and (st.get("index") or {}).get("state") == "running":  # restarted mid-indexing: BM25 keeps serving
+            st = {**st, "index": {**st["index"], "state": "error", "message": "Search indexing was interrupted."}}
     if st is None:
         raise HTTPException(404, "Book not found")
     return st
@@ -693,6 +739,60 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
         return _upload_status[book_id]
     finally:
         _kind_claims.discard(book_id)
+
+
+def _book_busy(book_id: str) -> bool:
+    """True while an ingest, enrichment or kind change for this book is running."""
+    st = _upload_status.get(book_id) or {}
+    return (st.get("status") == "processing" or (st.get("enrich") or {}).get("status") == "running"
+            or book_id in _enrich_jobs or book_id in _kind_claims)
+
+
+def _forget_book(book_id: str) -> None:
+    """Drop every in-memory trace of a book (library listing, serialised bodies, indexes, status)."""
+    _upload_status.pop(book_id, None)
+    _book_bodies.pop(book_id, None)
+    for k in [k for k in books._cache if Path(k).parent.name == book_id]:
+        books._cache.pop(k, None)
+    books._series_index = None
+    _index_for.cache_clear()
+
+
+@app.delete("/api/books/{book_id}", dependencies=[Depends(require_access)])
+async def delete_book(book_id: str):
+    """Really remove an uploaded book: its Vertex datapoints, folder, original file and caches. Owner only."""
+    if not books._ID.match(book_id):
+        raise HTTPException(404, "Book not found")
+    users.guard_book(book_id)   # 404 for another account's book
+    ident = users.require_account()   # PER_USER: signed in only, never the shared anonymous namespace
+    if not book_id.startswith("u-"):
+        raise HTTPException(403, "Only books you uploaded can be deleted.")
+    if ident.ns and users.book_owner_ns(book_id) != ident.ns:   # explicit owner check, whatever can_see_book allows
+        raise HTTPException(404, "Book not found")
+    book_dir = settings.data_dir / "books" / book_id
+    if not book_dir.is_dir():
+        raise HTTPException(404, "Book not found")
+    if _book_busy(book_id):
+        raise HTTPException(409, "This book is still being processed; try again when it finishes.")
+    _kind_claims.add(book_id)   # blocks a concurrent kind change / enrichment start while we delete
+    try:
+        if settings.retrieval_backend == "vertex":
+            from .gcp.indexing import datapoint_ids
+            book = books.load_book(book_id)
+            try:
+                ids = await asyncio.to_thread(datapoint_ids, book) if book else []
+                if ids:   # first: if Vertex fails the book stays intact and the delete can be retried
+                    await _vertex_deps()[1].delete(ids)
+            except Exception as e:
+                logging.getLogger(__name__).warning("vertex delete failed: %s", type(e).__name__)
+                raise HTTPException(502, "Could not remove the book from search; nothing was deleted, try again.")
+        left = await asyncio.to_thread(ingest_upload.delete_book_files, book_id)
+        _forget_book(book_id)
+    finally:
+        _kind_claims.discard(book_id)
+    if left:
+        logging.getLogger(__name__).warning("book %s: could not remove %s", book_id, left)
+    return {"deleted": book_id, "incomplete": left}
 
 
 # ---------- avatars (stretch) ----------
@@ -913,6 +1013,30 @@ async def clone_voice(request: Request, audio: UploadFile = File(...), transcrip
     return {"voice": voice_id, "name": name, "face": face_url}
 
 
+_VOICE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
+
+
+@app.delete("/api/voices/{voice_id}", dependencies=[Depends(require_access)])
+async def delete_voice(voice_id: str):
+    """Delete a voice the caller cloned: at Boson, from the saved list, and the face linked to it. Casts that used it
+    fall back to Auto. Built-in presets are refused."""
+    users.require_account()
+    if voice_id in voices.PRESET_VOICES:
+        raise HTTPException(403, "Built-in voices cannot be deleted.")
+    if not _VOICE_ID.match(voice_id) or not voices.is_cloned_voice(voice_id):   # this account's own list only
+        raise HTTPException(404, "Voice not found")
+    try:
+        await boson.delete_voice(voice_id)   # False (404) = already gone at Boson: carry on
+    except (BosonError, RuntimeError) as e:
+        raise boson_http_error(e)            # local data stays, so the delete can be retried
+    face_ids = faces.face_ids_for_voice(voice_id)
+    for fid in face_ids:   # the face made with this clone goes with it
+        await _delete_face_locked(fid)
+    await asyncio.to_thread(faces.delete_legacy_voice_files, voice_id)
+    voices.remove_voice(voice_id)
+    return {"deleted": voice_id, "faces": face_ids}
+
+
 @app.get("/api/voices", dependencies=[Depends(require_access)])
 def list_voices():
     return voices.load_voices()
@@ -954,16 +1078,20 @@ def list_faces():
     return faces.list_faces()
 
 
-@app.delete("/api/faces/{face_id}", dependencies=[Depends(require_access)])
-async def delete_face(face_id: str):
-    _safe_face_id(face_id)
+async def _delete_face_locked(face_id: str) -> bool:
     lock = _face_locks.setdefault(face_id, asyncio.Lock())
     try:
         async with lock:  # waits for a running animate, so no loops are written after the delete
-            deleted = faces.delete_face(face_id)
+            return faces.delete_face(face_id)
     finally:
         _release_face_lock(face_id, lock)
-    if not deleted:
+
+
+@app.delete("/api/faces/{face_id}", dependencies=[Depends(require_access)])
+async def delete_face(face_id: str):
+    users.require_account()
+    _safe_face_id(face_id)
+    if not await _delete_face_locked(face_id):
         raise HTTPException(404, "Face not found")
     return {"deleted": face_id}
 

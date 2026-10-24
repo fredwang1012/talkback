@@ -86,6 +86,9 @@ button:disabled { cursor: not-allowed; }
 }
 .volume-move:hover:not(:disabled) { border-color: var(--brass); color: var(--ink); }
 .volume-move:disabled { opacity: 0.6; cursor: default; }
+.volume-delete:hover:not(:disabled) { border-color: #b3402f; color: #b3402f; }
+.volume-confirm { display: flex; flex-direction: column; gap: 8px; font-size: 0.9rem; color: var(--ink); padding: 10px 12px; border: 1px solid #b3402f; border-radius: var(--radius); }
+.volume-confirm-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .volume-note { color: var(--ink-soft); font-size: 0.9rem; display: flex; flex-direction: column; gap: 6px; }
 .volume-note progress { width: 100%; }
 
@@ -538,3 +541,14 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
 .medallion { transition: width 280ms ease, height 280ms ease, font-size 280ms ease; }
 .speaker { transition: gap 280ms ease; }
 @media (prefers-reduced-motion: reduce) { .medallion, .speaker { transition: none; } }
+
+/* nested chapter list (textbooks) */
+.chapter-tree { flex: 1; min-width: 0; position: relative; }
+.chapter-tree > button { width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chapter-tree ul { list-style: none; margin: 4px 0 0; padding: 4px; max-height: 50vh; overflow-y: auto; background: var(--ground-raised);
+  border: 1px solid var(--brass-soft); border-radius: var(--radius); }
+.chapter-tree li { display: flex; align-items: center; gap: 4px; }
+.chapter-tree li[aria-current] .chapter-go { font-weight: 700; color: var(--brass); }
+.chapter-tree .twisty { flex: none; width: 28px; min-height: 28px; padding: 0; background: none; border: 0; text-align: center; }
+.chapter-tree .chapter-go { flex: 1; min-width: 0; text-align: left; background: none; border: 0; padding: 6px 4px; }
+.chapter-tree button:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }

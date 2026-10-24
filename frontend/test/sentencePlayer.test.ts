@@ -55,3 +55,57 @@ describe("createSentenceSpeaker", () => {
     expect(clips).toHaveLength(0);
   });
 });
+
+describe("speed and face signals", () => {
+  const evAudio = () => {
+    const l: Record<string, (() => void)[]> = {};
+    const a = {
+      onended: null as (() => void) | null, onerror: null, paused: false,
+      play: () => Promise.resolve(), pause() { a.paused = true; },
+      addEventListener(t: string, f: () => void) { (l[t] ||= []).push(f); },
+      removeEventListener(t: string, f: () => void) { l[t] = (l[t] || []).filter((x) => x !== f); },
+      fire(t: string) { (l[t] || []).forEach((f) => f()); },
+    };
+    return a;
+  };
+
+  it("preloads the audio of a prefetched sentence before it is played", async () => {
+    const created: string[] = [];
+    const s = createSentenceSpeaker(async (t) => ({ audio_url: `/m/${t}` }), (u) => { created.push(u); return evAudio(); });
+    s.prefetch("a", 1);
+    s.prefetch("b", 2);
+    await vi.waitFor(() => expect(created).toEqual(["/m/a", "/m/b"]));
+  });
+
+  it("opens the lip-sync stream only for rank 0 prefetches", async () => {
+    const open = vi.fn(async () => ({ url: "u", release() {} }));
+    const s = createSentenceSpeaker(async () => ({ audio_url: "/x", openVideo: open }), () => evAudio());
+    s.prefetch("a", 0);
+    s.prefetch("b", 1);
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports playing from media events, ignores a pause the sync caused, and logs stage timings", async () => {
+    const a = evAudio();
+    const playing: boolean[] = [];
+    const stages: string[] = [];
+    const sync = { holding: false, join() {}, leave() {} };
+    const s = createSentenceSpeaker(async () => ({ audio_url: "/x" }), () => a, {
+      sync, onPlaying: (v) => playing.push(v), onTiming: (e) => stages.push(e.stage),
+    });
+    const done = s.play("hi");
+    await vi.waitFor(() => expect(stages).toContain("tts"));
+    a.fire("playing");
+    sync.holding = true;
+    a.fire("pause"); // the video is catching up
+    sync.holding = false;
+    a.fire("pause"); // a real pause
+    a.fire("playing");
+    a.onended?.();
+    await done;
+    expect(playing).toEqual([true, false, true, false]);
+    expect(stages).toEqual(["tts", "audio-start"]);
+  });
+});

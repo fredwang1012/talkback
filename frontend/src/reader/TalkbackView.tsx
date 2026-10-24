@@ -96,7 +96,7 @@ export default function TalkbackView({
       <div className="tb-main">
         <div className="tb-face-col">
           <div className={`tb-face${status === "listening" ? " live" : ""}${status === "thinking" ? " thinking" : ""}${status === "speaking" ? " speaking" : ""}`} aria-hidden="true">
-            {face ? <FaceView face={face} speaking={talk.speaking} clip={talk.clip} />
+            {face ? <FaceView face={face} speaking={talk.speaking} sync={talk.faceSync} clipShown={talk.clipShown} />
               : portrait ? <img src={portrait} alt="" />
               : <span className="mono">{name.charAt(0)}</span>}
           </div>

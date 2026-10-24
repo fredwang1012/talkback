@@ -6,7 +6,7 @@ import {
   type Book, type Cast, type Face, type Health,
 } from "../api";
 import {
-  PRESETS, castVoice, createCastSaver, emptyCast, loadStyle, loadTalkChoice, migrateOldOverrides,
+  PRESETS, castVoice, dropReferences, createCastSaver, emptyCast, isNovel, loadStyle, loadTalkChoice, migrateOldOverrides,
   oneVoiceOverride, readingFaceId, saveStyle, saveTalkChoice, talkFaceId, talkVoice, type ReadingStyle, type TalkChoice,
 } from "../reader/castLogic";
 import { DEMO_SPEAKER, DEMO_START_PARA, firstChunkAtOrAfter, isDemo } from "../demo";
@@ -14,6 +14,7 @@ import BookText from "../reader/BookText";
 import PlayerBar from "../reader/PlayerBar";
 import RecapPanel from "../reader/RecapPanel";
 import { ReaderEngine, type AudioLike } from "../reader/ReaderEngine";
+import type { FollowAudio } from "../reader/clipFollow";
 import { AudioLevelMeter } from "../reader/audioLevel";
 import { SPEECH_IDLE, stepSpeech } from "../reader/speechLevel";
 import Stage from "../reader/Stage";
@@ -53,6 +54,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [labOpen, setLabOpen] = useState(false);
   const [recapOpen, setRecapOpen] = useState(false);
   const [cast, setCast] = useState<Cast>(emptyCast);
+  const [castLoaded, setCastLoaded] = useState(false); // false until the saved cast arrived: then the server picks voices
   const castEdited = useRef(false); // a local edit happened: late server loads must not overwrite it
   const [animating, setAnimating] = useState<Set<string>>(new Set()); // lives here so closing the panel keeps the spinner
   const [animErrors, setAnimErrors] = useState<Record<string, string>>({});
@@ -72,6 +74,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const meterRef = useRef<AudioLevelMeter | null>(null);
   const levelRef = useRef(0); // live loudness of the read-aloud audio (read-mode face)
   const [readSpeaking, setReadSpeaking] = useState(false);
+  const getAudio = useCallback(() => (engineRef.current?.currentAudio() as unknown as FollowAudio | null) ?? null, []);
   const indexRef = useRef(0);
   const playingRef = useRef(false);
   indexRef.current = index;
@@ -88,7 +91,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       fetchCast(b.id).then(async (c) => {
         if (castEdited.current) return; // the visitor already edited: their state is the newest
         const migrated = await migrateOldOverrides(b, c);
-        if (!castEdited.current) setCast(migrated ?? c);
+        if (!castEdited.current) { setCast(migrated ?? c); setCastLoaded(true); }
       }).catch(() => { /* no cast: books keep their own voices */ });
     }).catch((e: Error) => setError(e.message));
     fetchHealth().then(setHealth).catch(() => setHealth(null));
@@ -129,13 +132,16 @@ export default function Reader({ bookId }: { bookId: string }) {
     const tick = () => {
       const now = performance.now();
       const snap = engine.snapshot();
-      const lvl = meter.level(engine.currentAudio(), snap.state === "playing");
+      const cur = engine.currentAudio() as unknown as { paused?: boolean; ended?: boolean } | null;
+      // start/stop exactly with the element's own play/pause/ended, not only with the engine's state
+      const sounding = snap.state === "playing" && !(cur && (cur.paused || cur.ended));
+      const lvl = meter.level(engine.currentAudio(), sounding);
       if (lvl === null) { // no Web Audio: fall back to "speaking while playing"
         levelRef.current = 0;
-        speech = { ...SPEECH_IDLE, speaking: snap.state === "playing" };
+        speech = { ...SPEECH_IDLE, speaking: sounding };
       } else {
         levelRef.current = lvl;
-        speech = snap.state === "playing" ? stepSpeech(speech, lvl, now - last) : SPEECH_IDLE;
+        speech = sounding ? stepSpeech(speech, lvl, now - last) : SPEECH_IDLE;
       }
       last = now;
       setReadSpeaking((cur) => (cur === speech.speaking ? cur : speech.speaking));
@@ -220,8 +226,11 @@ export default function Reader({ bookId }: { bookId: string }) {
   useEffect(() => {
     engineRef.current?.setNarratorOnly(oneVoice);
   }, [oneVoice, audioAvailable]);
-  // a changed cast applies to chunks fetched ahead too
-  useEffect(() => { engineRef.current?.refreshAhead(); }, [cast, audioAvailable]);
+  // a changed cast applies at once, from the local copy (the save runs in the background)
+  useEffect(() => {
+    engineRef.current?.setVoiceResolver(book && castLoaded
+      ? (chunk) => castVoice(book, cast, isNovel(book) ? chunk.speaker : "narrator") : null);
+  }, [cast, castLoaded, book, audioAvailable]);
 
   const changeMode = useCallback((m: "read" | "talk") => {
     setMode(m);
@@ -283,7 +292,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const saver = useMemo(
     () => createCastSaver(bookId, () => setCastError(null), setCastError),
     [bookId]);
-  const changeCast = (next: Cast) => { castEdited.current = true; setCast(next); setCastError(null); void saver(next); };
+  const changeCast = (next: Cast) => { castEdited.current = true; setCastLoaded(true); setCast(next); setCastError(null); void saver(next); };
   const changeStyle = (next: ReadingStyle) => { setStyle(next); saveStyle(bookId, next); };
   const changeTalk = (next: TalkChoice) => { setTalkChoice(next); saveTalkChoice(bookId, next); };
   const reloadCast = () => { void saver.flush().then(() => fetchCast(bookId)).then((c) => { setCast(c); }).catch(() => {}); };
@@ -354,7 +363,7 @@ export default function Reader({ bookId }: { bookId: string }) {
           <Stage book={book} para={para} speakerId={speakerId} onSpeaker={setSpeakerId} health={health}
                  talk={talk} audioAvailable={audioAvailable}
                  avatarSrc={chunks[index] && avatars.has(chunks[index].id) ? avatarUrl(book.id, chunks[index].id) : null}
-                 avatarPlaying={playing && !loading} onMode={changeMode}
+                 avatarPlaying={playing && !loading} getAudio={getAudio} onMode={changeMode}
                  pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
                  needsCode={needsCode} onCode={(c, rem) => { setAccessToken(c, rem); setCode(c); }} onOpenLab={() => setLabOpen(true)}
                  faceFor={talkFaceFor}
@@ -366,6 +375,10 @@ export default function Reader({ bookId }: { bookId: string }) {
         <VoiceLab book={book} cast={cast} onCast={changeCast} castError={castError} style={style} onStyle={changeStyle}
                   cloned={cloned} onCloned={setCloned} animating={animating} setAnimating={setAnimating} animErrors={animErrors} setAnimErrors={setAnimErrors} faces={faces} onFaces={setFaces}
                   onFacesChanged={() => { reloadFaces(); reloadCast(); }}
+                  onRemoved={(gone) => {
+                    const next = dropReferences(style, talkChoice, gone);
+                    changeStyle(next.style); changeTalk(next.talk);
+                  }}
                   onPreview={preview} audioAvailable={audioAvailable} onClose={() => setLabOpen(false)} />
       )}
       {recapOpen && (

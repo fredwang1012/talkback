@@ -16,6 +16,9 @@ export function speechParts(text: string, max = 380): string[] {
   return parts;
 }
 
+/** Reader positions this close to the top count as "the start of the book". */
+const START_PARA = 2;
+
 type Props = { bookId: string; para: number; voice: string | null; onClose: () => void };
 
 /** "Previously...": what the reader has read so far, from summaries written only from text up to their place. */
@@ -23,6 +26,7 @@ export default function RecapPanel({ bookId, para, voice, onClose }: Props) {
   const [recap, setRecap] = useState<Recap | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [speaking, setSpeaking] = useState(false);
+  const [more, setMore] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
   const speaker = useRef<SentenceSpeaker | null>(null);
 
@@ -72,7 +76,9 @@ export default function RecapPanel({ bookId, para, voice, onClose }: Props) {
       {!recap && !error && <p>Looking back…</p>}
       {recap && (recap.text
         ? <p className="recap-text">{recap.text}</p>
-        : <p className="recap-empty">Nothing to recap yet — keep reading.</p>)}
+        : <p className="recap-empty">{para <= START_PARA
+          ? "You're at the start of this book."
+          : "Nothing to recap yet — keep reading."}</p>)}
       {recap?.text && voice && (
         <div className="lab-row">
           <button className="primary" onClick={() => void readAloud()} aria-pressed={speaking}>
@@ -83,7 +89,12 @@ export default function RecapPanel({ bookId, para, voice, onClose }: Props) {
       {recap?.earlier && (
         <details className="recap-earlier">
           <summary>Earlier books</summary>
-          <p className="recap-text">{recap.earlier}</p>
+          <p className="recap-text">{more && recap.earlier_full ? recap.earlier_full : recap.earlier}</p>
+          {recap.earlier_full && recap.earlier_full !== recap.earlier && (
+            <button className="recap-more" aria-expanded={more} onClick={() => setMore(!more)}>
+              {more ? "Less" : "More"}
+            </button>
+          )}
         </details>
       )}
     </section>

@@ -50,7 +50,7 @@ def test_needs_the_access_code_when_one_is_set(client, monkeypatch):
 
 def test_empty_before_the_first_summary(client):
     j = client.get("/api/books/demo/recap", params={"para": 1}).json()
-    assert j == {"upto_para": None, "chapter": "", "text": "", "earlier": ""}
+    assert j == {"upto_para": None, "chapter": "", "text": "", "earlier": "", "earlier_full": ""}
     assert client.get("/api/books/demo/recap", params={"para": 2}).json()["chapter"] == "Chapter One"
 
 

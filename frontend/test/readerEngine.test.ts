@@ -143,7 +143,7 @@ describe("ReaderEngine", () => {
     expect(audios.every((a) => !a.playing)).toBe(true);
   });
 
-  it("full cast off requests the narrator voice for chunks not yet fetched", async () => {
+  it("full cast off requests the narrator voice at once, including the current chunk", async () => {
     const { engine, fetched } = setup(8);
     engine.play();
     await flush();
@@ -151,7 +151,7 @@ describe("ReaderEngine", () => {
     await flush();
     const later = fetched.filter((f) => f.voice === "marcus").map((f) => f.id);
     expect(later.length).toBeGreaterThan(0);
-    expect(later).not.toContain("c0");
+    expect(later).toContain("c0"); // #37: the current chunk restarts in the new voice
   });
 
   it("highlights the word being spoken", async () => {

@@ -35,7 +35,7 @@ export type Book = {
   kind_detected?: KindDetected | null;
   license: string;
   attribution: string | null;
-  sections: { id: string; title: string; start_para: number }[];
+  sections: { id: string; title: string; start_para: number; level?: number }[];
   paragraphs: Paragraph[];
   characters: Character[];
   narrator: { id: string; voice: string; is_character: string | null; portrait: string | null } | null;
@@ -104,7 +104,7 @@ export const fetchBooks = () => getJson<BookSummary[]>("/api/books");
 export const fetchBook = (id: string) => getJson<Book>(`/api/books/${encodeURIComponent(id)}`);
 export const fetchHealth = () => getJson<Health>("/api/health");
 
-export type Recap = { upto_para: number | null; chapter: string; text: string; earlier: string };
+export type Recap = { upto_para: number | null; chapter: string; text: string; earlier: string; earlier_full?: string };
 /** "Previously...": the latest stored summary written from text at or before `para`. */
 export const fetchRecap = (bookId: string, para: number) =>
   getJson<Recap>(`/api/books/${encodeURIComponent(bookId)}/recap?para=${Math.max(0, Math.floor(para))}`);
@@ -243,6 +243,12 @@ export async function cloneVoice(audio: Blob, filename: string, transcript: stri
   return res.json() as Promise<CloneResult>;
 }
 
+/** Permanently deletes an uploaded book (files, search entries, caches). 409 while it is still being processed. */
+export async function deleteBook(id: string): Promise<void> {
+  const res = await timedFetch(`/api/books/${encodeURIComponent(id)}`, { method: "DELETE", headers: authHeaders() }, 60000);
+  if (!res.ok) throw await readError(res, "Could not delete the book");
+}
+
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 export type BookKind = "novel" | "textbook";
 /** What the upload form can send: "auto" lets the server decide. */
@@ -260,8 +266,11 @@ export type EnrichStatus = {
 export function enrichDoneNote(e: EnrichStatus): string {
   return e.degraded && e.message ? e.message : "characters, voices and recap are ready";
 }
+/** Cloud search indexing after the book is readable (it uses basic search until state is "done"). */
+export type IndexStatus = { state: "running" | "done" | "error"; done: number; total: number; message?: string };
+export const indexingLabel = (i: IndexStatus): string => `Indexing ${i.done} / ${i.total}`;
 export type BookStatus = {
-  status: "processing" | "ready" | "error"; message?: string; enrich?: EnrichStatus;
+  status: "processing" | "ready" | "error"; message?: string; enrich?: EnrichStatus; index?: IndexStatus;
   kind?: BookKind; kind_detected?: KindDetected;
 };
 
@@ -332,6 +341,13 @@ export function pollBookStatus(
   return pollStatus(id, (s) => s.status !== "processing", signal, intervalMs, maxMs);
 }
 
+/** After a book is ready: polls until its search indexing is no longer running (`onUpdate` sees each running status). */
+export function pollIndexing(
+  id: string, onUpdate?: (s: BookStatus) => void, signal?: AbortSignal, intervalMs = 2000, maxMs = 30 * 60 * 1000,
+): Promise<BookStatus | null> {
+  return pollStatus(id, (s) => s.status !== "ready" || s.index?.state !== "running", signal, intervalMs, maxMs, onUpdate);
+}
+
 /**
  * After a book is ready: polls until its enrichment is done, refused, errored or waiting for confirmation
  * (resolves with that status; `onUpdate` sees every running status). Textbooks resolve at once.
@@ -350,6 +366,12 @@ export async function startEnrichment(id: string): Promise<BookStatus> {
     throw new Error(detail ?? `Could not start processing (${res.status})`);
   }
   return res.json() as Promise<BookStatus>;
+}
+
+/** Deletes a cloned voice at Boson, from the saved list, and its linked face. 403 for built-in presets. */
+export async function deleteVoice(id: string): Promise<void> {
+  const res = await timedFetch(`/api/voices/${encodeURIComponent(id)}`, { method: "DELETE", headers: authHeaders() }, 60000);
+  if (!res.ok) throw await readError(res, "Could not delete the voice");
 }
 
 export const fetchVoices = () => getJson<Record<string, string>>("/api/voices");

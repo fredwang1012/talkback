@@ -685,7 +685,7 @@ def test_running_enrichment_after_restart_reports_interrupted(client, tmp_path):
 def test_vertex_indexing_runs_in_the_index_stage(client, monkeypatch):
     calls = []
 
-    async def fake_index(book, chunks, embedder, store):
+    async def fake_index(book, chunks, embedder, store, on_progress=None):
         calls.append((book.id, len(book.summaries), len(chunks)))
         return len(chunks)
 
@@ -765,3 +765,12 @@ def test_full_success_is_not_marked_degraded(data_dir):
     ok, events, _ = run_pipeline("u-test-aaaaaaaa")
     assert ok and not events[-1].get("degraded")
     assert events[-1]["message"] == "Characters, recap and search are ready."
+
+
+def test_persona_prompts_ask_for_concrete_speech_habits_not_generic_adjectives():
+    from app.enrich.cast import PERSONA_GUIDE, PERSONA_SYSTEM, SYSTEM, UPLOAD_SYSTEM
+    assert PERSONA_GUIDE in PERSONA_SYSTEM and "{guide}" not in PERSONA_SYSTEM
+    for needle in ("third person", "signature words", "Quote one or two short phrases", "bare adjectives"):
+        assert needle in PERSONA_SYSTEM
+    assert "concrete speech habits" in SYSTEM and "3 sentences" not in SYSTEM
+    assert "spoilers" not in PERSONA_SYSTEM.lower() and "Do not state plot facts" in PERSONA_SYSTEM

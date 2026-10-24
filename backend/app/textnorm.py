@@ -37,7 +37,7 @@ def _year_words(n: int) -> str:
 _WORDS = {
     "=": "equals", "+": "plus", "−": "minus", "×": "times", "÷": "divided by", "±": "plus or minus",
     "≤": "less than or equal to", "≥": "greater than or equal to", "≠": "not equal to",
-    "≈": "approximately equal to", "<": "less than", ">": "greater than", "→": "goes to",
+    "≈": "approximately equal to", "<": "less than", ">": "greater than", "→": "goes to", "←": "gets",
     "∞": "infinity", "°": "degrees", "∝": "proportional to", "√": "square root of",
     "∛": "cube root of", "·": "times", "⋅": "times", "/": "over",
 }
@@ -59,6 +59,8 @@ _EQ_TOKEN = re.compile(r"^[A-Za-z0-9]+[=<>][A-Za-z0-9.]+$")
 _WEAK = re.compile(r"^(?:[A-Za-z]|\d+(?:\.\d+)?|d[a-z]|[A-Za-z]_\w{1,3}|[A-Za-z]{1,2}\([^()\s]{0,12}\)|[-*/()\[\]])$")
 _AFFIX = re.compile(r"^([(\[]*)(.*?)([.,;:!?)\]]*)$", re.S)
 _MATH_CHARS = set(_WORDS) | set(_GREEK) | set(_SUP) | set(_SUB) | set("^") | _COMPLEX
+_NEQ_COMBINING = re.compile(r"=\s*\u0338|(\s*)\u0338\s*=")  # "p1<U+0338> =" / "=<U+0338>" (combining long solidus) is "not equal to"
+_SECTION_NO = re.compile(r"(?<![\w.])\d+(?:\.\d+){2,}(?![\w]|\.\d)")  # "5.3.1" but not "3.14"
 MAX_RUN_TOKENS = 14  # a longer run of math tokens is too much to read out
 
 
@@ -98,6 +100,7 @@ def speak_math(text: str) -> str:
     """Rewrite simple math in running text as words ("x²" -> "x squared"; "a/b" -> "a over b"; "≤" -> "less than or
     equal to"; Greek letters by name). A run of math tokens that is too complex to read out becomes "(equation)".
     Linear in the text length; ordinary prose (and/or, w/o, C++, footnote marks) is left alone."""
+    text = _NEQ_COMBINING.sub(lambda m: "≠" if m.group(1) is None else " ≠", text)
     parts = re.split(r"(\s+)", text)
     toks = [(i, _AFFIX.match(p).groups()) for i, p in enumerate(parts) if i % 2 == 0 and p]
     kinds = []
@@ -140,6 +143,7 @@ def speak_math(text: str) -> str:
 def normalize_for_tts(text: str) -> str:
     """Light normalization: spoken math, then spell out years and plain integers; leave punctuation and 'Mr.' as is."""
     text = speak_math(text)
+    text = _SECTION_NO.sub(lambda m: " point ".join(m.group().split(".")), text)
 
     def repl(m: re.Match) -> str:
         s = m.group(0)

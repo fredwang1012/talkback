@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
-  accountLabel, changeKind, fetchBooks, fetchMe, SIGN_OUT_URL, type Me, MAX_UPLOAD_BYTES, pollBookStatus, pollEnrichment, startEnrichment, uploadBook,
+  accountLabel, changeKind, deleteBook, fetchBooks, fetchMe, SIGN_OUT_URL, type Me, MAX_UPLOAD_BYTES, pollBookStatus, pollEnrichment, pollIndexing, indexingLabel, startEnrichment, uploadBook,
   type BookStatus, type BookSummary, type UploadKind,
   enrichDoneNote,
 } from "../api";
 import { clearAccessToken, getAccessToken } from "../accessToken";
-import { canMove, groupShelves, kindLabel, moveLabel, moveTarget, seriesTitle } from "../shelves";
+import { canDelete, canMove, groupShelves, kindLabel, moveLabel, moveTarget, seriesTitle } from "../shelves";
 
 type UploadState =
   | { phase: "idle" }
@@ -39,6 +39,12 @@ function AddBook({ onReady }: { onReady: () => void }) {
   /** Novels keep processing after they are readable: show the stage and progress, or the estimate to confirm. */
   async function follow(bookId: string, name: string, first: BookStatus, ctl: AbortController) {
     let st: BookStatus | null = first;
+    if (st.index?.state === "running") {  // readable already; cloud search is still being built
+      const showIdx = (s: BookStatus) => { if (s.index) setState({ phase: "processing", text: `${name} can be read now. ${indexingLabel(s.index)}` }); };
+      showIdx(st);
+      st = await pollIndexing(bookId, showIdx, ctl.signal);
+      if (!st || ctl.signal.aborted) return;
+    }
     if (st.enrich?.status === "running") {
       const show = (s: BookStatus) => setState({
         phase: "enriching", title: name, message: s.enrich?.message ?? "Adding characters", progress: s.enrich?.progress ?? 0,
@@ -160,9 +166,12 @@ function AddBook({ onReady }: { onReady: () => void }) {
 
 type MoveNote = { id: string; text: string; progress?: number; confirm?: number };
 
-function Volume({ b, busy, note, onMove, onConfirm }: {
+function Volume({ b, busy, note, onMove, onConfirm, onDelete }: {
   b: BookSummary; busy: boolean; note?: MoveNote; onMove: (b: BookSummary) => void; onConfirm: (b: BookSummary) => void;
+  onDelete: (b: BookSummary) => Promise<void>;
 }) {
+  const [asking, setAsking] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   return (
     <div className="volume-wrap">
       <a className="volume" href={`#/read/${b.id}`}>
@@ -186,6 +195,24 @@ function Volume({ b, busy, note, onMove, onConfirm }: {
           aria-label={`${moveLabel(b)}: ${b.title}`}>
           {moveLabel(b)}
         </button>
+      )}
+      {canDelete(b) && !asking && (
+        <button type="button" className="volume-move volume-delete" disabled={busy || deleting} onClick={() => setAsking(true)}
+          aria-label={`Delete: ${b.title}`}>
+          Delete
+        </button>
+      )}
+      {asking && (
+        <div className="volume-confirm" role="alertdialog" aria-label={`Delete ${b.title}?`}>
+          <span>Delete “{b.title}” for good? The book, its cast settings and its search data are removed. This cannot be undone.</span>
+          <div className="volume-confirm-actions">
+            <button type="button" className="volume-move volume-delete" disabled={deleting}
+              onClick={async () => { setDeleting(true); try { await onDelete(b); } finally { setDeleting(false); setAsking(false); } }}>
+              {deleting ? "Deleting…" : "Delete forever"}
+            </button>
+            <button type="button" className="volume-move" disabled={deleting} autoFocus onClick={() => setAsking(false)}>Cancel</button>
+          </div>
+        </div>
       )}
       {note && (
         <div className="volume-note" role="status">
@@ -252,6 +279,16 @@ export default function Library() {
     }
   }
 
+  async function remove(b: BookSummary) {
+    try {
+      await deleteBook(b.id);
+      setBooks((list) => (list ? list.filter((x) => x.id !== b.id) : list));
+      setNote(b.id, null);
+    } catch (err) {
+      setNote(b.id, { id: b.id, text: (err as Error).message });
+    }
+  }
+
   async function confirmProcessing(b: BookSummary) {
     const ctl = new AbortController();
     abortRef.current?.abort();
@@ -267,7 +304,7 @@ export default function Library() {
 
   const shelves = books ? groupShelves(books) : null;
   const volume = (b: BookSummary) => (
-    <Volume key={b.id} b={b} busy={moving} note={notes[b.id]} onMove={move} onConfirm={confirmProcessing} />
+    <Volume key={b.id} b={b} busy={moving} note={notes[b.id]} onMove={move} onConfirm={confirmProcessing} onDelete={remove} />
   );
 
   return (

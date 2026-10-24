@@ -34,7 +34,7 @@ SYSTEM = """You write roleplay personas for characters of a book series, for an 
 For each character you get their EARLIEST spoken lines in the series.
 
 Rules:
-- Each persona: at most 3 sentences, written to be spoken by a roleplay actor: temperament, how they talk (diction, rhythm, dialect), verbal tics.
+- Each persona: at most 4 sentences of direction to a roleplay actor ("Speaks ...", not "I speak"). Be specific to this character: how they refer to themselves and others (even third person), signature words, sentence shape, dialect or non-standard grammar, what happens to their speech when nervous or angry, and one or two short quoted phrases from the lines shown. No bare adjectives like "friendly" or "wise" unless tied to something audible.
 - Describe them ONLY as they come across in the lines shown. Manner and voice only.
 - No plot facts, no secrets, no later revelations, true allegiances, deaths, or anything from later in the series, even if you know it.
 - Return one entry per character id given."""

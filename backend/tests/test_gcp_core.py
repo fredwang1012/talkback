@@ -146,3 +146,46 @@ def test_record_in_event_loop_appends_off_the_loop(tmp_path, monkeypatch):
         await asyncio.sleep(0.2)
     asyncio.run(go())
     assert '"chars": 3' in (tmp_path / "cache" / "usage.jsonl").read_text(encoding="utf-8")
+
+
+class _ApiError(Exception):
+    def __init__(self, code):
+        self.code = code
+
+
+def test_embed_retries_429_and_5xx_then_succeeds():
+    emb, models = make_embedder()
+    real, fails = models.embed_content, [_ApiError(429), _ApiError(503)]
+
+    def flaky(model, contents, config):
+        if fails:
+            raise fails.pop(0)
+        return real(model, contents, config)
+
+    models.embed_content = flaky
+    sleeps = []
+    emb._sleep = sleeps.append
+    assert emb.embed_query("hi").shape == (768,)
+    assert sleeps == [1.0, 2.0]
+
+
+def test_embed_does_not_retry_client_errors_and_gives_up():
+    emb, models = make_embedder()
+    emb._sleep = lambda s: None
+    calls = []
+
+    def bad(code):
+        def f(model, contents, config):
+            calls.append(code)
+            raise _ApiError(code)
+        return f
+
+    models.embed_content = bad(400)
+    with pytest.raises(_ApiError):
+        emb.embed_query("x")
+    assert calls == [400]
+    calls.clear()
+    models.embed_content = bad(500)
+    with pytest.raises(_ApiError):
+        emb.embed_query("x")
+    assert len(calls) == 4  # first try + 3 retries

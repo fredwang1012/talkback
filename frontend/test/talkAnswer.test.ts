@@ -96,7 +96,8 @@ describe("TalkController via /api/answer", () => {
     h.stream.emit("Two.");
     h.stream.emit("Three.");
     await tick(0);
-    expect(h.speaker.log).toEqual(["play:One.", "prefetch:Two."]); // one ahead only
+    expect(h.speaker.log.filter((l) => l !== "prefetch:Two.")).toEqual(["play:One.", "prefetch:Three."]); // up to PREFETCH_DEPTH ahead
+    expect(h.speaker.log).toContain("prefetch:Two.");
     await end(h, "One.");
     await end(h, "Two.");
     expect(h.speaker.log.filter((l) => l.startsWith("play:"))).toEqual(["play:One.", "play:Two.", "play:Three."]);
@@ -200,5 +201,21 @@ describe("TalkController via /api/answer", () => {
     await tick(0);
     expect(h.toasts[0]).toContain("Could not play");
     expect(h.talk.state).toBe("reading");
+  });
+});
+
+describe("speaking follows the audio", () => {
+  it("is not set while a sentence is still being synthesised, only when the speaker reports playing", async () => {
+    const h = setup();
+    const speaking: boolean[] = [];
+    (h.talk as unknown as { d: { onSpeaking?: (s: boolean) => void } }).d.onSpeaking = (s) => speaking.push(s);
+    await ask(h);
+    h.stream.emit("One.");
+    await tick(0);
+    expect(speaking).toEqual([]);
+    h.talk.notePlaying(true);
+    expect(speaking).toEqual([true]);
+    h.talk.notePlaying(false);
+    expect(speaking).toEqual([true, false]);
   });
 });

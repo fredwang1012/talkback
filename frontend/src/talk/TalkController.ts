@@ -7,6 +7,10 @@ import { micErrorMessage } from "../audio/mediaErrors";
  */
 
 import type { SentenceSpeaker } from "./sentencePlayer";
+import type { TimingEvent } from "./speechGate";
+
+/** How many queued sentences are synthesised ahead of the one being spoken. */
+export const PREFETCH_DEPTH = 3;
 
 export type TalkState =
   | "reading" | "listening" | "transcribing" | "retrieving" | "answering" | "resuming" | "talk-idle";
@@ -69,6 +73,8 @@ export interface TalkDeps {
   onToast?: (message: string) => void;
   onCaption?: (text: string, done: boolean) => void;
   onLatency?: (l: Latency) => void;
+  /** Per-stage timing (Gemini first sentence here; TTS, avatar and audio start come from the speaker). */
+  onTiming?: (e: TimingEvent) => void;
   /** The question as transcribed, so the UI can show it and a language badge. */
   onTranscript?: (text: string) => void;
   /** True while answer audio is coming out of the speakers (drives the waveform). */
@@ -108,6 +114,9 @@ export class TalkController {
     this.speaking = v;
     this.d.onSpeaking?.(v);
   }
+
+  /** The sentence audio started or stopped coming out of the speakers (drives the face and the waveform). */
+  notePlaying(on: boolean): void { this.setSpeaking(on && this._state === "answering"); }
 
   private set(s: TalkState): void {
     if (s === this._state) return;
@@ -289,15 +298,17 @@ export class TalkController {
       if (streamError) this.d.onToast?.(streamError);
       this.afterAnswer();
     };
+    const prefetchAhead = () => queue.slice(0, PREFETCH_DEPTH).forEach((t, i) => speaker.prefetch(t, i));
     const pump = async () => {
       if (pumping) return;
       pumping = true;
       while (queue.length && alive()) {
         const text = queue.shift() as string;
-        this.setSpeaking(true);
-        if (queue.length) speaker.prefetch(queue[0]);
+        // "speaking" is not set here: the speaker reports it (notePlaying) when the audio really plays
         try {
-          await speaker.play(text);
+          const playing = speaker.play(text);
+          prefetchAhead(); // the next few sentences synthesise while this one plays
+          await playing;
         } catch (e) {
           if (!alive()) return;
           pumping = false;
@@ -327,10 +338,11 @@ export class TalkController {
           clearTimer();
           this.latency.retrieveMs = this.d.now() - r0;
           this.d.onLatency?.({ ...this.latency });
+          this.d.onTiming?.({ stage: "first-sentence", ms: this.latency.retrieveMs, sentence: text.slice(0, 40) });
           this.set("answering");
         }
         queue.push(text);
-        if (pumping && queue.length === 1) speaker.prefetch(text); // the next one, while the current plays
+        if (pumping) prefetchAhead();
         void pump();
       }, run.abort.signal);
     } catch (e) {

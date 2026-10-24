@@ -43,6 +43,25 @@ describe("RecapPanel", () => {
     expect(d.open).toBe(false);
   });
 
+  it("greets the start of a book and shows the full earlier summary behind More", async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify({ upto_para: null, chapter: "I", text: "", earlier: "Book One: Short.", earlier_full: "Book One: Short. And the rest." }), { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    await act(async () => { root.render(createElement(RecapPanel, { bookId: "hp2", para: 0, voice: null, onClose: () => {} })); });
+    expect(host.textContent).toContain("You're at the start of this book.");
+    expect(host.textContent).not.toContain("Nothing to recap yet");
+    const more = host.querySelector<HTMLButtonElement>("button.recap-more")!;
+    expect(more.textContent).toBe("More");
+    expect(host.querySelector("details")!.textContent).not.toContain("And the rest.");
+    act(() => more.click());
+    expect(host.querySelector("details")!.textContent).toContain("And the rest.");
+    expect(more.textContent).toBe("Less");
+  });
+
+  it("has no More button when the earlier summary was not trimmed", async () => {
+    await show({ upto_para: 10, chapter: "II", text: "Now.", earlier: "Book One: Done.", earlier_full: "Book One: Done." });
+    expect(host.querySelector("button.recap-more")).toBeNull();
+  });
+
   it("focuses the close button and closes on it and on Escape", async () => {
     const onClose = vi.fn();
     await show({ upto_para: null, chapter: "", text: "", earlier: "" }, onClose);

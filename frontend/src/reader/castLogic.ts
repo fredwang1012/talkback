@@ -36,6 +36,16 @@ export function loadTalkChoice(bookId: string): TalkChoice {
 }
 export const saveTalkChoice = (bookId: string, c: TalkChoice) => writeJson(talkKey(bookId), c);
 
+/** After a voice or face is deleted, browser-side choices that pointed at it fall back to Auto (null). */
+export function dropReferences(style: ReadingStyle, talk: TalkChoice, gone: { voice?: string; face?: string }) {
+  const v = (x: string | null) => (gone.voice && x === gone.voice ? null : x);
+  const f = (x: string | null) => (gone.face && x === gone.face ? null : x);
+  return {
+    style: { ...style, voice: v(style.voice), face: f(style.face) },
+    talk: { voice: v(talk.voice), face: f(talk.face) },
+  };
+}
+
 // ---------- resolving voices and faces ----------
 
 export const emptyCast = (): Cast => ({ main: [], narrator: { voice: null, face: null }, characters: {} });

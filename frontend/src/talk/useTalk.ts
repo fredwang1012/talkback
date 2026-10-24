@@ -6,6 +6,8 @@ import { spend } from "../spend";
 import type { LogEntry } from "../ui/DebugDrawer";
 import { addQuestion, appendSentence, finishAnswer, loadChat, saveChat, setPendingText, type ChatMessage } from "./chatLog";
 import { detectLanguage, type Detected } from "./language";
+import { FaceSync } from "./faceSync";
+import { createPlayingGate, type TimingEvent } from "./speechGate";
 import { chooseLipSyncMode, openAvatarStream } from "./avatarStream";
 import { createSentenceSpeaker } from "./sentencePlayer";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
@@ -23,7 +25,8 @@ export type TalkUi = {
   speaking: boolean;
   question: string;
   language: Detected | null;
-  clip: string | null; // lip-synced video of the sentence being spoken, when lip-sync is on
+  faceSync: FaceSync; // owns the persistent lip-sync <video> and keeps it locked to the voice
+  clipShown: boolean; // the lip-sync video has a decoded frame and is in step: show it over the talk loop
   logs: LogEntry[];
   pttDown: () => void;
   pttUp: () => void;
@@ -59,7 +62,9 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   const [speaking, setSpeaking] = useState(false);
   const [question, setQuestion] = useState("");
   const [language, setLanguage] = useState<Detected | null>(null);
-  const [clip, setClip] = useState<string | null>(null);
+  const [clipShown, setClipShown] = useState(false);
+  const faceSync = useRef<FaceSync | null>(null);
+  if (!faceSync.current) faceSync.current = new FaceSync(setClipShown);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const logSeq = useRef(0);
   const [messages, setMessagesState] = useState<ChatMessage[]>(() => loadChat(bookId));
@@ -94,7 +99,13 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       },
     });
     let answerVoice = "";
-    const talk = new TalkController({
+    let talk: TalkController | null = null;
+    const gate = createPlayingGate((on) => talk?.notePlaying(on));
+    const logTiming = (e: TimingEvent) => {
+      console.info("[talk] timing", e);
+      setLogs((l) => [...l.slice(-299), { id: ++logSeq.current, dir: "info", type: `timing:${e.stage}`, at: Date.now(), raw: e }]);
+    };
+    talk = new TalkController({
       session: client,
       reader: {
         isPlaying: () => latest.current.reader.isPlaying(),
@@ -115,26 +126,28 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
           const voice = answerVoice;
           const r = await speak(text, voice);
           if (latest.current.wantLipSync && latest.current.canLipSync(voice)) {
-            try {
+            // the voice does not wait for this: the video joins when its first fragment is in (see faceSync)
+            const openVideo = async () => {
               if (chooseLipSyncMode() === "stream") {
-                // resolves at the first playable fragment (seconds, not the whole render); the sound starts with it
                 const c = await openAvatarStream({
                   post: (signal) => lipSyncStream(r.audio_url, voice, signal),
                   MediaSourceCtor: MediaSource, createObjectURL: (o) => URL.createObjectURL(o), revokeObjectURL: (u) => URL.revokeObjectURL(u),
                 });
-                return { ...r, video_url: c.url, release: c.release };
+                return { url: c.url, release: c.release };
               }
-              return { ...r, video_url: await lipSync(r.audio_url, voice) };
-            } catch { /* render failed: the speaking loop stands in */ }
+              return { url: await lipSync(r.audio_url, voice), release: () => {} };
+            };
+            return { audio_url: r.audio_url, openVideo };
           }
-          return r;
-        }, undefined, setClip),
+          return { audio_url: r.audio_url };
+        }, undefined, { sync: faceSync.current as FaceSync, onPlaying: gate.playing, onTiming: logTiming }),
       } : {}),
       voiceFor: (id) => latest.current.voiceFor(id),
       onState: (st) => { setState(st); if (["reading", "talk-idle", "resuming"].includes(st)) setMessages(finishAnswer); },
       onToast: setToast,
       onCaption: (text) => { setCaption(text); if (!viaGemini && text) setMessages((m) => setPendingText(m, text)); },
       onSpeaking: setSpeaking,
+      onTiming: logTiming,
       onTranscript: (text) => {
         setQuestion(text); setLanguage(detectLanguage(text));
         setMessages((m) => addQuestion(m, text, latest.current.speakerId, via.current));
@@ -143,7 +156,8 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       onLatency: (l) => { setLatency(l); console.info("[talk] latency", l); },
     });
     controller.current = talk;
-    return () => { talk.dispose(); client.close(); controller.current = null; setState("reading"); setSpeaking(false); };
+    const sync = faceSync.current;
+    return () => { gate.reset(); sync?.leave(); talk?.dispose(); client.close(); controller.current = null; setState("reading"); setSpeaking(false); };
   }, [bookId, enabled, viaGemini]);
 
   useEffect(() => { controller.current?.setAutoResume(autoResume); }, [autoResume, enabled]);
@@ -154,7 +168,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   useEffect(() => { void controller.current?.refreshVoice(); }, [voiceKey, enabled]);
 
   return {
-    state, caption, toast, level, latency, speaking, question, language, clip, logs,
+    state, caption, toast, level, latency, speaking, question, language, faceSync: faceSync.current, clipShown, logs,
     pttDown: useCallback(() => { void controller.current?.pttDown(); }, []),
     pttUp: useCallback(() => { void controller.current?.pttUp(); }, []),
     messages,

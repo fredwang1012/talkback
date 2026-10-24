@@ -15,6 +15,7 @@ class Section(BaseModel):
     id: str
     title: str
     start_para: int
+    level: int = 1  # nesting depth in the chapter list: 1 = chapter, 2 = 2.1, 3 = 2.1.1 (old book.json files: 1)
 
 
 class Segment(BaseModel):
@@ -39,6 +40,7 @@ class Paragraph(BaseModel):
     text: str
     segments: list[Segment] = []
     tts_chunks: list[TtsChunk] = []
+    kind: Literal["code"] | None = None  # "code": a program / pseudocode listing, shown but not read aloud
 
 
 class Character(BaseModel):

@@ -21,7 +21,7 @@ from typing import NamedTuple
 
 from . import retrieval
 from .config import settings
-from .parsing import HEADING_MARK, parse
+from .parsing import CODE_MARK, HEADING_MARK, parse
 from .schema import Book, Narrator, Paragraph, Section
 from .ttschunks import chunk_paragraph, sentence_spans, split_long
 
@@ -129,6 +129,15 @@ def merge_lines(lines: list[Line]) -> list[str]:
     return paras
 
 
+_MONO_FONT = re.compile(r"mono|courier|consolas|cmtt|typewriter|menlo|lucidacon|inconsolata|fixed|\bcour\b", re.I)
+
+
+def _is_mono(spans: list[dict]) -> bool:
+    """Whether every non-blank span of a line is set in a monospace font."""
+    real = [s for s in spans if s["text"].strip()]
+    return bool(real) and all(_MONO_FONT.search(s["font"]) for s in real)
+
+
 def _font_info(spans: list[dict]) -> tuple[float, bool]:
     """(largest font size rounded to 0.5pt, whether all the text is bold) of a line's spans."""
     real = [s for s in spans if s["text"].strip()] or spans
@@ -175,8 +184,11 @@ def _reading_order(blocks: list[list[tuple]], width: float) -> list[list[tuple]]
     return out
 
 
+_LEADING_SYMBOLS = re.compile(r"^[^\w(]+")  # marker glyphs such as a leading triangle before "Figure 2.10"
+
+
 def _is_caption(blk: list[tuple], body: float) -> bool:
-    text = " ".join(ln[0] for ln in blk)
+    text = _LEADING_SYMBOLS.sub("", " ".join(ln[0] for ln in blk))
     if _CAPTION.match(text):
         return len(blk) <= 4
     # "Figure 8.2 The ..." without punctuation is a caption only when set small or bold, else a body sentence
@@ -185,8 +197,37 @@ def _is_caption(blk: list[tuple], body: float) -> bool:
         size < body * 0.95 or all(ln[6] for ln in blk))
 
 
+def _strip_small_captions(blocks: list[list[tuple]], body: float) -> list[list[tuple]]:
+    """Remove a small-font caption that shares a block with body text ("◮Figure 2.10 ..." plus its wrapped lines).
+
+    A caption starts at a line that begins with Figure/Table/... (after any marker symbol) and is set smaller
+    than the body text; it runs over the following lines that are also set small and close below. The block is
+    split around it so the text after the caption stays a block of its own.
+    """
+    out: list[list[tuple]] = []
+    for blk in blocks:
+        cur: list[tuple] = []
+        i = 0
+        while i < len(blk):
+            ln = blk[i]
+            if body and ln[5] <= body * 0.95 and _CAPTION_START.match(_LEADING_SYMBOLS.sub("", ln[0])):
+                i += 1
+                while i < len(blk) and blk[i][5] <= body * 0.95 and blk[i][2] - blk[i - 1][4] < 1.5 * (blk[i][4] - blk[i][2]):
+                    i += 1
+                if cur:
+                    out.append(cur)
+                    cur = []
+                continue
+            cur.append(ln)
+            i += 1
+        if cur:
+            out.append(cur)
+    return out
+
+
 def _clean_layout(blocks: list[list[tuple]], body: float) -> list[list[tuple]]:
     """Drop captions, small-font text (footnotes, sidebars) and runs of numeric table cells."""
+    blocks = _strip_small_captions(blocks, body)
     kept = [b for b in blocks
             if not _is_caption(b, body) and not (body and max(ln[5] for ln in b) < body * SMALL_FONT)]
     out: list[list[tuple]] = []
@@ -233,6 +274,76 @@ def _drop_contents(blocks: list[list[tuple]]) -> list[list[tuple]]:
     return out
 
 
+_BARE_INDEX = re.compile(r"^\d{1,3}$")
+_NUMBERED = re.compile(r"^\d{1,3}\s+\S")
+_CODE_SYMBOLS = re.compile("[←⇐≠]")  # assignment arrows and "not equal"; prose also uses angle brackets, <= and ->
+_CODE_WORDS = re.compile(r"\b(?:if|then|else|elseif|while|do|for each|return|NIL|null|until|repeat|end)\b")
+_CODE_TITLE = re.compile(r"^[A-Z][A-Z0-9_-]{3,}\(.*\)$")  # "INTERSECTWITHSKIPS(p1, p2)"
+CODE_MIN_LINES = 3
+
+
+def _code_score(blk: list[tuple]) -> bool:
+    """Whether a block is program code or pseudocode: monospace, or numbered lines full of keywords / symbols."""
+    lines = [ln[0] for ln in blk]
+    if len(lines) < 2:
+        return False
+    mono = sum(len(ln[0]) for ln in blk if len(ln) > 7 and ln[7])
+    if mono >= 0.8 * sum(len(t) for t in lines) and len(lines) >= 2:
+        return True
+    numbers = sum(1 for t in lines if _BARE_INDEX.match(t))
+    others = [t for t in lines if not _BARE_INDEX.match(t)]
+    if len(lines) < CODE_MIN_LINES or not others:
+        return False
+    arrows = sum(1 for t in others if _CODE_SYMBOLS.search(t))
+    words = sum(1 for t in others if _CODE_SYMBOLS.search(t) or _CODE_WORDS.search(t))
+    numbered = numbers + sum(1 for t in others if _NUMBERED.match(t))
+    if arrows >= 2 and arrows >= 0.4 * len(others):
+        return True
+    return numbered >= 0.4 * len(lines) and numbered >= 3 and words >= 0.6 * len(others) and words >= 2
+
+
+def _code_text(blocks: list[list[tuple]]) -> str:
+    """The listing's lines, each bare line number joined to the code that follows it."""
+    out: list[str] = []
+    pending = ""
+    for blk in blocks:
+        for ln in blk:
+            t = ln[0]
+            if _BARE_INDEX.match(t):
+                pending = (pending + " " + t).strip() if pending else t
+                continue
+            out.append((pending + " " + t).strip())
+            pending = ""
+    if pending:
+        out.append(pending)
+    return "\n".join(out)
+
+
+def _mark_code(blocks: list[list[tuple]]) -> list[list[tuple]]:
+    """Turn each run of code-like blocks (plus a leading 'NAME(args)' title block) into one CODE_MARK line.
+
+    The line stands alone as a paragraph; parse() makes it a paragraph of kind "code" (shown, not read).
+    """
+    flags = [_code_score(b) for b in blocks]
+    out: list[list[tuple]] = []
+    i = 0
+    while i < len(blocks):
+        title = i + 1 < len(blocks) and not flags[i] and flags[i + 1] and len(blocks[i]) == 1             and _CODE_TITLE.match(blocks[i][0][0])
+        if not (flags[i] or title):
+            out.append(blocks[i])
+            i += 1
+            continue
+        j = i + 1
+        while j < len(blocks) and flags[j]:
+            j += 1
+        run = blocks[i:j]
+        lns = [ln for b in run for ln in b]
+        out.append([(CODE_MARK + _code_text(run), min(ln[1] for ln in lns), lns[0][2], max(ln[3] for ln in lns),
+                     lns[-1][4], max(ln[5] for ln in lns), False, False)])
+        i = j
+    return out
+
+
 def _split_by_size(blocks: list[list[tuple]]) -> list[list[tuple]]:
     """Start a new block wherever the font size jumps (a heading set tight against body text)."""
     out = []
@@ -247,11 +358,21 @@ def _split_by_size(blocks: list[list[tuple]]) -> list[list[tuple]]:
     return out
 
 
+_FRONT_MATTER = re.compile(
+    r"©|\(c\)|\bcopyright\b|\bisbn\b|all rights reserved|\buniversity press\b|\bprinted (?:in|on)\b|"
+    r"\bpublished by\b|\bdraft of\b|\bonline edition\b", re.I)
+
+
 def _heading_candidate(blk: list[tuple], body: float) -> tuple[str, bool] | None:
-    """(text, found by font alone) when the block looks like a heading: the regex, or large / bold short text."""
+    """(text, found by font alone) when the block looks like a heading: the regex, or large / bold short text.
+
+    Copyright, ISBN and publisher lines (front matter) are never headings, however large they are set.
+    """
     if len(blk) > 2:
         return None
     text = " ".join(ln[0] for ln in blk)
+    if _FRONT_MATTER.search(text) or text.startswith(CODE_MARK):
+        return None
     if _is_heading(text):
         return text, False
     if len(text) > 68 or len(text) < 2 or not any(c.isalpha() for c in text) or re.search(r"[.!?,;:]$", text):
@@ -293,7 +414,7 @@ def _mark_headings(blocks: list[list[tuple]], body: float) -> list[list[tuple]]:
         if i - 1 in drop:
             continue
         if cand is None:
-            out.append([ln[:7] + (False,) for ln in blk])
+            out.append([ln[:7] + (ln[0].startswith(CODE_MARK),) for ln in blk])  # a listing stands alone
             continue
         text, by_font = cand
         nxt = cands[i] if i < len(blocks) and i not in drop else None
@@ -301,9 +422,90 @@ def _mark_headings(blocks: list[list[tuple]], body: float) -> list[list[tuple]]:
             text, by_font = text + " " + nxt[0], by_font or nxt[1]
             blk = blk + blocks[i]
             i += 1
+        while by_font and i < len(blocks) and i not in drop and cands[i] is not None and cands[i][1] \
+                and abs(blocks[i][0][5] - blk[0][5]) < 0.5 and not _is_heading(cands[i][0]) \
+                and blocks[i][0][2] - blk[-1][4] < 1.5 * max(blk[0][5], 1):
+            text += " " + cands[i][0]  # a title set over several lines (title page): one heading
+            blk = blk + blocks[i]
+            i += 1
         first, last = blk[0], blk[-1]
         mark = HEADING_MARK if by_font and not _is_heading(text) else ""
         out.append([(mark + text, first[1], first[2], max(ln[3] for ln in blk), last[4], first[5], first[6], True)])
+    return out
+
+
+_TOC_NUMBER = re.compile(r"^\d+(?:\.\d+)*$")
+_TOC_TRAILING = re.compile(r"\S\s+\d{1,4}$")
+TOC_MIN_LINES = 10     # a page needs this many lines to be judged a table of contents
+TOC_FRACTION = 0.5     # ... and this share of them bare numbers (section / page) or ending in a page number
+
+
+def _is_toc_page(blocks: list[list[tuple]]) -> bool:
+    """A contents page without dot leaders: most lines are bare section/page numbers or end in a page number."""
+    lines = [ln[0] for blk in blocks for ln in blk]
+    if len(lines) < TOC_MIN_LINES:
+        return False
+    tocish = sum(1 for t in lines if _TOC_NUMBER.match(t) or (_TOC_TRAILING.search(t) and len(t) <= 120))
+    return tocish >= TOC_FRACTION * len(lines)
+
+
+_LEAD_NUM = re.compile(r"^(?:\d+(?:\.\d+)*\s+)+")
+_TRAIL_NUM = re.compile(r"(?:\s+\d+(?:\.\d+)*)+$")
+
+
+def _header_core(blk: list[tuple], body: float) -> str | None:
+    """The title text of a block shaped like a running header ('2.4 Title 39', '36 2 Title'), else None.
+
+    Page-number-first headers ('39 Title') count only when set smaller than the body text, so that a real
+    chapter heading such as '12 The Wedding' is not mistaken for one.
+    """
+    text = " ".join(ln[0] for ln in blk)
+    if len(blk) > 3 or len(text) > 100 or _BARE_LABEL.match(text):
+        return None
+    trailing = bool(_TRAIL_NUM.search(text)) and bool(re.search(r"[A-Za-z]\s+\d{1,4}$", text))
+    leading2 = bool(re.match(r"^\d{1,4}\s+\d{1,2}\s+\S", text))
+    leading = bool(_LEAD_NUM.match(text)) and body and max(ln[5] for ln in blk) < body * 0.95
+    if not (trailing or leading2 or leading):
+        return None
+    core = _TRAIL_NUM.sub("", _LEAD_NUM.sub("", text)).strip()
+    if core.lower() in ("chapter", "part", "book", "section", "unit", "page"):
+        return None
+    return core.lower() if sum(c.isalpha() for c in core) >= 3 else None
+
+
+def _drop_running_headers(pages: list[list[list[tuple]]], body: float) -> list[list[list[tuple]]]:
+    """Drop per-page running headers/footers made of a section title and a page number (changing every page).
+
+    A page-edge block counts when its title (numbers stripped) repeats at the edge of another page or equals
+    the title of a heading elsewhere ('2.4 Positional postings 39' above the real '2.4 Positional postings').
+    """
+    edge_cores: Counter = Counter()
+    for blocks in pages:
+        seen = set()
+        for blk in ((blocks[0], blocks[-1]) if blocks else ()):
+            core = _header_core(blk, body)
+            if core:
+                seen.add(core)
+        edge_cores.update(seen)
+    body_cores = set()
+    for blocks in pages:
+        for blk in blocks[1:-1]:
+            if len(blk) <= 3:
+                text = " ".join(ln[0] for ln in blk)
+                if len(text) <= 100:
+                    body_cores.add(_TRAIL_NUM.sub("", _LEAD_NUM.sub("", text)).strip().lower())
+
+    def is_header(blk) -> bool:
+        core = _header_core(blk, body)
+        return bool(core) and (edge_cores[core] >= 2 or core in body_cores)
+
+    out = []
+    for blocks in pages:
+        if blocks and is_header(blocks[0]):
+            blocks = blocks[1:]
+        if blocks and is_header(blocks[-1]):
+            blocks = blocks[:-1]
+        out.append(blocks)
     return out
 
 
@@ -333,7 +535,7 @@ def pdf_to_text(data: bytes) -> str:
                         x0, y0, x1, y1 = ln["bbox"]
                         size, bold = _font_info(ln["spans"])
                         sizes[size] += len(t)
-                        lines.append((t, x0, y0, x1, y1, size, bold))
+                        lines.append((t, x0, y0, x1, y1, size, bold, _is_mono(ln["spans"])))
                         total += len(t) + 1
                         if total > MAX_CHARS:  # checked per line so extraction stops as soon as the cap is crossed
                             raise UploadError("The document has too much text (5 million characters maximum).")
@@ -355,13 +557,21 @@ def pdf_to_text(data: bytes) -> str:
         return key(block) in repeated or bool(_PAGE_NUMBER.match(" ".join(ln[0] for ln in block)))
 
     body = sizes.most_common(1)[0][0] if sizes else 0.0
+
+    def strip_noise(blocks):
+        while blocks and is_noise(blocks[0]):
+            blocks = blocks[1:]
+        while blocks and is_noise(blocks[-1]):
+            blocks = blocks[:-1]
+        return blocks
+
+    pages = [strip_noise(blocks) for blocks in pages]
+    pages = _drop_running_headers(pages, body)
     all_lines: list[Line] = []
     for pno, blocks in enumerate(pages):
-        if blocks and is_noise(blocks[0]):
-            blocks = blocks[1:]
-        if blocks and is_noise(blocks[-1]):
-            blocks = blocks[:-1]
-        blocks = _drop_contents(_clean_layout(_reading_order(blocks, widths[pno]), body))
+        if _is_toc_page(blocks):
+            continue
+        blocks = _mark_code(_drop_contents(_clean_layout(_reading_order(blocks, widths[pno]), body)))
         flat = [ln for blk in blocks for ln in blk]
         if not flat:
             continue
@@ -373,7 +583,9 @@ def pdf_to_text(data: bytes) -> str:
             for t, x0, y0, x1, y1, _size, _bold, _h in blk:
                 all_lines.append(Line(t, x0, x1, y0, y1, left, right, pno, alone))
 
-    text = "\n\n".join(merge_lines(all_lines))
+    paras = merge_lines(all_lines)
+    paras = [p for i, p in enumerate(paras) if i == 0 or p != paras[i - 1] or not p.startswith(HEADING_MARK)]
+    text = "\n\n".join(paras)
     if not text.strip():
         raise UploadError("No extractable text was found. Scanned (image-only) PDFs are not supported.")
     return text
@@ -418,15 +630,31 @@ def _cap_paragraphs(sections: list[Section], paragraphs: list[Paragraph]) -> lis
     for p in paragraphs:
         new_start[p.idx] = len(out)
         for piece in split_paragraph(p.text):
-            out.append(Paragraph(idx=len(out), section_id=p.section_id, text=piece))
+            out.append(Paragraph(idx=len(out), section_id=p.section_id, text=piece, kind=p.kind))
     for s in sections:
         s.start_para = new_start.get(s.start_para, len(out))
     return out
 
 
+_NUMBERED = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){0,5})(?![\d.]*\w)")
+MAX_LEVEL = 4
+
+
+def section_level(title: str) -> int:
+    """Nesting depth from the heading's number: "2" or "Chapter 2" is 1, "2.1" is 2, "2.1.1" is 3 (capped)."""
+    m = _NUMBERED.match(title.strip())
+    return min(m.group(1).count(".") + 1, MAX_LEVEL) if m else 1
+
+
 def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_detected: dict | None = None) -> Book:
     sections, paragraphs = parse(raw, None, None, HEADING_REGEX)
     paragraphs = _cap_paragraphs(sections, paragraphs)
+    if kind != "textbook":  # only textbooks skip listings; elsewhere a monospace block is just text to read
+        for p in paragraphs:
+            p.kind = None
+    if kind == "textbook":  # novels keep a flat chapter list
+        for sec in sections:
+            sec.level = section_level(sec.title)
     if not paragraphs:
         raise UploadError("No paragraphs were found in the file.")
     book = Book(id=book_id, title=title, author=author, kind=kind, kind_detected=kind_detected, license=LICENSE,
@@ -469,14 +697,20 @@ KIND_KEYS = ("kind", "kind_detected")
 
 
 def write_status(book_id: str, status: str, message: str | None = None, enrich: dict | None = None,
-                 **kind_info) -> dict:
-    """status.json: {status, message?, enrich?, kind?, kind_detected?}.
+                 index: dict | None = None, **kind_info) -> dict:
+    """status.json: {status, message?, enrich?, index?, kind?, kind_detected?}.
+
+    `index` is the Vertex indexing progress {state: running|done|error, done, total, message?}; absent for books
+    that never needed it (local retrieval, seeded books).
 
     `enrich` is the novel enrichment sub-status (see enrich/pipeline.py). `kind`/`kind_detected` are carried over from
     the previous status unless given.
     """
     prev = read_status(book_id) or {}
     out = {"status": status} | ({"message": message} if message else {}) | ({"enrich": enrich} if enrich else {})
+    index = index if index is not None else prev.get("index")  # carried over so enrich/kind updates keep it
+    if index:
+        out["index"] = index
     for k in KIND_KEYS:
         v = kind_info[k] if k in kind_info else prev.get(k)
         if v is not None:
@@ -499,3 +733,37 @@ def read_status(book_id: str) -> dict | None:
 
 def upload_path(book_id: str, ext: str) -> Path:
     return settings.data_dir / "uploads" / f"{book_id}{ext}"
+
+
+def delete_book_files(book_id: str, ident=None) -> list[str]:
+    """Remove an uploaded book from disk: the book folder (book.json first, so it leaves the library at once), the
+    original upload, avatar clips, portraits and the caller's cast file. Returns what could not be removed.
+
+    Robust on a GCS FUSE mount, where removing a tree can fail part-way: each part is retried once and a failure never
+    stops the others. Only the folders named after this exact book id are touched (the caller validates the id).
+    """
+    from . import users
+    root = settings.data_dir
+    d = root / "books" / book_id
+    for name in ("book.json", "book.json.tmp"):   # hide it first: a half-deleted book must not stay listed
+        try:
+            (d / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+    targets = [d, root / "cache" / "avatar" / book_id, root / "portraits" / book_id,
+               *sorted((root / "uploads").glob(f"{book_id}.*")), users.cast_json(book_id)]
+    left: list[str] = []
+    for t in targets:
+        for _ in range(2):
+            try:
+                if t.is_dir():
+                    shutil.rmtree(t, ignore_errors=True)
+                else:
+                    t.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if not t.exists():
+                break
+        else:
+            left.append(t.relative_to(root).as_posix())
+    return left
