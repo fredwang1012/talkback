@@ -191,7 +191,7 @@ async def cast_novel(book: Book, call: Callable[..., Awaitable], tier: str = "sm
                      persona_tier: str = "fast") -> None:
     """Cast call (who, voices, first_para), then one cheap persona call per character from their earliest text only."""
     user = f'Title: "{book.title}" by {book.author}\n\n{numbered_sample(book)}'
-    result = await call(tier, UPLOAD_SYSTEM, user, MainCast, max_tokens=4000, effort="medium")
+    result = await call(tier, UPLOAD_SYSTEM, user, MainCast, max_tokens=8000, effort="medium")   # Flash-Lite is wordier
     apply_cast(book, result, MAIN_MAX, mark_main=True)
     apply_series(book, result)
 
