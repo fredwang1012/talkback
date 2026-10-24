@@ -142,7 +142,7 @@ describe("echo: the server never hears the character", () => {
     await serverTurn(l, "u1", "Who is Alice?");
     await characterSpeaks(l);
     expect(l.talk.state).toBe("answering");
-    await l.audio("echo", 0.06, 2000);
+    await l.audio("echo", 0.03, 2000);
     await drain(l);
     await l.audio("tail", 0.03, MIC_HOLD_TAIL_MS - 100);
     expect(l.ws().heard().filter((x) => x === "echo" || x === "tail")).toEqual([]);
@@ -154,15 +154,28 @@ describe("echo: the server never hears the character", () => {
     expect(l.asked).toEqual(["Who is Alice?"]);
   });
 
-  it("a loud echo (speakers up) never interrupts the character: the barge-in threshold follows the echo level", async () => {
+  it("quiet residual echo (under 0.04) never interrupts the character, however long it lasts", async () => {
     const l = loop();
     await handsFreeOn(l);
     await serverTurn(l, "u1", "Who is Alice?");
     await characterSpeaks(l);
-    await l.audio("echo", 0.16, 3000); // over the fixed 0.10, all of it the character
+    await l.audio("echo", 0.035, 3000);
     expect(l.talk.state).toBe("answering");
     expect(l.interrupted()).toBe(0);
     expect(l.player.log).not.toContain("flush");
+  });
+
+  it("trade-off (#159): an echo louder than 0.04 that lasts 250 ms CAN barge in now, as speech at normal volume does", async () => {
+    const l = loop();
+    await handsFreeOn(l);
+    await serverTurn(l, "u1", "Who is Alice?");
+    await characterSpeaks(l);
+    await l.audio("blip", 0.16, 200); // shorter than 250 ms: ignored
+    expect(l.talk.state).toBe("answering");
+    await l.audio("quiet", 0.005, 100);
+    await l.audio("echo", 0.16, 3000); // speakers up: the echo alone is over the bar and over 1x itself
+    expect(l.interrupted()).toBeGreaterThanOrEqual(1);
+    expect(l.talk.state).not.toBe("answering");
   });
 
   it("a speech_started for audio sent before the hold (or a stray one) while the character speaks is echo: no turn, no bubble, no message", async () => {
@@ -170,7 +183,7 @@ describe("echo: the server never hears the character", () => {
     await handsFreeOn(l);
     await serverTurn(l, "u1", "Who is Alice?");
     await characterSpeaks(l);
-    await serverTurn(l, "echo1", "A girl who fell", 400, 0.06);
+    await serverTurn(l, "echo1", "A girl who fell", 400, 0.03);
     await l.advance(5000);
     // live, every committed turn carries the same item id, so the echo is not deleted by id (that would remove the real
     // question's item): the buffer is cleared, so its audio never leads the next question
@@ -191,7 +204,7 @@ describe("barge-in in hands-free (server turns)", () => {
     await handsFreeOn(l);
     await serverTurn(l, "u1", "Who is Alice?");
     await characterSpeaks(l);
-    await l.audio("echo", 0.05, 1000);
+    await l.audio("echo", 0.03, 1000);
     l.player.played = 1000; // half of the answer heard
     let cutAt = -1;
     for (let t = 0; t < 600 && cutAt < 0; t += 20) {
@@ -226,7 +239,7 @@ describe("barge-in in hands-free (server turns)", () => {
     await handsFreeOn(l);
     await serverTurn(l, "u1", "Who is Alice?");
     await characterSpeaks(l);
-    await l.audio("echo", 0.05, 500);
+    await l.audio("echo", 0.03, 500);
     await l.audio("cough", 0.3, 300);
     expect(l.talk.state).toBe("listening");
     await l.audio("quiet", 0.005, BARGE_CONFIRM_MS + 200);
@@ -240,7 +253,7 @@ describe("barge-in in hands-free (server turns)", () => {
     await handsFreeOn(l);
     await serverTurn(l, "u1", "Who is Alice?");
     await characterSpeaks(l);
-    await l.audio("echo", 0.05, 500);
+    await l.audio("echo", 0.03, 500);
     await l.talk.pttDown();
     await settle();
     expect(l.talk.state).toBe("listening");
@@ -433,7 +446,7 @@ describe("I didn't catch that: only for a real turn whose transcript never came"
 // ---- the local gate and push-to-talk ----------------------------------------------------------------------------
 
 describe("barge-in with the local gate, and push-to-talk / typed bubbles", () => {
-  it("local gate: speech over the character stops it within ~300 ms; a loud echo does not", async () => {
+  it("local gate: speech over the character stops it within ~300 ms; quiet echo does not", async () => {
     const l = loop({ serverTurns: false });
     await l.talk.setHandsFree(true);
     await l.audio("me", 0.2, 400);
@@ -446,7 +459,7 @@ describe("barge-in with the local gate, and push-to-talk / typed bubbles", () =>
     await settle();
     await characterSpeaks(l);
     expect(l.talk.state).toBe("answering");
-    await l.audio("echo", 0.16, 2000);
+    await l.audio("echo", 0.03, 2000);
     expect(l.talk.state).toBe("answering");
     let cutAt = -1;
     for (let t = 0; t < 600 && cutAt < 0; t += 20) {
@@ -487,9 +500,9 @@ describe("echo floor and the mic hold on the sentence-speaker (Gemini) path", ()
   it("the barge-in bar follows the echo heard while the character speaks; the reader's own speech never raises it", () => {
     const f = createEchoFloor();
     expect(f.profile().threshold).toBe(HANDS_FREE_OVER_SPEECH.threshold);
-    for (let t = 0; t < 2000; t += 20) f.feed(0.16, t); // a loud speaker
+    for (let t = 0; t < 600; t += 20) f.feed(0.16, t); // a loud speaker
     expect(f.profile().threshold).toBeCloseTo(0.16 * ECHO_RATIO);
-    for (let t = 2000; t < 4000; t += 20) f.feed(0.8, t); // the reader talking over it for 2 s
+    for (let t = 600; t < 1600; t += 20) f.feed(0.8, t); // the reader talking over it for 1 s
     expect(f.profile().threshold).toBeCloseTo(0.16 * ECHO_RATIO);
   });
 
