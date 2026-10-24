@@ -128,4 +128,4 @@ and `frontend/test/` are adapted from [boson-ai/higgs-realtime-tutorial](https:/
 
 ## License
 
-Copyright (c) 2026 Frederick Wang, Siyi Zhu and Kent Chen. All rights reserved. See [LICENSE](LICENSE).
+Copyright (c) 2026 Frederick Wang, Kent Chen and Siyi Zhu. All rights reserved. See [LICENSE](LICENSE).
