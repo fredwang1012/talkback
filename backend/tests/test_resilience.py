@@ -427,3 +427,26 @@ def test_parallel_uploads_are_not_limited_but_each_book_is():
     assert Settings.model_fields["enrich_parallel"].default == 1000
     assert Settings.model_fields["upload_concurrency"].default == 24
     assert LLM("gemini", {"gemini": FakeProvider()}).sem._value == settings.upload_concurrency
+
+
+def test_startup_settles_an_old_index_only_failure_as_done(monkeypatch, tmp_path):
+    from app import main, ingest_upload
+    from app.enrich import pipeline
+    from types import SimpleNamespace
+    calls = []
+    monkeypatch.setattr(main, "_set_enrich", lambda bid, **f: calls.append((bid, f)))
+    monkeypatch.setattr(main, "_upload_status", {"u-x-00000000": {"enrich": {"status": "error", "stage": "index"}}})
+    book = SimpleNamespace(characters=[1], summaries=[1])
+    main._settle_index_only_failure("u-x-00000000", book)
+    assert calls == [("u-x-00000000", {"status": "done", "stage": "done", "progress": 1.0,
+                                       "message": pipeline.INDEX_PENDING})]
+    calls.clear()
+    main._settle_index_only_failure("u-x-00000000", SimpleNamespace(characters=[], summaries=[]))
+    assert calls == []   # a real failure (nothing saved) stays retryable
+
+
+def test_settings_repr_never_shows_secrets():
+    from app.config import Settings
+    s = Settings(boson_api_key="bai-SECRET123", anthropic_api_key="sk-ant-SECRET", access_token="tok-SECRET")
+    text = repr(s) + str(s)
+    assert "SECRET" not in text
