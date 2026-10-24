@@ -6,7 +6,7 @@ What remains needs a key or a file from you. When they arrive: `python scripts/r
 Standing rule: do **not** use the Anthropic key until told (user instruction, 2026-10-15).
 
 ## 1. You provide
-- [ ] `BOSON_API_KEY` in `bookson/.env` (unblocks section 3).
+- [ ] `BOSON_API_KEY` in `talkback/.env` (unblocks section 3).
 - [ ] OK to spend Anthropic credit (unblocks section 2; estimated a few dollars of the $100).
 - [ ] Set a monthly spend cap in the Boson workspace.
 - [ ] Review the cast after `cast.py` runs (voices, personas, `first_para`). `run_all.py --anthropic` pauses for this.

@@ -43,7 +43,7 @@ def client() -> AsyncAnthropic:
     global _client
     if _client is None:
         if not settings.anthropic_api_key:
-            sys.exit("ANTHROPIC_API_KEY is not set in bookson/.env")
+            sys.exit("ANTHROPIC_API_KEY is not set in talkback/.env")
         _client = AsyncAnthropic(api_key=settings.anthropic_api_key, max_retries=5)
     return _client
 

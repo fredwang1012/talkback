@@ -1,4 +1,4 @@
-// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Bookson.
+// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Talkback.
 // Playback worklet — a ring buffer living on the audio render thread.
 //
 // WHY A RING BUFFER

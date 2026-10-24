@@ -1,4 +1,4 @@
-# Bookson
+# Talkback
 
 Books read aloud in full cast, with a way to talk back. Hold a key, ask a question out loud, get a spoken answer
 grounded in what you have read so far (never a spoiler), and the story resumes from the same sentence.
@@ -31,7 +31,7 @@ Copy `.env.example` to `.env` (gitignored) and fill it in:
 | `BOSON_API_KEY` | Audio, Talk mode, voice cloning. Never reaches the browser; the server mints short-lived keys. |
 | `ANTHROPIC_API_KEY` | Offline preprocessing only (cast, segments, summaries). Not used at runtime. |
 | `BOSON_BASE_URL` | Defaults to `https://api.boson.ai`. |
-| `BOOKSON_ACCESS_TOKEN` | Optional. For public deployments: voices then need an access code typed into the page. |
+| `TALKBACK_ACCESS_TOKEN` | Optional. For public deployments: voices then need an access code typed into the page. |
 
 **Set a monthly spend cap in the Boson workspace** (Billing, then Usage) before running anything that calls the API.
 The debug drawer (backtick key) shows a running estimate of this session's spend.

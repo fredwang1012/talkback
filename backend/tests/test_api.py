@@ -220,10 +220,10 @@ def test_access_token_gates_endpoints_that_spend_credit(env, monkeypatch):
     assert client.post("/api/realtime/token").status_code == 401
     assert clone(client).status_code == 401
     assert calls["n"] == 0
-    h = {"X-Bookson-Token": "letmein"}
+    h = {"X-Talkback-Token": "letmein"}
     assert client.post("/api/tts", json=body, headers=h).status_code == 200
     assert client.post("/api/realtime/token", headers=h).status_code == 200
-    assert client.post("/api/tts", json=body, headers={"X-Bookson-Token": "wrong"}).status_code == 401
+    assert client.post("/api/tts", json=body, headers={"X-Talkback-Token": "wrong"}).status_code == 401
     assert client.get("/api/books").status_code == 200  # reading stays open
 
 

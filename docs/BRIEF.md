@@ -1,4 +1,4 @@
-# Bookson — Claude Code implementation brief
+# Talkback — Claude Code implementation brief
 
 > Paste this whole file into Claude Code (or save it as `docs/BRIEF.md` in an empty repo and tell Claude Code: "Read docs/BRIEF.md and execute it milestone by milestone").
 > API facts below were checked against docs.boson.ai and the official Boson tutorial repo on 2026-10-15. Where docs and live behaviour may differ, Milestone 0 tells you to probe it.
@@ -18,7 +18,7 @@
 
 ## 1. What we are building
 
-**Bookson** ("Audible++"): a web app that reads books and textbooks aloud and lets you **talk back**. Built for a 24-hour Boson AI hackathon, so the demo loop must be flawless before anything else is added.
+**Talkback** ("Audible++"): a web app that reads books and textbooks aloud and lets you **talk back**. Built for a 24-hour Boson AI hackathon, so the demo loop must be flawless before anything else is added.
 
 Two modes, one toggle:
 
@@ -72,7 +72,7 @@ Why this shape:
 Repo layout:
 
 ```
-bookson/
+talkback/
   CLAUDE.md                 # short project conventions for future sessions
   NOTES.md                  # API probe results, decisions, gotchas found
   .env.example              # BOSON_API_KEY=, ANTHROPIC_API_KEY=, BOSON_BASE_URL=https://api.boson.ai
@@ -368,7 +368,7 @@ Keep these templates in one file with unit tests that render them for fixtures. 
 ---
 
 ## 10. The 90-second demo script (build toward this)
-1. Open Bookson → Sherlock (demo mode). Full-cast reading starts: Watson narrates, Holmes and the King each in their own voice, words highlighting.
+1. Open Talkback → Sherlock (demo mode). Full-cast reading starts: Watson narrates, Holmes and the King each in their own voice, words highlighting.
 2. Hold Space mid-scene: "Holmes, what do you make of this visitor?" → Holmes answers in character from what we've read; reading resumes from the same sentence.
 3. Hold Space and ask in Mandarin: "你觉得这封信是谁写的?" → Holmes answers in Mandarin.
 4. Ask "How does this end?" → Holmes refuses in character ("Data, my dear reader, I have not yet got it"). Point at the spoiler badge.

@@ -52,10 +52,10 @@ export type BookSummary = {
 };
 export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean };
 
-/** Sent when the server requires an access code (BOOKSON_ACCESS_TOKEN). Typed in by the visitor, never built in. */
+/** Sent when the server requires an access code (TALKBACK_ACCESS_TOKEN). Typed in by the visitor, never built in. */
 export function authHeaders(): Record<string, string> {
   const token = getAccessToken();
-  return token ? { "X-Bookson-Token": token } : {};
+  return token ? { "X-Talkback-Token": token } : {};
 }
 
 /** fetch with a deadline, so a stalled server shows an error instead of an endless spinner. */

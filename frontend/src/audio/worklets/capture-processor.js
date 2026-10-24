@@ -1,4 +1,4 @@
-// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Bookson.
+// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Talkback.
 // Capture worklet. Runs on the audio render thread.
 //
 // It does exactly one job: collect incoming microphone samples into ~100 ms

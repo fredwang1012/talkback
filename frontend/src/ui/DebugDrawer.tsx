@@ -1,4 +1,4 @@
-// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Bookson.
+// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Talkback.
 import { useEffect, useState } from "react";
 import type { SpendSnapshot } from "../spend";
 

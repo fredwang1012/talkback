@@ -1,8 +1,8 @@
 /**
- * Access code for servers that set BOOKSON_ACCESS_TOKEN. It is typed in by the visitor and kept for this tab only.
+ * Access code for servers that set TALKBACK_ACCESS_TOKEN. It is typed in by the visitor and kept for this tab only.
  * It must never be baked into the bundle (every VITE_* value is public), so there is deliberately no env fallback.
  */
-const KEY = "bookson:access-code";
+const KEY = "talkback:access-code";
 
 export function getAccessToken(): string {
   try { return sessionStorage.getItem(KEY) ?? ""; } catch { return ""; }

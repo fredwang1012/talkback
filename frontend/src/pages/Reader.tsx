@@ -52,7 +52,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       const flat = flattenChunks(b);
       setIndex(demo ? firstChunkAtOrAfter(flat, DEMO_START_PARA) : loadPosition(b.id, flat.length));
       if (demo && b.characters.some((c) => c.id === DEMO_SPEAKER)) setSpeakerId(DEMO_SPEAKER); // pinned to Holmes
-      try { setOverrides(JSON.parse(localStorage.getItem(`bookson:voices:${b.id}`) ?? "{}")); } catch { /* none saved */ }
+      try { setOverrides(JSON.parse(localStorage.getItem(`talkback:voices:${b.id}`) ?? "{}")); } catch { /* none saved */ }
     }).catch((e: Error) => setError(e.message));
     fetchHealth().then(setHealth).catch(() => setHealth(null));
     fetchAvatars(bookId).then((ids) => setAvatars(new Set(ids)));
@@ -200,7 +200,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     if (voice) next[speaker] = voice; else delete next[speaker];
     setOverrides(next);
     overridesRef.current = next;
-    try { localStorage.setItem(`bookson:voices:${bookId}`, JSON.stringify(next)); } catch { /* storage blocked */ }
+    try { localStorage.setItem(`talkback:voices:${bookId}`, JSON.stringify(next)); } catch { /* storage blocked */ }
     engineRef.current?.refreshAhead(); // chunks fetched ahead used the old voice
   };
   const preview = async (speaker: string, voice: string) => {

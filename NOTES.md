@@ -1,4 +1,4 @@
-# Bookson notes
+# Talkback notes
 
 ## 2026-10-15 — M0 scaffold
 - Python pinned to 3.12 for the backend (system Python is 3.14; torch/sentence-transformers wheels may lag). uv 0.13.1 installed via pip.

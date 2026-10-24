@@ -1,4 +1,4 @@
-// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Bookson.
+// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Talkback.
 // Turning microphone audio into what the API wants.
 //
 // Two conversions happen here, and both are pure functions of their input,

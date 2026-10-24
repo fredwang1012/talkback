@@ -35,7 +35,7 @@ async def lifespan(_: FastAPI):
     task.cancel()
 
 
-app = FastAPI(title="Bookson", lifespan=lifespan)
+app = FastAPI(title="Talkback", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -57,10 +57,10 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def require_access(x_bookson_token: str | None = Header(default=None)) -> None:
-    """Opt-in gate for endpoints that spend Boson credit: set BOOKSON_ACCESS_TOKEN for any public deployment."""
+def require_access(x_talkback_token: str | None = Header(default=None)) -> None:
+    """Opt-in gate for endpoints that spend Boson credit: set TALKBACK_ACCESS_TOKEN for any public deployment."""
     expected = settings.access_token
-    if expected and not secrets.compare_digest(x_bookson_token or "", expected):
+    if expected and not secrets.compare_digest(x_talkback_token or "", expected):
         raise HTTPException(401, "Missing or invalid access token.")
 
 

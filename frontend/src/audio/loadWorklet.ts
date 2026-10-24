@@ -1,4 +1,4 @@
-// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Bookson.
+// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Talkback.
 /**
  * Register an AudioWorklet module from a source string.
  *

@@ -1,4 +1,4 @@
-# Deploying Bookson (optional, M10)
+# Deploying Talkback (optional, M10)
 
 One container serves everything: the FastAPI API, cached audio (`/media`), portraits, and the built frontend (the
 backend mounts `frontend/dist` at `/` when it exists). Same origin, so no CORS settings and no extra proxy.
@@ -7,8 +7,8 @@ Status: the Dockerfile is written but **not built or run yet**. Treat the first 
 
 ## Railway (or Fly/Render)
 
-1. New service from this repo, root `bookson/`, builder: Dockerfile.
-2. Variables: `BOSON_API_KEY` (required), `BOOKSON_ACCESS_TOKEN` (recommended for a public URL: visitors must type the
+1. New service from this repo, root `talkback/`, builder: Dockerfile.
+2. Variables: `BOSON_API_KEY` (required), `TALKBACK_ACCESS_TOKEN` (recommended for a public URL: visitors must type the
    code before voices can spend credit), `PORT` is provided by the platform.
 3. Add a **volume** mounted at `/app/data/cache` so synthesised audio survives redeploys. Pre-render before the demo
    (`preprocess/prerender_tts.py`) on the deployed volume, or copy `data/cache/tts` into it.
@@ -17,7 +17,7 @@ Status: the Dockerfile is written but **not built or run yet**. Treat the first 
 ## Before sharing a public URL
 
 - Set a monthly spend cap in the Boson workspace.
-- Keep `BOOKSON_ACCESS_TOKEN` set. Rate limits (token mint 10/min, TTS cache misses 120/min, clone 5/min) are per IP.
+- Keep `TALKBACK_ACCESS_TOKEN` set. Rate limits (token mint 10/min, TTS cache misses 120/min, clone 5/min) are per IP.
 - Demo mode (`?demo=1`) serves pre-rendered audio only and never calls Boson for speech.
 
 ## Image size

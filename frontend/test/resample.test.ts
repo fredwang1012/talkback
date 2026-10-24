@@ -1,4 +1,4 @@
-// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Bookson.
+// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Talkback.
 import { describe, expect, it } from "vitest";
 import { createResampler, floatTo16BitPCM } from "../src/audio/resample";
 

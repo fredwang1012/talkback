@@ -1,4 +1,4 @@
-// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Bookson.
+// Adapted from boson-ai/higgs-realtime-tutorial (Apache-2.0). Modified for Talkback.
 import captureWorkletSource from "./worklets/capture-processor.js?raw";
 import { addWorkletModule } from "./loadWorklet";
 import { createResampler, floatTo16BitPCM, type Resampler } from "./resample";
