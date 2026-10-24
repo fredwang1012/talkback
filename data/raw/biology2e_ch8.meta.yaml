@@ -1,0 +1,11 @@
+book_id: biology-2e-ch8
+title: "Photosynthesis (Biology 2e, Chapter 8)"
+author: "OpenStax"
+kind: textbook
+license: "CC BY 4.0"
+attribution: "Biology 2e by OpenStax (Rice University), licensed CC BY 4.0. https://openstax.org/details/books/biology-2e"
+# Paste the chapter text into data/raw/biology2e_ch8.txt, separating paragraphs with blank lines.
+# A line like "8.2 The Light-Dependent Reactions" starts a section.
+heading_regex: '^8\.\d+\s+\S'
+# Drop figure credits, link lists, exercises and "Learning Objectives" boilerplate blocks.
+skip_regex: '^(Figure \d|Link to Learning|Visual Connection|Art Connection|Everyday Connection|Review Questions|Critical Thinking Questions|Learning Objectives|By the end of this section)'
