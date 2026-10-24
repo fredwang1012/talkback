@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import {
   accountLabel, changeKind, deleteBook, fetchBooks, fetchHiddenBooks, hideBook, restoreBook, waitForDeletion, type HiddenBook, fetchMe, SIGN_OUT_URL, type Me, pollEnrichment, pollUpload, startEnrichment, uploadBook,
   type BookStatus, type BookSummary, type UploadKind,
   enrichDoneNote,
 } from "../api";
 import { clearAccessToken, getAccessToken } from "../accessToken";
-import { canDelete, canMove, groupShelves, hiddenLabel, kindLabel, moveLabel, moveTarget, removeLabel, seriesTitle } from "../shelves";
+import { canDelete, cardActions, groupShelves, hiddenLabel, kindLabel, moveTarget, seriesBlurb, seriesTitle, wrapIndex, type CardAction, type SeriesGroup } from "../shelves";
 import { fileProblem, isBusyError, jobLine, jobProgress, titleFromFile, uploadSettled, type UploadJob } from "../uploads";
 
 const pct = (p: number | undefined) => Math.round(Math.max(0, Math.min(1, p ?? 0)) * 100);
@@ -13,7 +13,7 @@ const pct = (p: number | undefined) => Math.round(Math.max(0, Math.min(1, p ?? 0
 /** What the form hands over: one entry per file (a single file keeps the title typed in the form). */
 export type UploadRequest = { files: { file: File; title: string }[]; author: string; kind: UploadKind };
 
-function AddBook({ onStart }: { onStart: (req: UploadRequest) => void }) {
+function AddBook({ onStart, onCancel }: { onStart: (req: UploadRequest) => void; onCancel: () => void }) {
   const [files, setFiles] = useState<File[]>([]);
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
@@ -51,7 +51,10 @@ function AddBook({ onStart }: { onStart: (req: UploadRequest) => void }) {
 
   return (
     <section className="add-book" aria-labelledby="add-book-h">
-      <h2 id="add-book-h">Add a book</h2>
+      <div className="add-book-head">
+        <h2 id="add-book-h">Add a book</h2>
+        <button type="button" className="job-dismiss" onClick={onCancel} aria-label="Close">×</button>
+      </div>
       <form onSubmit={submit}>
         <div className={`dropzone${dragging ? " dropzone-over" : ""}`}
           onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={drop}>
@@ -79,7 +82,10 @@ function AddBook({ onStart }: { onStart: (req: UploadRequest) => void }) {
             <option value="textbook">Textbook</option>
           </select>
         </div>
-        <button type="submit" className="add-book-go">{files.length > 1 ? `Add ${files.length} books` : "Add a book"}</button>
+        <div className="add-book-actions">
+          <button type="submit" className="add-book-go">{files.length > 1 ? `Add ${files.length} books` : "Add the book"}</button>
+          <button type="button" className="volume-move" onClick={onCancel}>Cancel</button>
+        </div>
       </form>
       {error && <p className="add-book-error" role="alert">{error}</p>}
       <p className="add-book-note">The file stays on this computer. With cloud search on, the book's text is sent to Google Cloud to make it searchable.</p>
@@ -122,48 +128,89 @@ type Removal = { book: BookSummary; state: "running" | "error"; message?: string
 
 type MoveNote = { id: string; text: string; progress?: number; confirm?: number };
 
+/** A card's "…" menu (menu button pattern): arrow keys move, Esc closes and returns focus, a click outside closes. */
+function CardMenu({ b, busy, onPick }: { b: BookSummary; busy: boolean; onPick: (a: CardAction) => void }) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const items = useRef<(HTMLButtonElement | null)[]>([]);
+  const actions = cardActions(b);
+  const menuId = `menu-${b.id}`;
+
+  useEffect(() => {
+    if (!open) return;
+    items.current[0]?.focus();
+    const outside = (e: MouseEvent) => { if (!wrap.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", outside);
+    return () => document.removeEventListener("mousedown", outside);
+  }, [open]);
+
+  function close() { setOpen(false); button.current?.focus(); }
+
+  function onKey(e: KeyboardEvent<HTMLDivElement>) {
+    const i = items.current.findIndex((el) => el === document.activeElement);
+    if (e.key === "Escape") { e.preventDefault(); close(); }
+    else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      items.current[wrapIndex(i, e.key === "ArrowDown" ? 1 : -1, actions.length)]?.focus();
+    } else if (e.key === "Home") { e.preventDefault(); items.current[0]?.focus(); }
+    else if (e.key === "End") { e.preventDefault(); items.current[actions.length - 1]?.focus(); }
+    else if (e.key === "Tab") setOpen(false);
+  }
+
+  return (
+    <div className="card-menu" ref={wrap} onKeyDown={onKey}>
+      <button type="button" ref={button} className="card-menu-btn" disabled={busy} aria-haspopup="menu" aria-expanded={open}
+        aria-controls={open ? menuId : undefined} aria-label={`Actions for ${b.title}`} onClick={() => setOpen((v) => !v)}>
+        <span aria-hidden="true">…</span>
+      </button>
+      {open && (
+        <div className="card-menu-list" role="menu" id={menuId} aria-label={`Actions for ${b.title}`}>
+          {actions.map((a, i) => (
+            <button key={a.id} type="button" role="menuitem" tabIndex={-1} ref={(el) => { items.current[i] = el; }}
+              className={a.id === "remove" ? "card-menu-danger" : undefined}
+              onClick={() => { setOpen(false); onPick(a); }}>
+              {a.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Volume({ b, busy, note, onMove, onConfirm, onDelete, onHide }: {
   b: BookSummary; busy: boolean; note?: MoveNote; onMove: (b: BookSummary) => void; onConfirm: (b: BookSummary) => void;
   onDelete: (b: BookSummary) => Promise<void>; onHide: (b: BookSummary) => void;
 }) {
   const [asking, setAsking] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const pick = (a: CardAction) => {
+    if (a.id === "move") onMove(b);
+    else if (canDelete(b)) setAsking(true);
+    else onHide(b);
+  };
   return (
     <div className="volume-wrap">
-      <a className="volume" href={`#/read/${b.id}`}>
-        {b.cover && <img className="cover" src={b.cover} alt="" />}
-        <div>
-          <h3>{b.title}</h3>
-          <p className="by">{b.author}</p>
-        </div>
-        <div>
-          <ul className="facts">
-            <li>{b.sections} {b.sections === 1 ? "chapter" : "chapters"}, {b.paragraphs} paragraphs</li>
-            {b.kind === "novel" && (
-              <li>{b.characters > 0 ? `${b.characters} characters you can talk to` : "Narrator only so far; the cast is not set yet"}</li>
-            )}
-          </ul>
-          <div className="open">Open the book</div>
-        </div>
-      </a>
-      {canMove(b) && (
-        <button type="button" className="volume-move" disabled={busy} onClick={() => onMove(b)}
-          aria-label={`${moveLabel(b)}: ${b.title}`}>
-          {moveLabel(b)}
-        </button>
-      )}
-      {!canDelete(b) && (
-        <button type="button" className="volume-move volume-delete" disabled={busy} onClick={() => onHide(b)}
-          aria-label={`${removeLabel(b)}: ${b.title}`} title="Remove it from your library. You can restore it below.">
-          {removeLabel(b)}
-        </button>
-      )}
-      {canDelete(b) && !asking && (
-        <button type="button" className="volume-move volume-delete" disabled={busy || deleting} onClick={() => setAsking(true)}
-          aria-label={`Delete: ${b.title}`}>
-          Delete
-        </button>
-      )}
+      <div className="volume-card">
+        <a className="volume" href={`#/read/${b.id}`}>
+          {b.cover && <img className="cover" src={b.cover} alt="" />}
+          <div>
+            <h3>{b.title}</h3>
+            <p className="by">{b.author}</p>
+          </div>
+          <div>
+            <ul className="facts">
+              <li>{b.sections} {b.sections === 1 ? "chapter" : "chapters"}, {b.paragraphs} paragraphs</li>
+              {b.kind === "novel" && (
+                <li>{b.characters > 0 ? `${b.characters} characters you can talk to` : "Narrator only so far; the cast is not set yet"}</li>
+              )}
+            </ul>
+            <div className="open">Open the book</div>
+          </div>
+        </a>
+        <CardMenu b={b} busy={busy || deleting} onPick={pick} />
+      </div>
       {asking && (
         <div className="volume-confirm" role="alertdialog" aria-label={`Delete ${b.title}?`}>
           <span>Delete “{b.title}” for good? The book, its cast settings and its search data are removed. This cannot be undone.</span>
@@ -191,6 +238,45 @@ function Volume({ b, busy, note, onMove, onConfirm, onDelete, onHide }: {
   );
 }
 
+/** Books of one series stacked into a single card; it opens in place to show every volume in series order. */
+function SeriesStack({ g, children }: { g: SeriesGroup; children: (b: BookSummary) => ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const cover = g.books.find((b) => b.cover)?.cover;
+  const bodyId = `series-${g.series}`;
+  return (
+    <div className={`series-stack${open ? " series-open" : ""}`} role="group" aria-label={seriesTitle(g.series)}>
+      <button type="button" className="series-card" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((v) => !v)}>
+        {cover && <img className="cover" src={cover} alt="" />}
+        <span className="series-card-text">
+          <span className="series-card-title">{seriesTitle(g.series)}</span>
+          <span className="series-card-blurb">{seriesBlurb(g)}</span>
+          <span className="open">{open ? "Close the series" : `Show all ${g.books.length} books`}</span>
+        </span>
+      </button>
+      {open && <div className="shelf series-books" id={bodyId}>{g.books.map(children)}</div>}
+    </div>
+  );
+}
+
+/** The upload form in a modal dialog: native <dialog> gives the inert background, focus containment and Esc; focus
+ * goes back to the "Add book" button on close. */
+function AddBookDialog({ open, onClose, onStart }: { open: boolean; onClose: () => void; onStart: (req: UploadRequest) => void }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    if (!open && d.open) d.close();
+  }, [open]);
+  return (
+    <dialog ref={ref} className="add-dialog" aria-labelledby="add-book-h" onClose={onClose}
+      onCancel={(e) => { e.preventDefault(); onClose(); }}
+      onMouseDown={(e) => { if (e.target === ref.current) onClose(); }}>
+      {open && <AddBook onStart={(req) => { onStart(req); onClose(); }} onCancel={onClose} />}
+    </dialog>
+  );
+}
+
 export default function Library() {
   const [books, setBooks] = useState<BookSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -201,6 +287,8 @@ export default function Library() {
   const [hidden, setHidden] = useState<HiddenBook[]>([]);
   const [showHidden, setShowHidden] = useState(false);
   const [jobs, setJobs] = useState<UploadJob[]>([]);
+  const [adding, setAdding] = useState(false);
+  const addBtn = useRef<HTMLButtonElement>(null);
   const [removals, setRemovals] = useState<Record<string, Removal>>({});
   const alive = useRef<AbortController>(new AbortController());
   const abortRef = useRef<AbortController | null>(null);
@@ -390,6 +478,9 @@ export default function Library() {
           <p className="account">{accountLabel(me)} · <a href={SIGN_OUT_URL}>Sign out</a></p>
         )}
         <p>Books read aloud in full cast. Stop anywhere, ask a question out loud, and the story picks up from the same sentence.</p>
+        <div className="library-actions">
+          <button type="button" ref={addBtn} className="add-book-go" aria-haspopup="dialog" onClick={() => setAdding(true)}>Add book</button>
+        </div>
       </header>
 
       {jobs.length > 0 && (
@@ -410,21 +501,22 @@ export default function Library() {
           <section className="shelf-section" aria-labelledby="shelf-novels">
             <h2 id="shelf-novels" className="shelf-heading">Novels</h2>
             {shelves.series.length === 0 && shelves.standalone.length === 0 && (
-              <p className="shelf-empty">No novels yet. Upload a PDF or text file.</p>
+              <p className="shelf-empty">No novels yet. Use Add book to upload a PDF or text file.</p>
             )}
-            {shelves.series.map((g) => (
-              <div key={g.series} className="series-group" role="group" aria-label={seriesTitle(g.series)}>
-                <h3 className="series-heading">{seriesTitle(g.series)}</h3>
-                <div className="shelf">{g.books.map(volume)}</div>
+            {(shelves.series.length > 0 || shelves.standalone.length > 0) && (
+              <div className="shelf">
+                {shelves.series.map((g) => (g.books.length > 1
+                  ? <SeriesStack key={g.series} g={g}>{volume}</SeriesStack>
+                  : volume(g.books[0])))}
+                {shelves.standalone.map(volume)}
               </div>
-            ))}
-            {shelves.standalone.length > 0 && <div className="shelf">{shelves.standalone.map(volume)}</div>}
+            )}
           </section>
 
           <section className="shelf-section" aria-labelledby="shelf-textbooks">
             <h2 id="shelf-textbooks" className="shelf-heading">Textbooks</h2>
             {shelves.textbooks.length === 0
-              ? <p className="shelf-empty">No textbooks yet. Upload a PDF or text file.</p>
+              ? <p className="shelf-empty">No textbooks yet. Use Add book to upload a PDF or text file.</p>
               : <div className="shelf">{shelves.textbooks.map(volume)}</div>}
           </section>
         </>
@@ -463,7 +555,7 @@ export default function Library() {
         </section>
       )}
 
-      <AddBook onStart={startUploads} />
+      <AddBookDialog open={adding} onClose={() => { setAdding(false); addBtn.current?.focus(); }} onStart={startUploads} />
 
       <p className="licence">
         The Harry Potter series is read from your own copy. It is never committed to git; an online copy of this app needs an access code to open the books.

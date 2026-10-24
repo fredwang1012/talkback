@@ -175,3 +175,32 @@ describe("deleting voices and faces", () => {
     expect(g.style.face).toBeNull(); expect(g.talk.face).toBeNull(); expect(g.style.voice).toBe("v2");
   });
 });
+
+import { cardActions, seriesBlurb, wrapIndex } from "../src/shelves";
+
+describe("library cards (#63)", () => {
+  it("lists each card's actions: move + delete for uploads, hide for built-in books", () => {
+    expect(cardActions(book("u-x-1", { kind: "textbook" })).map((a) => [a.id, a.label]))
+      .toEqual([["move", "Move to Novels"], ["remove", "Delete"]]);
+    expect(cardActions(book("u-x-1")).map((a) => a.label)).toEqual(["Move to Textbooks", "Delete"]);
+    expect(cardActions(book("hp1")).map((a) => [a.id, a.label])).toEqual([["remove", "Hide"]]);
+  });
+
+  it("describes a stacked series in one line", () => {
+    const g = groupShelves([
+      book("hp2", { title: "Chamber", author: "J. K. Rowling", series: "harry-potter", series_index: 2 }),
+      book("hp1", { title: "Stone", author: "J. K. Rowling", series: "harry-potter", series_index: 1 }),
+      book("hp7", { title: "Hallows", author: "J. K. Rowling", series: "harry-potter", series_index: 7 }),
+    ]).series[0];
+    expect(seriesBlurb(g)).toBe("3 books by J. K. Rowling, from Stone to Hallows");
+    const solo = groupShelves([book("a", { title: "Only", author: "", series: "s", series_index: 1 })]).series[0];
+    expect(seriesBlurb(solo)).toBe("1 book: Only");
+  });
+
+  it("wraps menu focus around both ends", () => {
+    expect(wrapIndex(0, 1, 3)).toBe(1);
+    expect(wrapIndex(2, 1, 3)).toBe(0);
+    expect(wrapIndex(0, -1, 3)).toBe(2);
+    expect(wrapIndex(-1, 1, 0)).toBe(-1);
+  });
+});
