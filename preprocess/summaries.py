@@ -93,7 +93,7 @@ def estimate(book: Book) -> float:
     points = summary_points(book)
     chars = sum(len(p.text) for p in book.paragraphs) + len(points) * (len(SYSTEM) + 6 * MAX_WORDS)
     pin, pout = llm.PRICES[MODEL]
-    return (chars / 4 * pin + 300 * len(points) * pout) / 1e6
+    return (chars / 3 * pin + 500 * len(points) * pout) / 1e6  # measured on book 1: ~3 chars/token, ~500 out/note
 
 
 async def main() -> None:
