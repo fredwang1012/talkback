@@ -779,3 +779,35 @@ def test_persona_prompts_ask_for_concrete_speech_habits_not_generic_adjectives()
         assert needle in PERSONA_SYSTEM
     assert "concrete speech habits" in SYSTEM and "3 sentences" not in SYSTEM
     assert "spoilers" not in PERSONA_SYSTEM.lower() and "Do not state plot facts" in PERSONA_SYSTEM
+
+
+# ---------- CPU work off the event loop (review of #133) ----------
+
+@pytest.fixture
+def cpu_calls(monkeypatch):
+    """Record the thread of every attribution pass and rechunk; minor voices on so both rechunk paths are exercised."""
+    import threading
+    from app.enrich import minor as minor_mod
+    monkeypatch.setattr(settings, "minor_voices", True)
+    calls: list[tuple[str, bool]] = []
+    real_rechunk, real_attr = pipeline.rechunk_book, pipeline.attribute_speakers
+
+    def rechunk(book):
+        calls.append(("rechunk", threading.current_thread() is threading.main_thread()))
+        real_rechunk(book)
+
+    def attribute(book):
+        calls.append(("attribute", threading.current_thread() is threading.main_thread()))
+        return real_attr(book)
+    monkeypatch.setattr(pipeline, "rechunk_book", rechunk)
+    monkeypatch.setattr(minor_mod, "rechunk_book", rechunk)
+    monkeypatch.setattr(pipeline, "attribute_speakers", attribute)
+    return calls
+
+
+def test_attribution_and_rechunk_run_off_the_event_loop_once(data_dir, cpu_calls):
+    make_book_on_disk(data_dir)   # "a stranger" is an uncast speaker: the minor-voice pass changes lines
+    ok, _, _ = run_pipeline("u-test-aaaaaaaa")
+    assert ok
+    assert ("attribute", False) in cpu_calls and all(not on_loop for _, on_loop in cpu_calls), cpu_calls
+    assert [n for n, _ in cpu_calls].count("rechunk") == 1, cpu_calls

@@ -224,7 +224,7 @@ async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save:
         cast_mod.fallback_cast(book)
         degraded = True
     if book.narrator and book.narrator.is_character:
-        rebuild_chunks(book)  # a first-person narrator reads in that character's voice
+        await asyncio.to_thread(rebuild_chunks, book)  # a first-person narrator reads in that character's voice
     await checkpoint()
     _Throttle(report, stage)(1.0)
 
@@ -232,8 +232,12 @@ async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save:
     report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
     counts = await seg_mod.segment_book(book, llm, LLMRefusal, seg_mod.FAST, _Throttle(report, stage))
     report(status="running", stage=stage, progress=round(_offset(stage) + WEIGHTS[stage], 3), message=ATTRIBUTE_MESSAGE)
-    counts.update(attribute_speakers(book))
-    rebuild_chunks(book)
+
+    def attribute_and_rechunk() -> dict[str, int]:  # seconds of CPU on a long novel: off the event loop
+        found = attribute_speakers(book)
+        rebuild_chunks(book)
+        return found
+    counts.update(await asyncio.to_thread(attribute_and_rechunk))
     await checkpoint()
     log.info("segmented book: %s", counts)
     if counts.get("fallback") and not (counts.get("llm") or counts.get("retry")):
@@ -252,10 +256,10 @@ async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save:
 
 
 def attribute_speakers(book: Book) -> dict[str, int]:
-    """Free, offline: untagged dialogue to the right cast member (#17 rules), and with MINOR_VOICES the uncast speakers'
+    """Segments only (the caller rebuilds the TTS chunks). Free, offline: untagged dialogue to the right cast member (#17 rules), and with MINOR_VOICES the uncast speakers'
     lines to the two stand-in voices. Same rules as preprocess/attribute.py and minor_voices.py for built-in books."""
     if settings.minor_voices:  # one attribution pass that also handles uncast speakers
-        decisions = minor_mod.assign_minor_voices(book)
+        decisions = minor_mod.assign_minor_voices(book, rechunk=False)  # the caller rechunks the whole book once
         return {"minor": len(decisions)}
     decisions = attribute_mod.attribute_book(book)
     return {"attributed": sum(1 for d in decisions if d.speaker)}

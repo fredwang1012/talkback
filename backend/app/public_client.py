@@ -271,7 +271,7 @@ async def enrich_book(book_id: str, report: Callable[..., None], *, indexer=None
         try:
             report(status="running", stage="cast", progress=0.0, message=pipeline.MESSAGES["cast"])
             result = await _remote_enrich(book, report, client, sleep)
-            apply_result(book, result)
+            await asyncio.to_thread(apply_result, book, result)  # a whole-book rechunk: off the event loop
         except PublicFailure as e:
             log.warning("public enrichment of %s failed: %s %s", book_id, e.kind, e)
             note = LIMIT_NOTE if e.kind == "limit" else UNAVAILABLE_NOTE

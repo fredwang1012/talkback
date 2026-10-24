@@ -129,14 +129,16 @@ def ensure_stand_ins(book: Book, used: set[str]) -> None:
                                              persona="A minor speaker outside the cast.", main=False))
 
 
-def assign_minor_voices(book: Book, apply: bool = True) -> list[at.Decision]:
+def assign_minor_voices(book: Book, apply: bool = True, rechunk: bool = True) -> list[at.Decision]:
     """Give every uncast speaker's line a generic voice by inferred gender; returns the lines that were (or would be)
-    reassigned. With apply=True the book's segments, stand-in characters and TTS chunks are updated in place."""
+    reassigned. With apply=True the book's segments, stand-in characters and (unless rechunk=False, for a caller
+    that rechunks anyway) TTS chunks are updated in place."""
     known = _evidence(book)
     stand_in = {g: v.id for g, v in MINOR_VOICES.items()}
     ds = at.attribute_book(book, apply=apply, uncast_speaker=lambda b, q, a: stand_in[infer_gender(b, a, known)])
     lines = [d for d in ds if d.rule == "minor"]
     if apply and lines:
         ensure_stand_ins(book, {d.speaker for d in lines})
-        rechunk_book(book)  # stamps Book.chunk_rules
+        if rechunk:
+            rechunk_book(book)  # stamps Book.chunk_rules
     return lines
