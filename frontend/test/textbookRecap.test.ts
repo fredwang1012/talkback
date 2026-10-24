@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { enrichDoneNote, fetchScopedRecap } from "../src/api";
 import { recapChoices } from "../src/reader/RecapMenu";
 import { recapHeading } from "../src/reader/RecapPanel";
-import { parseIntent, runTool, type ToolActions, type ToolContext } from "../src/talk/tools";
+import { parseIntent, runTool, TEXTBOOK_TOOL_DEFS, type ToolActions, type ToolContext } from "../src/talk/tools";
 import { jobLine } from "../src/uploads";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -55,6 +55,16 @@ describe("textbook recap", () => {
     expect(log).toEqual(["recap:chapter:c4", "recap:chapter:c4-2"]);
     expect(runTool("open_recap", { chapter: "99" }, ctx(), a).ok).toBe(false);
     expect(runTool("open_recap", { scope: "chapter" }, ctx(), a).chip).toBe("Recap: this chapter");
+  });
+
+  it("textbook open_recap resolves sections like jump_to (spoken numbers, any depth) and the Realtime def takes a chapter", () => {
+    const def = TEXTBOOK_TOOL_DEFS.find((t) => t.name === "open_recap")!;
+    expect(Object.keys(def.parameters.properties)).toContain("chapter");
+    const { a, log } = acts();
+    expect(runTool("open_recap", { chapter: "four point two" }, ctx({ kind: "textbook" }), a).chip).toBe("Recap: 4.2 Blocked sort-based indexing");
+    expect(runTool("open_recap", { chapter: "section 4.2" }, ctx({ kind: "textbook" }), a).chip).toBe("Recap: 4.2 Blocked sort-based indexing");
+    expect(log).toEqual(["recap:chapter:c4-2", "recap:chapter:c4-2"]);
+    expect(runTool("open_recap", { chapter: "4.7" }, ctx({ kind: "textbook" }), a).ok).toBe(false);
   });
 
   it("a novel's chapter recap past the reader is refused while spoilers are off", () => {

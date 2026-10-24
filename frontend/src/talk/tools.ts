@@ -130,8 +130,8 @@ export const TEXTBOOK_TOOL_DEFS = [
   },
   {
     type: "function", name: "open_recap",
-    description: "Have the tutor summarize the last chapter or the book so far.",
-    parameters: { type: "object", properties: { scope: { type: "string", enum: ["chapter", "book"] } } },
+    description: "Have the tutor summarize this chapter or the book so far, or one chapter or section the reader names (chapter, e.g. '4' or '4.2').",
+    parameters: { type: "object", properties: { scope: { type: "string", enum: ["chapter", "book"] }, chapter: { type: "string", description: "a chapter or section to summarize, e.g. '4', 'four', '4.2' or words from its title" } } },
   },
   { type: "function", name: "bookmark", description: "Bookmark the reader's current place.", parameters: { type: "object", properties: {} } },
 ] as const;
@@ -534,7 +534,13 @@ export function runTool(name: string, args: Record<string, unknown>, ctx: ToolCo
     case "open_recap": {
       const asked = typeof args.chapter === "string" ? args.chapter : typeof args.chapter === "number" ? String(args.chapter) : "";
       if (asked.trim()) {
-        const s = findChapter(ctx.sections, asked);
+        const book = ctx.kind === "textbook" || ctx.textbook;
+        let s: ToolContext["sections"][number] | null;
+        if (book) { // sections at any depth, spoken numbers, titles, topics: the same places jump_to reaches
+          const p = resolveTextbookPlace(ctx, asked);
+          s = p ? sectionAt(ctx.sections, p.para) : null;
+          if (!s) return refuse(`No chapter or section matches "${asked}". Say so briefly.`);
+        } else s = findChapter(ctx.sections, asked);
         if (!s) return refuse(`No chapter matches "${asked}". Chapters are numbered 1 to ${topSections(ctx.sections).length}.`);
         if (!ctx.textbook && !ctx.spoilers && s.start_para > ctx.readerPara) return refuse(`${s.title} is past where the reader has read, and spoilers are off. Say so briefly.`);
         act.openRecap("chapter", { id: s.id, title: s.title });
