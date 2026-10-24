@@ -793,9 +793,9 @@ def cpu_calls(monkeypatch):
     calls: list[tuple[str, bool]] = []
     real_rechunk, real_attr = pipeline.rechunk_book, pipeline.attribute_speakers
 
-    def rechunk(book):
+    def rechunk(book, **kw):
         calls.append(("rechunk", threading.current_thread() is threading.main_thread()))
-        real_rechunk(book)
+        real_rechunk(book, **kw)
 
     def attribute(book):
         calls.append(("attribute", threading.current_thread() is threading.main_thread()))

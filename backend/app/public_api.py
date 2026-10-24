@@ -388,7 +388,7 @@ async def _run_job(job: Job, book: Book, llm=None) -> None:
         raise
     except Exception as e:  # never leak details (they may quote the book)
         job.status, job.code, job.message = "error", "failed", "Processing failed."
-        log.warning("enrich job %s failed in %s: %s", job.id, state["stage"], type(e).__name__)
+        log.warning("enrich job %s failed in %s: %s at %s", job.id, state["stage"], type(e).__name__, pipeline.where(e))
     finally:
         job.finished = time.monotonic()
         job.usd = llm.usd

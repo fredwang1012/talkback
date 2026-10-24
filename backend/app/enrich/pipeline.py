@@ -12,6 +12,7 @@ import asyncio
 import logging
 import math
 import time
+import traceback
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -121,7 +122,7 @@ def _book_path(book_id: str) -> Path:
 
 
 def rebuild_chunks(book: Book) -> None:
-    rechunk_book(book)  # stamps Book.chunk_rules
+    rechunk_book(book, strict=False)  # stamps Book.chunk_rules; a paragraph whose segments do not fit goes to the narrator
 
 
 def _meter(book_id: str, llm: LLM) -> None:
@@ -202,7 +203,7 @@ async def enrich_textbook(book_id: str, report: Report, *, llm: LLM | None = Non
         capped = True
         msg = TEXTBOOK_BUDGET_USED if "budget" in str(e) else TEXTBOOK_TOO_LONG
     except Exception as e:
-        log.warning("textbook notes for %s failed: %s", book_id, type(e).__name__)
+        log.warning("textbook notes for %s failed: %s at %s", book_id, type(e).__name__, where(e))
         msg = TEXTBOOK_FAILED
     finally:
         await asyncio.shield(asyncio.to_thread(spend.flush))
@@ -276,6 +277,13 @@ async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save:
     return degraded
 
 
+def where(e: BaseException, depth: int = 6) -> str:
+    """The innermost `depth` frames of e's traceback as 'file.py:line in func' (never the message: it may quote book
+    text or a key)."""
+    frames = traceback.extract_tb(e.__traceback__)[-depth:]
+    return " <- ".join(f"{Path(f.filename).name}:{f.lineno} in {f.name}" for f in reversed(frames)) or "?"
+
+
 def attribute_speakers(book: Book) -> dict[str, int]:
     """Segments only (the caller rebuilds the TTS chunks). Free, offline: untagged dialogue to the right cast member (#17 rules), and with MINOR_VOICES the uncast speakers'
     lines to the two stand-in voices. Same rules as preprocess/attribute.py and minor_voices.py for built-in books."""
@@ -306,6 +314,6 @@ async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Inde
         log.warning("enrichment of %s stopped in %s: %s", book_id, state["stage"], e)
         report(status="refused", stage=state["stage"], message=BUDGET_USED if "budget" in str(e) else TOO_LONG)  # final: no retry
     except Exception as e:
-        log.warning("enrichment of %s failed in %s: %s", book_id, state["stage"], type(e).__name__)
+        log.warning("enrichment of %s failed in %s: %s at %s", book_id, state["stage"], type(e).__name__, where(e))
         report(status="error", stage=state["stage"], message=FAILED)
     return False
