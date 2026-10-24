@@ -41,6 +41,14 @@ Five fully processed public-domain books ship in the repo, so you can try everyt
 
 The full list (191 features, with status and known gaps) is in [docs/FEATURES.md](docs/FEATURES.md).
 
+## Try it online
+
+A hosted copy runs on Google Cloud Run: **https://talkback-272822965835.us-central1.run.app**
+
+It is the same app with everything configured (Gemini answers with web search, Vector Search, uploads processed in the
+cloud). Access is through Google sign-in; it is opened for the judging window. If it asks for access, use the local quick
+start below.
+
 ## Quick start (judges)
 
 All you need is a Boson API key.
