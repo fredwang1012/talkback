@@ -930,3 +930,18 @@ def test_each_model_has_its_own_pacer():
     assert pacer.for_model(settings.gemini_model) is pacer.shared and pacer.for_model("") is pacer.shared
     lite = pacer.for_model("gemini-2.5-flash-lite")
     assert lite is not pacer.shared and pacer.for_model("gemini-2.5-flash-lite") is lite
+
+
+def test_invalid_json_is_retried_once_on_the_main_model():
+    client, seen = _fake_gemini(lambda m, n: ("STOP", '{"summary": "ok"') if m == "lite" else ("STOP", '{"summary":"ok"}'))
+    llm = LLM("gemini", {"gemini": GeminiProvider(client, model="lite", fallback="flash")})
+    out = asyncio.run(llm.complete_json("s", "u", sum_mod.NoteResult, "fast"))
+    assert out.summary == "ok" and seen == ["lite", "flash"]
+
+
+def test_invalid_json_twice_still_fails():
+    client, seen = _fake_gemini(lambda m, n: ("STOP", "{not json"))
+    llm = LLM("gemini", {"gemini": GeminiProvider(client, model="lite", fallback="flash")})
+    with pytest.raises(RuntimeError, match="invalid JSON twice"):
+        asyncio.run(llm.complete_json("s", "u", sum_mod.NoteResult, "fast"))
+    assert seen == ["lite", "flash"]
