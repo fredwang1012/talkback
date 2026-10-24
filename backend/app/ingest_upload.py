@@ -26,7 +26,7 @@ from . import retrieval
 from .config import settings
 from .parsing import CODE_MARK, EQ_MARK, EQ_SEP, HEADING_MARK, inline_marker, parse, strip_inline
 from .schema import Book, Narrator, Paragraph, Section
-from .ttschunks import rechunk_book, sentence_spans, split_long
+from .ttschunks import chunk_paragraph, rechunk_book, sentence_spans, split_long
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MULTIPART_SLACK = 1024 * 1024  # form-encoding overhead allowed on top of the file cap when checking Content-Length
