@@ -42,8 +42,9 @@ LLMRefusal = app_llm.LLMRefusal
 
 
 def provider() -> str:
-    """LLM_PROVIDER=claude|gemini (default claude), read at call time. gemini = Gemini 2.5 Flash on Vertex."""
-    name = os.environ.get("LLM_PROVIDER", "claude").strip().lower() or "claude"
+    """LLM_PROVIDER=gemini|claude (default gemini: no Claude key is configured), read at call time. gemini = the
+    enrichment Gemini model on Vertex (ENRICH_GEMINI_MODEL, else GEMINI_MODEL)."""
+    name = os.environ.get("LLM_PROVIDER", "gemini").strip().lower() or "gemini"
     if name not in ("claude", "gemini"):
         sys.exit(f"LLM_PROVIDER must be claude or gemini, not {name!r}")
     return name
@@ -77,7 +78,7 @@ def client() -> AsyncAnthropic:
 
 def estimate_cost(model: str, input_chars: int, expected_output_tokens: int, calls: int = 1) -> float:
     if provider() == "gemini":
-        pin, pout = app_llm.PRICES["gemini"]["fast" if "haiku" in model else "smart"]
+        pin, pout = app_llm.gemini_prices(app_llm.enrich_gemini_model())   # both tiers run on the same Gemini model
     else:
         pin, pout = PRICES[model]
     return calls * (input_chars / 4 * pin + expected_output_tokens * pout) / 1e6

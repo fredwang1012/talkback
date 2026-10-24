@@ -22,9 +22,10 @@ export const HANDS_FREE: VoiceGateOptions = { threshold: 0.04, minSpeechMs: 150,
 /**
  * While the character is speaking through the speakers (#103): what the browser's echo canceller leaves of their
  * voice is quiet (well under 0.05 on a laptop) but not nothing, and a cough or a click must not cut them off. A
- * barge-in then needs speech clearly louder than that residue (at least this threshold, and `ECHO_RATIO` times the
- * echo level measured during this playback, see `createEchoFloor`), sustained for a quarter of a second: the
- * character stops within about 300 ms of the reader starting to talk.
+ * barge-in then needs speech at least this threshold and at least `ECHO_RATIO` times the echo level measured during
+ * this playback (see `createEchoFloor`), sustained for a quarter of a second: the character stops within about 300 ms
+ * of the reader starting to talk. Since #159 (0.04, 1x echo) the length, not the loudness, is what keeps the echo out;
+ * an echo over 0.04 sustained for 250 ms (loud speakers) can still barge in.
  */
 // export const HANDS_FREE_OVER_SPEECH: VoiceGateOptions = { threshold: 0.10, minSpeechMs: 250, silenceMs: 700 };
 export const HANDS_FREE_OVER_SPEECH: VoiceGateOptions = { threshold: 0.04, minSpeechMs: 250, silenceMs: 700 };

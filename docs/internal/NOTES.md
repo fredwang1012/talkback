@@ -1078,7 +1078,8 @@ Fixes:
 - Mic hold (TalkClient.setMicHold, driven by TalkController.updateMicHold): while the character speaks and
   MIC_HOLD_TAIL_MS (600) after, no mic audio goes to the server; the held audio is dropped, except on a barge-in.
 - Barge-in in server mode comes from the local strict gate (HANDS_FREE_OVER_SPEECH, now 250 ms) with a threshold
-  relative to the echo: max(0.10, 2.5 x median mic level over the last 2 s of playback; createEchoFloor; the first
+  relative to the echo: max(0.10, 2.5 x median mic level over the last 2 s of playback (since #159: max(0.04, 1 x);
+  see "Barge-in thresholds" below); createEchoFloor; the first
   300 ms always count, later only readings under the bar, so the reader's speech never raises it). On it: cut now
   (flush + cancel/truncate), release the hold with ~300 ms pre-roll, the server's speech_started continues the turn; if
   the server never reports speech within BARGE_CONFIRM_MS (2.5 s) the turn ends quietly. The local gate mode uses the
@@ -1147,7 +1148,8 @@ Fixes:
   sentences, so the rule now caps answers at four sentences. A spoilers-on Alice question ("who inspired you, when was
   it published") had the tool but the model answered from memory both times (0 sources, no "outside the book" phrase):
   Gemini decides when to search; well-known facts often skip it. Not re-checked after the four-sentence rule (call
-  budget). Also seen: the sentence splitter breaks after "Mr." (pre-existing, `_split`).
+  budget). Also seen: the sentence splitter breaks after "Mr." (pre-existing, `gcp/llm._split`; fixed 2026-10-24, see
+  "Sentence ends after honorifics" below).
 
 ## Textbook figures in the reader (#40, 2026-10-23)
 - The IR textbook's figures (01bool, Figures 1.1-1.7) contain no vector drawings and no real pictures: they are text (matrix cells, posting lists, pseudocode) plus rules and boxes stored as thin embedded images. So `get_images` / `get_drawings` alone would find none of them. Figures are found from their caption instead (`_take_figures`): a "Figure N" line set small or bold, and everything between it and the nearest prose above it (else below it). The crop (page.get_pixmap(clip=...), 150 dpi, longest side <= 2000 px) is saved to `data/books/<id>/figures/fig-N.png`, and the figure becomes a paragraph of kind "figure" (text = caption, read aloud by default) placed between paragraphs. The text inside the figure no longer leaks into the body text.
@@ -1183,6 +1185,7 @@ was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-
 - Not changed, for a person to check: the "interrupted" label on an answer whose full text is on screen but whose
   voice is still queued (text streams ahead of TTS; speaking then is a real barge-in), and the barge-in bar relative to
   the speaker echo (max(0.10, 2.5 x echo median) can be out of reach of a normal voice on a laptop mic with speakers).
+  Addressed by #159 (max(0.04, 1 x echo median)), see "Barge-in thresholds" below.
 
 ## Upload enrichment resilience to transient failures (fix/enrich-resilience, 2026-10-24)
 - Seen on Windows with Gemini on Vertex: `enrichment ... failed in summaries: PermissionError at books.py _replace`
@@ -1228,3 +1231,70 @@ was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-
   minute` every ~30 s while throttled; retry lines now name the status (`ClientError 429`), never the message.
 - face_detect builds its client with settings.gemini_region() like the other Gemini clients (embeddings stay regional).
 - Embeddings (gcp/embed.py, sync worker threads) are not under the pacer: a different quota, and no 429s seen there.
+
+## Local meaning-based search for uploads (chore/cleanup-findings, 2026-10-24)
+- RETRIEVAL_BACKEND=local (laptops, GitHub clones): an upload is published with BM25-only chunks as before, then
+  `main._embed_locally` computes multilingual-e5 passage embeddings for its chunks (`app/local_index.py`) and saves
+  `index/embeddings.npy`, the format `preprocess/index.py` writes for the shipped books; `_index_for` is cleared, so the
+  upload is scored hybrid (0.6 cosine + 0.4 BM25) like a shipped book. Same spoiler filter (para_end <= reader_para).
+- One book at a time (a one-slot semaphore), batches of 32 encoded in a worker thread: the event loop never blocks and
+  CPU/RAM stay bounded. Progress is the upload card's usual "Indexing" line (status.json `index`) plus log lines
+  `embedding <id> locally: N chunks` / `embedded <id> locally`. Enrichment does not wait for it.
+- No sentence-transformers (the optional `embed` extra): skipped with one log line, no status, BM25 keeps serving. Model
+  fails to load: index state "error" ("using basic search"). LOCAL_EMBED_UPLOADS=false turns it off.
+- Deletes are not blocked by it: the job stops between batches once the book is deleted and never writes into a removed
+  folder. A kind change re-chunks the book: the running job's vectors no longer match chunks.json and are dropped, and
+  the new chunks are embedded right after. `save_index(..., None)` now removes a stale embeddings.npy, and
+  `Index.load` ignores vectors whose count differs from the chunks. Vertex mode is unchanged.
+- Not measured: e5-small speed on a laptop CPU for a 1300-chunk textbook (tests use a fake embedder).
+
+## Sentence ends after honorifics and abbreviations (chore/cleanup-findings, 2026-10-24)
+- The "Mr." quirk was in the streamed Gemini answer splitter (`gcp/llm._split`), not in the TTS chunker: every streamed
+  "Mr." became its own spoken sentence. `ttschunks.ends_with_abbreviation` (ABBREVIATIONS: Mr, Mrs, Ms, Dr, St, Prof,
+  Sr, Jr, vs, etc, e.g, i.e, No, Messrs, Capt, Col, Gen, Lt) is now shared by `sentence_spans` (TTS chunks, uploads),
+  `gcp/llm._split` (also at the end of the stream buffer: "I met Dr." waits for the name) and `recap.split_sentences`.
+- `sentence_spans` already kept "Mr." whole; new is "e.g." / "i.e." before a capital ("e.g. Wendy"). Re-chunking the
+  five committed public-domain books with the new rules changes 0 of 11,243 chunks, so CHUNK_RULES_VERSION stays 2
+  (a bump would rewrite every committed book.json for nothing). Trade-off: "No." and "etc." never end a sentence, so
+  "No. I won't." is one TTS chunk / one streamed sentence (harmless: just grouped).
+
+## 280-char limit measured on the spoken text (chore/cleanup-findings, 2026-10-24)
+- `_groups` checked MAX_CHARS on the raw sentence, but Boson reads `normalize_for_tts` output: "777,777" is 7 chars raw
+  and 41 spoken, so number-heavy sentences went over 280. `ttschunks.spoken_len` (inline math read out, then numbers,
+  years and simple math spelled out) now bounds every piece and every packed group; `_fit_pieces` splits at clause,
+  else word boundaries, with the raw window shrunk by the growth ratio, recursively (floor 12 raw chars). Offsets stay
+  raw paragraph offsets, so highlighting is unchanged; tags are still not counted.
+- Committed books: 2 of 3,037 Peter Pan chunks change (one paragraph had a 282-char chunk), 0 in the other four, so
+  CHUNK_RULES_VERSION is now 3 and the server re-chunks each book once (no API call; the changed chunks are re-voiced
+  when played). Rebuilt book.json files are not committed. Re-chunking all five books still takes 1.6 s
+  (`textnorm.may_change`: plain prose with no digit or math character skips normalisation).
+- Seen, not changed: "6:30" is spoken "six:thirty" in that Peter Pan paragraph (times are not normalized).
+
+## Prices follow the model (chore/cleanup-findings, 2026-10-24)
+- Vertex AI standard (online) text prices per 1M tokens, read from cloud.google.com/vertex-ai/generative-ai/pricing on
+  2026-10-24 (same below and above 200K input tokens): gemini-2.5-flash $0.30 in / $2.50 out; gemini-2.5-flash-lite
+  $0.10 in / $0.40 out (Flex/Batch and Priority have other rates; we use standard). Cached input $0.03 / $0.01 (unused).
+- `enrich.llm.gemini_prices(model)` (longest prefix; unknown models priced as 2.5 Flash) replaces the per-tier Gemini
+  row that priced Flash-Lite at full Flash rates. Estimates default to the enrichment model (ENRICH_GEMINI_MODEL, else
+  GEMINI_MODEL); the spend ledger is charged at `Raw.model`, the model that answered. Face detection and public answers
+  are priced at GEMINI_MODEL (what they call). With ENRICH_GEMINI_MODEL=gemini-2.5-flash-lite an estimate is 1/6 to 1/3 of
+  before (input 1/3, output 4/25 of the Flash rate), so caps refuse fewer books.
+- Higgs Avatar (docs.boson.ai/pricing, 2026-10-24): 640x640 $0.09/min, 640x480 and 480x640 $0.07/min. We stream
+  640x640, so $0.09 everywhere: frontend spend.ts (already), scripts/usage.py (was $0.08) and prerender_avatar.py's
+  docstring (its constant was already 0.09). Boson TTS: $0.015 per 1K characters (unchanged).
+
+## Barge-in thresholds now shipped (#159, 2026-10-24)
+- `frontend/src/talk/handsFree.ts`: `HANDS_FREE_OVER_SPEECH` = 0.04 RMS for 250 ms (700 ms silence ends the turn) and
+  `ECHO_RATIO` = 1, so a barge-in over the character needs max(0.04, 1 x the echo median of the last 2 s of playback).
+  Was 0.10 and 2.5 x (the sections above that quote those values describe the earlier state). The idle profile
+  `HANDS_FREE` is unchanged (0.04 for 150 ms).
+- Trade-off, covered by frontend/test/handsFreeEcho.test.ts: a quiet echo never interrupts, but an echo over 0.04
+  sustained for 250 ms (loud laptop speakers, no headphones) can barge in. Not re-checked live with speakers here.
+
+## Local embeddings: startup backfill for built-in books and older uploads (chore/cleanup-findings, 2026-10-24)
+- In local mode `_backfill_local_embeddings` embeds every published
+  book whose index has no matching embeddings.npy, uploads made before this change first, then the five built-in
+  books (no embeddings ship in the repo), awaited one at a time so a new upload takes the next slot. Built-in books get
+  no status.json (only log lines), so a clone's tree stays clean; `data/books/*/index/embeddings.npy` (+ `.tmp`) is
+  now gitignored (chunks.json stays committed). `_embedder()` loads the model once under a lock (warm-up and the job
+  may ask together). Never with the real model in tests; e5-small on ~11k built-in chunks is unmeasured here.

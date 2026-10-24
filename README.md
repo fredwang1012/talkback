@@ -104,7 +104,7 @@ Without a Boson key the reader still runs silently at an estimated reading pace.
 | The five sample books: read-aloud, full cast, expressive delivery, highlighting | Yes (already fully processed) |
 | Talking to characters by voice (push-to-talk, hands-free, barge-in, tools) | Yes |
 | Faces, lip-sync, voice cloning | Yes |
-| Spoiler-safe answers | Yes. Local search is keyword search (BM25); answers are written and spoken by Boson Realtime |
+| Spoiler-safe answers | Yes. Local search is keyword search (BM25), or hybrid BM25 + multilingual-e5 with `uv sync --extra embed`; answers are written and spoken by Boson Realtime |
 | Typed questions answered by Gemini, web search | Only through the public processing service (below), when it is open |
 | Uploads | Readable with the narrator at once. Full processing (characters, dialogue voices, recap notes, equation readings) runs on the public processing service when `PUBLIC_API_URL` is set and the service is open; otherwise simpler local fallbacks (a name-based cast, narrator reading) with a note saying why |
 
@@ -163,8 +163,11 @@ About 1,080 backend tests and 675 frontend tests. No test calls a paid API: ever
 
 ## Limitations
 
-- **Local search is keyword-only.** Without Google Cloud, retrieval is BM25: uploads get no embeddings yet (being
-  added). Answers stay spoiler-safe but can miss a passage that is phrased very differently from the question.
+- **Local search needs the optional `embed` extra for meaning-based search.** Without Google Cloud, retrieval is BM25
+  keyword search. Install with `uv sync --extra embed` (adds sentence-transformers / PyTorch, a large download) and the
+  server builds multilingual-e5 embeddings for every book in the background on first start (about 8–9 minutes for the
+  sample books on a laptop), then searches hybrid BM25 + e5. Without it, answers stay spoiler-safe but can miss a
+  passage phrased very differently from the question.
 - **Reading position is per browser** (localStorage), not synced to an account.
 - **Uploads must be in English** (#140). Talking to a character in another language works; a non-English book does not.
 - **Moving a paper to Textbooks** restores its equations but not its figures (#148). Upload it as a textbook instead.

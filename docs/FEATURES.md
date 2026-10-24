@@ -302,7 +302,7 @@ Same image with `PUBLIC_API=true` (entry `app.asgi:app`), Cloud Run service `tal
 | #148 | Moving a paper to Textbooks restores equations but not figures (`rebuild_textbook_text` omits `figures_dir`) | open, bug |
 | (#44) | Server-side reading-position sync. The issue is closed, but the code keeps the position only in the browser (localStorage), so it does not follow you to another browser or device | gap |
 | — | Demo mode is hard-wired to HP1, which clones do not have | gap |
-| — | Local runs (no Google Cloud) search every book by keywords (BM25): no embeddings ship and uploads get none at runtime yet. Local embeddings for uploads are being added | partial, in progress |
+| — | Local runs (no Google Cloud) search by keywords (BM25) unless the optional `embed` extra is installed; then e5 embeddings are built locally in the background for every book and search is hybrid | works (optional install) |
 | #159 | With laptop speakers instead of headphones, the lower hands-free barge-in thresholds (#162) can let the character's own voice interrupt it. Headphones are advised | partial |
 | — | Gemini on Vertex uses dynamic shared quota, so heavy parallel processing can be throttled (429s). The pacer (P18) slows down and retries, so books finish later but do not fail | limitation |
 | — | Tables in textbooks are dropped. Formulas split over several lines are only partly marked | gap / partial |

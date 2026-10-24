@@ -1,9 +1,9 @@
-"""One small LLM interface for the upload pipeline and the preprocess scripts: Claude or Gemini 2.5 Flash.
+"""One small LLM interface for the upload pipeline and the preprocess scripts: Gemini on Vertex (the default) or Claude.
 
 `LLM.complete_json(system, user, schema_model, tier)` returns a validated pydantic object. Tiers: "fast" (Haiku /
-Gemini Flash) and "smart" (Sonnet / Gemini Flash). With Claude, an out-of-credit error (insufficient_quota, billing,
+the Gemini enrichment model) and "smart" (Sonnet / the same Gemini model). With Claude, an out-of-credit error (insufficient_quota, billing,
 402, "credit balance is too low"), auth errors (401/403) and persistent overload/5xx switch the rest of the job to
-Gemini; Claude being unavailable never breaks an upload. Token usage is priced per provider and reported through `on_usage`.
+Gemini; Claude being unavailable never breaks an upload. Token usage is priced per model and reported through `on_usage`.
 """
 import asyncio
 import logging
@@ -19,12 +19,18 @@ log = logging.getLogger("talkback.enrich")
 T = TypeVar("T", bound=BaseModel)
 
 # $ per 1M tokens (input, output). Claude prices as in preprocess/llm.py (prompts under 100K tokens).
-# Gemini 2.5 Flash: $0.30 input / $2.50 output, the figures used by scripts/usage.py (estimates, not a billing source).
 CLAUDE_MODELS = {"fast": "claude-haiku-5-5", "smart": "claude-sonnet-5-5"}
 PRICES: dict[str, dict[str, tuple[float, float]]] = {
     "claude": {"fast": (0.10, 0.50), "smart": (2.00, 10.00)},
-    "gemini": {"fast": (0.30, 2.50), "smart": (0.30, 2.50)},
 }
+# Gemini on Vertex AI, standard (online) text prices per 1M tokens, the same below and above 200K input tokens
+# (cloud.google.com/vertex-ai/generative-ai/pricing, read 2026-10-24). Priced by the model that ran, whatever the tier.
+# Longest prefix wins ("gemini-2.5-flash-lite-001" is Flash-Lite); an unknown model is priced as 2.5 Flash.
+GEMINI_PRICES: dict[str, tuple[float, float]] = {
+    "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+}
+GEMINI_DEFAULT_PRICE = GEMINI_PRICES["gemini-2.5-flash"]
 CHARS_PER_TOKEN = 3.5  # prose, measured roughly on the HP books (~3 to 4)
 
 
@@ -64,14 +70,30 @@ class Provider(Protocol):
     async def complete(self, system: str, user: str, schema: dict, tier: str, max_tokens: int, effort: str) -> Raw: ...
 
 
-def price_usd(provider: str, tier: str, in_tokens: int, out_tokens: int) -> float:
-    pin, pout = PRICES[provider][tier]
+def enrich_gemini_model() -> str:
+    """The Gemini model book processing runs on (GeminiProvider's default)."""
+    return settings.enrich_gemini_model or settings.gemini_model
+
+
+def gemini_prices(model: str) -> tuple[float, float]:
+    """($ input, $ output) per 1M tokens for a Gemini model id (a "publishers/google/models/" path is fine)."""
+    name = model.rsplit("/", 1)[-1].lower()
+    best = max((k for k in GEMINI_PRICES if name.startswith(k)), key=len, default=None)
+    return GEMINI_PRICES[best] if best else GEMINI_DEFAULT_PRICE
+
+
+def price_usd(provider: str, tier: str, in_tokens: int, out_tokens: int, *, model: str | None = None) -> float:
+    """Cost of a call. Gemini is priced by `model` (default: the enrichment model), Claude by tier."""
+    if provider == "gemini":
+        pin, pout = gemini_prices(model or enrich_gemini_model())
+    else:
+        pin, pout = PRICES[provider][tier]
     return (in_tokens * pin + out_tokens * pout) / 1e6
 
 
-def estimate_usd(provider: str, tier: str, in_chars: float, out_tokens: float) -> float:
-    """Cost of in_chars of input and out_tokens of output in total."""
-    return price_usd(provider, tier, int(in_chars / CHARS_PER_TOKEN), int(out_tokens))
+def estimate_usd(provider: str, tier: str, in_chars: float, out_tokens: float, *, model: str | None = None) -> float:
+    """Cost of in_chars of input and out_tokens of output in total (Gemini: at `model`, default the enrichment model)."""
+    return price_usd(provider, tier, int(in_chars / CHARS_PER_TOKEN), int(out_tokens), model=model)
 
 
 def unavailable_reason(exc: BaseException) -> str | None:
@@ -154,7 +176,8 @@ class ClaudeProvider:
 
 
 class GeminiProvider:
-    """Gemini 2.5 Flash on Vertex AI (project and region from settings), JSON output."""
+    """Gemini on Vertex AI (the enrichment model, ENRICH_GEMINI_MODEL or GEMINI_MODEL; project and region from settings),
+    JSON output."""
     name = "gemini"
     RETRIES = pacing.BACKGROUND["attempts"]   # 6 attempts: 429s, 5xx and network errors, backoff to 30 s + jitter
     priority: pacing.Priority = "background"     # queued behind Talk answers and translations in the shared pacer
@@ -164,7 +187,7 @@ class GeminiProvider:
             from google import genai
             client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
         self.client = client
-        self.model = model or settings.enrich_gemini_model or settings.gemini_model
+        self.model = model or enrich_gemini_model()
         self._sleep = sleep
         self._pacer = pacer
 
@@ -212,7 +235,7 @@ UsageHook = Callable[[str, str, int, int, float], None]  # provider, model, in_t
 class LLM:
     """Provider switch with a concurrency limit, usage metering and automatic Claude -> Gemini fallback."""
 
-    def __init__(self, primary: str = "claude", providers: dict[str, Provider] | None = None, *,
+    def __init__(self, primary: str = "gemini", providers: dict[str, Provider] | None = None, *,
                  concurrency: int | None = None, on_usage: UsageHook | None = None, fallback: bool = True):
         self.providers: dict[str, Provider] = providers if providers is not None else {}
         self.active = primary
@@ -233,7 +256,7 @@ class LLM:
         return self.providers[name]
 
     def _record(self, provider: str, tier: str, raw: Raw) -> None:
-        usd = price_usd(provider, tier, raw.in_tokens, raw.out_tokens)
+        usd = price_usd(provider, tier, raw.in_tokens, raw.out_tokens, model=raw.model)
         self.usd += usd
         self.calls += 1
         self.tokens_in += raw.in_tokens

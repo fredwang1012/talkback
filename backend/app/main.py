@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import secrets
+import threading
 import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import lru_cache
@@ -62,10 +63,12 @@ async def lifespan(_: FastAPI):
     task = asyncio.create_task(asyncio.to_thread(_warm_up))
     resume = asyncio.create_task(_resume_enrichments())   # no job survives a restart: pick up the interrupted ones
     reindex = asyncio.create_task(_retry_failed_indexes())   # Vertex indexes a transient error left in state "error"
+    backfill = asyncio.create_task(_backfill_local_embeddings())   # local: e5 vectors for books that have none yet
     yield
     task.cancel()
     resume.cancel()
     reindex.cancel()
+    backfill.cancel()
 
 
 app = FastAPI(title="Talkback", lifespan=lifespan, dependencies=[Depends(users.bind_identity)])
@@ -391,8 +394,17 @@ class _LazyStore:
         return await _vertex_deps()[1].text_search(*a, **kw)
 
 
-@lru_cache(maxsize=1)
+_embedder_lock = threading.Lock()
+
+
 def _embedder():
+    """The shared local e5 model, loaded once (thread-safe: startup warm-up and the embedding job may both ask)."""
+    with _embedder_lock:
+        return _load_embedder()
+
+
+@lru_cache(maxsize=1)
+def _load_embedder():
     try:
         from .embedder import E5Embedder
         return E5Embedder()
@@ -735,6 +747,143 @@ async def _index_in_background(book: Book, chunks) -> None:
         await asyncio.to_thread(_write_current_status, book_id)
 
 
+# Local backend: meaning-based search. Each published upload gets e5 passage embeddings in the background, and at
+# startup so do the built-in books and older uploads that have none yet (no embeddings ship in the repo), one book at a
+# time (bounded CPU and RAM on a laptop); BM25 serves until they are saved. A book re-chunked meanwhile (kind change)
+# is re-embedded once the running job ends; a deleted book stops its job between batches.
+_local_embed_slot = _loop_semaphore(1)
+_local_embed_jobs: set[str] = set()
+_local_embed_again: dict[str, list] = {}   # book id -> chunks requested while its job was running
+_local_embed_tasks: set[asyncio.Task] = set()
+
+
+@lru_cache(maxsize=1)
+def _local_embed_available() -> bool:
+    """sentence-transformers is installed (the optional "embed" extra); checked without importing it."""
+    import importlib.util
+    return importlib.util.find_spec("sentence_transformers") is not None
+
+
+def _local_embed_on() -> bool:
+    return settings.retrieval_backend == "local" and settings.local_embed_uploads
+
+
+def _start_local_embed(book: Book, chunks) -> None:
+    """Fire-and-forget: the upload's enrichment does not wait for its embeddings."""
+    task = asyncio.create_task(_embed_locally(book, chunks))
+    _local_embed_tasks.add(task)
+    task.add_done_callback(_local_embed_tasks.discard)
+
+
+async def _embed_locally(book: Book, chunks) -> None:
+    await _embed_book_locally(book.id, chunks)
+
+
+async def _embed_book_locally(book_id: str, chunks) -> None:
+    """Embed a published book's chunks with the local e5 model and save them next to chunks.json. Never raises.
+    Uploads report progress in status.json["index"] (the upload card's "Indexing" line); built-in books only log (a
+    status.json there would dirty a clone's tree). Skipped (BM25 only) when sentence-transformers is missing; a model
+    that fails to load is recorded as index state "error" (uploads)."""
+    log = logging.getLogger(__name__)
+    total = len(chunks)
+    uploaded = book_id.startswith("u-")
+    set_index = _set_index if uploaded else (lambda *_a, **_k: None)
+
+    def progress(done: int, tot: int) -> None:
+        if uploaded:
+            _index_progress(book_id, done, tot)
+        elif book_id in _deleted:
+            raise _BookDeleted(book_id)
+
+    if not _local_embed_on() or not chunks or book_id in _deleted:
+        return
+    if book_id in _local_embed_jobs:   # running: embed the newer chunks once it ends
+        _local_embed_again[book_id] = chunks
+        return
+    if not _local_embed_available():
+        log.info("local search for %s stays keyword-only: sentence-transformers is not installed", book_id)
+        return
+    _local_embed_jobs.add(book_id)
+    final: dict | None = None
+    try:
+        set_index(book_id, state="queued", done=0, total=total)
+        async with _local_embed_slot():
+            if book_id in _deleted:
+                return
+            embedder = await asyncio.to_thread(_embedder)   # first use loads the model (seconds): off the loop
+            if embedder is None or not hasattr(embedder, "embed_passages"):
+                log.warning("local embeddings for %s skipped: the e5 model could not be loaded; keyword search only",
+                            book_id)
+                final = {"state": "error", "done": 0, "total": total, "message": INDEX_FAILED_MESSAGE}
+            else:
+                set_index(book_id, state="running", done=0, total=total)
+                log.info("embedding %s locally: %d chunks", book_id, total)
+                from . import local_index
+                emb = await local_index.embed_chunks(chunks, embedder, on_progress=progress)
+                if book_id in _deleted:
+                    raise _BookDeleted(book_id)
+                index_dir = settings.data_dir / "books" / book_id / "index"
+                if await asyncio.to_thread(local_index.save_embeddings, index_dir, chunks, emb):
+                    log.info("embedded %s locally: meaning-based search on", book_id)
+                final = {"state": "done", "done": total, "total": total}
+    except _BookDeleted:
+        _local_embed_again.pop(book_id, None)
+    except Exception as e:   # the book keeps BM25
+        if book_id not in _deleted:
+            log.warning("local embedding failed for %s: %s", book_id, type(e).__name__)
+            final = {"state": "error", "done": 0, "total": total, "message": INDEX_FAILED_MESSAGE}
+    finally:
+        _local_embed_jobs.discard(book_id)
+        _index_for.cache_clear()
+        pending = _index_writes.pop(book_id, None)
+        if pending is not None:   # a throttled progress write must not land after the final one
+            await asyncio.gather(pending, return_exceptions=True)
+        _index_written_at.pop(book_id, None)
+    if final is not None and uploaded and book_id not in _deleted:
+        _upload_status[book_id] = _index_status(book_id, final)
+        await asyncio.to_thread(_write_current_status, book_id)
+    again = _local_embed_again.pop(book_id, None)
+    if again is not None and book_id not in _deleted:
+        await _embed_book_locally(book_id, again)
+
+
+def _books_missing_embeddings() -> list[tuple[str, list]]:
+    """Worker thread: (book id, chunks from chunks.json) of every published book whose local index has no matching
+    embeddings.npy; uploads first, then built-in books, each group by id."""
+    from .local_index import has_embeddings, load_chunks
+    root = settings.data_dir / "books"
+    out = []
+    for d in sorted(root.iterdir()) if root.is_dir() else []:
+        index_dir = d / "index"
+        if (not books._ID.match(d.name) or not (d / "book.json").is_file() or (d / "deleting.json").exists()
+                or not (index_dir / "chunks.json").is_file()):
+            continue
+        try:
+            chunks = load_chunks(index_dir)
+            if chunks and not has_embeddings(index_dir, len(chunks)):
+                out.append((d.name, chunks))
+        except Exception as e:   # one unreadable index never stops the others
+            logging.getLogger(__name__).warning("local index of %s unreadable: %s", d.name, type(e).__name__)
+    return sorted(out, key=lambda x: (not x[0].startswith("u-"), x[0]))
+
+
+async def _backfill_local_embeddings() -> None:
+    """Startup (local backend only): embed the uploads made before local embeddings existed, then the built-in books,
+    one at a time in the background. Awaited one by one, so an upload published meanwhile takes the next slot ahead of
+    the remaining built-in books. Never raises."""
+    if not _local_embed_on() or not _local_embed_available():
+        return
+    try:
+        todo = await asyncio.to_thread(_books_missing_embeddings)
+        if todo:
+            logging.getLogger(__name__).info("local embeddings to build at startup: %d book(s)", len(todo))
+        for book_id, chunks in todo:
+            if book_id not in _deleted:
+                await _embed_book_locally(book_id, chunks)
+    except Exception as e:
+        logging.getLogger(__name__).warning("local embedding backfill failed: %s", type(e).__name__)
+
+
 def _set_enrich(book_id: str, **fields) -> None:
     """Record the novel enrichment sub-status next to the (ready) ingest status."""
     if book_id in _deleted:
@@ -745,7 +894,9 @@ def _set_enrich(book_id: str, **fields) -> None:
     _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", enrich=enrich, index=_mem_index(book_id), **extra)
 
 
-_enrich_lock = asyncio.Semaphore(max(1, settings.enrich_parallel))  # ENRICH_PARALLEL uploads at a time (rate limits)
+# ENRICH_PARALLEL uploads enriched at once (default 1000: no practical limit). Rate limits are handled by the shared
+# Gemini pacer (app/pacer.py) and UPLOAD_CONCURRENCY per book, not by this semaphore.
+_enrich_lock = asyncio.Semaphore(max(1, settings.enrich_parallel))
 
 
 INDEX_FAILED_MESSAGE = "Search indexing failed; using basic search."
@@ -910,8 +1061,8 @@ async def _resume_one(book_id: str, ns: str) -> None:
 
 
 async def _resume_enrichments() -> None:
-    """Startup: restart the enrichment of uploads that a restart interrupted. Same caps and the same single
-    enrichment slot as a fresh job; stages already saved are not paid for again. With PER_USER on, the owner comes
+    """Startup: restart the enrichment of uploads that a restart interrupted. Same caps and the same enrichment
+    semaphore (ENRICH_PARALLEL) as a fresh job; stages already saved are not paid for again. With PER_USER on, the owner comes
     from the book's owner marker; when it cannot be determined the book is left retryable instead of run. Never raises."""
     try:
         todo = await asyncio.to_thread(_stale_enrichments)
@@ -944,7 +1095,7 @@ async def _resume_enrichments() -> None:
                 continue
             _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start", **flag,
                         enrich_retries=tries + 1)
-            jobs.append(asyncio.create_task(_resume_one(book_id, ns)))   # the enrichment lock lets one run at a time
+            jobs.append(asyncio.create_task(_resume_one(book_id, ns)))   # up to ENRICH_PARALLEL run at once (_enrich_lock)
         _resume_tasks.update(jobs)
         for t in jobs:
             t.add_done_callback(_resume_tasks.discard)
@@ -979,8 +1130,9 @@ async def _plan_enrichment(book_id: str, book: Book) -> None:
 
 async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str, token: int,
                   hash_key: tuple[str, str] | None = None) -> None:
-    """Background ingest: CPU work in a thread, then publish book.json (readable, local BM25 retrieval), then (vertex
-    only) index the chunks in the background with progress in status.json["index"].
+    """Background ingest: CPU work in a thread, then publish book.json (readable, local BM25 retrieval), then index the
+    chunks in the background with progress in status.json["index"]: Vertex (awaited before enrichment), or local e5
+    embeddings (RETRIEVAL_BACKEND=local, not awaited; _embed_locally).
 
     book.json is written after the CPU work, so a processing or failed upload is never listed or readable; a Vertex
     indexing failure keeps the book readable. Never raises. A novel is then enriched (cast, dialogue, summaries) while it is already readable with the narrator.
@@ -1009,6 +1161,8 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
         _start_series_early(book_id)   # stacks the volume within seconds, before indexing and the queued enrichment
     if ready is not None and settings.retrieval_backend == "vertex":
         await _index_in_background(ready, chunks)
+    elif ready is not None and _local_embed_on() and book_id not in _deleted:
+        _start_local_embed(ready, chunks)   # meaning-based search once embedded; BM25 meanwhile
     if ready is not None and settings.upload_enrich and book_id not in _deleted:
         current = books.load_book(book_id)   # the reader may have moved it to the other shelf (or deleted it) meanwhile
         if current is None or current.kind != kind:
@@ -1316,7 +1470,8 @@ async def _reread_as_textbook(book: Book) -> tuple[Book | None, bytes | None]:
 
 async def _reindex_moved_book(book: Book, background: BackgroundTasks) -> None:
     """Retrieval index for a book whose text was re-read, as an upload builds it: the local chunks always, then (vertex)
-    the old text's leftover datapoints removed and the new chunks embedded in the background."""
+    the old text's leftover datapoints removed and the new chunks embedded in the background, or (local) the new
+    chunks embedded with e5 in the background."""
     def local():
         stale: list[str] = []
         if settings.retrieval_backend == "vertex":
@@ -1330,6 +1485,8 @@ async def _reindex_moved_book(book: Book, background: BackgroundTasks) -> None:
     _index_for.cache_clear()
     if settings.retrieval_backend == "vertex":
         background.add_task(_reindex_vertex, book, chunks, stale)
+    elif _local_embed_on():
+        background.add_task(_embed_locally, book, chunks)
 
 
 async def _reindex_vertex(book: Book, chunks, stale: list[str]) -> None:
@@ -1401,10 +1558,12 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
 
 
 def _book_busy(book_id: str) -> bool:
-    """True while an ingest, Vertex indexing (running or queued), enrichment or kind change for this book is running."""
+    """True while an ingest, Vertex indexing (running or queued), enrichment or kind change for this book is running.
+    Local embedding is not: it stops by itself on a delete and re-runs after a kind change."""
     st = _upload_status.get(book_id) or {}
+    index_busy = (st.get("index") or {}).get("state") in ("running", "queued") and book_id not in _local_embed_jobs
     return (st.get("status") == "processing" or (st.get("enrich") or {}).get("status") == "running"
-            or (st.get("index") or {}).get("state") in ("running", "queued") or book_id in _index_jobs
+            or index_busy or book_id in _index_jobs
             or book_id in _enrich_jobs or book_id in _kind_claims)
 
 

@@ -46,7 +46,7 @@ def main() -> None:
     if args.estimate_llm:
         e = at.llm_estimate(estimates)
         n = sum(len(ds) for _, ds in estimates)
-        print(f"LLM pass (Gemini Flash, NOT run): {n} ambiguous lines, {e['calls']} calls, ~{e['in_tokens']} in / "
+        print(f"LLM pass (Gemini, NOT run): {n} ambiguous lines, {e['calls']} calls, ~{e['in_tokens']} in / "
               f"~{e['out_tokens']} out tokens, estimated ${e['usd']:.2f}")
 
 

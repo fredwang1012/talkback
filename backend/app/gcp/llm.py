@@ -8,6 +8,7 @@ from google.genai import types
 
 from .. import pacer, websearch
 from ..config import settings
+from ..ttschunks import ends_with_abbreviation
 from . import usage
 
 log = logging.getLogger(__name__)
@@ -17,8 +18,12 @@ _END = re.compile(r"[.!?。！？]+(?=\s|$)")
 
 
 def _split(buf: str) -> tuple[list[str], str]:
+    """Complete sentences of the streamed buffer, and the unfinished rest. A period after an honorific or common
+    abbreviation ("Mr.", "e.g.") does not end a sentence, also at the end of the buffer (the name follows)."""
     out, start = [], 0
     for m in _END.finditer(buf):
+        if m.group() == "." and ends_with_abbreviation(buf[max(start, m.start() - 40):m.end()]):
+            continue
         s = buf[start : m.end()].strip()
         if s:
             out.append(s)

@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     gemini_location: str = ""
     gcp_bucket: str = ""
     retrieval_backend: Literal["local", "vertex"] = "local"
+    # local backend: give each published upload multilingual-e5 embeddings in the background (app/local_index.py), so
+    # it is searched by meaning like the shipped books. Needs the optional "embed" extra; without it BM25 keeps serving.
+    local_embed_uploads: bool = True
     # Who writes talk-mode answers. None = follow retrieval_backend (vertex -> gemini, local -> realtime).
     answer_backend: Literal["gemini", "realtime"] | None = None
     gemini_model: str = "gemini-2.5-flash"
@@ -50,7 +53,9 @@ class Settings(BaseSettings):
     # background thread at startup / on first load. No LLM, no API call; changed chunks are re-voiced when played.
     auto_rechunk: bool = True
     minor_voices: bool = True  # uncast speakers in uploaded novels read in one of two generic voices (enrich/minor.py)
-    upload_llm: Literal["claude", "gemini"] = "claude"   # developer-only; claude falls back to gemini when out of credit
+    # developer-only. gemini (Vertex) by default: no Claude key is configured. claude (needs ANTHROPIC_API_KEY) falls
+    # back to gemini when it is out of credit or unusable.
+    upload_llm: Literal["claude", "gemini"] = "gemini"
     upload_confirm: bool = False      # testing mode: show the estimate and wait for POST /api/books/{id}/enrich
     upload_concurrency: int = 24      # parallel LLM calls per book during enrichment (the shared pacer caps the total)
     enrich_parallel: int = 1000       # uploads processed at the same time: no practical limit (app/pacer.py shares one limit)
