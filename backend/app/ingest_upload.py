@@ -91,6 +91,7 @@ class Line(NamedTuple):
     page: int
     alone: bool    # this line is a block of its own that looks like a heading
     marked: str | None = None  # `text` with inline formulas marked (see _mark_inline); the paragraph uses it
+    drop: bool = False         # this line opens with a drop cap (see _merge_drop_caps): it starts a paragraph
 
 
 _LIGATURES = str.maketrans({"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl"})
@@ -113,7 +114,7 @@ def _is_heading(text: str) -> bool:
 
 
 def _starts_paragraph(prev: Line, cur: Line) -> bool:
-    if prev.alone or cur.alone:
+    if prev.alone or cur.alone or cur.drop:
         return True
     if not _SENTENCE_END.search(prev.text) or cur.text[:1].islower():
         return False  # mid-sentence, or a lowercase continuation such as '" said Ron.'
@@ -386,6 +387,174 @@ def _assemble_rows(block_lines: list[dict]) -> list[tuple[list[dict], float]]:
             rows[best].extend(spans)
     order = sorted(range(len(rows)), key=lambda i: bases[i])
     return [(rows[i], bases[i]) for i in order]
+
+
+DROP_CAP = re.compile(r"^[\"'“‘«„]?[^\W\d_]$")  # an initial letter, maybe after an opening quote
+DROP_RATIO = 1.8       # a drop cap is set at least this many times the size of the text it starts
+DROP_CHAPTERS = 3      # a book with this many drop-cap starts (no heading over them) has them as its chapters
+CHAPTER_MARK = "\x08"  # the line pdf_to_text puts where a drop-cap chapter starts; becomes "Chapter N"
+_PART = re.compile(r"^\x01?(?:book|part)\s+\S", re.I)
+_OPENING = re.compile(r"^\x01?(?:introduction|prologue|preface|foreword)\b", re.I)  # restarts chapter numbers
+_CHAPTER_TITLE = re.compile(r"^chapter\s+\S", re.I)
+_DASHES = ("—", "–", "―", "-")  # an epigraph's attribution starts with a dash ("—from ...")
+
+
+def _merge_drop_caps(blocks: list[dict]) -> None:
+    """Put each drop cap (a big initial letter, maybe after an opening quote, set beside the first lines of a
+    paragraph) back at the start of its word, in place on pymupdf's raw page blocks.
+
+    pymupdf gives the cap a line (often a block) of its own, so "Dune" came out as "D" + "une" and '"Y' was taken
+    for a heading. The cap is joined to the topmost line that starts at its right edge within its height, and
+    the lines beside it are moved to its left edge so they do not look indented. The word's span is flagged
+    "dropcap": its paragraph starts there (see _keep_epigraphs and _mark_drop_chapters).
+    """
+    lines = [(b, ln) for b in blocks if b.get("type") == 0 for ln in b["lines"] if abs(ln["dir"][1]) <= 0.2]
+
+    def real(ln: dict) -> list[dict]:
+        return [s for s in ln["spans"] if s["text"].strip()]
+
+    caps = [(b, ln) for b, ln in lines if real(ln) and DROP_CAP.match("".join(s["text"] for s in real(ln)).strip())]
+    used: set[int] = set()
+    for b, cap in caps:
+        if id(cap) in used:
+            continue
+        r = real(cap)
+        size = max(s["size"] for s in r)
+        x0, x1 = min(s["bbox"][0] for s in r), max(s["bbox"][2] for s in r)
+        y0, y1 = min(s["bbox"][1] for s in r), max(s["bbox"][3] for s in r)
+        beside = []
+        for _b, ln in lines:
+            r2 = real(ln)
+            if ln is cap or not r2 or id(ln) in used:
+                continue
+            lsize = max(s["size"] for s in r2)
+            if lsize * DROP_RATIO > size:
+                continue
+            first = min(r2, key=lambda s: s["bbox"][0])
+            mid = (min(s["bbox"][1] for s in r2) + max(s["bbox"][3] for s in r2)) / 2
+            # a glyph box is often wider than its ink ("A" in a book face): the text may start inside it
+            if (x0 + x1) / 2 < first["bbox"][0] <= x1 + max(20.0, 1.5 * lsize) and y0 <= mid <= y1:
+                beside.append((mid, id(ln), first))
+        if not beside:
+            continue
+        beside.sort(key=lambda it: it[0])
+        first = beside[0][2]
+        first["text"] = "".join(s["text"] for s in r).strip() + first["text"].lstrip()
+        first["dropcap"] = True
+        for _mid, lid, span in beside:
+            span["bbox"] = (x0,) + tuple(span["bbox"][1:])
+            used.add(lid)
+        used.add(id(cap))
+        b["lines"] = [ln for ln in b["lines"] if ln is not cap]
+
+
+def _line_key(pno: int, ln: tuple) -> tuple:
+    return pno, ln[1], ln[2], ln[0]
+
+
+def _keep_epigraphs(blocks: list[list[tuple]], pno: int, drops: set, body: float) -> tuple[list[list[tuple]], set]:
+    """(blocks, keys of epigraph lines). Each drop-cap line starts a block, and the text set smaller than it just
+    above it on the page (a chapter's epigraph and its attribution) is brought to its size, so that it is kept as
+    the chapter's opening text instead of being dropped as a footnote. (Never above the body size: an epigraph
+    is no heading.)"""
+    out: list[list[tuple]] = []
+    for blk in blocks:
+        cur: list[tuple] = []
+        for ln in blk:
+            if cur and _line_key(pno, ln) in drops:
+                out.append(cur)
+                cur = []
+            cur.append(ln)
+        out.append(cur)
+    epigraph: set = set()
+    for d, blk in enumerate(out):
+        if _line_key(pno, blk[0]) not in drops:
+            continue
+        top, size = blk[0][2], blk[0][5]
+        k = d - 1
+        while k >= 0 and all(ln[4] <= top + 2 and ln[5] < 1.05 * size and (
+                0.5 * size <= ln[5] < 0.97 * size or ln[0].startswith(_DASHES)) for ln in out[k]) \
+                and not out[k][0][0].startswith((CODE_MARK, EQ_MARK, FIGURE_MARK)):
+            out[k] = [ln[:5] + (max(ln[5], min(size, body or size)),) + ln[6:] for ln in out[k]]
+            epigraph.update(_line_key(pno, ln) for ln in out[k])
+            k -= 1
+    return out, epigraph
+
+
+def _mark_drop_chapters(blocks: list[list[tuple]], pno: int, drops: set, epigraph: set) -> list[list[tuple]]:
+    """Put a CHAPTER_MARK line before each drop-cap paragraph (and its epigraph) that has no heading of its own
+    just above it on the page; a part heading ("BOOK ONE") does not count. A short all-caps line at body size
+    alone above it at the top of the page ("INTRODUCTION") is such a heading and is marked as one. Without an
+    epigraph ending in an attribution ("—from ...") a drop cap opens a scene, an afterword or a dedication, not
+    a chapter: no mark."""
+    out = list(blocks)
+    d = 0
+    while d < len(out):
+        blk = out[d]
+        if not blk or blk[0][7] or _line_key(pno, blk[0]) not in drops:
+            d += 1
+            continue
+        k = d
+        while k > 0 and all(_line_key(pno, ln) in epigraph for ln in out[k - 1]):
+            k -= 1
+        prev = out[k - 1] if k > 0 else None
+        prev_text = " ".join(ln[0] for ln in prev) if prev else ""
+        heading = prev is not None and len(prev) == 1 and prev[0][7] \
+            and not prev_text.startswith((CODE_MARK, EQ_MARK, FIGURE_MARK))
+        if heading and not _PART.match(prev_text):
+            d += 1
+            continue
+        if not heading and prev is not None and len(prev) <= 2 and len(prev_text) <= 60 \
+                and prev_text.upper() == prev_text and sum(c.isalpha() for c in prev_text) >= 3 \
+                and not prev_text.startswith(_DASHES) \
+                and not re.search(r"[.!?,;:]$", prev_text) and min(ln[5] for ln in prev) >= 0.95 * blk[0][5] \
+                and k == 1:
+            first, last = prev[0], prev[-1]
+            out[k - 1] = [(HEADING_MARK + prev_text, first[1], first[2], max(ln[3] for ln in prev), last[4],
+                           first[5], first[6], True)]
+            d += 1
+            continue
+        if not any(ln[0].startswith(_DASHES) for b in out[k:d] for ln in b):
+            d += 1  # no epigraph with its attribution: a scene break, an afterword or a dedication
+            continue
+        ln = blk[0]
+        out.insert(k, [(CHAPTER_MARK, ln[1], ln[2], ln[3], ln[2], ln[5], False, True)])
+        d += 2
+    return out
+
+
+def _number_chapters(paras: list[str]) -> list[str]:
+    """CHAPTER_MARK paragraphs as "Chapter N", counted from 1 in the book and again after each part heading or
+    introduction (each novel of a collection in one PDF has its own). With fewer than DROP_CHAPTERS of them the
+    drop caps are only decoration, and the marks are removed."""
+    if sum(p == CHAPTER_MARK for p in paras) < DROP_CHAPTERS:
+        return [p for p in paras if p != CHAPTER_MARK]
+    out, n = [], 0
+    for p in paras:
+        if p == CHAPTER_MARK:
+            n += 1
+            out.append(f"Chapter {n}")
+            continue
+        if (_PART.match(p) or _OPENING.match(p)) and _is_heading(p):
+            n = 0
+        out.append(p)
+    return out
+
+
+def _toc_style(blocks: list[list[tuple]]) -> tuple[set, list[float]]:
+    """(font sizes, left edges) of the lines of a contents page."""
+    lines = [ln for b in blocks for ln in b]
+    return {ln[5] for ln in lines}, sorted({round(ln[1], 1) for ln in lines})
+
+
+def _is_toc_tail(blocks: list[list[tuple]], style: tuple[set, list[float]]) -> bool:
+    """A page holding only the last entries of the contents page before it ("Epilogue"): every line short, not a
+    sentence, and set in the font size and at a left edge of that page's entries."""
+    sizes, lefts = style
+    lines = [ln for b in blocks for ln in b]
+    return bool(lines) and len(lines) <= 40 and all(
+        len(ln[0]) <= 60 and not re.search(r"[.!?]$", ln[0]) and ln[5] in sizes
+        and any(abs(ln[1] - x) <= 3 for x in lefts) for ln in lines)
 
 
 def _by_x(spans: list[dict]) -> list[dict]:
@@ -828,7 +997,8 @@ def _drop_contents(blocks: list[list[tuple]]) -> list[list[tuple]]:
     for blk in blocks:
         if len(blk) == 1 and _CONTENTS.match(blk[0][0]):
             continue
-        blk = [ln for ln in blk if ln[0].startswith(EQ_MARK) or not _has_dot_leader(ln[0])]
+        # a line led by a dash is an epigraph's attribution ("—ARCHIVES #X99 . . . .. 041"), never an entry
+        blk = [ln for ln in blk if ln[0].startswith((EQ_MARK, "—", "―")) or not _has_dot_leader(ln[0])]
         if blk:
             out.append(blk)
     return out
@@ -1353,6 +1523,7 @@ def pdf_to_text(data: bytes, figures_out: Path | None = None) -> str:
         page_rects: list[list[tuple]] = []  # page -> images (rules too) and labelled figure regions: figure parts
         page_boxes: list[tuple] = []
         inline: dict[tuple, str] = {}  # (page, x0, y0, text) of a prose line -> its text with inline formulas marked
+        drops: set[tuple] = set()      # (page, x0, y0, text) of each line that opens with a drop cap
         for page in doc:
             blocks = []
             info = []  # per line: (math class, glyphs lost), see _mark_math
@@ -1362,6 +1533,8 @@ def pdf_to_text(data: bytes, figures_out: Path | None = None) -> str:
             for b in raw_blocks:
                 if b.get("type") == 1:
                     rects.append(tuple(b["bbox"]))
+            _merge_drop_caps(raw_blocks)
+            for b in raw_blocks:
                 if b.get("type") != 0:
                     continue
                 grouped.append([[spans, base] for spans, base in _assemble_rows(b["lines"])])
@@ -1389,6 +1562,8 @@ def pdf_to_text(data: bytes, figures_out: Path | None = None) -> str:
                     marked = _mark_inline(spans, page.number) if cls == NOT_MATH else None
                     if marked:
                         inline[(page.number, x0, y0, t)] = marked
+                    if any(s.get("dropcap") for s in spans):
+                        drops.add((page.number, x0, y0, t))
                     total += len(t) + 1
                     if total > MAX_CHARS:  # checked per line so extraction stops as soon as the cap is crossed
                         raise UploadError("The document has too much text (5 million characters maximum).")
@@ -1435,12 +1610,20 @@ def pdf_to_text(data: bytes, figures_out: Path | None = None) -> str:
     renderer = _FigureRenderer(data, figures_out)
     try:
         laid_out = []
+        toc = None  # the entry style of the contents page just before, see _toc_style
+        epigraph: set = set()
         for pno, blocks in enumerate(pages):
             # figures first: a table of bare numbers would otherwise make its whole page look like a contents page
             blocks = _take_figures(blocks, page_rects[pno], page_boxes[pno], body, column, renderer.page(pno))
             if _is_toc_page(blocks):
+                toc = _toc_style(blocks)
                 continue
-            laid_out.append((pno, _mark_code(_drop_contents(_clean_layout(_reading_order(blocks, widths[pno]), body)))))
+            if toc is not None and _is_toc_tail(blocks, toc):
+                continue
+            toc = _toc_style(blocks) if any(len(b) == 1 and _CONTENTS.match(b[0][0]) for b in blocks) else None
+            blocks, epi = _keep_epigraphs(_reading_order(blocks, widths[pno]), pno, drops, body)
+            epigraph |= epi
+            laid_out.append((pno, _mark_code(_drop_contents(_clean_layout(blocks, body)))))
     finally:
         renderer.close()
     for pno, blocks in laid_out:
@@ -1450,12 +1633,13 @@ def pdf_to_text(data: bytes, figures_out: Path | None = None) -> str:
         x0s = sorted(ln[1] for ln in flat)
         x1s = sorted(ln[3] for ln in flat)
         left, right = x0s[len(x0s) // 5], x1s[len(x1s) * 9 // 10]
-        for blk in _mark_headings(blocks, body, figures[pno]):
+        for blk in _mark_drop_chapters(_mark_headings(blocks, body, figures[pno]), pno, drops, epigraph):
             alone = len(blk) == 1 and blk[0][7]
             for t, x0, y0, x1, y1, _size, _bold, _h in blk:
-                all_lines.append(Line(t, x0, x1, y0, y1, left, right, pno, alone, inline.get((pno, x0, y0, t))))
+                all_lines.append(Line(t, x0, x1, y0, y1, left, right, pno, alone, inline.get((pno, x0, y0, t)),
+                                      (pno, x0, y0, t) in drops))
 
-    paras = merge_lines(all_lines)
+    paras = _number_chapters(merge_lines(all_lines))
     paras = [p for i, p in enumerate(paras) if i == 0 or p != paras[i - 1] or not p.startswith(HEADING_MARK)]
     text = "\n\n".join(paras)
     if not text.strip():
@@ -1535,9 +1719,18 @@ def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_
         for p in paragraphs:
             p.kind = p.math = p.figure = None
             p.inline_math = []
-    if kind == "textbook":  # novels keep a flat chapter list
+    if kind == "textbook":
         for sec in sections:
             sec.level = section_level(sec.title)
+    else:  # novels keep a flat chapter list, except that the chapters of a part ("BOOK ONE") sit under it
+        in_part = False
+        for sec in sections:
+            if _PART.match(sec.title):
+                in_part = True
+            elif in_part and _CHAPTER_TITLE.match(sec.title):
+                sec.level = 2
+            else:
+                in_part = False
     if not paragraphs:
         raise UploadError("No paragraphs were found in the file.")
     book = Book(id=book_id, title=title, author=author, kind=kind, kind_detected=kind_detected, license=LICENSE,
