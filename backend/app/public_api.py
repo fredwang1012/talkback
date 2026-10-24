@@ -12,9 +12,11 @@ Privacy and cost rules:
 - The server never decides what a reader may see: answer passages arrive already spoiler-filtered by the client.
 """
 import asyncio
+import hashlib
 import json
 import logging
 import secrets
+import threading
 import time
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -23,13 +25,14 @@ from typing import Literal
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .config import settings
 from .enrich import pipeline, spend
 from .enrich.llm import SpendLimit, make_llm, price_usd
 from .personas import build_answer_prompt
-from .ratelimit import TokenBucket, client_ip
+from .ratelimit import TokenBucket, client_key, normalize_ip
 from .schema import Book, Character, Paragraph, Section
 from .uploadlimit import _reply
 
@@ -44,12 +47,18 @@ ANSWER_BODY_LIMIT = 128 * 1024
 JOB_TTL_SECONDS = 30 * 60
 JOB_MAX_SECONDS = 25 * 60
 MAX_RUNNING_JOBS = 2
+MAX_ANSWER_STREAMS = 4
+ANSWER_SLOT_SECONDS = 300      # an UNSTARTED stream slot or reservation is dropped after this (guards a leak)
+ANSWER_DEADLINE_SECONDS = 120  # hard limit on one answer stream
+STARTED_GRACE_SECONDS = 60     # a started reservation or slot that outlives deadline + grace is leaked: charged in full
+MAX_OUTPUT_TOKENS = 700        # GeminiAnswerer max_output_tokens: the most one answer can cost in output
 MAX_JOBS_KEPT = 50
 
 ID_PATTERN = r"^[A-Za-z0-9_.-]{1,80}$"
 
 MSG_BOOK_CAP = "This book is too long for the free processing service."
 MSG_TOTAL_CAP = "The free processing budget has been used up."
+MSG_IP_CAP = "You have used your share of the free processing for today; try again tomorrow."
 MSG_DAILY_CAP = "The free Gemini answer budget for today has been used up."
 
 
@@ -136,7 +145,7 @@ class AnswerRequest(BaseModel):
 
 # ---------- state ----------
 
-enrich_bucket = TokenBucket(capacity=3, per_seconds=3600)    # books per IP per hour
+enrich_bucket = TokenBucket(capacity=1, per_seconds=3600)    # books per IP per hour
 poll_bucket = TokenBucket(capacity=120, per_seconds=60)
 answer_bucket = TokenBucket(capacity=20, per_seconds=60)
 
@@ -145,6 +154,9 @@ class Job:
     def __init__(self, job_id: str, estimate_usd: float):
         self.id, self.estimate_usd = job_id, estimate_usd
         self.created = time.monotonic()
+        self.finished: float | None = None   # set when the job leaves running (the result TTL counts from here)
+        self.usd = 0.0                       # real spend so far (admission reserves only the unspent part of the estimate)
+        self.ip = ""
         self.status = "running"          # running | done | error
         self.stage, self.progress, self.message = "queued", 0.0, "Waiting to start"
         self.code: str | None = None     # error code: cap | book_cap | failed
@@ -175,7 +187,8 @@ _jobs: dict[str, Job] = {}
 
 def _purge() -> None:
     now = time.monotonic()
-    for jid in [j for j, job in _jobs.items() if job.status != "running" and now - job.created > JOB_TTL_SECONDS]:
+    for jid in [j for j, job in _jobs.items()
+                if job.status != "running" and now - (job.finished or job.created) > JOB_TTL_SECONDS]:
         del _jobs[jid]
     while len(_jobs) > MAX_JOBS_KEPT:  # oldest finished first
         done = [j for j, job in _jobs.items() if job.status != "running"]
@@ -186,6 +199,11 @@ def _purge() -> None:
 
 def _running() -> int:
     return sum(1 for j in _jobs.values() if j.status == "running")
+
+
+def _reserved_usd() -> float:
+    """Estimated spend still to come from running jobs (their estimate minus what they already spent)."""
+    return sum(max(0.0, j.estimate_usd - j.usd) for j in _jobs.values() if j.status == "running")
 
 
 def _result(book: Book) -> dict:
@@ -205,6 +223,7 @@ async def _run_job(job: Job, book: Book, llm=None) -> None:
     cap = settings.public_book_cap_usd * pipeline.BOOK_CAP_MARGIN
 
     def on_usage(provider: str, model: str, n_in: int, n_out: int, usd: float) -> None:
+        job.usd = llm.usd
         total = spend.add(job.id, provider, usd, flush_now=False)
         if llm.calls % 25 == 0:
             asyncio.get_running_loop().create_task(asyncio.to_thread(spend.flush))
@@ -232,19 +251,37 @@ async def _run_job(job: Job, book: Book, llm=None) -> None:
         job.status, job.code, job.message = "error", "failed", "Processing failed."
         log.warning("enrich job %s failed in %s: %s", job.id, state["stage"], type(e).__name__)
     finally:
+        job.finished = time.monotonic()
+        job.usd = llm.usd
+        ip_budget.settle(job.ip, job.estimate_usd, llm.usd)
         await asyncio.shield(asyncio.to_thread(spend.flush))
 
 
 # ---------- answer budget (persisted per UTC day) ----------
 
 class DailyBudget:
-    """Gemini answer spend of the current UTC day in data/usage/public_answer_spend.json (written atomically)."""
+    """Gemini answer spend of the current UTC day in data/usage/public_answer_spend.json (written atomically).
 
-    def __init__(self):
+    `reserve` is the admission check: it counts what in-flight answers may still cost, so concurrent requests cannot
+    all slip under the cap, and returns a token. `settle(token, actual)` replaces the reservation by the real cost.
+    A reservation nobody settles (the response body never started) expires after ANSWER_SLOT_SECONDS and is released
+    without a charge: no Gemini call was made for it.
+    """
+    FILE = "public_answer_spend.json"
+
+    def __init__(self, clock=time.monotonic):
         self.day, self.usd, self.path = None, 0.0, None
+        self.clock = clock
+        self._held: dict[str, tuple[float, float]] = {}    # token -> (usd, taken at)
+        self._started: dict[str, float] = {}               # tokens whose stream is running -> start time
+        self.lock = threading.Lock()
+
+    @property
+    def reserved(self) -> float:
+        return sum(v[0] for v in self._held.values())
 
     def _sync(self) -> None:
-        path = settings.data_dir / "usage" / "public_answer_spend.json"
+        path = settings.data_dir / "usage" / self.FILE
         today = datetime.now(timezone.utc).date().isoformat()
         if self.path != path:
             self.path, self.day, self.usd = path, None, 0.0
@@ -255,15 +292,123 @@ class DailyBudget:
                 pass
         if self.day != today:
             self.day, self.usd = today, 0.0
+        now = self.clock()
+        changed = False
+        for t, (usd, at) in list(self._held.items()):
+            if t in self._started:
+                if now - self._started[t] > ANSWER_DEADLINE_SECONDS + STARTED_GRACE_SECONDS:
+                    # leaked while running (its settle never came): count the full reservation as spent, never drop it
+                    del self._held[t]
+                    del self._started[t]
+                    self.usd = round(self.usd + usd, 6)
+                    changed = True
+            elif now - at > ANSWER_SLOT_SECONDS:
+                del self._held[t]           # never started: no model call was made, no charge
+        if changed:
+            spend._write({"day": self.day, "usd": self.usd}, self.path)
 
     def spent(self) -> float:
-        self._sync()
-        return self.usd
+        with self.lock:
+            self._sync()
+            return self.usd
 
-    def add(self, usd: float) -> None:
-        self._sync()
-        self.usd = round(self.usd + usd, 6)
-        spend._write({"day": self.day, "usd": self.usd}, self.path)
+    def reserve(self, usd: float) -> str | None:
+        with self.lock:
+            self._sync()
+            if self.usd + self.reserved + usd > settings.public_answer_daily_cap_usd:
+                return None
+            token = secrets.token_hex(8)
+            self._held[token] = (usd, self.clock())
+            return token
+
+    def mark_started(self, token: str) -> None:
+        with self.lock:
+            if token in self._held:
+                self._started[token] = self.clock()
+
+    def settle(self, token: str, actual: float) -> None:
+        """Release the reservation and charge the real cost. Idempotent: a token that is no longer held (settled
+        before, or expired and already charged in full) charges nothing."""
+        with self.lock:
+            self._sync()
+            if self._held.pop(token, None) is None:
+                return
+            self._started.pop(token, None)
+            self.usd = round(self.usd + actual, 6)
+            spend._write({"day": self.day, "usd": self.usd}, self.path)
+
+
+class IpBudget:
+    """Enrichment dollars per client address per UTC day (addresses stored as short hashes), persisted.
+
+    The estimate is charged at admission and settled to the real spend when the job ends.
+    """
+    FILE = "public_ip_spend.json"
+
+    def __init__(self):
+        self.day, self.ips, self.path = None, {}, None
+        self.lock = threading.Lock()
+
+    def _sync(self) -> None:
+        path = settings.data_dir / "usage" / self.FILE
+        today = datetime.now(timezone.utc).date().isoformat()
+        if self.path != path:
+            self.path, self.day, self.ips = path, None, {}
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                self.day, self.ips = data.get("day"), dict(data.get("ips", {}))
+            except (OSError, ValueError, TypeError):
+                pass
+        if self.day != today:
+            self.day, self.ips = today, {}
+
+    @staticmethod
+    def _key(ip: str) -> str:
+        return hashlib.sha256(normalize_ip(ip).encode()).hexdigest()[:16]
+
+    def spent(self, ip: str) -> float:
+        with self.lock:
+            self._sync()
+            return float(self.ips.get(self._key(ip), 0.0))
+
+    def charge(self, ip: str, usd: float) -> bool:
+        """Charge `usd` unless it would take this address over its daily cap."""
+        with self.lock:
+            self._sync()
+            k = self._key(ip)
+            if self.ips.get(k, 0.0) + usd > settings.public_ip_daily_cap_usd:
+                return False
+            self.ips[k] = round(self.ips.get(k, 0.0) + usd, 6)
+            spend._write({"day": self.day, "ips": self.ips}, self.path)
+            return True
+
+    def settle(self, ip: str, estimate: float, actual: float) -> None:
+        with self.lock:
+            self._sync()
+            k = self._key(ip)
+            if k in self.ips:
+                self.ips[k] = round(max(0.0, self.ips[k] - estimate + actual), 6)
+                spend._write({"day": self.day, "ips": self.ips}, self.path)
+
+
+ip_budget = IpBudget()
+_streams: dict[str, float] = {}   # answer stream slots: token -> start time
+_started_slots: dict[str, float] = {}  # slots whose stream is running -> start time
+
+
+def _take_stream_slot() -> str | None:
+    now = time.monotonic()
+    for t, at in list(_streams.items()):
+        started = _started_slots.get(t)
+        if (started is None and now - at > ANSWER_SLOT_SECONDS) or (
+                started is not None and now - started > ANSWER_DEADLINE_SECONDS + STARTED_GRACE_SECONDS):
+            del _streams[t]
+            _started_slots.pop(t, None)
+    if len(_streams) >= MAX_ANSWER_STREAMS:
+        return None
+    token = secrets.token_hex(8)
+    _streams[token] = now
+    return token
 
 
 answer_budget = DailyBudget()
@@ -352,18 +497,22 @@ def health():
 
 @app.post("/api/public/enrich", status_code=202)
 async def start_enrich(req: EnrichRequest, request: Request):
-    if not enrich_bucket.allow(client_ip(request)):
+    if not enrich_bucket.allow(client_key(request)):
         raise PublicError(429, "rate", "Too many books from your address; try again later.")
     _purge()
     book = req.to_book()
     est = pipeline.estimate(book, "gemini")
     if est > settings.public_book_cap_usd:
         raise PublicError(402, "book_cap", MSG_BOOK_CAP)
-    if spend.total_usd() + est > settings.public_total_cap_usd:
+    if spend.total_usd() + _reserved_usd() + est > settings.public_total_cap_usd:
         raise PublicError(402, "cap", MSG_TOTAL_CAP)
     if _running() >= MAX_RUNNING_JOBS:
         raise PublicError(429, "busy", "The processing service is busy; try again in a minute.")
+    ip = client_key(request)
+    if not ip_budget.charge(ip, est):
+        raise PublicError(402, "ip_cap", MSG_IP_CAP)
     job = Job(secrets.token_urlsafe(16), round(est, 4))
+    job.ip = ip
     _jobs[job.id] = job
     job.task = asyncio.create_task(_run_job(job, book))
     log.info("enrich job %s started: %d paragraphs, estimate $%.4f", job.id, len(book.paragraphs), est)
@@ -372,7 +521,7 @@ async def start_enrich(req: EnrichRequest, request: Request):
 
 @app.get("/api/public/enrich/{job_id}")
 async def enrich_status(job_id: str, request: Request):
-    if not poll_bucket.allow(client_ip(request)):
+    if not poll_bucket.allow(client_key(request)):
         raise PublicError(429, "rate", "Polling too fast.")
     _purge()
     job = _jobs.get(job_id)
@@ -383,30 +532,75 @@ async def enrich_status(job_id: str, request: Request):
 
 @app.post("/api/public/answer")
 async def public_answer(req: AnswerRequest, request: Request):
-    if not answer_bucket.allow(client_ip(request)):
+    if not answer_bucket.allow(client_key(request)):
         raise PublicError(429, "rate", "Too many questions; wait a moment.")
-    if answer_budget.spent() >= settings.public_answer_daily_cap_usd:
-        raise PublicError(402, "daily_cap", MSG_DAILY_CAP)
     system, user = req.prompt()
-    tokens = {"in": 0, "out": 0}
+    cost = price_usd("gemini", "fast", int((len(system) + len(user)) / 3.5) + 1, MAX_OUTPUT_TOKENS)
+    token = answer_budget.reserve(cost)
+    if token is None:
+        raise PublicError(402, "daily_cap", MSG_DAILY_CAP)
+    slot = _take_stream_slot()
+    if slot is None:
+        answer_budget.settle(token, 0.0)
+        raise PublicError(429, "busy", "Too many answers in progress; try again in a moment.")
+    state = {"in": 0, "out": 0, "seen": False, "started": False, "done": False}
+
+    def finish() -> None:
+        """Settle once: the real cost when usage arrived, the worst case if the model ran without reporting, nothing
+        if the body never started. Also reached from the response's background task and, failing that, by expiry."""
+        if state["done"]:
+            return
+        state["done"] = True
+        if state["seen"]:
+            actual = price_usd("gemini", "fast", state["in"], state["out"])
+        else:
+            actual = cost if state["started"] else 0.0
+        answer_budget.settle(token, actual)
+        _streams.pop(slot, None)
+        _started_slots.pop(slot, None)
 
     def on_usage(n_in: int, n_out: int) -> None:
-        tokens["in"], tokens["out"] = n_in, n_out
+        state.update({"in": n_in, "out": n_out, "seen": True})
 
     async def stream():
-        n = 0
+        state["started"] = True
+        answer_budget.mark_started(token)
+        _started_slots[slot] = time.monotonic()
+        deadline = asyncio.get_running_loop().time() + ANSWER_DEADLINE_SECONDS
+        gen = get_public_answerer().stream_sentences(system, user, on_usage=on_usage)
         try:
-            async for sentence in get_public_answerer().stream_sentences(system, user, on_usage=on_usage):
-                n += 1
-                yield json.dumps({"type": "sentence", "text": sentence}, ensure_ascii=False) + "\n"
-        except Exception as e:  # never leak details (they may quote the book)
-            log.warning("public answer failed: %s", type(e).__name__)
-            yield json.dumps({"type": "error", "message": "The answer could not be generated; please try again."}) + "\n"
-            return
+            try:
+                it = gen.__aiter__()
+                while True:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    try:
+                        async with asyncio.timeout(max(remaining, 0.0)):
+                            sentence = await it.__anext__()
+                    except StopAsyncIteration:
+                        break
+                    yield json.dumps({"type": "sentence", "text": sentence}, ensure_ascii=False) + "\n"
+                    if deadline - asyncio.get_running_loop().time() <= 0:
+                        raise TimeoutError
+            except TimeoutError:
+                log.warning("public answer cut at its deadline")
+                yield json.dumps({"type": "error", "message": "The answer took too long; please try again."}) + "\n"
+                return
+            except Exception as e:  # never leak details (they may quote the book)
+                log.warning("public answer failed: %s", type(e).__name__)
+                yield json.dumps({"type": "error", "message": "The answer could not be generated; please try again."}) + "\n"
+                return
+            yield json.dumps({"type": "done"}) + "\n"
         finally:
-            n_in = tokens["in"] or int((len(system) + len(user)) / 3.5)
-            n_out = tokens["out"]
-            await asyncio.to_thread(answer_budget.add, price_usd("gemini", "fast", n_in, n_out))
-        yield json.dumps({"type": "done"}) + "\n"
+            try:
+                async with asyncio.timeout(5):
+                    await gen.aclose()  # runs the answerer's own finally: that is where the token counts arrive
+            except BaseException:
+                pass
+            finally:
+                finish()
 
-    return StreamingResponse(stream(), media_type="application/x-ndjson")
+    try:
+        return StreamingResponse(stream(), media_type="application/x-ndjson", background=BackgroundTask(finish))
+    except BaseException:
+        finish()
+        raise

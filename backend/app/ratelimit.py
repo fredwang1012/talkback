@@ -1,3 +1,4 @@
+import ipaddress
 import time
 
 from fastapi import Request
@@ -33,3 +34,22 @@ def client_ip(request: Request) -> str:
         if parts:
             return parts[-1]
     return request.client.host if request.client else "unknown"
+
+
+def normalize_ip(ip: str) -> str:
+    """Rate-limit key for an address: IPv4 as is, IPv4-mapped IPv6 as its IPv4, other IPv6 as its /64 network
+    (one subscriber commonly holds a whole /64, so rotating inside it must not buy a fresh allowance)."""
+    try:
+        addr = ipaddress.ip_address(ip.strip())
+    except ValueError:
+        return ip
+    if addr.version == 6:
+        if addr.ipv4_mapped is not None:
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+    return str(addr)
+
+
+def client_key(request: Request) -> str:
+    """`client_ip`, normalized for per-address limits (used by the public API)."""
+    return normalize_ip(client_ip(request))

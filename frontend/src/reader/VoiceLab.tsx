@@ -1,3 +1,4 @@
+import { micErrorMessage } from "../audio/mediaErrors";
 import { useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { animateFace, cloneVoice, deleteFace, uploadFace, type Book, type Cast, type Face } from "../api";
 import {
@@ -62,8 +63,8 @@ export default function VoiceLab({ book, cast, onCast, castError, style, onStyle
       recorder.current = rec;
       rec.start();
       setRecording(true);
-    } catch {
-      setStatus({ kind: "error", text: "The microphone is not available. Allow access in the browser, or upload a file instead." });
+    } catch (e) {
+      setStatus({ kind: "error", text: `${micErrorMessage(e)} Or upload a file instead.` });
     }
   }
 

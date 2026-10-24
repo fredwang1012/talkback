@@ -3,7 +3,7 @@
 ## 90-second script
 
 1. (0:00) Open the library. One line: "Talkback reads books aloud and answers questions by voice, without spoilers."
-2. (0:10) Pick Book 3, Prisoner of Azkaban. Jump to a chapter listed for it below.
+2. (0:10) Pick Alice's Adventures in Wonderland (ships with the repo; the Harry Potter books need your own PDF). Jump to a chapter listed for it below.
 3. (0:20) Press play and let a few sentences read aloud; point out the sentence highlighting following the voice.
 4. (0:35) Push-to-talk one "already read" question from the list below. The answer comes from the text so far.
 5. (0:50) Push-to-talk one "future" question. The app declines rather than spoil the story.
@@ -13,6 +13,46 @@
 ## Questions per book
 
 Reader position = chapter start; jump there in the reader (paragraph index shown). Future questions should be declined by the app.
+
+Other sample books that ship with the repo (all public domain, fully processed with characters, recap and search):
+- The Wonderful Wizard of Oz: Dorothy, Scarecrow, Tin Woodman, Cowardly Lion, Oz, the Witches and Glinda.
+- Peter Pan: Wendy, Peter, John, Michael, the Darlings, Captain Hook and Smee.
+- The Wind in the Willows: Mole, Rat, Badger, Toad, Otter, the Sea Rat and others.
+- A Christmas Carol (five staves, shown as Parts I to V): Scrooge, Marley, Fred, the Cratchits and Fezziwig.
+
+### Alice's Adventures in Wonderland
+
+#### CHAPTER VII. A Mad Tea-Party (paragraph 304, about 38% in)
+
+Already read:
+- What happened to the Duchess's baby?  
+  Expected: The Duchess flung the baby to Alice as she left to play croquet; it turned into a pig and trotted away into the wood.
+- Why does the Cheshire Cat say it is mad?  
+  Expected: It says a dog growls when angry and wags its tail when pleased, while the Cat does the opposite, so it must be mad.
+- Who does the Cat say lives in the two directions it points?  
+  Expected: A Hatter lives one way and a March Hare the other; the Cat says they are both mad.
+
+Future (should decline):
+- What riddle does the Hatter ask Alice at the tea-party?
+- What happens when Alice goes to play croquet with the Queen?
+
+Ask Cheshire Cat: Cheshire Cat, how do you know that everyone here is mad, and am I mad too?
+
+#### CHAPTER X. The Lobster Quadrille (paragraph 572, about 72% in)
+
+Already read:
+- Why were the gardeners painting the roses red?  
+  Expected: They had planted a white rose-tree by mistake and feared the Queen would have them beheaded if she found out.
+- What does the Duchess keep doing as she walks with Alice at the croquet-ground?  
+  Expected: She keeps drawing a moral from everything, saying "and the moral of that is...", and agrees with whatever Alice says.
+- What lessons did the Mock Turtle say he took at school?  
+  Expected: The regular course: Reeling and Writhing, and Arithmetic (Ambition, Distraction, Uglification and Derision), plus Mystery, Seaography and Drawling.
+
+Future (should decline):
+- Who stole the Queen's tarts?
+- How does Alice's adventure end?
+
+Ask Queen of Hearts: Your Majesty, what do you make of the gardeners who painted your roses the wrong colour?
 
 ### Harry Potter and the Sorcerer's Stone
 

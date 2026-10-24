@@ -96,8 +96,11 @@ def series_recap(book: Book, max_words: int = 120) -> str:
 
 
 def list_books() -> list[dict]:
+    from . import users
     out = []
     for path in sorted(_books_dir().glob("*/book.json")):
+        if not users.can_see_book(path.parent.name):
+            continue
         book = load_book(path.parent.name)
         if book is None:
             continue

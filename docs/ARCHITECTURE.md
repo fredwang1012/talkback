@@ -105,6 +105,22 @@ speakers when `RETRIEVAL_BACKEND=vertex`). Typical time is 3 to 5 minutes for a 
   stays in the file, the UI ignores it). The check-and-claim is synchronous and `_run_enrichment` skips books with a job
   in flight, so concurrent requests start one paid job.
 
+### The public processing API (`app/public_api.py`, `app/public_client.py`)
+
+A clone with only a Boson key has no LLM. When `PUBLIC_API_URL` is set and the machine has no `ANTHROPIC_API_KEY` or usable
+GCP credentials, `app/public_client.py` sends the ingested narrator-only novel (title, sections, paragraphs; at most 3 MB /
+6,000 paragraphs) to the separate `talkback-public` Cloud Run service (same image, `PUBLIC_API=true`, entry `app.asgi:app`).
+The service runs the same `pipeline.run_stages` (cast, segment, summaries) with Gemini on an in-memory book and returns
+characters, narrator, summaries and the non-trivial segments; the client re-validates every paragraph's segments against
+its own text (anything that does not tile the paragraph becomes plain narration), rebuilds the TTS chunks and saves
+`book.json`. Jobs are polled (`POST /api/public/enrich`, `GET /api/public/enrich/{id}`) into the usual `enrich.stage` /
+`progress` status. Closed (403), missing (404), unreachable, failing or capped (402/429): the upload falls back to the
+simple local cast with a degraded message that says which. Typed answers: `/api/answer` retrieves and spoiler-filters
+locally and posts only the eligible passages, the persona and the question to `POST /api/public/answer`, which builds the
+same prompt as `personas.build_answer_prompt` and streams Gemini's sentences back. `/api/health` reports
+`answer_backend: "gemini"` only while the service answers its health check, so a closed service means Realtime answers.
+Caps, rate limits and the deploy are in DEPLOY.md.
+
 ## Retrieval sizes
 
 - Chunks (`retrieval.make_chunks`): paragraph-aligned, about 1,400 characters (min 900, max 2,000; a single longer paragraph
@@ -113,7 +129,7 @@ speakers when `RETRIEVAL_BACKEND=vertex`). Typical time is 3 to 5 minutes for a 
 - `/api/answer` (Gemini): k = 8 (`DEFAULT_K`), passages capped at 12,000 characters (`MAX_PASSAGE_CHARS`), whole prompt at
   24,000 (`MAX_ANSWER_PROMPT_CHARS`). The most recent two paragraphs are always added.
 - `/api/retrieve` (Boson realtime instructions): k <= 4 (`REALTIME_K`), passages capped at 4,500 characters
-  (`REALTIME_MAX_PASSAGE_CHARS`), so the instructions fit `MAX_INSTRUCTIONS_CHARS` = 8,000 and stay short (BRIEF: long
+  (`REALTIME_MAX_PASSAGE_CHARS`), so the instructions fit `MAX_INSTRUCTIONS_CHARS` = 8,000 and stay short (docs/internal/BRIEF.md: long
   realtime prompts made the model stop calling tools).
 
 ## The spoiler rule (enforced on the server, never by the model)
@@ -147,6 +163,13 @@ speakers when `RETRIEVAL_BACKEND=vertex`). Typical time is 3 to 5 minutes for a 
 
 - Keys never reach the browser. On a public deployment, `TALKBACK_ACCESS_TOKEN` gates every endpoint that spends
   money and the full-text book endpoint (copyrighted text).
-- Per-IP rate limits on answers, retrieval, TTS cache misses, lip-sync renders, uploads and clones.
+- Per-account separation on the live deploy (`PER_USER=true`, `backend/app/users.py`): the IAP JWT is verified on every
+  request (cached briefly) and the resulting namespace decides where voices, faces and cast settings are read and written
+  (`data/users/<sha256(email)[:16]>/`; `public` when there is no valid JWT). A request-scoped context variable carries the
+  identity, so `voices.py`, `faces.py` and `cast.py` keep their signatures and fall back to the shared `data/` paths when
+  `PER_USER` is off. Every book route returns 404 for another account's upload (`u-*` books carry an `owner.txt`) and for
+  `OWNER_ONLY_BOOKS` ids unless the caller is in `OWNER_EMAILS`; `/portraits` is a `StaticFiles` subclass that serves
+  `faces/` from the caller's own folder and hides the shared `faces/` and `voices/` folders. See docs/DEPLOY.md.
+- Per-IP (per-account when signed in) rate limits on answers, retrieval, TTS cache misses, lip-sync renders, uploads and clones.
 - The cloned voice and face (`data/voices.json`, `data/faces.json`, `data/portraits/`) and the books
   (`data/books/hp*`) are gitignored. The deploy script syncs `data/books` to the private bucket but never portraits.

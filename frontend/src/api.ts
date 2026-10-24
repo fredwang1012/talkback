@@ -91,6 +91,15 @@ async function getJson<T>(url: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export type Me = { email: string | null; per_user: boolean };
+/** Who is signed in (live deploy behind Google sign-in only). Never throws: no account is the local default. */
+export const fetchMe = (): Promise<Me> =>
+  getJson<Me>("/api/me").catch((): Me => ({ email: null, per_user: false }));
+/** IAP's sign-out: clears its login cookie and returns to the app. */
+export const SIGN_OUT_URL = "/?gcp-iap-mode=CLEAR_LOGIN_COOKIE";
+/** The signed-in email to show, or null (local runs, anonymous visitors). */
+export const accountLabel = (me: Me | null): string | null => (me && me.per_user && me.email ? me.email : null);
+
 export const fetchBooks = () => getJson<BookSummary[]>("/api/books");
 export const fetchBook = (id: string) => getJson<Book>(`/api/books/${encodeURIComponent(id)}`);
 export const fetchHealth = () => getJson<Health>("/api/health");

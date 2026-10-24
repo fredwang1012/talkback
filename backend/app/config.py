@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[2]  # talkback/
@@ -22,9 +22,9 @@ class Settings(BaseSettings):
     # Comma-separated browser origins allowed by CORS (the single-container deploy is same-origin and needs none).
     cors_origins: str = "http://localhost:5173"
     # Google Cloud (Vertex AI). retrieval_backend="local" keeps today's BM25 + e5 behaviour.
-    gcp_project: str = "frederick-talkback"
+    gcp_project: str = ""  # set GCP_PROJECT when RETRIEVAL_BACKEND=vertex or UPLOAD_LLM=gemini
     gcp_region: str = "us-central1"
-    gcp_bucket: str = "frederick-talkback-data"
+    gcp_bucket: str = ""
     retrieval_backend: Literal["local", "vertex"] = "local"
     # Who writes talk-mode answers. None = follow retrieval_backend (vertex -> gemini, local -> realtime).
     answer_backend: Literal["gemini", "realtime"] | None = None
@@ -44,9 +44,27 @@ class Settings(BaseSettings):
     # /api/public/*, Gemini only. PUBLIC_API_URL (client side, set in .env.example) points a local app at it.
     public_api: bool = False
     public_api_url: str = ""
-    public_book_cap_usd: float = 4.0            # refuse a book whose estimate is above this
+    public_book_cap_usd: float = 1.5            # refuse a book whose estimate is above this
     public_total_cap_usd: float = 10.0          # cumulative enrichment spend, persisted
+    public_ip_daily_cap_usd: float = 2.0        # enrichment estimates per client address per UTC day, persisted
     public_answer_daily_cap_usd: float = 2.0    # Gemini answers per UTC day, persisted
+
+    # Per-account separation for the live Cloud Run deploy (Google sign-in via IAP). Off everywhere else.
+    per_user: bool = False
+    iap_audience: str = ""        # /projects/PROJECT_NUMBER/locations/REGION/services/SERVICE
+    owner_emails: str = ""        # comma list; the first one inherits the pre-existing shared data
+    owner_only_books: str = ""    # comma list of globs on book ids visible only to owner emails (e.g. "hp*")
+
+    @model_validator(mode="after")
+    def _per_user_needs_audience(self):
+        if self.per_user and not self.iap_audience.strip():
+            raise ValueError("PER_USER=true requires IAP_AUDIENCE (/projects/NUMBER/locations/REGION/services/NAME); "
+                             "without it every visitor would be anonymous.")
+        return self
+
+    @property
+    def owner_email_list(self) -> list[str]:
+        return [e.strip().lower() for e in self.owner_emails.split(",") if e.strip()]
 
     @property
     def cors_origin_list(self) -> list[str]:

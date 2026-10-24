@@ -19,7 +19,7 @@ class FakeAudio implements AudioLike {
 const flush = () => new Promise((r) => setTimeout(r, 0));
 const mkChunks = (n: number): FlatChunk[] =>
   Array.from({ length: n }, (_, i) => ({
-    id: `c${i}`, speaker: "narrator", voice: "marcus", tts_text: `t${i}`, char_start: 0, char_end: 10, para: Math.floor(i / 2),
+    id: `c${i}`, speaker: "narrator", voice: "marcus", tts_text: `t${i}`.padEnd(200, "."), char_start: 0, char_end: 10, para: Math.floor(i / 2),
   }));
 
 function setup(n = 8, opts: { failAt?: number; words?: boolean } = {}) {

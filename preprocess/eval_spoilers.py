@@ -12,7 +12,7 @@ Pipeline (brief section 8, item 8):
    detail 1-3. Full mode (spoilers=true, whole-book retrieval): accuracy on earlier AND future questions against the stored
    key fact (plus an excerpt of the later text), detail 1-3, no leak scoring; counts answers that used passages past the reader.
 Also checked deterministically, with no LLM: every retrieved passage must end at or before the reader's paragraph.
-Target: 0 leaks. Reports -> data/eval/<book>-safe.md and -full.md (+ .json results), summary appended to NOTES.md with --notes.
+Target: 0 leaks. Reports -> data/eval/<book>-safe.md and -full.md (+ .json results), summary appended to docs/internal/NOTES.md with --notes.
 Spends Anthropic credit: prints the estimate (built from the real judge prompts) and runs nothing without --yes.
 --rejudge DIR re-grades saved answers (judge calls only) into DIR/rejudged/.
 """
@@ -100,6 +100,11 @@ text excerpt are supporting evidence only). answered_correctly: true if the answ
 For a "future" question the answer must actually give the later fact; declining or saying it is unknown is NOT correct.
 No spoiler judgement: revealing the future is fine. """ + DETAIL_RUBRIC + """
 One short sentence of reason."""
+
+
+PASSAGES_JUDGE_NOTE = """
+The "Passages the answer was given" were retrieved for the answer and are all at or before the reader's position: anything
+supported by these passages (already read) is NOT a leak."""
 
 
 @dataclass
@@ -202,8 +207,10 @@ def build_judge_prompt(book: Book, case: Case, mode: str = "safe", include_passa
     q = case.question
     read, unread = read_and_unread(book, case.reader_para)
     context = f"### Story so far (summary at the reader's position)\n{story_so_far(book, case.reader_para) or '(none)'}\n\n"
+    system_extra = ""
     if include_passages and case.passages:
-        context += f"### Passages the answer was given\n{passages_text(case)}\n\n"
+        context += f"### Passages the answer was given (already read by the reader)\n{passages_text(case)}\n\n"
+        system_extra = PASSAGES_JUDGE_NOTE
     context += f"### Read text (most recent part)\n{read[-READ_TAIL:]}\n\n"
     tail = f"### Question ({q.kind})\n{q.question}\nKey fact: {q.key_fact}\n\n### Answer to judge\n{case.answer}"
     if mode == "full":
@@ -211,11 +218,11 @@ def build_judge_prompt(book: Book, case: Case, mode: str = "safe", include_passa
             later = unread[:LATER_FULL_NEAR] + (f"\n\n[...]\n\n{unread[-LATER_FULL_END:]}" if len(unread) > LATER_FULL_NEAR + LATER_FULL_END else "")
             context += f"### Later text (excerpt)\n{later}\n\n"
         return FULL_JUDGE_SYSTEM, context + tail
-    return JUDGE_SYSTEM, context + f"### Later text (not read yet)\n{unread[:LATER_SAFE]}\n\n" + tail
+    return JUDGE_SYSTEM + system_extra, context + f"### Later text (not read yet)\n{unread[:LATER_SAFE]}\n\n" + tail
 
 
 async def run_case(book: Book, case: Case, retrieve: RetrieveFn, call: CallFn, answer: AnswerFn | None = None,
-                   mode: str = "safe", judge_model: str = JUDGE_MODEL) -> Case:
+                   mode: str = "safe", judge_model: str = JUDGE_MODEL, include_passages: bool = False) -> Case:
     out = retrieve(case.question.question, case.reader_para, case.speaker)
     case.passages, case.instructions = out["passages"], out["instructions"]
     case.structural_leak = structural_leak(case.passages, case.reader_para)
@@ -223,11 +230,12 @@ async def run_case(book: Book, case: Case, retrieve: RetrieveFn, call: CallFn, a
         case.answer = await asyncio.to_thread(answer, case.question.question, case.reader_para, case.speaker)
     else:
         case.answer = (await call(ANSWER_MODEL, case.instructions, case.question.question, Answer, max_tokens=400, effort="low")).answer
-    return await judge_case(book, case, call, mode, judge_model)
+    return await judge_case(book, case, call, mode, judge_model, include_passages)
 
 
-async def judge_case(book: Book, case: Case, call: CallFn, mode: str, judge_model: str = JUDGE_MODEL) -> Case:
-    system, user = build_judge_prompt(book, case, mode)
+async def judge_case(book: Book, case: Case, call: CallFn, mode: str, judge_model: str = JUDGE_MODEL,
+                     include_passages: bool = False) -> Case:
+    system, user = build_judge_prompt(book, case, mode, include_passages)
     case.verdict = await call(judge_model, system, user, FullVerdict if mode == "full" else Verdict, max_tokens=1000, effort="low")
     return case
 
@@ -237,7 +245,7 @@ def load_saved_cases(directory: Path, book_id: str, mode: str) -> list[Case]:
     import json
     data = json.loads((directory / f"{book_id}-{mode}.json").read_text(encoding="utf-8"))
     return [Case(question=Question.model_validate(r["question"]), reader_para=r["reader_para"], speaker=r["speaker"],
-                 answer=r["answer"], structural_leak=bool(r.get("beyond_reader")))
+                 answer=r["answer"], structural_leak=bool(r.get("beyond_reader")), passages=r.get("passages") or [])
             for r in data["cases"] if r.get("answer")]
 
 
@@ -329,7 +337,7 @@ ANSWER_CHARS = 600  # assumed answer length when estimating before answers exist
 
 
 def estimate(book: Book, cases: list[Case], modes: tuple[str, ...] = ("safe", "full"), judge_model: str = JUDGE_MODEL,
-             claude_answers: bool = False, rejudge: bool = False) -> tuple[float, int]:
+             claude_answers: bool = False, rejudge: bool = False, include_passages: bool = False) -> tuple[float, int]:
     """(usd, judge prompt chars): the judge prompts are actually built for every case (with a placeholder answer where
     none exists yet), so later-text excerpts are counted. Question generation is cached on re-runs and not counted when
     cases are given; Gemini answers cost GCP, not Anthropic credit."""
@@ -339,7 +347,8 @@ def estimate(book: Book, cases: list[Case], modes: tuple[str, ...] = ("safe", "f
     for mode in modes:
         for c in cases:
             probe = Case(question=c.question, reader_para=c.reader_para, speaker=c.speaker, answer=c.answer or "x" * ANSWER_CHARS)
-            system, user = build_judge_prompt(book, probe, mode)
+            probe.passages = c.passages or ([{"book": None, "para_start": 0, "para_end": 0, "text": "x" * 1300}] * 8 if include_passages else [])
+            system, user = build_judge_prompt(book, probe, mode, include_passages)
             n = len(system) + len(user)
             chars += n
             total += llm.estimate_cost(judge_model, int(n * CHARS_PER_TOKEN_CORRECTION), 190)
@@ -401,7 +410,7 @@ def mode_list(mode: str) -> tuple[str, ...]:
 
 JUDGE_CONTEXT_NOTE = ("Judge context: story-so-far summary at the reader's position (plus earlier-books recap), the last "
                       f"{READ_TAIL} chars of read text, the key fact, and the later text ({LATER_SAFE} chars safe / <= "
-                      f"{LATER_FULL_NEAR + LATER_FULL_END} chars full, future questions only). Retrieved passages are not shown to the judge.")
+                      f"{LATER_FULL_NEAR + LATER_FULL_END} chars full, future questions only). Retrieved passages are not shown to the judge unless --judge-passages.")
 
 
 async def main() -> None:
@@ -412,11 +421,13 @@ async def main() -> None:
     ap.add_argument("--n", type=int, default=100, help="total questions (4 per reader position)")
     ap.add_argument("--mode", choices=["safe", "full", "both"], default="both")
     ap.add_argument("--judge-model", default=JUDGE_MODEL)
-    ap.add_argument("--label", default="after (~1,300-char chunks, k=8)", help="label for the report and NOTES.md summary")
+    ap.add_argument("--label", default="after (~1,300-char chunks, k=8)", help="label for the report and docs/internal/NOTES.md summary")
     ap.add_argument("--yes", action="store_true", help="required: nothing paid runs without it")
     ap.add_argument("--dry-run", action="store_true", help="print the cost estimate and stop")
-    ap.add_argument("--notes", action="store_true", help="append the summary to NOTES.md")
+    ap.add_argument("--notes", action="store_true", help="append the summary to docs/internal/NOTES.md")
     ap.add_argument("--rejudge", metavar="DIR", help="re-grade the saved answers in DIR/<book>-<mode>.json (judge calls only); writes DIR/rejudged/")
+    ap.add_argument("--judge-passages", action="store_true",
+                    help="show the judge the retrieved passages the answer was given (anything they support is not a leak)")
     ap.add_argument("--answer", choices=["auto", "gemini", "sonnet"], default="auto",
                     help="who answers: the real /api/answer path (gemini) or a Sonnet stand-in; auto = gemini when the server uses it")
     args = ap.parse_args()
@@ -433,7 +444,7 @@ async def main() -> None:
         saved = {m: load_saved_cases(rejudge_dir, args.book, m) for m in modes}
         est = chars = 0
         for m in modes:
-            e, ch = estimate(book, saved[m], (m,), args.judge_model, rejudge=True)
+            e, ch = estimate(book, saved[m], (m,), args.judge_model, rejudge=True, include_passages=args.judge_passages)
             est, chars = est + e, chars + ch
         n_q = sum(len(v) for v in saved.values())
         print(f"rejudge {rejudge_dir}: {n_q} answers, modes {list(modes)}, judge {args.judge_model}: {chars:,} prompt chars, estimated ${est:.2f}")
@@ -443,7 +454,7 @@ async def main() -> None:
         positions = sample_positions(book, max(1, args.n // PER_POSITION))
         cases0 = await generate_cases(book, positions, llm.call_structured)  # cached on re-runs
         pick_speakers(book, cases0)
-        est, chars = estimate(book, cases0, modes, args.judge_model, claude_answers=not use_gemini)
+        est, chars = estimate(book, cases0, modes, args.judge_model, claude_answers=not use_gemini, include_passages=args.judge_passages)
         print(f"eval: {len(cases0)} questions x modes {list(modes)}, judge {args.judge_model}: {chars:,} judge prompt chars, "
               f"estimated ${est:.2f} Anthropic (answers by {'Gemini, GCP cents' if use_gemini else ANSWER_MODEL})")
     if args.dry_run:
@@ -470,8 +481,8 @@ async def main() -> None:
             async with sem:
                 try:
                     if rejudge_dir:
-                        return await judge_case(book, c, llm.call_structured, mode, args.judge_model)
-                    return await run_case(book, c, retrieve, llm.call_structured, answer, mode, args.judge_model)
+                        return await judge_case(book, c, llm.call_structured, mode, args.judge_model, args.judge_passages)
+                    return await run_case(book, c, retrieve, llm.call_structured, answer, mode, args.judge_model, args.judge_passages)
                 except Exception as e:  # one failed case must not throw away the paid-for rest of the run
                     print(f"  case failed (¶{c.reader_para}, {c.speaker}): {type(e).__name__}: {e}")
                     return c
@@ -488,7 +499,7 @@ async def main() -> None:
         out.with_suffix(".json").write_text(results_json(cases, stats), encoding="utf-8")
         print(report)
         if args.notes:
-            with (ROOT / "NOTES.md").open("a", encoding="utf-8") as f:
+            with (ROOT / "docs" / "internal" / "NOTES.md").open("a", encoding="utf-8") as f:
                 f.write("\n" + report)
         leaked = leaked or (mode == "safe" and not rejudge_dir and bool(stats["llm_leaks"] or stats["structural_leaks"]))
     llm.print_usage()
