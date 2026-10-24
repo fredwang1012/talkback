@@ -14,7 +14,9 @@ MAX_CHARS = 280
 CHUNK_RULES_VERSION = 2
 DEFAULT_VOICE = "default"
 log = logging.getLogger("talkback.ttschunks")
-ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "st", "messrs", "capt", "col", "prof", "no", "vs", "etc", "sr", "jr", "gen", "lt"}
+# Honorifics and common abbreviations: a period after one never ends a sentence ("Mr. Darling", "e.g. Wendy").
+ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "st", "messrs", "capt", "col", "prof", "no", "vs", "etc", "sr", "jr", "gen", "lt",
+                 "e.g", "i.e"}
 
 _SENT_END = re.compile(r"""(?<![.!?])[.!?]++["')\]]*+(?=\s)""")  # lookbehind + possessive: linear on punctuation runs
 
@@ -24,6 +26,19 @@ _NONWS = re.compile(r"\S")
 _LAST_WORD = re.compile(r"[A-Za-z]+\.?$")
 _INITIAL = re.compile(r"(?:^|\s)[A-Z]\.$")
 _TAIL = 40  # abbreviation / initial checks only need the last few characters before the period
+_OPENERS = "\"'([{“‘"
+
+
+def ends_with_abbreviation(before: str) -> bool:
+    """True when `before` (text up to and including a period) ends with an honorific or common abbreviation
+    ("Mr.", "(Dr.", "e.g."), so that period does not end the sentence."""
+    if not before.endswith("."):
+        return False
+    last_word = _LAST_WORD.search(before)
+    if last_word and last_word.group().rstrip(".").lower() in ABBREVIATIONS:
+        return True
+    token = before.split()[-1].lstrip(_OPENERS).rstrip(".").lower() if before.strip() else ""
+    return token in ABBREVIATIONS
 
 
 def sentence_spans(text: str) -> list[tuple[int, int]]:
@@ -35,11 +50,9 @@ def sentence_spans(text: str) -> list[tuple[int, int]]:
             continue
         end = m.end()
         before = text[max(start, m.start() + 1 - _TAIL):m.start() + 1]
-        last_word = _LAST_WORD.search(before)
-        word = last_word.group().rstrip(".").lower() if last_word else ""
         nxt = _WS.match(text, end).end()
         if m.group().rstrip("\"')]") == ".":  # a lone period, not "?!" or an ellipsis
-            if word in ABBREVIATIONS or _INITIAL.search(before):
+            if ends_with_abbreviation(before) or _INITIAL.search(before):
                 continue  # "Mr.", initials such as "J. Smith"
         if text[nxt:nxt + 1].islower():
             continue  # ellipsis, dialogue tag ('"Well?" said he.'), or other lowercase continuation

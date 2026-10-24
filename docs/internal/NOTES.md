@@ -1147,7 +1147,8 @@ Fixes:
   sentences, so the rule now caps answers at four sentences. A spoilers-on Alice question ("who inspired you, when was
   it published") had the tool but the model answered from memory both times (0 sources, no "outside the book" phrase):
   Gemini decides when to search; well-known facts often skip it. Not re-checked after the four-sentence rule (call
-  budget). Also seen: the sentence splitter breaks after "Mr." (pre-existing, `_split`).
+  budget). Also seen: the sentence splitter breaks after "Mr." (pre-existing, `gcp/llm._split`; fixed 2026-10-24, see
+  "Sentence ends after honorifics" below).
 
 ## Textbook figures in the reader (#40, 2026-10-23)
 - The IR textbook's figures (01bool, Figures 1.1-1.7) contain no vector drawings and no real pictures: they are text (matrix cells, posting lists, pseudocode) plus rules and boxes stored as thin embedded images. So `get_images` / `get_drawings` alone would find none of them. Figures are found from their caption instead (`_take_figures`): a "Figure N" line set small or bold, and everything between it and the nearest prose above it (else below it). The crop (page.get_pixmap(clip=...), 150 dpi, longest side <= 2000 px) is saved to `data/books/<id>/figures/fig-N.png`, and the figure becomes a paragraph of kind "figure" (text = caption, read aloud by default) placed between paragraphs. The text inside the figure no longer leaks into the body text.
@@ -1244,3 +1245,13 @@ was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-
   the new chunks are embedded right after. `save_index(..., None)` now removes a stale embeddings.npy, and
   `Index.load` ignores vectors whose count differs from the chunks. Vertex mode is unchanged.
 - Not measured: e5-small speed on a laptop CPU for a 1300-chunk textbook (tests use a fake embedder).
+
+## Sentence ends after honorifics and abbreviations (chore/cleanup-findings, 2026-10-24)
+- The "Mr." quirk was in the streamed Gemini answer splitter (`gcp/llm._split`), not in the TTS chunker: every streamed
+  "Mr." became its own spoken sentence. `ttschunks.ends_with_abbreviation` (ABBREVIATIONS: Mr, Mrs, Ms, Dr, St, Prof,
+  Sr, Jr, vs, etc, e.g, i.e, No, Messrs, Capt, Col, Gen, Lt) is now shared by `sentence_spans` (TTS chunks, uploads),
+  `gcp/llm._split` (also at the end of the stream buffer: "I met Dr." waits for the name) and `recap.split_sentences`.
+- `sentence_spans` already kept "Mr." whole; new is "e.g." / "i.e." before a capital ("e.g. Wendy"). Re-chunking the
+  five committed public-domain books with the new rules changes 0 of 11,243 chunks, so CHUNK_RULES_VERSION stays 2
+  (a bump would rewrite every committed book.json for nothing). Trade-off: "No." and "etc." never end a sentence, so
+  "No. I won't." is one TTS chunk / one streamed sentence (harmless: just grouped).

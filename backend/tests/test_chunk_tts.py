@@ -129,3 +129,26 @@ def test_prerender_estimate_scales_with_chars():
     total = sum(w[3] for w in work)
     assert work and 30_000 < total < 60_000
     assert pr.estimate_usd(work) == pytest.approx(total / 1000 * pr.RATE_PER_1K_CHARS)
+
+
+def test_honorifics_and_common_abbreviations_never_end_a_sentence():
+    for abbr in ["Mr.", "Mrs.", "Ms.", "Dr.", "St.", "Prof.", "Sr.", "Jr.", "vs.", "etc.", "e.g.", "i.e.", "No."]:
+        text = f"He spoke of {abbr} Darling at length. Then he left."
+        assert sents(text) == [f"He spoke of {abbr} Darling at length.", "Then he left."], abbr
+    assert sents("(Mr. Smith) came. Yes.") == ["(Mr. Smith) came.", "Yes."]
+    assert sents('"Mrs. Darling!" she cried. Then.') == ['"Mrs. Darling!" she cried.', "Then."]
+
+
+def test_streamed_answers_do_not_split_after_honorifics():
+    from app.gcp.llm import _split
+    out, rest = _split("Mr. Darling was cross. Mrs. Darling e.g. Wendy agreed. And then")
+    assert out == ["Mr. Darling was cross.", "Mrs. Darling e.g. Wendy agreed."] and rest == " And then"
+    out, rest = _split("I met Dr.")   # end of the buffer: wait for the name, never emit "I met Dr." alone
+    assert out == [] and rest == "I met Dr."
+    assert _split("Fine. Good!")[0] == ["Fine.", "Good!"]
+
+
+def test_recap_sentences_do_not_split_after_abbreviations():
+    from app.recap import split_sentences
+    assert split_sentences("Prof. Jones taught, e.g. Wendy came. They left.") == [
+        "Prof. Jones taught, e.g. Wendy came.", "They left."]

@@ -18,6 +18,7 @@ from typing import Literal
 
 from . import books
 from .schema import Book, Section, Summary
+from .ttschunks import ends_with_abbreviation
 
 Scope = Literal["chapter", "book", "series"]
 SCOPES: tuple[str, ...] = ("chapter", "book", "series")
@@ -28,7 +29,18 @@ BOOK_SENTENCES = 2
 OLD_OVERLAP = 0.6   # a sentence whose content words were this much in the earlier note is not new
 MIN_SENTENCE_WORDS = 4
 
-_SENTENCE = re.compile(r"(?<!\bMr\.)(?<!\bMrs\.)(?<!\bMs\.)(?<!\bDr\.)(?<!\bSt\.)(?<=[.!?])\s+")
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+
+
+def split_sentences(text: str) -> list[str]:
+    """Sentences of a summary; a period after an honorific or abbreviation ("Mr.", "e.g.") does not end one."""
+    out: list[str] = []
+    for piece in (x.strip() for x in _SENTENCE.split(text.strip())):
+        if out and ends_with_abbreviation(out[-1]):
+            out[-1] += " " + piece
+        elif piece:
+            out.append(piece)
+    return out
 
 
 def _words(text: str) -> set[str]:
@@ -45,7 +57,7 @@ def new_sentences(text: str, before: str) -> str:
     """Sentences of `text` the earlier note `before` did not already say."""
     seen = _words(before)
     out = []
-    for s in (x.strip() for x in _SENTENCE.split(text.strip())):
+    for s in split_sentences(text):
         w = _words(s)
         if len(s.split()) >= MIN_SENTENCE_WORDS and w and len(w & seen) / len(w) < OLD_OVERLAP:
             out.append(s)
@@ -148,7 +160,7 @@ def _textbook_scoped(book: Book, para: int, scope: Scope, notes: dict[str, Summa
                   key=lambda s: s.start_para)
     lines, budget = [], BOOK_WORDS
     for s in reversed(tops):   # the most recent chapters first, while the word budget lasts
-        first = " ".join(x.strip() for x in _SENTENCE.split(notes[s.id].text.strip())[:BOOK_SENTENCES])
+        first = " ".join(split_sentences(notes[s.id].text)[:BOOK_SENTENCES])
         line = f"{s.title}: {first}"
         if lines and len(line.split()) > budget:
             break
