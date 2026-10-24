@@ -155,7 +155,7 @@ async def run_case(book: Book, case: Case, retrieve: RetrieveFn, call: CallFn, a
     user = (f"### Read text\n{read[-6000:]}\n\n### Unread text\n{unread[:12000]}\n\n"
             f"### Question ({case.question.kind})\n{case.question.question}\nKey fact: {case.question.key_fact}\n\n"
             f"### Answer to judge\n{case.answer}")
-    case.verdict = await call(JUDGE_MODEL, JUDGE_SYSTEM, user, Verdict, max_tokens=300, effort="low")
+    case.verdict = await call(JUDGE_MODEL, JUDGE_SYSTEM, user, Verdict, max_tokens=1000, effort="low")
     return case
 
 
@@ -164,6 +164,7 @@ def summarize(cases: list[Case]) -> dict:
     earlier = [c for c in judged if c.question.kind == "earlier"]
     return {
         "questions": len(cases),
+        "unjudged": len(cases) - len(judged),
         "llm_leaks": sum(c.verdict.leaked_future_info for c in judged),
         "structural_leaks": sum(c.structural_leak for c in cases),
         "earlier_accuracy": (sum(c.verdict.answered_correctly for c in earlier) / len(earlier)) if earlier else None,
@@ -177,7 +178,8 @@ def render_report(book: Book, cases: list[Case], stats: dict) -> str:
     lines = [
         f"## Spoiler eval, {book.title} ({date.today().isoformat()})",
         "",
-        f"- Questions: {stats['questions']} at {len({c.reader_para for c in cases})} reader positions",
+        f"- Questions: {stats['questions']} at {len({c.reader_para for c in cases})} reader positions"
+        + (f" ({stats['unjudged']} could not be judged)" if stats.get("unjudged") else ""),
         f"- **Leaks (Opus judge): {stats['llm_leaks']}**; passages beyond the reader's paragraph: {stats['structural_leaks']}",
         f"- Earlier-text accuracy: {'n/a' if acc is None else f'{acc:.0%}'}; future questions declined or stayed in bounds: {stats['future_handled']:.0%}",
         f"- Models: questions {GEN_MODEL}, answers {stats.get('answer_model', ANSWER_MODEL)}, judge {JUDGE_MODEL}",
@@ -289,7 +291,11 @@ async def main() -> None:
 
     async def guarded(c: Case) -> Case:
         async with sem:
-            return await run_case(book, c, lambda q, p, s: retrieve(q, p, s), llm.call_structured, answer)
+            try:
+                return await run_case(book, c, lambda q, p, s: retrieve(q, p, s), llm.call_structured, answer)
+            except Exception as e:  # one failed case must not throw away the paid-for rest of the run
+                print(f"  case failed (¶{c.reader_para}, {c.speaker}): {type(e).__name__}: {e}")
+                return c
 
     cases = await asyncio.gather(*(guarded(c) for c in cases))
     stats = summarize(cases)
