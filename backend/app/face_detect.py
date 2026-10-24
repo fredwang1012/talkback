@@ -10,6 +10,7 @@ import json
 import logging
 from datetime import date
 
+from . import pacer, retrying
 from .config import settings
 from .enrich import spend
 from .enrich.llm import price_usd
@@ -79,13 +80,17 @@ async def _gemini(image: bytes, mime: str) -> str:
     the reserved estimate is added to the upload spend."""
     from google import genai
     from google.genai import types
-    client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gcp_region)
+    client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
     config = types.GenerateContentConfig(
         max_output_tokens=1024, response_mime_type="application/json", response_json_schema=SCHEMA,
         thinking_config=types.ThinkingConfig(thinking_budget=0),
     )
-    resp = await client.aio.models.generate_content(
-        model=settings.gemini_model, contents=[types.Part.from_bytes(data=image, mime_type=mime), PROMPT], config=config)
+
+    async def once():
+        return await client.aio.models.generate_content(
+            model=settings.gemini_model, contents=[types.Part.from_bytes(data=image, mime_type=mime), PROMPT], config=config)
+    # someone is waiting for the crop: the interactive lane of the shared pacer, with its short retry budget
+    resp = await pacer.shared.call(once, priority="interactive", what="face detect")
     meta = getattr(resp, "usage_metadata", None)
     if meta is not None:
         n_in, n_out = meta.prompt_token_count or 0, meta.candidates_token_count or 0
@@ -115,5 +120,5 @@ async def detect(image: bytes, ext: str) -> dict | None:
     try:
         return parse(await _gemini(image, MIME.get(ext, "image/jpeg")))
     except Exception as e:   # the app falls back to a centred square
-        log.warning("face detection failed (%s)", type(e).__name__)
+        log.warning("face detection failed (%s)", retrying.describe(e))
         return None

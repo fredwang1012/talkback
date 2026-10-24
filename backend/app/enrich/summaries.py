@@ -15,6 +15,7 @@ from typing import Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict
 
+from .. import retrying
 from ..schema import Book, Summary
 from .llm import LLMRefusal, SpendLimit
 from .tasks import gather_or_cancel
@@ -152,9 +153,9 @@ async def build_summaries(book: Book, call: CallFn, on_progress: Callable[[float
             raise  # stops the stage: siblings are cancelled
         except Exception as e:  # out of tokens/bad JSON/provider failure: this checkpoint is tried once more
             if last or isinstance(e, LLMRefusal):   # a refusal would only be refused again
-                log.warning("summary note skipped (%s)", type(e).__name__)
+                log.warning("summary note skipped (%s)", retrying.describe(e))
             else:
-                log.warning("summary note failed (%s); retrying after the others", type(e).__name__)
+                log.warning("summary note failed (%s); retrying after the others", retrying.describe(e))
                 failed.append((ui, u, c))
                 return
         tick()

@@ -14,6 +14,7 @@ from typing import Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict
 
+from .. import retrying
 from ..config import settings
 from ..schema import Book, Paragraph, Summary
 from .llm import SpendLimit, effective_provider, estimate_usd
@@ -186,7 +187,7 @@ async def build(book: Book, call: CallFn, on_progress: Callable[[float], None] |
         except SpendLimit:
             raise
         except Exception as e:  # refusal / bad JSON / provider failure: this section has no note
-            log.warning("textbook note skipped (%s)", type(e).__name__)
+            log.warning("textbook note skipped (%s)", retrying.describe(e))
         tick()
 
     await gather_or_cancel(one(t) for t in ts if t.level != 1)

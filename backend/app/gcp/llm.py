@@ -6,7 +6,7 @@ from typing import AsyncIterator, Callable
 from google import genai
 from google.genai import types
 
-from .. import retrying, websearch
+from .. import pacer, websearch
 from ..config import settings
 from . import usage
 
@@ -45,7 +45,7 @@ class GeminiAnswerer:
         Google's Search Suggestions markup (search_entry_point.rendered_content, unmodified) through `on_suggestions`. If the
         grounded request is refused before it starts, the answer is retried once without the tool. A transient error
         (network, 429, 5xx) before the first token is retried with backoff; once a token was spoken the stream is not
-        replayed."""
+        replayed. The call takes an interactive slot of the shared Gemini pacer: never queued behind an upload's batch."""
         def config(thinking: bool, grounded: bool):
             return types.GenerateContentConfig(
                 system_instruction=system, max_output_tokens=700,
@@ -72,7 +72,7 @@ class GeminiAnswerer:
                 except StopAsyncIteration:
                     first = None
                 return it, first
-            return await retrying.retry_async(once, what="answer", sleep=self._sleep)
+            return await pacer.shared.call(once, priority="interactive", what="answer", sleep=self._sleep)
 
         buf = ""
         meta = None

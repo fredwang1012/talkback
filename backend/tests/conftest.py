@@ -59,3 +59,10 @@ def _no_auto_rechunk_unless_a_test_says_otherwise(monkeypatch):
 def _no_minor_voices_unless_a_test_says_otherwise(monkeypatch):
     """Pipeline tests assert exact casts and segments; the generic-voice pass (#70) is tested on its own."""
     monkeypatch.setattr(settings, "minor_voices", False, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_gemini_pacer(monkeypatch):
+    """The shared Gemini limiter is process state (a 429 in one test would slow the next): each test gets its own."""
+    from app import pacer
+    monkeypatch.setattr(pacer, "shared", pacer.Pacer())

@@ -49,8 +49,12 @@ class Settings(BaseSettings):
     minor_voices: bool = True  # uncast speakers in uploaded novels read in one of two generic voices (enrich/minor.py)
     upload_llm: Literal["claude", "gemini"] = "claude"   # developer-only; claude falls back to gemini when out of credit
     upload_confirm: bool = False      # testing mode: show the estimate and wait for POST /api/books/{id}/enrich
-    upload_concurrency: int = 24      # parallel LLM calls during enrichment
-    enrich_parallel: int = 1000       # uploads processed at the same time: no practical limit; lower it if Gemini rate limits bite
+    upload_concurrency: int = 24      # parallel LLM calls per book during enrichment (the shared pacer caps the total)
+    enrich_parallel: int = 1000       # uploads processed at the same time: no practical limit (app/pacer.py shares one limit)
+    # Process-wide adaptive concurrency for every Gemini call (app/pacer.py): starts here, halves on a 429, grows by one
+    # after 10 consecutive successes up to the max. Vertex's per-minute quota on a fresh project tolerates a few dozen.
+    gemini_concurrency_start: int = 8
+    gemini_concurrency_max: int = 32
     upload_book_cap_usd: float = 4.0      # refuse a book whose estimate is above this
     upload_total_cap_usd: float = 15.0    # hard stop on cumulative upload enrichment spend (data/usage)
 

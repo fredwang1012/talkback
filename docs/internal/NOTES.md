@@ -1208,3 +1208,23 @@ was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-
   writes). book.json / status.json reads use read_bytes (open-read-close; pydantic validates bytes).
 - ENRICH_PARALLEL default 3 -> 1000 (no practical limit on parallel uploads; each book still bounded by
   UPLOAD_CONCURRENCY=24 LLM calls; 429s are retried with jitter). Lower it if Gemini rate limits bite.
+
+## Shared adaptive Gemini limiter (feat/gemini-pacer, 2026-10-24)
+- Seen locally (ENRICH_PARALLEL=1000, UPLOAD_CONCURRENCY=24, gemini-2.5-flash on Vertex, GEMINI_LOCATION=global made no
+  difference): two novels enriching together logged hundreds of `gemini call failed (ClientError); retry n/4` a minute,
+  many reaching 4/4, then `12 of 74 summary notes skipped`. One live burst of 60 tiny calls (~$0.001) read the real
+  error: google.genai `ClientError`, HTTP 429, status `RESOURCE_EXHAUSTED`, no Retry-After header, no RetryInfo; 13 of
+  60 concurrent calls were refused. So the quota is a per-minute budget that a few dozen concurrent calls already exceed.
+- `app/pacer.py`: one process-wide AIMD concurrency limit for every Gemini call site (GeminiProvider: enrichment,
+  textbook notes, equations, series checks, public jobs; GeminiAnswerer; multilingual.translate; face_detect). Starts at
+  GEMINI_CONCURRENCY_START=8, +1 after 10 consecutive successes up to GEMINI_CONCURRENCY_MAX=32, halves on a 429 (once per
+  generation: the 429s of calls already in flight at the cut count as the same overload), floor 1. Honours a Retry-After
+  header or RetryInfo.retryDelay when one exists. Callers over the limit queue instead of failing; a cancelled waiter or
+  holder gives its slot back. Interactive calls (answers, translation, face upload) are served first and keep one
+  reserved slot background work may not take. Retries: background 6 attempts, backoff 1-2, 2-4, 4-8, 8-16, 15-30 s with
+  jitter (about a minute in all), slot released while sleeping; interactive keeps retrying's short defaults (4 attempts,
+  cap 8 s; translate 2 x 0.3 s). Per-book UPLOAD_CONCURRENCY still caps each book. Log: `gemini rate limited
+  (ClientError 429): concurrency 8 -> 4` at each cut and `gemini pacer: limit, in flight, queued, 429s in the last
+  minute` every ~30 s while throttled; retry lines now name the status (`ClientError 429`), never the message.
+- face_detect builds its client with settings.gemini_region() like the other Gemini clients (embeddings stay regional).
+- Embeddings (gcp/embed.py, sync worker threads) are not under the pacer: a different quota, and no 429s seen there.

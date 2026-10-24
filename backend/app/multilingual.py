@@ -12,7 +12,7 @@ import logging
 import re
 from collections import OrderedDict
 
-from . import retrying
+from . import pacer
 from .config import settings
 
 RETRY_ATTEMPTS = 2     # translation is on the question's critical path: one retry, a short wait
@@ -118,7 +118,8 @@ async def translate(text: str) -> str:
         return await _client.aio.models.generate_content(model=settings.gemini_model, contents=text, config=config)
 
     # one quick retry of a network blip, short enough to fit the caller's TRANSLATE_TIMEOUT_S
-    resp = await retrying.retry_async(once, what="translation", attempts=RETRY_ATTEMPTS, base=RETRY_BASE_S, cap=RETRY_BASE_S)
+    resp = await pacer.shared.call(once, priority="interactive", what="translation", attempts=RETRY_ATTEMPTS,
+                                   base=RETRY_BASE_S, cap=RETRY_BASE_S)
     meta = getattr(resp, "usage_metadata", None)
     if meta is not None:
         usage.record("llm", settings.gemini_model, prompt_tokens=meta.prompt_token_count or 0,
