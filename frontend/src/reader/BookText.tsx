@@ -1,7 +1,7 @@
 import { Fragment, memo } from "react";
 import "katex/dist/katex.min.css";
 import type { Book, Paragraph } from "../api";
-import { equationView, imageWidth } from "./equation";
+import { equationView, imageHeight, imageWidth, inlineView, pieces } from "./equation";
 import type { FlatChunk } from "./position";
 import ChapterList from "./ChapterList";
 import Figure from "./Figure";
@@ -94,7 +94,9 @@ function BookText({ book, chunks, index, onPick, word }: Props) {
               tabIndex={-1}
               onClick={() => onPick(i)}
             >
-              {i === index && word ? <Spoken text={p.text.slice(c.char_start, c.char_end)} word={word} /> : p.text.slice(c.char_start, c.char_end)}
+              {p.inline_math?.length
+                ? <WithMath p={p} start={c.char_start} end={c.char_end} word={i === index ? word : null} />
+                : i === index && word ? <Spoken text={p.text.slice(c.char_start, c.char_end)} word={word} /> : p.text.slice(c.char_start, c.char_end)}
             </span>,
           );
           cursor = c.char_end;
@@ -123,6 +125,23 @@ function Equation({ p }: { p: Paragraph }) {
     return <img className="math-img" src={view.src} alt={spoken} loading="lazy" style={{ width: imageWidth(p.math) }} />;
   }
   return <span className="math-text">{p.text}</span>;
+}
+
+/** A sentence holding inline formulas, each typeset (else its picture, else its text); the spoken word is marked. */
+function WithMath({ p, start, end, word }: {
+  p: Paragraph; start: number; end: number; word?: { charStart: number; charEnd: number } | null;
+}) {
+  return <>{pieces(p.text, start, end, p.inline_math, word).map((x, k) => {
+    if (x.kind === "text") return x.spoken ? <mark className="word" key={k}>{x.text}</mark> : x.text;
+    const view = inlineView(x.math);
+    const cls = `math-inline${x.spoken ? " word" : ""}`;
+    if (view.kind === "latex") return <span className={cls} key={k} dangerouslySetInnerHTML={{ __html: view.html }} />;
+    if (view.kind === "image") {
+      return <img className={`${cls} math-inline-img`} key={k} src={view.src} alt={x.math.spoken || x.text}
+                  loading="lazy" style={{ height: imageHeight(x.math) }} />;
+    }
+    return x.spoken ? <mark className="word" key={k}>{x.text}</mark> : x.text;
+  })}</>;
 }
 
 /** The sentence being read, with the word currently spoken marked. */

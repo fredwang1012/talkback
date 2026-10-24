@@ -3,6 +3,7 @@ import type { Book, Face as FaceT } from "../api";
 import type { TalkUi } from "../talk/useTalk";
 import { PRESETS, type TalkChoice } from "./castLogic";
 import { FaceView } from "./FaceView";
+import { SourceLinks } from "./SourceLinks";
 import RecapMenu, { type RecapChoice } from "./RecapMenu";
 import { priorTurns } from "../talk/chatLog";
 import { chapterAt, createStatusGate, showSpoilerToggle, speakerChoices, speakerName, talkbackStatus, type TalkbackStatus } from "./talkbackLogic";
@@ -86,7 +87,8 @@ export default function TalkbackView({
 
   const press = () => { if (!held.current) { held.current = true; talk.pttDown(); } };
   const release = () => { if (held.current) { held.current = false; talk.pttUp(); } };
-  const remembered = priorTurns(talk.messages, speakerId, 99).length;
+  // only what is given back to the character counts: a fresh session and the Gemini answer get the last HISTORY_TURNS lines
+  const remembered = priorTurns(talk.messages, speakerId).length;
   const busy = line === "thinking" || line === "speaking";
 
   const send = () => {
@@ -100,7 +102,7 @@ export default function TalkbackView({
     <section className="talkback" aria-label="Talkback conversation">
       <div className="tb-top">
         <button className="link-btn" onClick={onBack}>Back to reading</button>
-        <RecapMenu inSeries={!!book.series} onPick={onRecap} />
+        <RecapMenu inSeries={!!book.series} textbook={book.kind === "textbook"} onPick={onRecap} />
         <button className="link-btn" onClick={onVoices}>Voices</button>
         <div className={`badge${fullBook ? " spoilers-on" : ""}`}>
           <strong>You're at {chapter ?? `paragraph ${para + 1}`}.</strong>
@@ -168,6 +170,7 @@ export default function TalkbackView({
                   {m.interrupted && <small> · interrupted</small>}
                 </span>
                 <p>{m.text || (m.pending || m.loading ? "…" : "")}</p>
+                {m.role === "character" && <SourceLinks sources={m.sources} suggestions={m.searchSuggestions} />}
                 {m.role !== "user" && (m.id === talk.liveId ? !!m.text : !m.pending && talk.replayable?.has(m.id)) && (() => {
                   const on = talk.replayingId === m.id;
                   const verb = on ? "Pause" : talk.isPaused?.(m.id) ? "Resume" : "Play";
@@ -185,7 +188,7 @@ export default function TalkbackView({
           </div>
           <div className="tb-actions">
             {remembered > 0 && (
-              <span className="remembers" title="This chat is kept for this browser tab and given back to the character, so follow-up questions work">
+              <span className="remembers" title="This chat is kept for this browser tab and its latest lines with this character are given back to them, so follow-up questions work">
                 {name} remembers this chat ({remembered} {remembered === 1 ? "line" : "lines"})
               </span>
             )}

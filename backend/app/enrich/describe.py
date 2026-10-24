@@ -159,6 +159,11 @@ def parts(data: bytes, ext: str) -> tuple[str, str, str]:
     return title, author, text[:MAX_CHARS]
 
 
+def _public_active() -> bool:
+    from .. import public_client
+    return public_client.active()
+
+
 def _take_llm_call() -> bool:
     """One LLM call under the global bucket and the daily cap (checked and counted synchronously)."""
     today = date.today().isoformat()
@@ -201,6 +206,9 @@ async def describe(data: bytes, ext: str, *, llm: LLM | None = None) -> dict:
     if title and author and not unsure:
         return {"title": title, "author": author, "source": "metadata"}
     source = "metadata" if title or author else "none"
+    if text and llm is None and settings.upload_enrich and _public_active():
+        from .. import public_client
+        llm = public_client.remote_llm("describe")   # a clone with only a Boson key: the public service's caps apply
     if text and (llm is not None or settings.upload_enrich):
         try:
             if llm is None:

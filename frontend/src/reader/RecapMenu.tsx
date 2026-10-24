@@ -1,12 +1,14 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { RecapScope } from "../api";
 
-export type RecapChoice = { scope: RecapScope; label: string };
+/** `section`: a chapter asked for by name ("summarize chapter 4") instead of the last / current one. */
+export type RecapChoice = { scope: RecapScope; label: string; section?: string };
 
-/** The menu's options: the series one only for a book that belongs to a series. */
-export function recapChoices(inSeries: boolean): RecapChoice[] {
+/** The menu's options: the series one only for a book that belongs to a series. A textbook recaps the chapter the
+ * reader is in (no spoilers), so its first option is "This chapter". */
+export function recapChoices(inSeries: boolean, textbook = false): RecapChoice[] {
   const all: RecapChoice[] = [
-    { scope: "chapter", label: "Last chapter" },
+    { scope: "chapter", label: textbook ? "This chapter" : "Last chapter" },
     { scope: "book", label: "This book so far" },
     { scope: "series", label: "The series so far" },
   ];
@@ -22,18 +24,18 @@ export function menuKey(index: number, count: number, key: string): number | nul
   return null;
 }
 
-type Props = { inSeries: boolean; onPick: (c: RecapChoice) => void; className?: string; disabled?: boolean };
+type Props = { inSeries: boolean; textbook?: boolean; onPick: (c: RecapChoice) => void; className?: string; disabled?: boolean };
 
 /** "Recap" menu button (WAI-ARIA menu button): Enter/Space/ArrowDown open it on the first item, ArrowUp on the last;
  * arrows, Home and End move; Esc closes and returns focus to the button; Tab or a click outside closes it. */
-export default function RecapMenu({ inSeries, onPick, className = "link-btn", disabled }: Props) {
+export default function RecapMenu({ inSeries, textbook = false, onPick, className = "link-btn", disabled }: Props) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const button = useRef<HTMLButtonElement>(null);
   const items = useRef<(HTMLButtonElement | null)[]>([]);
   const wrap = useRef<HTMLDivElement>(null);
   const menuId = useId();
-  const choices = recapChoices(inSeries);
+  const choices = recapChoices(inSeries, textbook);
 
   useEffect(() => { if (open) items.current[active]?.focus(); }, [open, active]);
   useEffect(() => {

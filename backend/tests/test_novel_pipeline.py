@@ -198,7 +198,10 @@ def test_verbatim_failure_falls_back_to_narrator(data_dir):
     assert ok
     book = saved(data_dir)
     bad = next(p for p in book.paragraphs if "CORRUPT" in p.text)
-    assert [(s.speaker, s.text) for s in bad.segments] == [("narrator", bad.text)]
+    # the segmenter's answer is rejected (narrator only); the free attribution pass then voices the tagged quotes
+    assert " ".join(s.text for s in bad.segments).split() == bad.text.split()
+    assert [s.speaker for s in bad.segments if s.text.startswith('"')] == ["alice", "bob"]
+    assert all(s.speaker == "narrator" for s in bad.segments if not s.text.startswith('"'))
     good = next(p for p in book.paragraphs if p.text.startswith("m0x"))
     assert any(s.speaker == "alice" for s in good.segments)
 
@@ -541,7 +544,7 @@ def test_job_stops_when_cumulative_cap_is_reached_mid_job(data_dir, monkeypatch)
     monkeypatch.setattr(settings, "upload_total_cap_usd", 15.0)
     fake = FakeProvider()
     ok, events, _ = run_pipeline("u-test-aaaaaaaa", fake)
-    assert not ok and events[-1]["status"] == "error" and events[-1]["message"] == pipeline.BUDGET_USED
+    assert not ok and events[-1]["status"] == "refused" and events[-1]["message"] == pipeline.BUDGET_USED
     assert len(fake.calls) == 1  # the cast call went out, every later call was refused locally
     assert saved(data_dir).paragraphs  # still readable
 
@@ -625,7 +628,7 @@ def test_confirm_mode_waits_then_starts_on_post(client, monkeypatch):
 
 
 def test_enrich_endpoint_409_without_waiting_book_and_404(client):
-    book_id = upload(client, kind="textbook").json()["book_id"]
+    book_id = upload(client).json()["book_id"]   # enriched already: neither waiting nor failed (a failed job may be retried)
     assert client.post(f"/api/books/{book_id}/enrich").status_code == 409
     assert client.post("/api/books/nope-nope/enrich").status_code == 404
 
@@ -657,10 +660,12 @@ def test_demo_mode_refusal_is_silent_but_plain(client, monkeypatch):
     assert "estimate_usd" not in st["enrich"] and not client.fake.calls
 
 
-def test_textbooks_are_unchanged(client, monkeypatch):
+def test_textbooks_get_recap_notes_only(client, monkeypatch):
     monkeypatch.setattr(settings, "upload_confirm", True)
     book_id = upload(client, kind="textbook").json()["book_id"]
-    assert client.get(f"/api/books/{book_id}/status").json() == {"status": "ready"}
+    st = client.get(f"/api/books/{book_id}/status").json()
+    assert st["enrich"]["status"] == "awaiting_confirmation" and st["enrich"]["summaries_only"] is True
+    assert st["enrich"]["message"] == pipeline.TEXTBOOK_CONFIRM
     assert not client.fake.calls
     book = client.get(f"/api/books/{book_id}").json()
     assert book["characters"] == [] and book["summaries"] == []
@@ -774,3 +779,35 @@ def test_persona_prompts_ask_for_concrete_speech_habits_not_generic_adjectives()
         assert needle in PERSONA_SYSTEM
     assert "concrete speech habits" in SYSTEM and "3 sentences" not in SYSTEM
     assert "spoilers" not in PERSONA_SYSTEM.lower() and "Do not state plot facts" in PERSONA_SYSTEM
+
+
+# ---------- CPU work off the event loop (review of #133) ----------
+
+@pytest.fixture
+def cpu_calls(monkeypatch):
+    """Record the thread of every attribution pass and rechunk; minor voices on so both rechunk paths are exercised."""
+    import threading
+    from app.enrich import minor as minor_mod
+    monkeypatch.setattr(settings, "minor_voices", True)
+    calls: list[tuple[str, bool]] = []
+    real_rechunk, real_attr = pipeline.rechunk_book, pipeline.attribute_speakers
+
+    def rechunk(book):
+        calls.append(("rechunk", threading.current_thread() is threading.main_thread()))
+        real_rechunk(book)
+
+    def attribute(book):
+        calls.append(("attribute", threading.current_thread() is threading.main_thread()))
+        return real_attr(book)
+    monkeypatch.setattr(pipeline, "rechunk_book", rechunk)
+    monkeypatch.setattr(minor_mod, "rechunk_book", rechunk)
+    monkeypatch.setattr(pipeline, "attribute_speakers", attribute)
+    return calls
+
+
+def test_attribution_and_rechunk_run_off_the_event_loop_once(data_dir, cpu_calls):
+    make_book_on_disk(data_dir)   # "a stranger" is an uncast speaker: the minor-voice pass changes lines
+    ok, _, _ = run_pipeline("u-test-aaaaaaaa")
+    assert ok
+    assert ("attribute", False) in cpu_calls and all(not on_loop for _, on_loop in cpu_calls), cpu_calls
+    assert [n for n, _ in cpu_calls].count("rechunk") == 1, cpu_calls

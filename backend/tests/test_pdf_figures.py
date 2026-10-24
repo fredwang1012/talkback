@@ -127,7 +127,7 @@ def test_a_figure_and_a_display_equation_on_one_page_stay_apart(tmp_path):
     book = build_book("u-x-00000000", "T", "", "textbook", pdf_to_text(build(page, lambda p: prose(p, 60, 300)), tmp_path))
     kinds = [(p.kind, p.figure or (p.math.number if p.math else None)) for p in book.paragraphs if p.kind]
     assert kinds == [("math", "3.4"), ("figure", "fig-1.png")]
-    assert not any(c in p.text for p in book.paragraphs for c in "\x02\x03\x04\x05")
+    assert not any(c in p.text for p in book.paragraphs for c in "\x01\x02\x03\x04\x05\x06\x07")
 
 
 def test_parse_and_build_book_make_figure_paragraphs_for_textbooks_only():

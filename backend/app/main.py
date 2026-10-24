@@ -12,14 +12,15 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from . import books, cast, face_detect, faces, ingest_upload, public_client, recap, retrieval, tts_cache, users, voices
+from . import books, cast, emotion, face_detect, faces, ingest_upload, multilingual, public_client, recap, retrieval, tts_cache, tts_lang, users, voices
+from .delivery import apply_speed
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
 from .config import settings
@@ -29,13 +30,17 @@ from .enrich import pipeline as enrich_pipeline
 from .enrich.detect import detect_kind
 from .gcp import usage
 from .personas import build_answer_prompt, build_instructions
+from . import websearch
 from .mp3dur import mp3_seconds
 from .ratelimit import TokenBucket, client_ip
 from .schema import Book, ChatTurn
+from .ttschunks import inline_spans
 from .uploadlimit import UploadSizeLimit
 
 def _warm_up() -> None:
     """Load the embedding model and every book's index before the first question (the model takes ~17 s to load)."""
+    if settings.auto_rechunk:
+        books.schedule_all_upgrades()  # out-of-date tts_chunks are rebuilt on a background thread (no API calls)
     try:
         for info in books.list_books():
             _index_for(info["id"])
@@ -43,14 +48,22 @@ def _warm_up() -> None:
             _vertex_deps()[0].embed_query("warm up")
     except Exception:  # never block startup; retrieval falls back to BM25 / loads lazily
         pass
+    # after the indexes: with the LLM down a check can wait for a timeout, which must not delay the first question
+    try:  # uploads whose first volume got no series (#134): one bounded, once-per-book pass; never raises
+        from .enrich import series_link
+        asyncio.run(series_link.startup_default())
+    except Exception:
+        pass
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await asyncio.to_thread(users.migrate_on_startup)  # PER_USER only; never raises
     task = asyncio.create_task(asyncio.to_thread(_warm_up))
+    resume = asyncio.create_task(_resume_enrichments())   # no job survives a restart: pick up the interrupted ones
     yield
     task.cancel()
+    resume.cancel()
 
 
 app = FastAPI(title="Talkback", lifespan=lifespan, dependencies=[Depends(users.bind_identity)])
@@ -240,17 +253,19 @@ def get_book(book_id: str, accept_encoding: str = Header(default="")):
 
 
 @app.get("/api/books/{book_id}/recap", dependencies=[Depends(require_access)])
-def get_recap(book_id: str, para: int = 0, scope: recap.Scope | None = None):
+def get_recap(book_id: str, para: int = 0, scope: recap.Scope | None = None,
+              section: str | None = Query(None, max_length=80)):
     """Spoiler-safe "Previously..." for the reader's place: the latest stored summary written from text at or
     before `para` (never a later one), the chapter they are in, and the closing summaries of earlier books.
-    With `scope` (chapter | book | series, see recap.py) just that recap: {scope, upto_para, chapter, text}."""
+    With `scope` (chapter | book | series, see recap.py) just that recap: {scope, upto_para, chapter, text}; with
+    `section` too, that chapter's recap (a textbook: any section; a novel: only as far as the reader has read)."""
     users.guard_book(book_id)
     book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
     _, para = retrieval._clamp(book, para)
     if scope is not None:
-        return recap.scoped(book, para, scope)
+        return recap.scoped(book, para, scope, section)
     ok = [s for s in book.summaries if s.upto_para <= para]
     best = max(ok, key=lambda s: s.upto_para) if ok else None
     sections = [s for s in book.sections if s.start_para <= para]
@@ -282,6 +297,7 @@ class TtsRequest(BaseModel):
     chunk_id: str
     voice_override: str | None = None
     cached_only: bool = False  # demo mode: serve pre-rendered audio only, never call Boson
+    speed: Literal["very_slow", "slow", "fast", "very_fast"] | None = None  # natural speed (#78): Boson speed tag, own cache entry
 
 
 @app.post("/api/tts", dependencies=[Depends(require_access)])
@@ -301,13 +317,15 @@ async def tts(req: TtsRequest, request: Request):
                 tags = cast.tags_for(book, c.speaker) if ch else None
                 if tags is not None and tts_text.startswith(ch.voice_tags):  # the user's pitch/speed replaces the book's
                     tts_text = tags + tts_text[len(ch.voice_tags):]
+                tts_text = apply_speed(tts_text, req.speed)
                 cached = tts_cache.is_cached(tts_text, voice)
                 if req.cached_only and not cached:
                     raise HTTPException(409, "This line is not pre-rendered yet. Run preprocess/prerender_tts.py before the demo.")
                 if not cached and not tts_bucket.allow(rate_key(request)):
                     raise HTTPException(429, "Too many new audio requests; wait a moment.")
                 try:
-                    out = await tts_cache.get_or_create(boson, tts_text, voice, p.text[c.char_start:c.char_end])
+                    out = await tts_cache.get_or_create(boson, tts_text, voice, p.text[c.char_start:c.char_end],
+                                                        inline_spans(p, c.char_start, c.char_end))
                 except (BosonError, RuntimeError) as e:
                     raise boson_http_error(e)
                 return {"chunk_id": c.id, "voice": voice, **out}
@@ -410,10 +428,14 @@ async def retrieve(req: RetrieveRequest, request: Request):
     if not retrieve_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many lookups; wait a moment.")
     book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
+    search = await multilingual.search_query(req.query)  # the book is English: a question in another language is translated
     # realtime (Boson) instructions must stay short: fewer passages and a smaller character cap than /api/answer
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, min(req.k, REALTIME_K),
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), search, reader_para, min(req.k, REALTIME_K),
                                     spoilers=req.spoilers, max_chars=REALTIME_MAX_PASSAGE_CHARS, **_series_context(book))
-    out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"], spoilers=req.spoilers)
+    out["instructions"] = build_instructions(book, req.speaker_id, out["story_so_far"], out["passages"], spoilers=req.spoilers,
+                                             reply_language=multilingual.foreign_language(req.query), voice_emotion=True)
+    if search != req.query:
+        out["search_query"] = search  # what was searched, for debugging (the browser network panel)
     out["persona"] = speaker.persona if speaker else None
     return out
 
@@ -437,27 +459,36 @@ async def answer(req: RetrieveRequest, request: Request):
         raise HTTPException(429, "Too many questions; wait a moment.")
     book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
     t0 = time.monotonic()
-    out = await retrieval.aretrieve(book, _index_for(req.book_id), req.query, reader_para, req.k, spoilers=req.spoilers,
+    search = await multilingual.search_query(req.query)  # searched in English; answered in the reader's language
+    out = await retrieval.aretrieve(book, _index_for(req.book_id), search, reader_para, req.k, spoilers=req.spoilers,
                                     **_series_context(book))
     t_retrieved = time.monotonic()
     retrieve_ms = int((t_retrieved - t0) * 1000)
     if _public_answers():  # passages above are already spoiler-filtered here; the service only writes the answer
         return StreamingResponse(_public_answer_stream(book, speaker, req, out, retrieve_ms, t_retrieved),
                                  media_type="application/x-ndjson")
+    # web search only for textbooks and spoilers-on novels (never a spoiler-safe novel), within today's grounded cap
+    grounded = websearch.allowed(book.kind, req.spoilers) and websearch.take_local()
     system, user = build_answer_prompt(book, req.speaker_id, out["story_so_far"], out["passages"], req.query,
-                                        spoilers=req.spoilers, history=req.history)
+                                        spoilers=req.spoilers, history=req.history, web_search=grounded)
+    sources: list[dict] = []
+    suggestions: list[str] = []   # Google's Search Suggestions markup (shown with the answer, as Google requires)
+    search_kw = {"web_search": True, "on_sources": sources.extend, "on_suggestions": suggestions.append} if grounded else {}
 
     async def stream():
         first_ms = None
         try:
-            async for sentence in get_answerer().stream_sentences(system, user):
+            async for sentence, feeling in emotion.tag_sentences(get_answerer().stream_sentences(system, user, **search_kw)):
                 if first_ms is None:
                     first_ms = int((time.monotonic() - t_retrieved) * 1000)
-                yield _line({"type": "sentence", "text": sentence})
+                yield _line(emotion.sentence_line(sentence, feeling))
         except Exception as e:  # never leak stack traces or secrets to the client
             logging.getLogger(__name__).warning("answer stream failed: %s", type(e).__name__)
             yield _line({"type": "error", "message": "The answer could not be generated; please try again."})
             return
+        event = websearch.sources_event(sources, suggestions[-1] if suggestions else None)
+        if event:  # shown under the answer (links + Google's suggestions), never spoken
+            yield _line(event)
         yield _line({"type": "done", "passages": len(out["passages"]), "retrieve_ms": retrieve_ms,
                      "first_sentence_ms": first_ms if first_ms is not None else 0})
 
@@ -466,12 +497,19 @@ async def answer(req: RetrieveRequest, request: Request):
 
 async def _public_answer_stream(book: Book, speaker, req: RetrieveRequest, out: dict, retrieve_ms: int, t_retrieved: float):
     first_ms = None
+    event = None
     payload = public_client.answer_payload(book, speaker, req.speaker_id, out, req.query, req.spoilers, req.history)
     try:
         async for msg in public_client.stream_answer(payload):
+            if msg.get("type") == "sources":
+                event = websearch.sources_event(msg.get("sources"), msg.get("search_suggestions"))  # re-checked here
+                continue
+            text, marked = emotion.split_marker(msg["text"])  # the service is not trusted to have stripped markers
+            if not text:
+                continue
             if first_ms is None:
                 first_ms = int((time.monotonic() - t_retrieved) * 1000)
-            yield _line({"type": "sentence", "text": msg["text"]})
+            yield _line(emotion.sentence_line(text, emotion.valid(msg.get("emotion")) or marked))
     except public_client.PublicFailure as e:
         logging.getLogger(__name__).warning("public answer failed: %s", e.kind)
         if e.kind != "limit":
@@ -479,6 +517,8 @@ async def _public_answer_stream(book: Book, speaker, req: RetrieveRequest, out: 
         yield _line({"type": "error", "message": public_client.ANSWER_LIMIT if e.kind == "limit"
                      else public_client.ANSWER_UNAVAILABLE})
         return
+    if event:
+        yield _line(event)
     yield _line({"type": "done", "passages": len(out["passages"]), "retrieve_ms": retrieve_ms,
                  "first_sentence_ms": first_ms if first_ms is not None else 0})
 
@@ -486,16 +526,30 @@ async def _public_answer_stream(book: Book, speaker, req: RetrieveRequest, out: 
 class SpeakRequest(BaseModel):
     text: str = Field(min_length=1, max_length=400)
     voice: str
+    emotion: str | None = Field(default=None, max_length=40)  # an answer sentence's feeling (#14); unknown is ignored
+    language: str | None = Field(default=None, max_length=3)  # ISO 639-3 of the sentence (#135); None / 'eng' = English
+
+    @field_validator("language")
+    @classmethod
+    def _documented_language(cls, v):
+        if v is not None and not tts_lang.valid(v):
+            raise ValueError("language must be an ISO 639-3 code of a language Higgs TTS supports")
+        return v
 
 
 @app.post("/api/speak", dependencies=[Depends(require_access)])
 async def speak(req: SpeakRequest, request: Request):
     if not voices.is_known_voice(req.voice):
         raise HTTPException(400, f"Unknown voice '{req.voice}'.")
-    if not tts_cache.is_cached(req.text, req.voice) and not tts_bucket.allow(rate_key(request)):
+    text = emotion.strip_tags(req.text)   # answer / recap text: it never carries its own Boson tags
+    if not text:
+        raise HTTPException(400, "Nothing to say.")
+    tts_text = emotion.tts_input(text, emotion.valid(req.emotion))
+    lang = None if tts_lang.is_english(req.language) else req.language
+    if not tts_cache.is_cached(tts_text, req.voice, *([lang] if lang else [])) and not tts_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many new audio requests; wait a moment.")
     try:
-        out = await tts_cache.get_or_create(boson, req.text, req.voice, req.text)
+        out = await tts_cache.get_or_create(boson, tts_text, req.voice, text, **({"language": lang} if lang else {}))
     except (BosonError, RuntimeError) as e:
         raise boson_http_error(e)
     return {"voice": req.voice, **out}
@@ -684,8 +738,10 @@ def _set_enrich(book_id: str, **fields) -> None:
     """Record the novel enrichment sub-status next to the (ready) ingest status."""
     if book_id in _deleted:
         return
+    retries = fields.pop("enrich_retries", None)
     enrich = {k: v for k, v in fields.items() if v is not None}
-    _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", enrich=enrich, index=_mem_index(book_id))
+    extra = {"enrich_retries": retries} if retries is not None else {}
+    _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", enrich=enrich, index=_mem_index(book_id), **extra)
 
 
 _enrich_lock = asyncio.Lock()  # one enrichment at a time (cost control and rate limits)
@@ -707,11 +763,15 @@ async def _enrich_indexer(book: Book) -> None:
             _index_jobs.discard(book.id)
 
 
+MAX_ENRICH_RETRIES = 3          # user retries per book (persisted in status.json as enrich_retries)
+TOO_MANY_TRIES = "Character processing has failed several times; the book stays readable with the narrator."
+ENRICH_OFF = "Character processing is turned off on this server; the book stays readable with the narrator."
 _enrich_jobs: set[str] = set()   # books with an enrichment job queued or running
 _kind_claims: set[str] = set()   # books whose kind change is being handled (check-and-claim, see change_kind)
 
 
-async def _run_enrichment(book_id: str) -> None:
+async def _run_enrichment(book_id: str, resume: bool = False) -> None:
+    """resume (a retry or a restart's resume): the pipeline reuses the stages an earlier run already saved."""
     if book_id in _enrich_jobs:  # defence in depth: never two paid jobs for one book
         return
     _enrich_jobs.add(book_id)
@@ -719,28 +779,110 @@ async def _run_enrichment(book_id: str) -> None:
         _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
         async with _enrich_lock:
             book = books.load_book(book_id)
-            if book is not None and book.characters:  # already enriched: nothing to pay for
+            if book is not None and book.kind == "textbook":   # recap notes only (no characters, no re-index)
+                report = lambda **f: _set_enrich(book_id, summaries_only=True, **f)  # noqa: E731
+                if recap.textbook_notes(book):  # already written: nothing to pay for
+                    report(status="done", stage="done", progress=1.0, message=enrich_pipeline.TEXTBOOK_DONE)
+                    return
+                run = public_client.summarize_textbook if public_client.active() else enrich_pipeline.enrich_textbook
+                await run(book_id, report)
+                return
+            if book is not None and book.characters and (book.summaries or not resume):  # already enriched: nothing to pay for
                 _set_enrich(book_id, status="done", stage="done", progress=1.0,
                             message="Characters, recap and search are ready.")
                 return
-            run = public_client.enrich_book if public_client.active() else enrich_pipeline.enrich_book
-            await run(book_id, lambda **f: _set_enrich(book_id, **f), indexer=_enrich_indexer)
+            if public_client.active():
+                await public_client.enrich_book(book_id, lambda **f: _set_enrich(book_id, **f), indexer=_enrich_indexer)
+            else:
+                await enrich_pipeline.enrich_book(book_id, lambda **f: _set_enrich(book_id, **f), indexer=_enrich_indexer,
+                                                  resume=resume)
     finally:
         _enrich_jobs.discard(book_id)
         _index_for.cache_clear()
 
 
+_resume_tasks: set[asyncio.Task] = set()
+
+
+def _stale_enrichments() -> list[str]:
+    """Uploads whose status.json says the character processing is queued or running: after a restart, nothing runs."""
+    out = []
+    for path in sorted((settings.data_dir / "books").glob("u-*/status.json")):
+        book_id = path.parent.name
+        st = ingest_upload.read_status(book_id) or {}
+        if books._ID.match(book_id) and (st.get("enrich") or {}).get("status") in ("running", "queued"):
+            out.append(book_id)
+    return out
+
+
+async def _resume_one(book_id: str, ns: str) -> None:
+    """Run the interrupted job as its owner (the PER_USER namespace is a context variable, not a global)."""
+    token = users._current.set(users.Identity(None, ns)) if ns else None
+    try:
+        await _run_enrichment(book_id, resume=True)
+    finally:
+        if token is not None:
+            users._current.reset(token)
+
+
+async def _resume_enrichments() -> None:
+    """Startup: restart the enrichment of uploads that a restart interrupted. Same caps and the same single
+    enrichment slot as a fresh job; stages already saved are not paid for again. With PER_USER on, the owner comes
+    from the book's owner marker; when it cannot be determined the book is left retryable instead of run. Never raises."""
+    try:
+        todo = await asyncio.to_thread(_stale_enrichments)
+        jobs = []
+        for book_id in todo:
+            if book_id in _enrich_jobs or book_id in _kind_claims or book_id in _deleted:
+                continue
+            if not settings.upload_enrich:   # UPLOAD_ENRICH=false: never pay for a resume
+                _set_enrich(book_id, status="error", message=ENRICH_OFF)
+                continue
+            book = await asyncio.to_thread(books.load_book, book_id)
+            if book is None:
+                continue
+            ns = ""
+            if settings.per_user:
+                ns = users.book_owner_ns(book_id) or ""
+                if not ns:   # unknown owner: never run it as somebody else
+                    _set_enrich(book_id, status="error", message=enrich_pipeline.INTERRUPTED)
+                    continue
+            textbook = book.kind == "textbook"
+            flag = {"summaries_only": True} if textbook else {}
+            # a resume is an attempt, counted BEFORE it runs: a book that kills the process is not resumed forever
+            tries = int((await asyncio.to_thread(ingest_upload.read_status, book_id) or {}).get("enrich_retries") or 0)
+            if tries >= MAX_ENRICH_RETRIES:
+                _set_enrich(book_id, status="error", message=TOO_MANY_TRIES, **flag)
+                continue
+            reason = enrich_pipeline.check_caps(enrich_pipeline.estimate_for(book), textbook=textbook, book_id=book_id)
+            if reason:
+                _set_enrich(book_id, status="refused", message=reason, **flag)
+                continue
+            _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start", **flag,
+                        enrich_retries=tries + 1)
+            jobs.append(asyncio.create_task(_resume_one(book_id, ns)))   # the enrichment lock lets one run at a time
+        _resume_tasks.update(jobs)
+        for t in jobs:
+            t.add_done_callback(_resume_tasks.discard)
+        await asyncio.gather(*jobs, return_exceptions=True)
+    except Exception as e:
+        logging.getLogger(__name__).warning("resuming enrichment failed: %s", type(e).__name__)
+
+
 def _decide_enrichment(book_id: str, book: Book) -> bool:
-    """Refuse (caps), wait for confirmation (testing mode) or mark as queued. True when the job should now run."""
-    est = enrich_pipeline.estimate(book)
-    reason = enrich_pipeline.check_caps(est)
+    """Refuse (caps), wait for confirmation (testing mode) or mark as queued. True when the job should now run.
+    A textbook gets only recap notes (enrich/textbook.py), with the same estimate-first caps."""
+    textbook = book.kind == "textbook"
+    flag = {"summaries_only": True} if textbook else {}
+    est = enrich_pipeline.estimate_for(book)
+    reason = enrich_pipeline.check_caps(est, textbook=textbook, book_id=book_id)
     if reason:
-        _set_enrich(book_id, status="refused", message=reason)
+        _set_enrich(book_id, status="refused", message=reason, **flag)
     elif settings.upload_confirm:
-        _set_enrich(book_id, status="awaiting_confirmation", estimate_usd=round(est, 2),
-                    message="Characters, voices and recap need processing.")
+        _set_enrich(book_id, status="awaiting_confirmation", estimate_usd=round(est, 2), **flag,
+                    message=enrich_pipeline.TEXTBOOK_CONFIRM if textbook else "Characters, voices and recap need processing.")
     else:
-        _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
+        _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start", **flag)
         return True
     return False
 
@@ -776,19 +918,21 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
         _ingest_guard.release(token)
         if hash_key is not None:   # book.json is written by now (or the ingest failed): the disk check takes over
             _hash_claims.pop(hash_key, None)
-    if ready is not None and kind == "textbook" and ext == ".pdf" and any(p.kind == "math" for p in ready.paragraphs):
+    if ready is not None and kind == "textbook" and ext == ".pdf" and any(p.kind == "math" or p.inline_math
+                                                                         for p in ready.paragraphs):
         _start_equations(book_id, data)
     if ready is not None and settings.retrieval_backend == "vertex":
         await _index_in_background(ready, chunks)
-    if ready is not None and kind == "novel" and settings.upload_enrich and book_id not in _deleted:
-        current = books.load_book(book_id)   # the reader may have moved it to Textbooks (or deleted it) meanwhile
-        if current is None or current.kind != "novel":
+    if ready is not None and settings.upload_enrich and book_id not in _deleted:
+        current = books.load_book(book_id)   # the reader may have moved it to the other shelf (or deleted it) meanwhile
+        if current is None or current.kind != kind:
             return
         try:
             await _plan_enrichment(book_id, current)
         except Exception as e:  # the book stays readable with the narrator
             logging.getLogger(__name__).warning("enrichment planning failed: %s", type(e).__name__)
-            _set_enrich(book_id, status="error", message=enrich_pipeline.FAILED)
+            _set_enrich(book_id, status="error",
+                        message=enrich_pipeline.TEXTBOOK_FAILED if kind == "textbook" else enrich_pipeline.FAILED)
 
 
 async def _ingest_work(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str):
@@ -828,19 +972,43 @@ def _start_equations(book_id: str, data: bytes) -> None:
 async def _equations_job(book_id: str, data: bytes) -> None:
     """Pictures first (the reader shows them at once), then LaTeX and spoken readings. Never raises; the book stays
     readable with whatever was saved."""
+    stop = lambda: book_id in _deleted  # noqa: E731
     try:
-        crops = await asyncio.to_thread(ingest_upload.render_equations, book_id, data, lambda: book_id in _deleted)
-        if crops and enrich_equations.available() and book_id not in _deleted:
-            readings = await enrich_equations.transcribe(book_id, crops)
-            if readings and book_id not in _deleted:
-                await asyncio.to_thread(ingest_upload.update_equations, book_id, readings)
+        crops = await asyncio.to_thread(ingest_upload.render_equations, book_id, data, stop)
+        inline, shared = await asyncio.to_thread(ingest_upload.render_inline, book_id, data, stop)
+        if not (crops or inline) or stop():
+            return
+        if not enrich_equations.available():
+            if settings.upload_enrich and public_client.active():   # a clone with only a Boson key
+                await _public_equations(book_id, crops, inline, shared, stop)
+            return
+        llm = enrich_equations.make_llm("gemini")
+        readings = await enrich_equations.transcribe(book_id, crops, llm=llm) if crops else {}
+        if readings and not stop():
+            await asyncio.to_thread(ingest_upload.update_equations, book_id, readings)
+        readings = await enrich_equations.transcribe(book_id, inline, llm=llm, fit=True) if inline else {}
+        fields = {i: r for k, r in readings.items() for i in shared.get(k, [k])}
+        if fields and not stop():
+            await asyncio.to_thread(ingest_upload.update_equations, book_id, fields)
     except Exception as e:
         logging.getLogger(__name__).warning("equations of %s failed: %s", book_id, type(e).__name__)
     finally:
         _equation_jobs.discard(book_id)
 
 
-_EQ_ID = re.compile(r"^e\d{1,5}$")
+async def _public_equations(book_id: str, crops: dict, inline: dict, shared: dict, stop) -> None:
+    """The equation readings through the public processing service (its caps); what it cannot read stays pictures."""
+    display, inl, note = await public_client.transcribe_equations(book_id, crops, inline, stop=stop)
+    if display and not stop():
+        await asyncio.to_thread(ingest_upload.update_equations, book_id, display)
+    fields = {i: r for k, r in inl.items() for i in shared.get(k, [k])}
+    if fields and not stop():
+        await asyncio.to_thread(ingest_upload.update_equations, book_id, fields)
+    if note:
+        logging.getLogger(__name__).info("equations of %s: %s", book_id, note)
+
+
+_EQ_ID = re.compile(r"^(?:e\d{1,5}|m\d{1,6})$")  # display equation / inline formula
 
 
 @app.get("/api/books/{book_id}/equations/{eq_id}.png")
@@ -982,9 +1150,9 @@ def book_status(book_id: str):
         st = ingest_upload.read_status(book_id)
         if st and st.get("status") == "processing":  # not in memory: the server restarted mid-ingest
             st = {"status": "error", "message": "Processing was interrupted; please upload again."}
-        elif st and (st.get("enrich") or {}).get("status") == "running":  # restarted mid-enrichment
+        elif st and (st.get("enrich") or {}).get("status") in ("running", "queued"):  # restarted mid-enrichment
             st = {"status": "ready", "enrich": {"status": "error", "stage": st["enrich"].get("stage"),
-                  "message": "Character processing was interrupted; the book is still readable with the narrator."}}
+                  "message": enrich_pipeline.INTERRUPTED}} | ({"enrich_retries": st["enrich_retries"]} if "enrich_retries" in st else {})
         if st and (st.get("index") or {}).get("state") in ("running", "queued"):  # restarted mid-indexing: BM25 keeps serving
             st = {**st, "index": {**st["index"], "state": "error", "message": "Search indexing was interrupted."}}
     if st is None:
@@ -994,21 +1162,38 @@ def book_status(book_id: str):
 
 @app.post("/api/books/{book_id}/enrich", status_code=202, dependencies=[Depends(require_access)])
 async def start_enrichment(book_id: str, background: BackgroundTasks):
-    """Testing mode (UPLOAD_CONFIRM): start the character processing the reader just confirmed."""
+    """Start the character processing: after the reader confirmed it (testing mode, UPLOAD_CONFIRM), or again after it
+    was interrupted or failed (status "error"; only for an upload the caller owns)."""
+    users.guard_book(book_id)
     st = book_status(book_id)
-    if book_id in _kind_claims:   # a delete or kind change is in progress
+    state = (st.get("enrich") or {}).get("status")
+    retry = state == "error"
+    if retry:
+        users.require_account("Sign in to process books.")
+        if not book_id.startswith("u-"):
+            raise HTTPException(403, "Only books you uploaded can be processed again.")
+    # check without an await before the new status is written: a second request then sees the job and gets a 409
+    if book_id in _kind_claims or book_id in _enrich_jobs or book_id in _equation_jobs:   # a job or kind change is running
         raise HTTPException(409, "This book is still being processed; try again when it finishes.")
-    if (st.get("enrich") or {}).get("status") != "awaiting_confirmation":
+    if state not in ("awaiting_confirmation", "error"):   # also "refused": a cap stop is final
         raise HTTPException(409, "This book is not waiting for confirmation.")
+    if not settings.upload_enrich:   # UPLOAD_ENRICH=false: no paid processing, not even a retry
+        raise HTTPException(409, ENRICH_OFF)
+    retries = int(st.get("enrich_retries") or 0)
+    if retry and retries >= MAX_ENRICH_RETRIES:
+        raise HTTPException(409, TOO_MANY_TRIES)
     book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
-    reason = enrich_pipeline.check_caps(enrich_pipeline.estimate(book))  # caps are re-checked at start
+    textbook = book.kind == "textbook"
+    flag = {"summaries_only": True} if textbook else {}
+    reason = enrich_pipeline.check_caps(enrich_pipeline.estimate_for(book), textbook=textbook, book_id=book_id)  # re-checked at start
     if reason:
-        _set_enrich(book_id, status="refused", message=reason)
+        _set_enrich(book_id, status="refused", message=reason, **flag)
         return _upload_status[book_id]
-    _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start")
-    background.add_task(_run_enrichment, book_id)
+    extra = {"enrich_retries": retries + 1} if retry else {}
+    _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start", **flag, **extra)
+    background.add_task(_run_enrichment, book_id, resume=retry)
     return _upload_status[book_id]
 
 
@@ -1016,12 +1201,57 @@ class KindBody(BaseModel):
     kind: Literal["novel", "textbook"]
 
 
+async def _reread_as_textbook(book: Book) -> tuple[Book | None, bytes | None]:
+    """(re-read text, PDF bytes) for an uploaded PDF moving to Textbooks, else (None, None). The expensive read runs
+    in a thread and outside the book's write lock; a failure only logs its type."""
+    pdf = ingest_upload.upload_path(book.id, ".pdf")
+    if not pdf.is_file():
+        return None, None
+    try:
+        data = await asyncio.to_thread(pdf.read_bytes)
+        return await asyncio.to_thread(ingest_upload.rebuild_textbook_text, book, data), data
+    except Exception as e:
+        logging.getLogger(__name__).warning("textbook restore failed: %s", type(e).__name__)
+        return None, None
+
+
+async def _reindex_moved_book(book: Book, background: BackgroundTasks) -> None:
+    """Retrieval index for a book whose text was re-read, as an upload builds it: the local chunks always, then (vertex)
+    the old text's leftover datapoints removed and the new chunks embedded in the background."""
+    def local():
+        stale: list[str] = []
+        if settings.retrieval_backend == "vertex":
+            from .gcp.indexing import datapoint_ids
+            stale = datapoint_ids(book)   # still the old chunks.json
+        chunks = retrieval.make_chunks(book)
+        retrieval.save_index(settings.data_dir / "books" / book.id / "index", chunks, None)
+        keep = {f"{book.id}__{c.id}" for c in chunks}
+        return chunks, [i for i in stale if i not in keep]
+    chunks, stale = await asyncio.to_thread(local)
+    _index_for.cache_clear()
+    if settings.retrieval_backend == "vertex":
+        background.add_task(_reindex_vertex, book, chunks, stale)
+
+
+async def _reindex_vertex(book: Book, chunks, stale: list[str]) -> None:
+    """Drop the old text's datapoints that the new chunks do not overwrite, then index the new chunks. Never raises."""
+    if stale:
+        try:
+            await _vertex_deps()[1].delete(stale)
+        except Exception as e:   # a leftover datapoint is still bound by its own para_end (spoiler rule holds)
+            logging.getLogger(__name__).warning("vertex delete failed: %s", type(e).__name__)
+    await _index_in_background(book, chunks)
+
+
 @app.post("/api/books/{book_id}/kind", status_code=202, dependencies=[Depends(require_access)])
 async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks):
     """Move an uploaded book between the Novels and Textbooks shelves.
 
     textbook -> novel starts enrichment (same caps and UPLOAD_CONFIRM behaviour as an upload) unless the book already
-    has its characters; novel -> textbook only changes the kind (the characters stay in the file, the UI ignores them).
+    has its characters; novel -> textbook keeps the characters in the file (the UI ignores them) and writes the
+    textbook recap notes (same caps) only when the book has no summaries at all. A PDF moved to Textbooks is read
+    again so the display equations and inline formulas dropped while it was a novel come back (with their pictures);
+    its old summaries go (their paragraph numbers belong to the old text), so the textbook notes are written.
     """
     users.guard_book(book_id)
     if not book_id.startswith("u-"):
@@ -1041,12 +1271,29 @@ async def change_kind(book_id: str, body: KindBody, background: BackgroundTasks)
         return st
     _kind_claims.add(book_id)
     try:
-        book = book.model_copy(deep=True)  # load_book's result is cached and must not be mutated
-        book.kind = body.kind
-        await asyncio.to_thread(books.save_book, settings.data_dir / "books" / book_id / "book.json", book)
+        def set_kind(b) -> None:
+            b.kind = body.kind
+        path = settings.data_dir / "books" / book_id / "book.json"
+        rebuilt, pdf_bytes = await _reread_as_textbook(book) if body.kind == "textbook" else (None, None)
+        if rebuilt is not None:
+            try:  # applied to a fresh read under the lock: a write made during the re-read is kept
+                book = await asyncio.to_thread(books.update_book, path,
+                                               lambda b: ingest_upload.apply_textbook_text(b, rebuilt))
+            except Exception as e:  # still move the shelf; the text they already have stays
+                logging.getLogger(__name__).warning("textbook restore failed: %s", type(e).__name__)
+                rebuilt = pdf_bytes = None
+        if rebuilt is None:
+            # a fresh read under the book's write lock (never the cached object, never a stale copy of it)
+            book = await asyncio.to_thread(books.update_book, path, set_kind)
         _index_for.cache_clear()
         _set_status(book_id, "ready", kind=body.kind)
-        if body.kind == "novel" and settings.upload_enrich and not book.characters:
+        if rebuilt is not None:
+            await _reindex_moved_book(book, background)
+            if any(p.kind == "math" or p.inline_math for p in book.paragraphs):
+                _start_equations(book_id, pdf_bytes)
+        # a novel's own summaries are kept when it moves to Textbooks (recap then uses them as before)
+        needs = not book.characters if body.kind == "novel" else not book.summaries
+        if settings.upload_enrich and needs:
             if _decide_enrichment(book_id, book):  # sets status "running" (queued) before the claim is released
                 background.add_task(_run_enrichment, book_id)
         return _upload_status[book_id]

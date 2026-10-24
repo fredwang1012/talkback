@@ -29,10 +29,10 @@ export default function RecapPanel({ bookId, para, choice, onClose }: Props) {
   useEffect(() => {
     let live = true;
     setRecap(null); setError(null);
-    fetchScopedRecap(bookId, para, choice.scope).then((r) => { if (live) setRecap(r); })
+    fetchScopedRecap(bookId, para, choice.scope, choice.section).then((r) => { if (live) setRecap(r); })
       .catch((e: Error) => { if (live) setError(e.message); });
     return () => { live = false; };
-  }, [bookId, para, choice.scope]);
+  }, [bookId, para, choice.scope, choice.section]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);

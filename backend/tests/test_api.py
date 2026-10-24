@@ -301,3 +301,22 @@ def test_health_reports_answer_backend(env, monkeypatch, retrieval, answer, expe
     monkeypatch.setattr(settings, "retrieval_backend", retrieval)
     monkeypatch.setattr(settings, "answer_backend", answer)
     assert client.get("/api/health").json()["answer_backend"] == expected
+
+
+def test_tts_speed_tag_gets_its_own_cache_entry_and_sends_the_tag(env):
+    client, calls = env
+    normal = client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0"}).json()
+    fast = client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "speed": "fast"}).json()
+    again = client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "speed": "fast"}).json()
+    plain = client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0"}).json()
+    assert normal["audio_url"] != fast["audio_url"]
+    assert again["cached"] is True and again["audio_url"] == fast["audio_url"]
+    assert plain["cached"] is True and plain["audio_url"] == normal["audio_url"], "normal audio is never overwritten"
+    assert calls["n"] == 2
+
+
+def test_tts_speed_is_validated_and_default_request_has_no_tag(env):
+    client, _ = env
+    assert client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "speed": "warp"}).status_code == 422
+    from app import tts_cache
+    assert tts_cache.is_cached("<|prosody:speed_fast|>It was in March, eighteen eighty-eight, that Harry spoke.", "marcus") is False

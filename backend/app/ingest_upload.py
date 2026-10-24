@@ -26,9 +26,9 @@ from typing import NamedTuple
 
 from . import retrieval
 from .config import settings
-from .parsing import CODE_MARK, EQ_MARK, EQ_SEP, FIGURE_MARK, HEADING_MARK, parse
+from .parsing import CODE_MARK, EQ_MARK, EQ_SEP, FIGURE_MARK, HEADING_MARK, inline_marker, parse, strip_inline
 from .schema import Book, Narrator, Paragraph, Section
-from .ttschunks import chunk_paragraph, sentence_spans, split_long
+from .ttschunks import BookIndex, chunk_paragraph, rechunk_book, sentence_spans, split_long
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MULTIPART_SLACK = 1024 * 1024  # form-encoding overhead allowed on top of the file cap when checking Content-Length
@@ -90,6 +90,7 @@ class Line(NamedTuple):
     right: float
     page: int
     alone: bool    # this line is a block of its own that looks like a heading
+    marked: str | None = None  # `text` with inline formulas marked (see _mark_inline); the paragraph uses it
 
 
 _LIGATURES = str.maketrans({"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl"})
@@ -152,9 +153,9 @@ def merge_lines(lines: list[Line]) -> list[str]:
             flush()
         if parts and parts[-1].endswith("-") and len(parts[-1]) > 1 and parts[-1][-2].isalpha() \
                 and ln.text[:1].islower():
-            parts[-1] = parts[-1][:-1] + ln.text  # de-hyphenate "exam-" + "ple"
+            parts[-1] = parts[-1][:-1] + (ln.marked or ln.text)  # de-hyphenate "exam-" + "ple"
         else:
-            parts.append(ln.text)
+            parts.append(ln.marked or ln.text)
         prev = ln
     flush()
     return paras
@@ -223,6 +224,303 @@ def _math_class(spans: list[dict]) -> int:
     return WEAK if prose_words == 0 and nonspace <= EQ_WEAK_CHARS else NOT_MATH
 
 
+# ---- inline formulas ----
+# Inside a prose line, a run of math-font spans (with the operators, digits and brackets between them) whose text
+# would read wrong is marked for a picture and a Gemini reading: lost glyphs, accents, big operators, roots, or
+# sub/superscripts (smaller or shifted spans). A plain italic x reads fine and is left as text.
+_GLUE_WORD = re.compile(r"[A-Za-z\u00C0-\u024F]{2,}|\b(?:i\.e|e\.g|cf|etc|vs)\b")
+_LEAD_CATEGORIES = {"Ps", "Sk", "Sm", "Lm", "Mn", "Zs"}   # brackets, accents, operators may open a formula
+
+
+def _trail_punct_len(t: str) -> int:
+    """Length of the trailing run of whitespace and , . ; : (a linear scan: a regex search here is quadratic on long runs)."""
+    i = len(t)
+    while i > 0 and (t[i - 1] in ",.;:" or t[i - 1].isspace()):
+        i -= 1
+    return len(t) - i
+
+
+_STRUCTURE_CHARS = set("∑∫∬∭∮∏∐√∛∜")
+INLINE_SMALL = 0.85     # a span this much smaller than the run's main size is a sub/superscript
+INLINE_SHIFT = 0.2      # ... or one whose baseline is this many font sizes off
+INLINE_MAX_CHARS = 120  # longer runs are not one inline formula
+
+
+def _span_role(s: dict) -> str:
+    """"m" a math-font span, "g" glue that may sit inside a formula (operators, digits, "log", "RSE"), "p" prose, " " blank.
+
+    A short token with no lowercase letter ("SE", "RSE", "RSS") is glue: it is part of the formula it touches. A word
+    with a lowercase letter ("where", "the") stays prose, so the formula does not swallow the sentence.
+    """
+    t = s["text"]
+    if not t.strip():
+        return " "
+    if _MATH_FONT.search(s["font"]):
+        return "m"
+    for w in _GLUE_WORD.findall(t):
+        if w.lower() in _MATH_WORDS:
+            continue
+        if len(w) > 3 or any(c.islower() for c in w):
+            return "p"
+    return "g"
+
+
+def _main_line(real: list[dict]) -> tuple[float, float]:
+    """(main font size, baseline) of a run: the lowest baseline at the main size, since an accent such as the hat
+    of ˆβ is set on a raised baseline of its own."""
+    main = max(s["size"] for s in real)
+    return main, max(s["origin"][1] for s in real if s["size"] == main)
+
+
+def _needs_picture(run: list[dict]) -> bool:
+    real = [s for s in run if s["text"].strip()]
+    text = "".join(s["text"] for s in real)
+    if _CONTROL.search(text) or any(c in _STRUCTURE_CHARS or unicodedata.category(c) in ("Sk", "Lm", "Mn")
+                                    for c in text):
+        return True
+    if any(_BIG_OP_FONT.search(s["font"]) for s in real):
+        return True
+    main, base = _main_line(real)
+    return any(s["size"] < main * INLINE_SMALL or abs(s["origin"][1] - base) > main * INLINE_SHIFT for s in real)
+
+
+def _span_ink(s: dict) -> tuple[float, float, float, float]:
+    """A span's box. Big-operator fonts (sums, roots) report a box far taller than the glyph, so their box is the
+    band around the baseline where the glyph actually sits."""
+    x0, y0, x1, y1 = s["bbox"]
+    if _BIG_OP_FONT.search(s["font"]):
+        base, size = s["origin"][1], s["size"] or 10.0
+        y0, y1 = base - 1.15 * size, base + 1.7 * size
+    return x0, y0, x1, y1
+
+
+def _run_bbox(run: list[dict], cut: int = 0) -> tuple[float, float, float, float]:
+    """The run's box, its height kept near its main line so tall math-font boxes do not reach the next line.
+    `cut` trailing characters of the last span (sentence punctuation) are left out, by their share of its width."""
+    real = [s for s in run if s["text"].strip()]
+    main, base = _main_line(real)
+    inks = [_span_ink(s) for s in real]
+    x0 = min(b[0] for b in inks)
+    x1 = max(b[2] for b in inks)
+    if cut:
+        bx0, _, bx1, _ = run[-1]["bbox"]
+        x1 = min(x1, bx1 - (bx1 - bx0) * cut / max(len(run[-1]["text"]), 1))
+    y0 = max(min(b[1] for b in inks), base - 1.35 * main)
+    y1 = min(max(b[3] for b in inks), base + 0.45 * main)
+    return x0, y0, x1, y1
+
+
+ROW_BASE = 0.45         # baselines this close (in font sizes) are one row that pymupdf split around a tall glyph
+DECO_BASE = 1.15        # a root / sum / hat this close to a prose row, and sitting in its x-range, belongs to that row
+
+
+def _line_baseline(spans: list[dict]) -> float:
+    real = [s for s in spans if s["text"].strip()]
+    return _main_line(real)[1] if real else 0.0
+
+
+def _assemble_rows(block_lines: list[dict]) -> list[tuple[list[dict], float]]:
+    """pymupdf lines of one block, regrouped into visual rows.
+
+    A tall glyph (a root, a sum, a hat) is often its own line, and the words on either side of it are split into
+    two more, so one sentence comes out as "RSE =", "√", "RSS/(n-2)". Lines whose baselines match are one row.
+    A line with no prose word is then attached to the prose row it sits on, when it is close and overlaps that
+    row's width. Pieces of a display equation stay separate: they are not attached to each other here.
+    """
+    items = []
+    for ln in block_lines:
+        if abs(ln["dir"][1]) > 0.2:
+            continue
+        spans = list(ln["spans"])
+        if any(s["text"].strip() for s in spans):
+            items.append((spans, _line_baseline(spans), _math_class(spans) == NOT_MATH))
+    rows: list[list[dict]] = []
+    bases: list[float] = []
+    prose: list[bool] = []
+    deco: list[tuple[float, list[dict]]] = []
+    for spans, base, is_prose in sorted(items, key=lambda it: (not it[2], it[1])):
+        if not is_prose:
+            deco.append((base, spans))
+            continue
+        size = max((s["size"] for s in spans if s["text"].strip()), default=10)
+        x0 = min(s["bbox"][0] for s in spans if s["text"].strip())
+        x1 = max(s["bbox"][2] for s in spans if s["text"].strip())
+
+        def near(i: int) -> bool:
+            other = max(s["size"] for s in rows[i] if s["text"].strip())
+            if min(size, other) < 0.8 * max(size, other):  # a margin note set smaller than the text
+                return False
+            ox0 = min(s["bbox"][0] for s in rows[i] if s["text"].strip())
+            ox1 = max(s["bbox"][2] for s in rows[i] if s["text"].strip())
+            return x0 - ox1 < 25 and ox0 - x1 < 25
+
+        join = next((i for i, b in enumerate(bases)
+                     if prose[i] and abs(base - b) <= ROW_BASE * max(size, 8) and near(i)), None)
+        if join is None:
+            rows.append(list(spans))
+            bases.append(base)
+            prose.append(True)
+        else:
+            rows[join].extend(spans)
+    for base, spans in deco:
+        base = _deco_anchor(spans, base)
+        size = max(s["size"] for s in spans)
+        x0, x1 = min(s["bbox"][0] for s in spans), max(s["bbox"][2] for s in spans)
+        best, best_d = None, DECO_BASE * max(size, 8)
+        for i, b in enumerate(bases):
+            if not prose[i] or abs(base - b) > best_d:
+                continue
+            other = max(s["size"] for s in rows[i] if s["text"].strip())
+            if min(size, other) < 0.8 * max(size, other):
+                continue
+            rx0 = min(s["bbox"][0] for s in rows[i] if s["text"].strip())
+            rx1 = max(s["bbox"][2] for s in rows[i] if s["text"].strip())
+            if x1 < rx0 - 20 or x0 > rx1 + 20:  # the gap a root occupies between "RSE =" and "RSS"
+                continue
+            best, best_d = i, abs(base - b)
+        if best is None:
+            rows.append(list(spans))
+            bases.append(base)
+            prose.append(False)
+        else:
+            rows[best].extend(spans)
+    order = sorted(range(len(rows)), key=lambda i: bases[i])
+    return [(rows[i], bases[i]) for i in order]
+
+
+def _by_x(spans: list[dict]) -> list[dict]:
+    return sorted(spans, key=lambda s: (round(s["bbox"][0]), 0 if _BIG_OP_FONT.search(s["font"]) else 1, s["bbox"][1]))
+
+
+def _deco_anchor(spans: list[dict], base: float) -> float:
+    """The row a math-only fragment belongs to. A root, sum or delimiter font reports its baseline near the top of a
+    box far taller than the glyph, so the middle of the ink is where it actually sits."""
+    real = [s for s in spans if s["text"].strip()]
+    ops = [s for s in real if _BIG_OP_FONT.search(s["font"])]
+    if ops:
+        # the raw box, not a band around the reported baseline: that baseline sits at the top of a tall
+        # delimiter, and a band around it lands on the sentence above. An exponent drawn beside the
+        # delimiter must not pull the anchor back up to that baseline.
+        return (min(s["bbox"][1] for s in ops) + max(s["bbox"][3] for s in ops)) / 2
+    return base
+
+
+def _attach_deco_rows(groups: list[list[list]]) -> None:
+    """Move a math-only row onto the prose row it belongs to.
+
+    pymupdf puts a root or a hat in its own block, so the row assembly inside one block never sees the words beside
+    it. `groups` is per block a list of [spans, baseline], edited in place.
+    """
+    prose = [(bi, li) for bi, blk in enumerate(groups) for li, (spans, _b) in enumerate(blk)
+             if _math_class(spans) == NOT_MATH]
+    prose_set = set(prose)
+    for bi, blk in enumerate(groups):
+        for li, item in enumerate(blk):
+            # a prose row stays prose even after a glyph is appended: reclassifying it would delete the sentence
+            if item is None or (bi, li) in prose_set:
+                continue
+            spans, base = item
+            real = [s for s in spans if s["text"].strip()]
+            size = max(s["size"] for s in real)
+            anchor = _deco_anchor(spans, base)
+            x0, x1 = min(s["bbox"][0] for s in real), max(s["bbox"][2] for s in real)
+            best, best_key = None, None
+            limit = DECO_BASE * max(size, 8)
+            for pb, pl in prose:
+                pspans, pbase = groups[pb][pl]
+                if abs(anchor - pbase) > limit:
+                    continue
+                other = max(s["size"] for s in pspans if s["text"].strip())
+                if min(size, other) < 0.8 * max(size, other):
+                    continue
+                preal = [s for s in pspans if s["text"].strip()]
+                rx0, rx1 = min(s["bbox"][0] for s in preal), max(s["bbox"][2] for s in preal)
+                if x1 < rx0 - 20 or x0 > rx1 + 20:
+                    continue
+                # a root sits in the gap between "RSE =" and "RSS", not on top of the words of the line above
+                covers = any(s["text"].strip() and _span_role(s) == "p" and x1 > s["bbox"][0] + 1
+                             and x0 < s["bbox"][2] - 1 for s in pspans)
+                key = (covers, abs(anchor - pbase))
+                if best_key is None or key < best_key:
+                    best, best_key = (pb, pl), key
+            if best is not None:
+                groups[best[0]][best[1]][0].extend(spans)
+                blk[li] = None
+
+
+def _opens_formula(text: str) -> bool:
+    """Whether a glue span may start a formula: brackets, accents, operators, an operator name ("max"), or a short
+    upright name with no lowercase letter ("SE", "RSE")."""
+    t = text.strip()
+    if t.lower() in _MATH_WORDS:
+        return True
+    letters = [c for c in t if c.isalpha()]
+    if letters and len(letters) <= 4 and not any(c.islower() for c in letters):
+        return True
+    return all(unicodedata.category(c) in _LEAD_CATEGORIES for c in text)
+
+
+def _inline_runs(spans: list[dict]) -> list[tuple[int, int, int]]:
+    """(start, end, cut) span ranges of the line's inline formulas that need a picture (see above): spans[start:end]
+    without the last `cut` characters (sentence punctuation after the formula)."""
+    roles = [_span_role(s) for s in spans]
+    runs: list[tuple[int, int, int]] = []
+    i = 0
+    while i < len(spans):
+        if roles[i] == "p":
+            i += 1
+            continue
+        j = i
+        while j < len(spans) and roles[j] != "p":
+            j += 1
+        s, e = i, j
+        while s < e and (roles[s] == " " or (roles[s] == "g" and not _opens_formula(spans[s]["text"]))):
+            s += 1
+        while e > s and roles[e - 1] == " ":
+            e -= 1
+        cut = 0
+        while e > s and roles[e - 1] == "g":
+            text = spans[e - 1]["text"]
+            n = _trail_punct_len(text)
+            if not n:
+                break
+            if n < len(text):
+                cut = n
+                break
+            e -= 1
+        run = spans[s:e]
+        if "m" in roles[s:e] and len("".join(x["text"] for x in run)) <= INLINE_MAX_CHARS and _needs_picture(run):
+            runs.append((s, e, cut))
+        i = j
+    return runs
+
+
+def _mark_inline(spans: list[dict], page: int) -> str | None:
+    """The line's cleaned text with each inline formula that needs a picture wrapped in a parsing.inline_marker,
+    or None when there is none."""
+    runs = _inline_runs(spans)
+    if not runs:
+        return None
+    pieces: list[str] = []
+    rest = ""
+    pos = 0
+    for s, e, cut in runs:
+        pieces.append(_clean_piece(rest + "".join(x["text"] for x in spans[pos:s])))
+        raw = "".join(x["text"] for x in spans[s:e])
+        raw, rest = (raw[:-cut], raw[-cut:]) if cut else (raw, "")
+        inner = _clean_line_text(raw)
+        pieces.append((" " if raw[:1].isspace() else "") + inline_marker(page, _run_bbox(spans[s:e], cut), inner)
+                      + (" " if raw[-1:].isspace() else ""))
+        pos = e
+    pieces.append(_clean_piece(rest + "".join(x["text"] for x in spans[pos:])))
+    return re.sub(r" {2,}", " ", "".join(pieces)).strip()
+
+
+def _clean_piece(text: str) -> str:
+    """Like _clean_line_text but keeping one space at either end, so pieces can be joined."""
+    return re.sub(r"\s{2,}", " ", _CONTROL.sub(" ", text.translate(_LIGATURES)))
+
+
 EQ_INDENT = 0.12        # a cluster starting this far (share of the text width) right of the margin is set off
 
 
@@ -246,25 +544,29 @@ def _mark_math(blocks: list[list[tuple]], info: list[list[tuple[int, bool]]], pn
     if not any(c == STRONG for *_, c in flat):
         return blocks
     prose = sorted((ln for _bi, _li, ln, c in flat if c == NOT_MATH), key=lambda p: p[2])
-    tops = [p[2] for p in prose]
-    tallest = max((p[4] - p[2] for p in prose), default=0.0)
-
-    def beside_prose(ln: tuple, share: float) -> bool:
-        h = ln[4] - ln[2]
-        for p in prose[bisect.bisect_left(tops, ln[2] - tallest):bisect.bisect_right(tops, ln[4])]:
-            overlap = min(ln[4], p[4]) - max(ln[2], p[2])
-            if overlap > share * min(h, p[4] - p[2]) and max(ln[1], p[1]) - min(ln[3], p[3]) < EQ_ROW_GAP:
+    prose_base = {id(ln): info[bi][li][2] for bi, blk in enumerate(blocks) for li, ln in enumerate(blk)
+                  if bi not in code and info[bi][li][0] == NOT_MATH}
+    def beside_prose(ln: tuple, base: float, share: float) -> bool:
+        """Same row as prose when the baselines are close. The font box is not used: a sum or a root reports a box
+        tall enough to overlap the line above and the line below."""
+        band = (0.55 if share >= 0.4 else 0.9) * max(ln[5], 8.0)
+        for p in prose:
+            if abs(base - prose_base.get(id(p), (p[2] + p[4]) / 2)) <= band \
+                    and max(ln[1], p[1]) - min(ln[3], p[3]) < EQ_ROW_GAP:
                 return True
         return False
 
     # a WEAK piece (an inline sum's limit) touching a prose row belongs to that row; a STRONG line must share it more
     cands = sorted(((ln[2], bi, li) for bi, li, ln, c in flat
-                    if c != NOT_MATH and not beside_prose(ln, 0.4 if c == STRONG else 0.2)))
+                    if c != NOT_MATH and not beside_prose(ln, info[bi][li][2], 0.4 if c == STRONG else 0.2)))
     clusters: list[list[tuple[int, int]]] = []
     bottom = 0.0
     for y0, bi, li in cands:
         ln = blocks[bi][li]
-        if clusters and y0 - bottom <= EQ_LINE_GAP * max(ln[4] - ln[2], 1.0):
+        # a delimiter's font box is far taller than the glyph; measuring the gap with that box glues the
+        # equation above to the one below. Cap the height at the font size.
+        span = min(ln[4] - ln[2], 1.3 * max(ln[5], 8.0))
+        if clusters and y0 - bottom <= EQ_LINE_GAP * max(span, 1.0):
             clusters[-1].append((bi, li))
             bottom = max(bottom, ln[4])
         else:
@@ -317,8 +619,10 @@ def _mark_math(blocks: list[list[tuple]], info: list[list[tuple[int, bool]]], pn
             if len(done) > EQ_PAGE_MAX:
                 out.append([blocks[b][l] for b, l in clusters[n]])
                 continue
-            out.append([_equation_line(pno, [blocks[b][l] for b, l in clusters[n]],
-                                       any(info[b][l][1] for b, l in clusters[n]))])
+            pieces = [blocks[b][l] for b, l in clusters[n]]
+            out.append([_equation_line(pno, pieces, any(info[b][l][1] for b, l in clusters[n]),
+                                       _equation_clip(pieces, [info[b][l][2] for b, l in clusters[n]], prose,
+                                                      prose_base))])
         if cur:
             out.append(cur)
     return out
@@ -327,11 +631,34 @@ def _mark_math(blocks: list[list[tuple]], info: list[list[tuple[int, bool]]], pn
 _EQ_NUMBER_TAIL = re.compile(r"\s*,?\s*\((\d{1,3}(?:\.\d{1,3}){0,2}[a-z]?)\)$")
 
 
-def _equation_line(pno: int, lns: list[tuple], lost_glyphs: bool) -> tuple:
-    """One EQ_MARK line for a cluster of equation lines (see parsing.EQ_MARK): its pieces row by row, left to right,
-    and the equation number (wherever it sat) moved to the end."""
+def _equation_clip(lns: list[tuple], baselines: list[float], prose: list[tuple],
+                   prose_base: dict) -> tuple[float, float, float, float]:
+    """The cluster's box, stopped at the neighbouring prose line.
+
+    A sum or a root box runs into the line above and the line below even though the glyph does not. The prose line's
+    own edge is the limit, and only when its baseline is clearly off the equation's baseline.
+    """
     x0, y0 = min(l[1] for l in lns), min(l[2] for l in lns)
     x1, y1 = max(l[3] for l in lns), max(l[4] for l in lns)
+    base = sorted(baselines)[len(baselines) // 2]
+    size = max(l[5] for l in lns) or 10.0
+    for p in prose:
+        pb = prose_base.get(id(p), (p[2] + p[4]) / 2)
+        if pb > base + 0.8 * size:
+            y1 = min(y1, pb - 0.85 * size)  # above the next line's letters, not its font box
+        elif pb < base - 0.8 * size:
+            y0 = max(y0, pb + 0.35 * size)
+    if y1 < y0 + 1:  # a neighbour on every side: keep the cluster's own box
+        return (min(l[1] for l in lns), min(l[2] for l in lns), max(l[3] for l in lns), max(l[4] for l in lns))
+    return x0, y0, x1, y1
+
+
+def _equation_line(pno: int, lns: list[tuple], lost_glyphs: bool,
+                   clip: tuple[float, float, float, float] | None = None) -> tuple:
+    """One EQ_MARK line for a cluster of equation lines (see parsing.EQ_MARK): its pieces row by row, left to right,
+    and the equation number (wherever it sat) moved to the end."""
+    x0, y0, x1, y1 = clip if clip is not None else (
+        min(l[1] for l in lns), min(l[2] for l in lns), max(l[3] for l in lns), max(l[4] for l in lns))
     rows: list[list[tuple]] = []
     row_bottom = 0.0
     for l in sorted(lns, key=lambda l: (l[2] + l[4]) / 2):
@@ -358,8 +685,8 @@ def _equation_line(pno: int, lns: list[tuple], lost_glyphs: bool) -> tuple:
 
 
 def plain_text(raw: str) -> str:
-    """pdf_to_text output without the equation markers' positions (for samples shown to a model)."""
-    return re.sub(EQ_MARK + "[^" + EQ_SEP + "]*" + EQ_SEP, "", raw)
+    """pdf_to_text output without the equation and inline-formula markers (for samples shown to a model)."""
+    return strip_inline(re.sub(EQ_MARK + "[^" + EQ_SEP + "]*" + EQ_SEP, "", raw))
 
 
 def _font_info(spans: list[dict]) -> tuple[float, bool]:
@@ -1025,31 +1352,46 @@ def pdf_to_text(data: bytes, figures_out: Path | None = None) -> str:
         figures: list[list[tuple]] = []  # page -> labelled figure regions (see _figure_regions)
         page_rects: list[list[tuple]] = []  # page -> images (rules too) and labelled figure regions: figure parts
         page_boxes: list[tuple] = []
+        inline: dict[tuple, str] = {}  # (page, x0, y0, text) of a prose line -> its text with inline formulas marked
         for page in doc:
             blocks = []
             info = []  # per line: (math class, glyphs lost), see _mark_math
             rects = []  # images and drawing clusters: figure candidates
             raw_blocks = page.get_text("dict")["blocks"]
+            grouped: list[list] = []
             for b in raw_blocks:
                 if b.get("type") == 1:
                     rects.append(tuple(b["bbox"]))
                 if b.get("type") != 0:
                     continue
+                grouped.append([[spans, base] for spans, base in _assemble_rows(b["lines"])])
+            _attach_deco_rows(grouped)
+            for rows in grouped:
                 lines, line_info = [], []
-                for ln in b["lines"]:
-                    raw_text = "".join(s["text"] for s in ln["spans"])
+                for item in rows:
+                    if item is None:
+                        continue
+                    spans, base = item
+                    spans = _by_x(spans)
+                    raw_text = "".join(s["text"] for s in spans)
                     t = _clean_line_text(raw_text)
-                    if t and abs(ln["dir"][1]) > 0.2:
-                        continue  # rotated text: an axis label or a margin stamp, never body text or a heading
-                    if t:
-                        x0, y0, x1, y1 = ln["bbox"]
-                        size, bold = _font_info(ln["spans"])
-                        sizes[size] += len(t)
-                        lines.append((t, x0, y0, x1, y1, size, bold, _is_mono(ln["spans"])))
-                        line_info.append((_math_class(ln["spans"]), bool(_CONTROL.search(raw_text))))
-                        total += len(t) + 1
-                        if total > MAX_CHARS:  # checked per line so extraction stops as soon as the cap is crossed
-                            raise UploadError("The document has too much text (5 million characters maximum).")
+                    if not t:
+                        continue
+                    x0 = min(s["bbox"][0] for s in spans)
+                    y0 = min(s["bbox"][1] for s in spans)
+                    x1 = max(s["bbox"][2] for s in spans)
+                    y1 = max(s["bbox"][3] for s in spans)
+                    size, bold = _font_info(spans)
+                    sizes[size] += len(t)
+                    lines.append((t, x0, y0, x1, y1, size, bold, _is_mono(spans)))
+                    cls = _math_class(spans)
+                    line_info.append((cls, bool(_CONTROL.search(raw_text)), base))
+                    marked = _mark_inline(spans, page.number) if cls == NOT_MATH else None
+                    if marked:
+                        inline[(page.number, x0, y0, t)] = marked
+                    total += len(t) + 1
+                    if total > MAX_CHARS:  # checked per line so extraction stops as soon as the cap is crossed
+                        raise UploadError("The document has too much text (5 million characters maximum).")
                 if lines:
                     blocks.append(lines)
                     info.append(line_info)
@@ -1111,7 +1453,7 @@ def pdf_to_text(data: bytes, figures_out: Path | None = None) -> str:
         for blk in _mark_headings(blocks, body, figures[pno]):
             alone = len(blk) == 1 and blk[0][7]
             for t, x0, y0, x1, y1, _size, _bold, _h in blk:
-                all_lines.append(Line(t, x0, x1, y0, y1, left, right, pno, alone))
+                all_lines.append(Line(t, x0, x1, y0, y1, left, right, pno, alone, inline.get((pno, x0, y0, t))))
 
     paras = merge_lines(all_lines)
     paras = [p for i, p in enumerate(paras) if i == 0 or p != paras[i - 1] or not p.startswith(HEADING_MARK)]
@@ -1134,22 +1476,28 @@ def extract_text(data: bytes, ext: str, figures_out: Path | None = None) -> str:
 
 def split_paragraph(text: str, limit: int = MAX_PARAGRAPH_CHARS) -> list[str]:
     """Split text longer than `limit` into pieces at sentence (else whitespace) boundaries."""
+    return [text[s:e] for s, e in split_spans(text, limit)]
+
+
+def split_spans(text: str, limit: int = MAX_PARAGRAPH_CHARS, keep: list[tuple[int, int]] = ()) -> list[tuple[int, int]]:
+    """(start, end) pieces of split_paragraph; no cut falls inside a `keep` range (an inline formula)."""
     if len(text) <= limit:
-        return [text]
+        return [(0, len(text))]
     pieces: list[tuple[int, int]] = []
     for s, e in sentence_spans(text):
         pieces += split_long(text[s:e], s, limit) if e - s > limit else [(s, e)]
-    out: list[str] = []
+    out: list[tuple[int, int]] = []
     gs = ge = None
     for s, e in pieces:
-        if gs is not None and e - gs <= limit:
+        inside = any(a < s < b for a, b in keep)
+        if gs is not None and (e - gs <= limit or inside):
             ge = e
         else:
             if gs is not None:
-                out.append(text[gs:ge])
+                out.append((gs, ge))
             gs, ge = s, e
     if gs is not None:
-        out.append(text[gs:ge])
+        out.append((gs, ge))
     return out
 
 
@@ -1159,8 +1507,12 @@ def _cap_paragraphs(sections: list[Section], paragraphs: list[Paragraph]) -> lis
     new_start: dict[int, int] = {}
     for p in paragraphs:
         new_start[p.idx] = len(out)
-        for piece in ([p.text] if p.kind == "math" else split_paragraph(p.text)):
-            out.append(Paragraph(idx=len(out), section_id=p.section_id, text=piece, kind=p.kind, math=p.math, figure=p.figure))
+        keep = [(m.start, m.end) for m in p.inline_math]
+        for s, e in ([(0, len(p.text))] if p.kind == "math" else split_spans(p.text, keep=keep)):
+            inline = [m.model_copy(update={"start": m.start - s, "end": m.end - s})
+                      for m in p.inline_math if s <= m.start and m.end <= e]
+            out.append(Paragraph(idx=len(out), section_id=p.section_id, text=p.text[s:e], kind=p.kind, math=p.math,
+                                 inline_math=inline, figure=p.figure))
     for s in sections:
         s.start_para = new_start.get(s.start_para, len(out))
     return out
@@ -1182,6 +1534,7 @@ def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_
     if kind != "textbook":  # only textbooks skip listings, set equations and show figures; elsewhere they are just text
         for p in paragraphs:
             p.kind = p.math = p.figure = None
+            p.inline_math = []
     if kind == "textbook":  # novels keep a flat chapter list
         for sec in sections:
             sec.level = section_level(sec.title)
@@ -1189,9 +1542,30 @@ def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_
         raise UploadError("No paragraphs were found in the file.")
     book = Book(id=book_id, title=title, author=author, kind=kind, kind_detected=kind_detected, license=LICENSE,
                 sections=sections, paragraphs=paragraphs, narrator=Narrator(voice=NARRATOR_VOICE))
-    for p in book.paragraphs:
-        p.tts_chunks = chunk_paragraph(p, book)
+    rechunk_book(book)  # stamps Book.chunk_rules
     return book
+
+
+def rebuild_textbook_text(book: Book, data: bytes) -> Book:
+    """Re-read the PDF of a book stored as a novel, as a textbook, so its equations come back. Pure: nothing is
+    saved or indexed (the caller applies the result with `apply_textbook_text` under the book's write lock).
+
+    A paper the detector calls a novel is stored with every formula turned into plain text. Moving it to Textbooks
+    cannot recover the pictures from that text; the original file is read again.
+    """
+    detected = book.kind_detected.model_dump() if book.kind_detected else None
+    return build_book(book.id, book.title, book.author, "textbook", extract_text(data, ".pdf"), detected)
+
+
+def apply_textbook_text(book: Book, rebuilt: Book) -> None:
+    """Put the re-read text (`rebuild_textbook_text`) into `book` (a fresh read of book.json) and make it a textbook.
+    Everything not derived from the text stays (characters, narrator, series, license, title...). Summaries do not:
+    their paragraph numbers belong to the old text. The TTS chunks are rebuilt with the book's own voices."""
+    book.kind = "textbook"
+    book.sections = rebuilt.sections
+    book.paragraphs = rebuilt.paragraphs
+    book.summaries = []
+    rechunk_book(book)  # stamps Book.chunk_rules
 
 
 def process_upload(book_id: str, title: str, author: str, kind: str, data: bytes, ext: str,
@@ -1217,8 +1591,10 @@ EQ_MAX_PIXELS = 4_000_000
 EQ_MAX_BOOK = 1500       # pictures per book
 
 
-def equation_url(book_id: str, eq_id: str) -> str:
-    return f"/api/books/{book_id}/equations/{eq_id}.png"
+def equation_url(book_id: str, eq_id: str, png: bytes | None = None) -> str:
+    """The picture's URL; `?v=` (from its bytes) makes a browser fetch a re-made crop despite its cache."""
+    version = f"?v={hashlib.sha256(png).hexdigest()[:10]}" if png else ""
+    return f"/api/books/{book_id}/equations/{eq_id}.png{version}"
 
 
 def equation_path(book_id: str, eq_id: str) -> Path:
@@ -1248,49 +1624,159 @@ def render_equations(book_id: str, data: bytes, stop=lambda: False) -> dict[str,
     except OSError:
         return {}
     found: dict[str, tuple[bytes, str]] = {}
+    spans: dict = {}
     with pymupdf.open(stream=data, filetype="pdf") as doc:
         for p in eqs:
             m = p.math
             if stop():
                 return {}
-            if not 0 <= m.page < doc.page_count:
+            png = _crop(doc, m.page, m.bbox, spans=spans)
+            if png is None:
                 continue
-            page = doc[m.page]
-            x0, y0, x1, y1 = m.bbox
-            clip = pymupdf.Rect(x0 - EQ_PAD, y0 - EQ_PAD, x1 + EQ_PAD, y1 + EQ_PAD) & page.rect
-            if clip.is_empty or clip.width * clip.height * (EQ_DPI / 72) ** 2 > EQ_MAX_PIXELS:
-                continue
-            png = page.get_pixmap(clip=clip, dpi=EQ_DPI, colorspace=pymupdf.csGRAY, alpha=False).tobytes("png")
             equation_path(book_id, m.id).write_bytes(png)
             found[m.id] = (png, p.text)
     if stop():
         return {}
     if found:
-        update_equations(book_id, {k: {"image": equation_url(book_id, k)} for k in found})
+        update_equations(book_id, {k: {"image": equation_url(book_id, k, png)} for k, (png, _t) in found.items()})
     return found
 
 
-_eq_lock = threading.Lock()   # read-modify-write of book.json by the equation job's threads
+_PROSE_WORD = re.compile(r"[a-z]{2,}")   # "we", "known": a word, not a math italic y or an index i
+
+
+def _crop(doc, page_no: int, bbox: list[float], pad: tuple[float, float] = (EQ_PAD, EQ_PAD),
+          spans: dict | None = None, mask_prose: bool = False) -> bytes | None:
+    """PNG of the box (padded by (x, y) points) on the page, or None when it is off the page, empty or too big.
+
+    Text of other lines is painted out: math fonts report boxes far taller than their glyphs ("≈" reaches a line
+    below its baseline), so the box can overlap the next line's letters. A span belongs to another line when its
+    baseline lies outside the box; prose beside an inline formula is painted out too, up to the box's edge.
+    With `mask_prose`, a word whose baseline sits inside a tall glyph's box (a sum or a root reaching the line
+    above) is painted out as well. `spans` caches each page's span boxes across calls."""
+    import pymupdf
+    if not 0 <= page_no < doc.page_count:
+        return None
+    page = doc[page_no]
+    x0, y0, x1, y1 = bbox
+    clip = pymupdf.Rect(x0 - pad[0], y0 - pad[1], x1 + pad[0], y1 + pad[1]) & page.rect
+    if clip.is_empty or clip.width * clip.height * (EQ_DPI / 72) ** 2 > EQ_MAX_PIXELS:
+        return None
+    pix = page.get_pixmap(clip=clip, dpi=EQ_DPI, colorspace=pymupdf.csGRAY, alpha=False)
+    if spans is None:
+        spans = {}
+    if page_no not in spans:
+        spans[page_no] = [(pymupdf.Rect(s["bbox"]), s["origin"][1], s["size"], s["text"])
+                          for b in page.get_text("dict")["blocks"]
+                          for ln in b.get("lines", ()) for s in ln["spans"] if s["text"].strip()]
+    anchor = main = None
+    if mask_prose:
+        body = [(base, size) for rect, base, size, text in spans[page_no]
+                if y0 <= base <= y1 and rect.x1 > x0 and rect.x0 < x1 and not _PROSE_WORD.search(text)]
+        if body:
+            anchor = max(base for base, _size in body)
+            main = max(size for _base, size in body)
+    zoom = pymupdf.Matrix(EQ_DPI / 72, EQ_DPI / 72)
+    for rect, base, size, text in spans[page_no]:
+        if not rect.intersects(clip):
+            continue
+        area = rect & clip
+        # a word on the line above, tucked into a tall sum or root, is not part of the formula
+        tucked = (anchor is not None and _PROSE_WORD.search(text)
+                  and (base < anchor - 0.7 * main or base > anchor + 0.45 * main))
+        if base < y0 or base > y1 or tucked:   # another line: only where its letters are, not its font's whole box
+            area.y0, area.y1 = max(area.y0, base - 0.78 * size), min(area.y1, base + 0.25 * size)
+        else:   # the formula's own line: only prose beside it, outside the box, is painted out
+            if rect.x0 >= x1 - 0.5:
+                area.x0 = max(area.x0, x1)
+            elif rect.x1 <= x0 + 0.5:
+                area.x1 = min(area.x1, x0)
+            else:
+                continue
+        if not area.is_empty:
+            area = area * zoom
+            pix.set_rect(pymupdf.IRect(area.x0, area.y0, area.x1 + 1, area.y1 + 1) & pix.irect, (255,))
+    return pix.tobytes("png")
+
+
+INLINE_MAX_BOOK = 3000   # distinct inline formulas cropped per book
+INLINE_PAD = (1.0, 0.5)  # points (x, y): a taller pad reaches the descenders of the line above
+
+
+def render_inline(book_id: str, data: bytes, stop=lambda: False) -> tuple[dict[str, tuple[bytes, str]],
+                                                                          dict[str, list[str]]]:
+    """Worker thread: crop the inline formulas of the published book, like render_equations. Formulas with the same
+    extracted text and size share one picture (and one reading). Returns ({first id: (PNG, extracted text)},
+    {first id: every id sharing it})."""
+    import pymupdf
+    path = _book_json(book_id)
+    try:
+        book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}, {}
+    groups: dict[tuple, list] = {}
+    for p in book.paragraphs:
+        for m in p.inline_math:
+            x0, y0, x1, y1 = m.bbox
+            key = (p.text[m.start:m.end], round(x1 - x0), round(y1 - y0))
+            if key in groups:
+                groups[key].append(m.id)
+            elif len(groups) < INLINE_MAX_BOOK:
+                groups[key] = [m, m.id]
+    if not groups:
+        return {}, {}
+    out_dir = path.parent / "equations"
+    try:
+        out_dir.mkdir(exist_ok=True)  # never parents: a deleted book's folder must not come back
+    except OSError:
+        return {}, {}
+    found: dict[str, tuple[bytes, str]] = {}
+    shared: dict[str, list[str]] = {}
+    spans: dict = {}
+    with pymupdf.open(stream=data, filetype="pdf") as doc:
+        for (text, _w, _h), (m, *ids) in groups.items():
+            if stop():
+                return {}, {}
+            png = _crop(doc, m.page, m.bbox, INLINE_PAD, spans, mask_prose=True)
+            if png is None:
+                continue
+            equation_path(book_id, m.id).write_bytes(png)
+            found[m.id] = (png, text)
+            shared[m.id] = ids
+    if stop():
+        return {}, {}
+    if found:
+        update_equations(book_id, {i: {"image": equation_url(book_id, k, found[k][0])}
+                                   for k, ids in shared.items() for i in ids})
+    return found, shared
 
 
 def update_equations(book_id: str, fields: dict[str, dict]) -> int:
-    """Set MathBlock fields ({equation id: {image|latex|spoken: value}}) in book.json and re-chunk those paragraphs.
-    Returns how many equations changed; nothing is written when book.json is gone (a deleted book)."""
+    """Set MathBlock / InlineMath fields ({id: {image|latex|spoken: value}}) in book.json and re-chunk those
+    paragraphs. Returns how many changed; nothing is written when book.json is gone (a deleted book)."""
     from . import books
     path = _book_json(book_id)
-    with _eq_lock:
+    with books.write_lock(path):   # read-modify-write: shared with every other book.json writer
         try:
             book = Book.model_validate_json(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return 0
         n = 0
+        index = BookIndex(book)
         for p in book.paragraphs:
+            changed = 0
             new = fields.get(p.math.id) if p.math is not None else None
-            if not new:
+            if new:
+                p.math = p.math.model_copy(update=new)
+                changed += 1
+            for i, m in enumerate(p.inline_math):
+                if new := fields.get(m.id):
+                    p.inline_math[i] = m.model_copy(update=new)
+                    changed += 1
+            if not changed:
                 continue
-            p.math = p.math.model_copy(update=new)
-            p.tts_chunks = chunk_paragraph(p, book)
-            n += 1
+            p.tts_chunks = chunk_paragraph(p, book, index=index)
+            n += changed
         if n:
             books.save_book(path, book)
     return n
@@ -1298,10 +1784,8 @@ def update_equations(book_id: str, fields: dict[str, dict]) -> int:
 
 def publish_book(book: Book) -> None:
     """Write book.json (which makes the book visible to list_books/load_book)."""
-    d = settings.data_dir / "books" / book.id
-    tmp = d / "book.json.tmp"
-    tmp.write_text(book.model_dump_json(indent=1), encoding="utf-8")
-    tmp.replace(d / "book.json")
+    from . import books
+    books.save_book(settings.data_dir / "books" / book.id / "book.json", book)
 
 
 def discard_book(book_id: str) -> None:
@@ -1311,9 +1795,11 @@ def discard_book(book_id: str) -> None:
     shutil.rmtree(d / "figures", ignore_errors=True)
     for name in ("book.json", "book.json.tmp"):
         (d / name).unlink(missing_ok=True)
+    for tmp in d.glob("book.json.*.tmp"):   # books.save_book's per-call temp files (only left by a crash)
+        tmp.unlink(missing_ok=True)
 
 
-KIND_KEYS = ("kind", "kind_detected")
+KIND_KEYS = ("kind", "kind_detected", "enrich_retries")   # carried over from the previous status
 
 
 def write_status(book_id: str, status: str, message: str | None = None, enrich: dict | None = None,

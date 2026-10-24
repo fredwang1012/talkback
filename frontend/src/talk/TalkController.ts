@@ -2,14 +2,27 @@ import { micErrorMessage } from "../audio/mediaErrors";
 /**
  * The core loop as an explicit state machine (brief 7.3):
  *   reading -> listening -> transcribing -> retrieving -> answering -> resuming -> reading   (+ talk-idle)
- * Push-to-talk only. It talks to the network through `TalkSession` and to the reader through `ReaderControl`,
+ * Push-to-talk, or hands-free (the local voice gate, or Boson's turn detection since #135). It talks to the network through `TalkSession` and to the reader through `ReaderControl`,
  * so the whole loop can be tested with fakes.
  */
 
 import type { SentenceSpeaker } from "./sentencePlayer";
 import type { TimingEvent } from "./speechGate";
 import { HANDS_FREE_OVER_SPEECH, createVoiceGate } from "./handsFree";
-import { parseIntent, type ToolOutcome, type ToolRunner } from "./tools";
+import { transcriptionHint } from "./language";
+import { QUIZ_QUESTIONS, endsQuiz, parseIntent, quizGeminiQuery, quizTurnInstructions, type Quiz, type ToolOutcome, type ToolRunner } from "./tools";
+
+/**
+ * #135: how long to wait for the transcript of a committed turn before saying "I didn't catch that". Boson never sends
+ * transcription `.failed`; live the transcript comes 0.15-0.4 s after the commit, or not at all (e.g. a wrong
+ * language hint), so a missing one is known well before the old 6 s window.
+ */
+export const FAST_FAIL_MS = 1500;
+/**
+ * #135: after the server ends a turn, speech that starts again within this window continues the same question (live,
+ * the server VAD split one spoken question into two committed turns). The transcript takes about this long anyway.
+ */
+export const MERGE_MS = 600;
 
 /** How many queued sentences are synthesised ahead of the one being spoken. */
 export const PREFETCH_DEPTH = 3;
@@ -22,7 +35,12 @@ export type ToolCall = { callId: string; name: string; args: Record<string, unkn
 export type ToolResult = { callId: string; output: string };
 
 export type SessionEvent =
-  | { type: "transcript"; text: string }
+  | { type: "transcript"; text: string; itemId?: string }
+  | { type: "speech-started"; itemId?: string } // #135: Boson's turn detection heard speech begin (input_audio_buffer.speech_started)
+  | { type: "speech-stopped" }
+  | { type: "committed"; itemId?: string } // a user audio turn was committed (by us or by the server's VAD)
+  | { type: "heard"; text: string } // #135: on a cut, the words of the answer the reader actually heard
+  | { type: "turn-mode"; server: boolean } // #135: the server's turn detection was refused: back to the local gate
   | { type: "tool-call"; calls: ToolCall[] }
   | { type: "audio-start" }
   | { type: "caption"; text: string; done: boolean }
@@ -36,8 +54,12 @@ export interface TalkSession {
   ensureOpen(voice: string): Promise<void>;
   /** Switch the voice of an open session (reconnects if the server rejects mid-session changes). */
   setVoice(voice: string): Promise<void>;
-  /** Start streaming mic audio; audio captured while the socket is still connecting is buffered then sent. */
-  startMic(): Promise<void>;
+  /**
+   * Start streaming mic audio; audio captured while the socket is still connecting is buffered then sent.
+   * `voiceStarted`: the hands-free voice gate opened the turn, so the pre-roll from before it goes first (#114).
+   * `overSpeech`: it opened while the character was speaking (a barge-in): only a short pre-roll, the rest is echo.
+   */
+  startMic(voiceStarted?: boolean, overSpeech?: boolean): Promise<void>;
   /** Stop the mic. With `discard`, drop what was captured instead of keeping it for a commit. */
   stopMic(discard?: boolean): Promise<void>;
   commit(): void;
@@ -52,6 +74,14 @@ export interface TalkSession {
   /** Hold local playback where it is (the reply keeps arriving and waits), and continue it. Optional. */
   pausePlayback?(): Promise<void>;
   resumePlayback?(): Promise<void>;
+  /** #135: use Boson's turn detection for hands-free (the session reconnects when the mode changes). Optional. */
+  setServerTurns?(on: boolean): void;
+  /** #135: remove a turn from the server's conversation (it was the character's echo). Optional. */
+  deleteItem?(itemId: string): void;
+  /** #135: the transcription language hint (ISO 639-1), or null. Optional. */
+  setLanguageHint?(code: string | null): void;
+  /** Whether the socket is open now. Optional. */
+  readonly isOpen?: boolean;
   on(fn: (e: SessionEvent) => void): () => void;
 }
 
@@ -97,6 +127,10 @@ export interface TalkDeps {
   onToolRun?: (chip: string) => void;
   /** The reader cut the answer being spoken off (barge-in, #10): mark its bubble; the next answer is told. */
   onInterrupted?: () => void;
+  /** #135: hands-free uses Boson's turn detection when the session supports it (else, or when false, the local gate). */
+  serverTurns?: boolean;
+  /** #135: the cut-off answer's words that were actually heard (cut the stored reply to them). */
+  onHeard?: (text: string) => void;
   /** True while answer audio is coming out of the speakers (drives the waveform). */
   onSpeaking?: (speaking: boolean) => void;
   now?: () => number;
@@ -114,6 +148,13 @@ export class TalkController {
   private resumeIndex: number | null = null;
   private wasPlayingBeforePress = false;
   private pressedAt = 0;
+  /** A quiz in progress (quiz_me): the next turns carry its rules and text until the last answer is graded, or it is ended. */
+  private quiz: (Quiz & { answered: number }) | null = null;
+  /** The quiz answer being graded now: it counts only once that answer is complete (not cut off or cancelled). */
+  private quizPending: { quiz: Quiz & { answered: number }; n: number } | null = null;
+
+  /** End a quiz in progress (the chat was cleared, or reading went on). */
+  endQuiz(): void { this.quiz = null; this.quizPending = null; }
   private turn = 0; // bumped whenever a turn is abandoned, so stale async work is ignored
   private resumeTimer: ReturnType<typeof setTimeout> | null = null;
   private waiters: { predicate: (e: SessionEvent) => boolean; resolve: (e: SessionEvent | null) => void }[] = [];
@@ -125,7 +166,16 @@ export class TalkController {
   private gate = createVoiceGate();
   private opening: Promise<void> = Promise.resolve(); // the session connect started by the current turn (#102)
   private watch = 0; // the answer watchdog in force; an older one that wakes up does nothing
-  private quietSince = 0; // when the character last stopped speaking (hands-free echo tail, #103)
+  private quietSince = Number.NEGATIVE_INFINITY; // when the character last stopped speaking (hands-free echo tail, #103)
+  // #135 hands-free on Boson's turn detection
+  private serverMode = false;
+  private strongGate = createVoiceGate(HANDS_FREE_OVER_SPEECH); // the echo guard: clear speech over the character
+  /** The question the server is hearing now: its transcripts so far, whether speech goes on, when it last stopped. */
+  private srv: { transcripts: string[]; speaking: boolean; heardSpeech: boolean; stoppedAt: number; timer: ReturnType<typeof setTimeout> | null } | null = null;
+  private pendingEcho: string | null = null; // a speech_started over the character, not yet confirmed by the local level
+  private echoItems = new Set<string>(); // server turns that were judged echo: deleted on commit, transcripts ignored
+  private recentQuestions: string[] = []; // for the transcription language hint
+  private hint: string | null = null;
   private off: () => void;
 
   constructor(deps: TalkDeps) {
@@ -190,10 +240,11 @@ export class TalkController {
 
   private talkback = false;
   /** In the Talkback view a short tap on the mic never starts or stops the story; it just cancels the question. */
-  setTalkback(v: boolean): void { this.talkback = v; }
+  setTalkback(v: boolean): void { if (v !== this.talkback) this.endQuiz(); this.talkback = v; }
 
   /** Picking someone else to talk to; applied to the session voice before the next question. */
   async setSpeaker(id: string): Promise<void> {
+    if (id !== this.speakerId) this.endQuiz(); // a quiz belongs to the one who asked it
     this.speakerId = id;
     try { await this.d.session.setVoice(this.d.voiceFor(id)); } catch { /* the next ensureOpen reconnects with the right voice */ }
   }
@@ -204,6 +255,8 @@ export class TalkController {
   }
 
   dispose(): void {
+    this.clearSrv();
+    this.endQuiz();
     this.off();
     this.clearResumeTimer();
     this.cancelAnswer();
@@ -216,14 +269,31 @@ export class TalkController {
 
   get isHandsFree(): boolean { return this.handsFree; }
 
-  /** Turn hands-free on or off: the mic stays open and `noteLevel` drives the turns. Off by default. */
+  /** Hands-free runs on Boson's turn detection now (#135); false: the local voice gate (or hands-free is off). */
+  get serverTurnsActive(): boolean { return this.handsFree && this.serverMode; }
+
+  /**
+   * Turn hands-free on or off. Off by default. On Boson's turn detection (#135, `serverTurns`) the session is
+   * reopened with semantic_vad at once and the mic streams to it; otherwise the mic stays open and `noteLevel` drives
+   * the turns (the local gate, also the fallback when the server mode is refused).
+   */
   async setHandsFree(on: boolean): Promise<void> {
     if (on === this.handsFree) return;
     this.handsFree = on;
     this.gate.reset();
+    this.strongGate.reset();
+    this.pendingEcho = null;
+    const canServer = !!this.d.serverTurns && !!this.d.session.setServerTurns;
+    this.serverMode = on && canServer;
+    if (canServer) this.d.session.setServerTurns?.(this.serverMode);
     try { await this.d.session.setMonitor?.(on); } catch (e) {
       this.handsFree = false;
+      if (this.serverMode) { this.serverMode = false; this.d.session.setServerTurns?.(false); }
       this.d.onToast?.(micErrorMessage(e));
+      return;
+    }
+    if (this.serverMode) {
+      try { await this.d.session.ensureOpen(this.d.voiceFor(this.speakerId)); } catch (e) { this.d.onToast?.(e instanceof Error ? e.message : String(e)); }
     }
   }
 
@@ -236,9 +306,22 @@ export class TalkController {
   noteLevel(rms: number): void {
     if (!this.handsFree) return;
     const now = this.d.now();
+    if (this.serverMode) { // #135: the server decides the turns; the level is the echo guard (and wakes a closed session)
+      this.strongGate.feed(rms, now);
+      const idle = this.gate.feed(rms, now);
+      if (this.pendingEcho !== null && this.strongGate.speaking) {
+        this.pendingEcho = null; // confirmed: the reader is talking over the character
+        if (["reading", "talk-idle", "answering", "resuming"].includes(this._state)) void this.beginTurn(true, true, true);
+      }
+      else if (idle === "start" && this.d.session.isOpen === false && ["reading", "talk-idle", "resuming"].includes(this._state)) {
+        // the session closed (idle timeout): reopen; the mic audio held meanwhile goes first, so the server hears the question
+        void this.d.session.ensureOpen(this.d.voiceFor(this.speakerId)).catch(() => {});
+      }
+      return;
+    }
     const overSpeech = this._state !== "listening" && (this.speaking || now - this.quietSince < TalkController.ECHO_TAIL_MS);
     const ev = this.gate.feed(rms, now, overSpeech ? HANDS_FREE_OVER_SPEECH : undefined);
-    if (ev === "start" && ["reading", "talk-idle", "answering", "resuming"].includes(this._state)) void this.beginTurn(true);
+    if (ev === "start" && ["reading", "talk-idle", "answering", "resuming"].includes(this._state)) void this.beginTurn(true, overSpeech);
     else if (ev === "stop" && this._state === "listening") { this.handsFreeTurn = true; void this.pttUp(); } // a pressed turn ends on silence too, and is never a tap
   }
 
@@ -246,12 +329,18 @@ export class TalkController {
 
   pttDown(): Promise<void> { return this.beginTurn(false); }
 
-  private async beginTurn(handsFree: boolean): Promise<void> {
+  /** `serverStarted` (#135): Boson's VAD opened the turn; the mic is already streaming to it. */
+  private async beginTurn(handsFree: boolean, overSpeech = false, serverStarted = false): Promise<void> {
     this.handsFreeTurn = handsFree;
+    this.clearSrv();
+    this.pendingEcho = null;
+    if (this.serverMode) this.srv = { transcripts: [], speaking: serverStarted, heardSpeech: serverStarted, stoppedAt: 0, timer: null };
     this.clearResumeTimer(); // pressing during the 1.5 s window starts a follow-up question
     const turn = ++this.turn;
     this.pressedAt = this.d.now();
     const wasAnswering = this._state === "answering";
+    this.quizPending = null; // a barge-in: the answer being graded was cut off and does not count
+    if (this.d.reader.isPlaying()) this.endQuiz(); // the reader read on since the quiz: this is not an answer to it
     const wasBusy = ["transcribing", "retrieving"].includes(this._state);
     const viaAnswer = this.run !== null;
     if (wasAnswering) this.d.onInterrupted?.(); // barge-in (#10): the bubble shows it was cut off, the next answer is told
@@ -273,7 +362,8 @@ export class TalkController {
       : Promise.resolve();
     const connecting = this.d.session.ensureOpen(this.d.voiceFor(this.speakerId)).catch((e: unknown) => this.fail(turn, e));
     this.opening = Promise.all([interrupting, connecting]).then(() => undefined);
-    try { await this.d.session.startMic(); } catch (e) { this.fail(turn, e, micErrorMessage(e)); }
+    if (serverStarted) return; // the server already has the audio
+    try { await this.d.session.startMic(handsFree, handsFree && overSpeech); } catch (e) { this.fail(turn, e, micErrorMessage(e)); }
   }
 
   async pttUp(): Promise<void> {
@@ -290,12 +380,23 @@ export class TalkController {
       const index = this.resumeIndex;
       this.resumeIndex = null;
       this.set("reading");
-      if (!wasPlaying && index !== null) this.d.reader.play();
+      if (!wasPlaying && index !== null) { this.endQuiz(); this.d.reader.play(); } // reading on ends a quiz
       return;
     }
 
     await this.d.session.stopMic();
     if (turn !== this.turn) return;
+    const srv = this.srv;
+    if (srv) { // #135 a pressed turn in server mode: the server ends it; nothing heard yet means we commit it ourselves
+      if (srv.speaking || srv.transcripts.length || srv.stoppedAt) return;
+      await this.opening;
+      if (turn !== this.turn || this.srv !== srv) return;
+      this.d.session.commit();
+      srv.stoppedAt = this.d.now();
+      this.set("transcribing");
+      this.armSrv(FAST_FAIL_MS);
+      return;
+    }
     this.set("transcribing");
     // The first press often releases before the socket is open (key fetch + connect take seconds). The commit is
     // queued until then, so the transcript window must start when it is really sent, not at the release (#102).
@@ -303,18 +404,117 @@ export class TalkController {
     if (turn !== this.turn) return;
     const t0 = this.d.now();
     this.d.session.commit();
+    // push-to-talk and the local gate keep the full window: a long question can take its time to transcribe (#141);
+    // FAST_FAIL_MS is for server turns only (armSrv)
     const transcript = await this.waitFor((e) => e.type === "transcript", this.d.transcriptTimeoutMs);
     if (turn !== this.turn) return;
     const query = transcript && transcript.type === "transcript" ? transcript.text.trim() : "";
     this.latency = { commitToTranscriptMs: this.d.now() - t0 };
-    if (!query) { // nothing heard (silence, a failed or late transcription): never ask an empty question
-      this.d.onToast?.("I didn't catch that. Try again.");
-      this.turn++;
-      this.backToReading();
+    if (!query) { this.noTranscript(); return; } // nothing heard (silence, a failed or late transcription): never ask an empty question
+    this.d.onTranscript?.(query);
+    this.noteQuestion(query);
+
+    await this.answerQuery(turn, query);
+  }
+
+  /** Nothing usable was heard: say so now, and drop a language hint that may be the cause (#135). */
+  private noTranscript(): void {
+    this.d.onToast?.("I didn't catch that. Try again.");
+    this.turn++;
+    this.clearSrv();
+    this.backToReading();
+    if (this.hint !== null) { // live: a wrong hint swallowed the transcript entirely
+      this.recentQuestions = [];
+      this.hint = null;
+      this.d.session.setLanguageHint?.(null);
+    }
+  }
+
+  /** A question was asked (spoken or typed): update the transcription language hint from the recent ones (#135). */
+  private noteQuestion(query: string): void {
+    this.recentQuestions = [...this.recentQuestions, query].slice(-3);
+    const hint = transcriptionHint(this.recentQuestions);
+    if (hint === this.hint) return;
+    this.hint = hint;
+    this.d.session.setLanguageHint?.(hint);
+  }
+
+  // ---- Boson turn detection (#135) ----------------------------------------------------------------------------
+
+  private clearSrv(): void {
+    if (this.srv?.timer) clearTimeout(this.srv.timer);
+    this.srv = null;
+  }
+
+  private armSrv(ms: number): void {
+    const srv = this.srv;
+    if (!srv) return;
+    if (srv.timer) clearTimeout(srv.timer);
+    srv.timer = setTimeout(() => { if (this.srv === srv) { srv.timer = null; void this.finishSrv(); } }, ms);
+  }
+
+  private markEcho(itemId: string | undefined): void {
+    if (!itemId) return;
+    if (this.echoItems.size > 50) this.echoItems.clear();
+    this.echoItems.add(itemId);
+  }
+
+  /** speech_started: a new question, more of the current one, a barge-in, or (over the character) maybe their echo. */
+  private onServerSpeech(itemId: string | undefined): void {
+    const srv = this.srv;
+    if (srv && (this._state === "listening" || this._state === "transcribing")) { // the same question goes on
+      if (srv.timer) { clearTimeout(srv.timer); srv.timer = null; }
+      srv.speaking = true;
+      srv.heardSpeech = true;
+      if (this._state === "transcribing") this.set("listening");
       return;
     }
-    this.d.onTranscript?.(query);
+    if (!["reading", "talk-idle", "answering", "resuming"].includes(this._state)) { this.markEcho(itemId); return; } // busy: not a question we answer
+    const overSpeech = this.speaking || this.d.now() - this.quietSince < TalkController.ECHO_TAIL_MS;
+    // Echo guard: over the character (speakers), the server's VAD alone may be hearing them. A barge-in needs clear
+    // local speech too (the strict gate, #103); until then this speech is on probation (noteLevel may confirm it).
+    if (overSpeech && !this.strongGate.speaking) { this.pendingEcho = itemId ?? ""; return; }
+    void this.beginTurn(true, overSpeech, true);
+  }
 
+  private onServerStop(): void {
+    if (this.pendingEcho !== null) { this.markEcho(this.pendingEcho); this.pendingEcho = null; return; } // never confirmed: echo
+    const srv = this.srv;
+    if (!srv || this._state !== "listening") return;
+    srv.speaking = false;
+    srv.stoppedAt = this.d.now();
+    this.set("transcribing");
+    this.armSrv(FAST_FAIL_MS);
+  }
+
+  private onCommitted(itemId: string | undefined): void {
+    if (itemId && this.echoItems.has(itemId)) { this.d.session.deleteItem?.(itemId); return; }
+    const srv = this.srv;
+    if (srv && this._state === "transcribing" && !srv.speaking && srv.transcripts.length === 0) this.armSrv(FAST_FAIL_MS); // the transcript is due shortly
+  }
+
+  private onServerTranscript(text: string, itemId: string | undefined): void {
+    if (itemId && this.echoItems.has(itemId)) return;
+    const srv = this.srv;
+    if (!srv || !["listening", "transcribing"].includes(this._state)) return;
+    if (text.trim()) srv.transcripts.push(text.trim());
+    if (srv.speaking) return; // more of the question is coming
+    this.armSrv(Math.max(0, srv.stoppedAt + MERGE_MS - this.d.now()));
+  }
+
+  /** The server's turn is over: answer it through the normal flow (retrieval instructions, then our response.create). */
+  private async finishSrv(): Promise<void> {
+    const srv = this.srv;
+    if (!srv) return;
+    this.clearSrv();
+    const turn = this.turn;
+    const query = srv.transcripts.join(" ").trim();
+    if (!query) { this.noTranscript(); return; }
+    this.latency = { commitToTranscriptMs: this.d.now() - srv.stoppedAt };
+    this.d.onTranscript?.(query);
+    this.noteQuestion(query);
+    await this.opening; // a barge-in's cancel must be acknowledged before our response.create
+    if (turn !== this.turn) return;
     await this.answerQuery(turn, query);
   }
 
@@ -322,6 +522,7 @@ export class TalkController {
   async ask(text: string): Promise<void> {
     const query = text.trim();
     if (!query) return;
+    this.clearSrv();
     this.clearResumeTimer();
     const turn = ++this.turn;
     const wasAnswering = this._state === "answering";
@@ -337,6 +538,7 @@ export class TalkController {
     this.d.onCaption?.("", false);
     this.latency = {};
     this.d.onTranscript?.(query);
+    this.noteQuestion(query);
     this.set("retrieving");
     if ((wasAnswering || wasBusy) && !viaAnswer) {
       try { await this.d.session.interrupt(); } catch (e) { this.fail(turn, e); return; }
@@ -351,6 +553,7 @@ export class TalkController {
 
   /** Stop speaking and drop the current answer (Stop button). */
   async stop(): Promise<void> {
+    this.clearSrv();
     const viaAnswer = this.run !== null;
     this.cancelAnswer();
     this.turn++;
@@ -361,21 +564,34 @@ export class TalkController {
   }
 
   /** `typed`: the question is text, so the Realtime model must be given it as an item (#97); spoken audio is already the user item. */
+  /** The quiz part of this turn (and the answer it grades), or null when no quiz runs. Ends the quiz on its last answer or on a stop / command. */
+  private quizTurn(query: string): { quiz: Quiz; n: number } | null {
+    const q = this.quiz;
+    this.quizPending = null;
+    if (!q) return null;
+    if (endsQuiz(query)) { this.endQuiz(); return null; }
+    const n = q.answered + 1; // counted when this answer completes (afterAnswer), so a cut-off one is asked again
+    this.quizPending = { quiz: q, n };
+    return { quiz: q, n };
+  }
+
   private async answerQuery(turn: number, query: string, typed = false): Promise<void> {
     this.set("retrieving");
     const r0 = this.d.now();
+    const quiz = this.quizTurn(query);
     if (this.d.answer && this.d.speaker) {
       // Gemini writes the answer (no Realtime, so no function calling): a plain spoken command is acted on here instead
       const intent = this.d.tools ? parseIntent(query) : null;
       if (intent && this.d.tools) {
         const outcome = this.runTool(intent.name, intent.args);
+        if (outcome.ok && outcome.ask) { void this.streamAndSpeak(turn, outcome.ask, r0); return; } // quiz / explain: Gemini answers it aloud
         if (outcome.ok) { this.turn++; this.endTurn(); return; }
         this.d.onToast?.(outcome.output); // refused (e.g. a spoiler jump): tell the reader, no question is sent
         this.turn++;
         this.endTurn();
         return;
       }
-      void this.streamAndSpeak(turn, query, r0);
+      void this.streamAndSpeak(turn, quiz ? quizGeminiQuery(quiz.quiz, quiz.n, query) : query, r0);
       return;
     }
     let instructions: string;
@@ -393,6 +609,7 @@ export class TalkController {
 
     this.set("answering");
     const a0 = this.d.now();
+    if (quiz) instructions = `${instructions}\n\n${quizTurnInstructions(quiz.quiz, quiz.n)}`;
     this.d.session.respond(instructions, typed ? query : undefined);
     void this.awaitAnswer(turn, a0); // key release returns now; the answer is handled in the background
   }
@@ -514,6 +731,20 @@ export class TalkController {
       if (w.predicate(e)) { this.waiters = this.waiters.filter((x) => x !== w); w.resolve(e); }
     }
     if (e.type === "caption") this.d.onCaption?.(e.text, e.done);
+    if (e.type === "heard") this.d.onHeard?.(e.text);
+    if (e.type === "turn-mode" && !e.server && this.serverMode) { // refused: the local gate takes over hands-free
+      this.serverMode = false;
+      this.gate.reset();
+      this.clearSrv();
+      this.pendingEcho = null;
+      if (["listening", "transcribing"].includes(this._state)) { this.turn++; this.backToReading(); }
+    }
+    if (this.serverMode) {
+      if (e.type === "speech-started") this.onServerSpeech(e.itemId);
+      else if (e.type === "speech-stopped") this.onServerStop();
+      else if (e.type === "committed") this.onCommitted(e.itemId);
+      else if (e.type === "transcript") this.onServerTranscript(e.text, e.itemId);
+    }
     if (e.type === "tool-call" && ["retrieving", "answering"].includes(this._state) && !this.run) this.onToolCalls(e.calls);
     if (e.type === "audio-start" && this._state === "answering") this.setSpeaking(true);
     if (e.type === "playback-drained") this.setSpeaking(false);
@@ -543,6 +774,8 @@ export class TalkController {
     let outcome: ToolOutcome;
     try { outcome = (this.d.tools as ToolRunner)(name, args); } catch (e) { outcome = { ok: false, output: `The tool failed: ${e instanceof Error ? e.message : String(e)}`, chip: null }; }
     if (outcome.chip) this.d.onToolRun?.(outcome.chip);
+    this.quiz = outcome.ok && outcome.quiz ? { ...outcome.quiz, answered: 0 } : null; // quiz_me starts one; any other tool ends it
+    this.quizPending = null;
     if (!outcome.ok) return outcome;
     if (outcome.moveTo !== undefined) this.resumeIndex = outcome.moveTo; // reading goes on there, if it goes on at all
     if (outcome.play) { this.resumeIndex ??= this.d.reader.currentIndex(); this.wasPlayingBeforePress = true; this.forceResume = true; }
@@ -557,6 +790,12 @@ export class TalkController {
   }
 
   private afterAnswer(): void {
+    const p = this.quizPending;
+    this.quizPending = null;
+    if (p && this.quiz === p.quiz) { // the graded answer is complete: it counts; the last one ends the quiz
+      p.quiz.answered = p.n;
+      if (p.n >= QUIZ_QUESTIONS) this.quiz = null;
+    }
     if ((this.autoResume || this.forceResume) && this.resumeIndex !== null && this.wasPlayingBeforePress) {
       const turn = this.turn;
       this.set("resuming");
@@ -574,10 +813,12 @@ export class TalkController {
   private backToReading(): void {
     const index = this.resumeIndex;
     const wasPlaying = this.wasPlayingBeforePress;
+    this.quizPending = null; // the turn ended without a complete answer (or reading goes on): it does not count
     this.resumeIndex = null;
     this.forceResume = false;
     this.clearResumeTimer();
     if (index !== null && wasPlaying) {
+      this.endQuiz(); // reading goes on: a quiz in progress is over
       this.set("reading");
       this.d.reader.resumeAt(index);
     } else {
@@ -587,6 +828,7 @@ export class TalkController {
 
   private fail(turn: number, e: unknown, message?: string): void {
     if (turn !== this.turn) return;
+    this.clearSrv();
     this.d.onToast?.(message ?? (e instanceof Error ? e.message : String(e)));
     this.turn++;
     void this.d.session.stopMic(true);

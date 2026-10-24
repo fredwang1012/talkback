@@ -650,12 +650,61 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
 - ISLR (1st printing): 272 equations, 163 of 173 numbered ones found; misses are prose hypotheses (3.12/3.13) and
   "maximize ... subject to" problems (9.9-9.15), plus (3.27) loses its number (it sits beside the prose condition
   "if ith person is female"). The bogus "1 B" section (a fraction of (5.8) read as a heading) is gone. Crops of the
-  whole book: 0.8 s, ~1 MB. Inline math inside sentences is unchanged (still extracted text).
+  whole book: 0.8 s, ~1 MB. Inline math inside sentences: see "Inline formulas" below.
 - Books uploaded before this change have no math paragraphs; re-upload to get them.
 - A new GCP project cannot call gemini-2.5-flash (404) and Gemini 3 is served only from the `global` location, so
   `.env` sets GEMINI_MODEL=gemini-3.5-flash and GEMINI_LOCATION=global (config.gemini_region). Gemini 3 rejects
   thinking_budget (400): the provider drops it and retries, and adds 8192 output tokens because the model spends the
   cap on hidden thoughts (two equations took ~1,500 thought tokens).
+
+## Inline formulas in uploaded textbooks (2026-10-23)
+- Inside a prose line, a run of math-font spans (plus the operators, digits, brackets and operator names such as
+  "max" between them) is marked when its text would read wrong: lost glyphs, accents (ˆ ¯), big operators or roots,
+  or sub/superscripts (a span < 85% of the run's size or with a shifted baseline). A plain italic x is left alone.
+  Detection uses fonts and sizes only, nothing book-specific. Leading prose punctuation/numbers ("3.1,", "•") and
+  trailing sentence punctuation stay outside the formula.
+- The marker rides in pdf_to_text's output (parsing.IM_OPEN + page/bbox as private-use chars + text + IM_CLOSE) but
+  only on the final paragraph text: layout heuristics (headers, headings, code, TOC) see the unmarked line. parse()
+  turns markers into `Paragraph.inline_math` (offsets into the text); long-paragraph splits never cut one; novels
+  drop them.
+- After the display equations, the same job crops each distinct inline formula (same text and size share one
+  picture) and Gemini reads them in the same batches; the inline pass is trimmed to fit the per-book cap on the same
+  LLM instance. The reading replaces the garbled text in the TTS chunk (packing measures the spoken length; readings
+  over 120 chars are not used) and its spoken words highlight the formula (tts_cache.align_timestamps `inline`).
+- Reader: KaTeX in text style inside the sentence, else the crop sized by its PDF height, else the text.
+- Crops (display and inline) paint out other lines' text: math fonts report boxes much taller than their glyphs
+  (CMSY "≈" reaches 11pt below its baseline), so a padded box caught the tops of the next line. A span whose baseline
+  is outside the box is whited out over base-0.78*size..base+0.25*size (not its font box, which can reach above the
+  formula's baseline); prose beside an inline formula is whited out up to the box edge. The inline box's baseline is
+  the lowest main-size baseline (the hat of ˆβ sits on a raised one). Picture URLs carry ?v=<hash of the PNG>
+  because the route is cached for a day.
+- A root, sum or hat is often its own PDF block, with a font box tall enough to overlap the lines above and below,
+  so the glyph used to fall into the next sentence ("!n where", "RSE = { RSS"). Rows on one baseline are joined, and
+  a math-only row is moved onto the prose row it actually sits in (the gap between the words, not the line above
+  whose words it overlaps). "SE" / "RSE" with no lowercase letter count as part of that formula. The display-equation
+  crop stops at the next line's letters, so the sum's box no longer takes in "where". An inline crop also whites out a
+  word whose baseline falls inside a tall sum or root ("we can" on the sum, "known as the" on the radical).
+  A display equation's tall brackets report a baseline near the sentence above; they are placed by the middle of
+  their ink, so they stay on the equation and "a 95% chance" is left as a sentence. Once a glyph is appended, that
+  sentence stays a prose row: reclassifying it deleted the sentence and the next glyph crashed extraction
+  (`TypeError` on the CQL paper; short excerpts never hit a second glyph on the same line).
+- A paper the heuristic calls a novel is stored with formulas flattened to text (only textbooks keep them). Moving
+  that PDF to Textbooks reads the file again and crops the pictures; the kind flag alone left the flat text in place.
+  Merged onto the locked kind change: the PDF is read outside the write lock, then sections/paragraphs are put into a
+  fresh read under `books.update_book` (other writers' fields survive), summaries are dropped (old paragraph numbers)
+  so the textbook notes run under the caps, chunks are rebuilt with `rechunk_book`, and the retrieval index is rebuilt
+  like an upload's (local chunks; Vertex: stale datapoints deleted, new chunks indexed in the background). Kept
+  characters keep their old `first_para`, and paragraph numbers change, so a saved reading position may shift.
+- An inline crop's height is the picture. The padding that keeps a KaTeX limit off the next line was also on the
+  image, and with border-box it shrank the picture to about two thirds. A tall delimiter is placed by the middle
+  of its real box: a band around its reported baseline (the top of the glyph) glued the brackets of the equation
+  below into the sentence, and that crop showed up as a tiny second copy of the line.
+- ISLR excerpt: 184 inline formulas (79 distinct crops), all read (e.g. "\hat{\beta}_1", "beta one hat"). CQL paper:
+  49. Limits: a formula that pymupdf splits over several text lines (a stacked sum's limits, a hat set on its own
+  line) is marked only in part; ligature glyphs such as "coe!cients" are a separate extraction issue.
+- Pre-existing, not from this change: number expansion ("6,130" -> "six thousand one hundred thirty") runs after
+  the 280-char packing, so number-heavy chunks (tables, prices) reach ~500 chars. Fixing the packing would re-chunk
+  the demo novels and invalidate their pre-rendered audio, so it is left for a separate change.
 
 ## Voice agent: Realtime tools act on the reader (#72, 2026-10-23)
 - `frontend/src/talk/tools.ts` declares ten client function tools to `session.update` (`tools[]`, `tool_choice: auto`):
@@ -696,6 +745,7 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   per-response retrieval instructions (spoiler-safe context, persona), so turns stay manual (`turn_detection: null`).
   The session still sets `noise_reduction: near_field`. If Boson adds `create_response: false`, `server_vad` with
   `threshold` ~0.6-0.7 (its default moved to 0.85) would replace the local gate.
+  **Superseded by #135 (below): `create_response: false` is honoured live, so hands-free now uses `semantic_vad`.**
 
 ## Spoken turns live: tool calls, barge-in leftovers, hands-free echo (#102, #97, #99, #100, #103, 2026-10-23)
 - Spoken commands failed where typed ones worked because the *question* was lost, not the tool. `pttUp` waited a fixed
@@ -751,6 +801,316 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   unlinks borrowed ones (`faces.unlink_voice`). The old `face` file upload still works.
 - Realtime (Boson realtime) answers are audio only, as before; nothing to lip-sync there.
 
+## Questions in other languages (#12, 2026-10-23)
+- Answer language: the prompts already said "Always reply in the language the reader used", but deep in a long English prompt. When the question is clearly not English (`multilingual.foreign_language`: a non-Latin script, or 2+ common words of one language outnumbering English ones), `build_instructions(reply_language=...)` now opens the prompt with "The reader wrote in Spanish. Answer only in Spanish ..." (first, so the length cap never cuts it). Gemini (`build_answer_prompt`, also the public service) sets it from the question; Realtime gets it in the `/api/retrieve` instructions (typed and spoken questions). The model still sees the reader's own words.
+- Search: `multilingual.search_query` translates a non-English question to English with Gemini on Vertex (temperature 0, thinking off, 4 s timeout, 256-entry cache) before `/api/retrieve` and `/api/answer` search; `/api/retrieve` returns `search_query` when it differs. Without GCP_PROJECT, or on any failure, the original question is searched.
+- Why it matters: with BM25 alone (local, no e5 installed; also Vertex books while their index builds) a Spanish question finds nothing relevant. Alice: "¿Qué le pasa a Alicia cuando bebe de la botella?" returned ¶114-118 / 141-142 / 215-221 (unrelated); its English form returns ¶14-17 and ¶109-111 (the bottle scenes).
+- Not live-tested here (this machine has no GCP_PROJECT, and a Realtime check spends Boson credit). The badge (frontend/src/talk/language.ts) uses the same word lists; voice commands (#72 parseIntent) are still English only.
+## More expressive read-aloud tags, rule-based (#73, 2026-10-23, offline: no Boson calls)
+- `backend/app/delivery.py` (no LLM, strict; ambiguous -> no tag). Every sfx goes right before onomatopoeia already at the
+  start of a character's line (after the opening quote); narration never gets one. `speech_tag()` is the short adjacent
+  speech tag (same <=9-word clauses the style rule uses).
+  - sigh: Sigh / Ahh / Ahh-h / Haah, only if the tag says sighed/sighs/sighing.
+  - crying: Sob / Boo-hoo / Boo hoo, only if the tag says sobbed, wept, weeping, crying (not "crying out"), in tears,
+    or "cried bitterly/softly/quietly/piteously/harder/silently/herself...". Plain "cried Alice" means said -> no sfx.
+  - sniff, cough: Sniff / Cough when followed by punctuation or repeated ("Sniff this rose" is a verb); Ahem -> cough.
+  - screaming: Aah+! / Aaargh! with "!", and either uppercase (AAAARGH!) or a screamed/shrieked tag. Lowercase "Aaah!"
+    alone is not tagged (HP4: Mr. Weasley's "Aaah!" is delight).
+  - laughter unchanged.
+- Expressiveness: `<|prosody:expressive_high|>` for a character line that is mostly uppercase with "!", or ends with "!"
+  and its tag says shouted/screamed; `<|prosody:expressive_low|>` for a whispered line (alongside style:whispering).
+  Never added when the voice tags already carry an expressive_* tag.
+- Pauses (`ttschunks.lead_pause`, first chunk of a paragraph only, right before the text): `long_pause` for the first
+  paragraph of every section (after the heading, which is not spoken) and after a separator paragraph (`* * *`, `***`,
+  `#`, `~ ~ ~`; the separator's own chunk is unchanged); `pause` for a dialogue paragraph right after a paragraph of
+  pure narration that ended with . ! or ? (narration ending in ":" or "," introduces the quote, so no pause).
+- tts_text order: voice tags, style, emotion, expressive_*, pause/long_pause, text (sfx inside the text).
+- Chapter-end reset tag: not done. Neither the Boson vocabulary we recorded (above, and delivery.TAG_VALUES) nor the
+  tags page lists a reset tag, so nothing is inserted.
+- Timestamp residue: all new tags are already in TAG_VALUES, so `strip_tag_residue` removes 'prosodylongpause',
+  'prosodyexpressivelow', 'sfxcrying' etc. glued to words (tests in backend/tests/test_expressive.py).
+- Cost: existing book.json files are NOT rebuilt, so cached audio is untouched; the tags appear when a book's chunks are
+  rebuilt (preprocess/chunk_tts.py, re-enrich, new uploads). `scripts/estimate_expressive.py` (offline) compares
+  chunk_paragraph(expressive=False) with the new rules per book. Run on the main checkout's data/books:
+  9642 of ~104k chunks change, 806k chars, $12.09 if every changed chunk were re-voiced (HP1-7 $10.15, five classics
+  $1.09, IR textbook $0.85); only 16 changed chunks ($0.05) have audio in the local cache under the book's own voice.
+  `pause` makes up ~85% of the changes; real sfx hits are rare (HP1-7: 8 cough/screaming, classics: 0).
+## Upload parity (#115)
+- Audit of built-in vs uploaded books: uploads already match on cast, aliases, first_para, emotions/styles, stand-ins,
+  summaries and index. Gaps fixed: the #17 attribution pass now always runs after segmentation (it ran only inside the
+  MINOR_VOICES pass); the cast call also returns `series` / `series_index` (slugged, e.g. "harry-potter"; a series
+  already set is kept); `books.earlier_in_series` only joins books of the same library (built-in with built-in, an
+  upload with the same owner's uploads).
+- Left as proposals: textbook summaries (~$0.05 per 100K chars, IR book ~$1.60), personas from earliest spoken lines
+  (+~$0.004/novel, changes the spoiler window), resegment with a stronger tier, PDF cover image (free).
+
+## Singing songs and poems: `<|style:singing|>` (#74, 2026-10-23)
+- Probe (2 Boson calls, ~$0.004): higgs-tts-3, preset `marcus`, the Hatter's 'Twinkle, twinkle, little bat' with and
+  without `<|style:singing|>` at the start (same request as `BosonClient.create_speech`). The tag is not spoken (timestamp
+  words are the same 22 words) and the sung take is 10.4 s against 7.0 s spoken. Listen before trusting it.
+- Rules (`delivery.is_sing_lead_in`, `verse_score`, `sung_from`; wired in `ttschunks.sing_offset` / `chunk_paragraph`):
+  a song starts after a lead-in whose last sentence mentions sing/sang/sung/song/chorus/lullaby/hum/carol/croon and ends on
+  ':' or ':—' (or on the verb 'sing'/'sang', or is a 'CHORUS.' line), with no repeat/recite/read and no negation before
+  the word. 'sang out' and 'sing-song' don't count; a bare dash doesn't either (HP5 Quidditch commentary). The next
+  paragraph is sung if it opens a quote (or reads as verse) and no narration follows a closing quote; the song goes on
+  while each paragraph reopens a quote the previous one left open, or reads as verse (>= 2 capitalised small words
+  mid-sentence, i.e. flattened line starts). Inline lead-ins ('the hat began to sing: "Oh, you...') split the segment
+  at the quote. Caps: <= 700 chars per paragraph, <= 8 paragraphs per song, same chapter only.
+- A sung chunk gets voice tags, style:singing (replacing whispering/shouting), emotion, pause, text: no sfx and no
+  expressive_*. `chunk_paragraph(expressive=False)` never sings.
+- Recited verse is left alone ('How doth', 'Father William', ''Tis the voice of the Lobster').
+- `scripts/estimate_expressive.py --list-sung` lists what would be sung. Main checkout data: Alice 10 paragraphs (13
+  chunks: lullaby + two choruses, Twinkle bat, Lobster Quadrille, Beautiful Soup), Peter Pan 5, HP1 4 (Sorting Hat),
+  HP2 1, HP4 1 (egg song), others 0. Known misses: Sorting Hat's last 3 short stanzas, Twinkle's second half (lead-in
+  'in this way:—' has no singing word), Toad's song (lead-in ends on a bare dash), 'Weasley is our King'.
+  No book.json was rebuilt: songs are sung after a book's chunks are rebuilt (preprocess/chunk_tts.py) and in new uploads.
+
+## #78 Natural reading speed (prosody speed tags)
+- Opt-in "Natural speed" checkbox in the player bar (default off, localStorage `talkback.naturalSpeed`; hidden in demo, which only plays pre-rendered audio). Off = playbackRate exactly as before.
+- On: 0.75x -> `<|prosody:speed_slow|>` (~0.85x), 1.25x -> `speed_fast` (~1.2x), 1.5x -> `speed_very_fast` (~1.4x); 1x has no tag; tagged audio plays at 1.0. Boson docs (tags page): speed is a delivery token, put at the start; a new delivery group replaces the previous one.
+- Backend: `POST /api/tts` takes optional `speed`; `delivery.apply_speed` puts the tag first (replacing a voice-tag speed) so the tts_text, hence the cache key, differs: normal audio is never overwritten. Lip-sync clips are keyed by audio url, so they are rendered per tag (extra cost, hence the opt-in and the UI hint).
+- Engine: `setSpeed(speed, tag)`; on a tag change only entries outside the new tag are dropped and only the window [current, prefetchEnd] is fetched again. The chunk playing now finishes in its own audio (rate matches that audio); the change applies from the next chunk.
+- Live check: 1 Boson call (marcus, `speed_fast`, 1 sentence) returned audio; saved in the session scratchpad speed/fast.mp3 (3.04 s for 11 words).
+- Not covered: very_slow is unused (no reader speed maps to it); the speeds still 1.1/1.0 etc. use playbackRate.
+## Emotion in answers (#14, 2026-10-23)
+- Typed questions (Gemini, local `/api/answer` and the public service): `personas.ANSWER_EMOTION_RULE` (in `ANSWER_SUFFIX`, so after the #12 language rule and never cut by the length cap) asks the model to start every sentence with its feeling in square brackets, one English word from `schema.EMOTIONS` (the 20 values the books use; also in a non-English answer), or `[neutral]`. `app/emotion.py` `split_marker` removes the leading marker and keeps it only if it is in that list (`[Sadness]`, `[emotion:fear]`, `<|emotion:fear|>`, full-width `［surprise］` work; `[neutral]`, unknown, translated (`[tristeza]`, `【悲伤】`) and `arousal` give none). It also removes an unclosed leading `[word ` and any stray one-word `[marker]` / `<|...|>` inside the sentence (a CJK answer with no space after 。 arrives as one "sentence"), so no marker reaches the screen, the chat history or the TTS. Side effect: a genuine one-word bracket like "[sic]" is dropped from an answer. A marker-only sentence (a trailing "[relief]") is dropped. Markers split across stream chunks are fine: `gcp/llm._split` only emits whole sentences.
+- NDJSON `sentence` lines now carry `"emotion"` when there is one (neutral: no field). The proxy of the public service re-validates the service's `emotion` and strips markers again (an older or misbehaving service cannot inject one). `tag_sentences` closes the inner answerer when it is closed, so token usage is still recorded on abandon.
+- Frontend: `streamAnswer` passes the emotion to `onSentence`; `useTalk` keeps it per sentence text (`talk/answerEmotion.ts`) and `speak(text, voice, emotion)` sends it. `/api/speak` validates it and sends `<|emotion:X|>` + text to Boson (timestamps still align to the plain text); the cache key includes the tag, so neutral audio already cached is untouched.
+- Boson check (2 TTS calls, ~110 chars, voice marcus, audio in the session scratchpad `emotion/neutral.mp3` and `sadness.mp3`): "I waited all night, and he never came back." neutral 2.48 s, with `<|emotion:sadness|>` 2.88 s, timestamps without tag residue. The delivery changes; not judged by ear here.
+- Spoken questions (Boson Realtime, audio only, no tags): `/api/retrieve` instructions get `REALTIME_EMOTION_RULE` ("Let the feeling of what you say show in your voice ...") right after the language rule (`build_instructions(voice_emotion=True)`).
+- Reader's emotion: Boson does not report it. The Realtime server events (`conversation.item.input_audio_transcription.completed`: item_id, content_index, transcript; `speech_started/stopped`: timing only) carry no emotion, tone or sentiment, and there is no separate STT model in the docs. So nothing is inferred from audio; the character prompts (spoiler-safe and full-book) gain `READER_TONE_RULE`: notice the reader's mood from how they word the question and react to it. Spoken questions reach Realtime as audio, so it can hear the tone itself.
+- Avatar face: no expression control. `POST /v1/videos` takes model, ref_image, input / input_tts, size; avatar realtime sessions take model, avatar_id, transport, output, max_duration_seconds. The docs say lip sync, head motion and expression follow the driving voice, so the emotional TTS above is the only lever (an emotional sentence may animate the face more; not verified). Nothing changed for the avatar.
+- Book text emotion tagging is unchanged (no re-enrichment, no new cost).
+## Read-mode mic: face and chat memory (2026-10-23)
+- Face did not move for a read-mode spoken answer: `faceSync` keeps a read clip "shown" when its voice pauses (it freezes, to resume in step), and the mic pauses the reader, so the frozen frame of the reading clip (`ReadClipVideo`, on top of the medallion in `Stage.tsx`) covered the answering FaceView for the whole answer; a chunk's pre-rendered avatar clip took precedence the same way. Talkback has no reading clip, hence fine there. Now `readFace.answerOnStage(state, speaking)` (listening..answering or still sounding) makes the Stage show the Talk face (FaceView, `talk.speaking`, `talk.faceSync`: same as Talkback) and hides the reading clip; when the answer ends the talk loop goes idle and on resume the reading face/clip come back.
+- Chat memory: read-mode spoken questions and the Realtime answer transcript (`output_audio_transcript`) were already logged and given back (same session; a new session is seeded with `priorTurns`; Gemini gets `history`), now covered by `test/readModeMemory.test.ts` (fake socket). Gap fixed: the Realtime session was shared across a speaker switch (mid-session voice change), so one character heard another's chat, and a character whose turns were in an earlier closed session got none of them. After a speaker switch the session is now dropped once no answer is in progress; the next press opens one seeded with that character's turns (one extra connect after a switch, no extra paid audio).
+- The "remembers this chat (N lines)" count now shows what is actually given back (last `HISTORY_TURNS` = 6 lines of that speaker), not every line.
+## Textbook voice agent (2026-10-23)
+- Tools by book kind (`talk/tools.ts` `toolDefsFor`, passed by `useTalk` to `session.update`): a textbook gets `jump_to` / `read_chapter` (arg `section`), `next_section`, `previous_section`, `go_back`, `find_topic`, `quiz_me`, `explain_here`, resume/pause, speed, recap, bookmark; no `show_cast`, `set_narrator`, `set_voice_mode`. Novels keep their list plus `go_back`. Session instructions shortened to a generic tool sentence (test caps them at 300 chars).
+- No spoiler gate in textbooks (`ToolContext.kind === "textbook"`, a textbook is read out of order); novels keep `para <= readerPara` unless spoilers are on, for every tool including next/previous, find_topic and quiz_me.
+- Sections (`talk/sections.ts`, pure, no API): by number at any depth from the title ("2.3", "two point three", "section 3.2"); a number missing from the titles that falls in a numbering gap with exactly one unnumbered section takes that section (the IR book's "2.3" heading lost its number in the PDF parse: "Faster postings list intersection via skip pointers"). By title words with a plural stemmer; ties (every "References and further reading") go to the next one from the reader, else the last before.
+- `find_topic`: a title with every query word wins, else tf-idf over the read-aloud paragraphs (code skipped) with phrase and section-title bonuses, earliest paragraph on ties. Done in the browser (the whole book is already loaded; the tools are synchronous) instead of a backend endpoint: the backend index is hybrid with embeddings (a paid query embed) and spoiler-filtered. On the real IR book: "tf-idf" -> 6.2.2, "edit distance" -> 3.3.3, "Porter stemmer" -> 2.2.4 text, "BM25" -> 11.4.3, "permuterm index" -> 3.2.1.
+- `go_back`: no args restarts the current paragraph; `paragraphs: n` starts n paragraphs earlier; `sentences: n` goes back n TTS chunks (sentence-aligned); always reads on.
+- `quiz_me` (#75 light): returns the section's text (default the reader's section, or "this chapter", a number, title words; equations as LaTeX + spoken form, figures as captions, code skipped; capped at 3000 chars) and the rules: 3 questions one at a time, right/wrong with a one-line reason, score, offer to read on. Reading stays paused. No backend LLM call; the Realtime model runs the quiz. Quiz mode (`TalkController.quiz`): the next 3 turns send the normal grounding + `quizTurnInstructions` (rules, section text, "answered question n of 3", ask the next / give the score); progress is counted client-side per turn, the model's grading is not parsed. It ends after the 3rd answer, on stop / cancel / "keep reading" / any parseIntent command (`endsQuiz`), on any other tool call, a speaker switch, a view switch or a new book. Gemini path: the answer is sent as `quizGeminiQuery` (<= 500 chars; the questions are in the chat history). Not verified live.
+- `explain_here`: the current paragraph (or the nearest equation / figure from 6 paragraphs back to 2 ahead) plus the paragraph before, explain in 2-4 sentences, offer to read on; reading paused.
+- Gemini path: a tool may return `ask` (<= 500 chars, the `/api/answer` query limit); `TalkController` then asks Gemini that instead of ending the turn silently (quiz / explain).
+- parseIntent fast paths (English): "read section 2.3", "go to 4.1", "read the section on X", "next section/chapter", "skip this section", "go back a section/chapter", "say that again", "repeat the last paragraph/sentence", "go back a bit / two paragraphs / 3 sentences", "where is X covered/explained", "which section covers X", "find the section on X", "quiz me (on chapter 3 / this chapter)", "explain this figure", "what does this equation mean", "explain that". Tests: `test/textbookTools.test.ts`.
+
+## Textbook recap notes (2026-10-23)
+- Textbooks used to skip enrichment, so their Recap menu was empty. Now an uploaded textbook gets study-guide notes
+  (`backend/app/enrich/textbook.py`, Gemini "fast" tier): one per chapter (level-1 section) and per numbered
+  subsection (level 2; level-3 headings fold into their subsection). 3-6 sentences, key ideas, definitions and formulas
+  in words, only from the given text. A chapter with subsections is written from its opening text plus its
+  subsections' notes, so the book is read about once. Display equations are read as their spoken form / LaTeX.
+- Stored as ordinary `Summary` rows with a new optional `section_id`; `upto_para` = the section's last paragraph, so
+  each note is still derived only from text at or before `upto_para` (safe even if the book is moved to Novels).
+- Recap (`recap.py`): a textbook with section notes has no spoilers. "chapter" = the note of the chapter the reader is
+  in (menu label "This chapter"), `section=<id>` = any chapter / subsection wherever the reader is; "book" = the first
+  two sentences of each chapter's note up to the reader's chapter (300 words, latest kept). A textbook without
+  section notes and every novel keep the old rule; a novel's `section` recap still uses only `upto_para <= para`.
+  Voice/typed "summarize chapter 4" / "summarise section 4.2" -> `open_recap {chapter}` (frontend `tools.ts`); the
+  Realtime tool got an optional `chapter` argument. Novels refuse a chapter past the reader while spoilers are off.
+- Flow: same background job as novels (`main._run_enrichment` dispatches on kind; `_enrich_lock`), same estimate first,
+  per-book cap, total cap (data/usage/upload_spend.json), SpendLimit stop (notes written before a stop are kept), and
+  UPLOAD_CONFIRM. Status carries `summaries_only: true` with textbook wording. Subsections are left out only when the
+  full estimate is over the per-book cap. The save re-reads book.json under the equations lock (that job may write
+  LaTeX meanwhile). Moving a novel to Textbooks writes notes only when it has no summaries at all (its story notes are
+  kept); moving a textbook to Novels runs the novel enrichment as before.
+- Public service: `/api/public/enrich` accepts `kind: "textbook"` (sections carry `level`) and runs only the notes;
+  `public_client.summarize_textbook` keeps only notes for real sections, with `upto_para` reset to the section end.
+  An older deployed service answers 422 -> the textbook simply has no notes. Needs a redeploy of talkback-public.
+- Existing books: `scripts/summarize_textbook.py --book <id>` prints the estimate and caps; `--yes` runs it (refused
+  over a cap even with --yes). IR textbook (1.12M chars, 32 chapters + 118 subsections, 150 calls), computed offline
+  from the raw JSON: ~$0.33 with subsections, ~$0.16 chapters only (margin included; Gemini 2.5 Flash prices). On this
+  branch the IR book.json fails schema validation ('figure' paragraphs from the figures branch), so run the script
+  after that branch is merged. Not run against Gemini here (fake LLM only).
+## Chunk-rules version: books pick up new TTS delivery rules by themselves (2026-10-23)
+- `ttschunks.CHUNK_RULES_VERSION` (now 1 = #73 expressive delivery + #74 singing) and `Book.chunk_rules` (default 0,
+  so every existing book.json still validates). `ttschunks.rechunk_book` rebuilds all chunks and stamps the version;
+  ingest (`ingest_upload.build_book`, `ingest_series`), enrich (`pipeline.rebuild_chunks`, `minor`), voice baking and
+  `preprocess/attribute.py` / `chunk_tts.py` all go through it. **Bump the constant whenever chunk/tag rules change.**
+- Server: `books.load_book` queues a re-chunk of an out-of-date book on one background thread
+  (`books._upgrade`), and `main._warm_up` queues every book at startup (`books.schedule_all_upgrades`). Requests keep
+  the old chunks until the new file is saved; the next `load_book` sees the new mtime/size and returns a new object,
+  so `main._book_bodies` re-serialises. Measured: Alice 1812 chunks 0.28 s (171 chunks change), HP5 18k chunks 2.9 s
+  (1836 change); styles unchanged (Alice 17 shouting / 12 whispering before and after).
+- Safety: works on a fresh parse (not the shared cached object, so no portrait URLs get written); one upgrade per file
+  at a time (in-process dedupe); skips the write if the file changed since it was read (an enrich save wins); any error
+  (bad segment, read-only disk) is logged, the old file stays, and that file version is not retried. Segment styles
+  are never cleared. Two Cloud Run instances can both rewrite a book once; the content is identical. `AUTO_RECHUNK=false`
+  turns it off (tests do, so they never rewrite the committed data/books).
+- Side effect: running the server rewrites out-of-date committed `data/books/*/book.json` in a clone (git shows them
+  modified) until the rebuilt files are committed. Rebuild offline with `preprocess/chunk_tts.py --book <id>`.
+- `preprocess/chunk_tts.py` now keeps segment styles by default (it used to clear them, which dropped Alice's
+  LLM-assigned styles, 17->7 shouting, 12->7 whispering); `--redetect-styles` keeps the old behaviour.
+- Cost: TTS cache keys are sha256(model, tts_text, voice, ...), so only chunks whose tts_text changed are re-voiced,
+  and only when played (same for lip-sync videos). Unchanged chunks keep their audio (tested).
+
+## Public API parity for clones (2026-10-23)
+Audit of every Gemini/Vertex feature on a clone with only a Boson key + PUBLIC_API_URL (code on feat/public-api-parity;
+the deployed talkback-public-00001 is the Oct 21 code):
+| Feature | Clone before | Clone now | Old deployment |
+|---|---|---|---|
+| Novel cast, personas, dialogue (#115 attribution), summaries | works | works | no #115 attribution changes |
+| Series / series_index | missing (not returned) | works | missing |
+| Minor voices (stand-ins) | degraded (stand-ins made main, cut at 8) | works (kept main=False, fixed voices) | missing |
+| Textbook recap notes | works | works | missing (422 -> no notes) |
+| Equation LaTeX / spoken (#41) | missing (local GCP only) | works (tickets) | missing |
+| Question translation for search (#12) | missing | works (<= 4 s, else original) | missing |
+| Reply language rule | works (built server-side from the query) | works | missing (older prompt) |
+| Emotion markers in answers (#14) | works (stripped both sides) | works | server sends none; client strips |
+| Typed answers via Gemini | works | works | works (history ignored) |
+| Face auto-crop box (#109) | missing (centred square) | works | missing |
+| Add book title/author (describe) | degraded (metadata only) | works | missing |
+| Novel/textbook auto-detect | degraded (heuristic) | works | missing |
+| Retrieval embeddings (local e5) / Vector Search (live only) | fine | fine | n/a |
+- New routes in `public_api.py`: `/api/public/translate`, `/detect`, `/describe`, `/faces/detect` (one call each,
+  counted on the persisted daily answer budget; face boxes also on a persisted 100/day count), and
+  `/api/public/equations` (ticket: fits the pictures under the per-book cap, checks the total cap with running
+  reservations, charges the per-IP daily cap) + `/api/public/equations/{ticket}` (<= 24 PNGs, 256 KB each, 2 MB total,
+  bound to the caller's address, two at a time, 90 s; a cap stops with `"stopped"` and keeps the readings).
+  `equations.read()` is the shared batch reader. Body limits per route in `BodyLimit`. No content is logged.
+- Clone side (`public_client.py`): `translate`, `RemoteLLM` (detect/describe keep their own schema validation),
+  `detect_face` (re-clamped), `transcribe_equations` (display first, chunks by count and bytes, retries busy, readings
+  re-cleaned and limited to the ids sent; note says why pictures stay). A 401/403 marks the service unavailable for a
+  minute (answers then use Realtime too). All fall back exactly like the local no-GCP path.
+- No new env vars for deploy_public_api.sh (limits are constants). Needs a redeploy of talkback-public.
+- Security review fixes (equation tickets): one running request per ticket (`busy` -> 429), spend added per call
+  (`t.usd += usd`, never overwritten), settle/close/purge never while a request runs; one open ticket per IP (429
+  `ticket_open`), 32 in all, a ticket with no picture expires after 2 minutes, and every ticket costs its address at
+  least $0.02 (so opening tickets cannot be repeated for free).
+- Test note: tests/test_kind.py::test_concurrent_kind_changes_start_only_one_enrichment failed once in a full run and
+  passed on every rerun (timing flake, unrelated code path).
+
+## Review of integration PR #133 (backend fixes)
+- book.json writers share one re-entrant lock per file (`books.write_lock`): rechunk upgrade (stamp re-checked inside
+  the lock), equation updates, textbook notes, kind change (`books.update_book`, fresh read), enrich checkpoints and
+  ingest publish. `save_book` writes a per-call temp file (`book.json.<uuid>.tmp`) and `os.replace`s it; on Windows a
+  replace over a file a reader has open is retried briefly (this was the cause of the test_kind flake above).
+- Known transient (not fixed): rechunking an old book (chunk_rules upgrade) can shift chunk ids (`p{idx}c{n}`) when a
+  paragraph gains a singing split. A reader that loaded the old book JSON before the upgrade asks for the old ids until
+  it reloads the book, so a few chunks may play the wrong audio once. There is no book version / ETag the client
+  could check; the upgrade runs once per book at startup, so a reload after deploy clears it.
+- Enrichment CPU (attribution + whole-book rechunk) runs in a worker thread; the minor-voice pass no longer rechunks
+  on its own (the segment stage rechunks once). TTS chunking uses a per-book `BookIndex` (30k paras x 3k sections:
+  9.4 s -> 1.8 s, committed books byte-identical).
+- Emotion markers: `emotion.strip_tags` removes every `<|...|>` (repeatedly, then stray `|`); split_marker is linear and
+  capped at 2000 chars; `/api/speak` strips tags from its text. An empty textbook-notes result is now a failure (keeps
+  earlier notes); `start_enrich` purges abandoned equation tickets.
+
+## #135 (backend): non-English TTS and two more sound effects
+
+- `/api/speak` takes an optional `language` (ISO 639-3, validated against `app/tts_lang.py`, the 102 documented languages;
+  the docs give names only, so the codes are ours: all 102 plus `cmn` were accepted live by Boson, 2026-10-23). English
+  (absent or `eng`) is unchanged. Any other language is requested with `timestamps: false`, `language` and `normalize: true`
+  (timestamps switch normalization off; they exist only for English, Chinese and Spanish, and a live Spanish clip with
+  timestamps read "1888" unnormalized). The reply is then raw audio, so `timestamps` is null and the caption highlights the
+  whole sentence. `cache_key` gains language and mode for non-English only, so English keys do not change.
+- delivery.py already had laughter, sigh, crying, sniff, cough (Ahem/Cough) and screaming (#73). Added `sneeze`
+  (Achoo, Ah-choo, Atishoo) and `humming` (Hmm-hmm / Mmm, only when the speech tag says hummed/humming). Never in
+  narration or sung chunks; one sfx per chunk. `burping` is deliberately not used. CHUNK_RULES_VERSION is 2.
+  Effect on the committed public-domain books and Alice: 0 chunks change (rules are strict; there is no Achoo or hummed
+  line in them), so the bump only upgrades uploads and keeps books stamped.
+- `<|reset|>`: the docs say only that a new group of delivery tokens replaces the old one and that reset returns to
+  neutral; sfx are not delivery tokens and chunks are synthesized independently, so no reset is emitted. A live clip with
+  style + sfx + `<|reset|>` was accepted and no tag was read aloud (tag words absent from word timestamps).
+## Realtime hands-free on Boson turn detection, voice-timed captions, fast "didn't catch that" (#135, 2026-10-23)
+- Live probes (about $0.005 in total: ~1.5 min of input audio, one short reply), `higgs-realtime`, the 2 s TTS clip
+  "What is the capital of France?" streamed in real time:
+  - `turn_detection` **cannot change mid-session**: `session.update` after the start -> 400 `turn_detection cannot be
+    changed after session start`. So hands-free on/off reopens the socket (seeded history keeps the chat).
+    `transcription.language` *can* change mid-session (`session.updated` echoes it).
+  - `semantic_vad` + `create_response: false` + `interrupt_response: false` is echoed and honoured. Sequence:
+    `speech_started` (item_id, audio_start_ms) -> `speech_stopped` -> `committed` (~0.05-0.1 s later) ->
+    `transcription.completed` (0.15-0.4 s after the commit) -> nothing until our `response.create`. A
+    `speech_started` while our response was active did not cancel it.
+  - `noise_reduction: near_field` under server VAD started the turn ~1 s late and transcribed only "France." (also
+    split the question into fragments transcribed as "嗯。" at threshold 0.5). Without it: start at 436 ms, one turn,
+    "What is the capital of France?". Server-turn sessions therefore send no noise_reduction (the capture still has
+    the browser's noise suppression and echo cancellation); push-to-talk keeps near_field.
+  - Semantic's default `silence_duration_ms` 100 and threshold 0.85 cut the start; shipped: threshold 0.6, silence 500.
+  - A wrong transcription hint (`language: "es"` on English speech) gave **no transcript event at all**.
+  - `response.output_audio_transcript.delta` is followed by `.length` for the same fragment, `length_ms` per fragment
+    (not cumulative): "Hello!" 840 ms, " How can I assist you today?" 2680 ms (= the reply's 3.52 s). Fragments are
+    about a sentence, so captions interpolate words inside a fragment.
+- Hands-free (TalkController `serverTurns`, on in useTalk unless `?gate=local` or localStorage `talkback:gate=local`):
+  the session opens at once with semantic_vad (fallback chain: server_vad if refused, then manual turns + the local
+  gate, `turn-mode` event); the mic streams continuously (up to 3 s held while connecting). speech_started starts the
+  turn (reader paused, no extra mic start); speech_stopped -> transcribing; the transcript runs the normal flow
+  (`/api/retrieve` instructions, spoiler-safe) and we send `response.create`. Speech restarting within 600 ms of a stop
+  continues the same question (transcripts joined; the server can split one question). An answer the server starts by
+  itself is cancelled and never played (and would mean the docs' "no effect" became true again).
+- Echo guard: a speech_started while the character speaks (or within the 300 ms tail) counts only with the strict
+  local gate (`HANDS_FREE_OVER_SPEECH`, 0.10 RMS for 400 ms) speaking; otherwise it is on probation until the level
+  confirms it, and if it never does, its committed item is deleted (`conversation.item.delete`) and its transcript
+  ignored. Headphones advice stays. If the session closed (5 min idle), the idle gate reopens it on speech; the held
+  audio goes first.
+- Captions: TalkClient builds [text, start, end] from `.length` and reveals by the player's played position
+  (`RingPlayer.playedMs`, an AudioContext-clock estimate; it stops while paused); the full caption lands when playback
+  drains. Without a playback clock: as before (as it arrives). On a cut (`interrupt`) the `heard` event carries the
+  words up to the flushed position, and `chatLog.cutHeard` trims the interrupted (or stopped) reply to them, so the
+  bubble and `priorTurns` memory match what was said.
+- Fast failure: a `committed` with no transcript within 1.5 s (`FAST_FAIL_MS`), or an empty transcript, ends the turn
+  with "I didn't catch that" (push-to-talk too; the 6 s window stays only when no committed event comes). A failure
+  while a language hint is set clears the hint.
+- Language: `language.clearLanguage` (a script, or >= 2 stopwords of one language and more than any other); the newest
+  clear one of the last three questions sets `transcription.language` (ISO 639-1; English -> none). Gemini-path
+  answers pass it to `/api/speak` as ISO 639-3 (`spa`, `fra`, ...; only when not English); the backend then returns
+  `timestamps: null`, which the answer path never needed (sentence-level bubbles and playback).
+- Not verified live: the echo guard with real laptop speakers (needs a person), how fine `.length` fragments are for
+  long answers, `semantic_vad` on real (not TTS) speech with pauses.
+
+## Web search on Talk answers (Grounding with Google Search), branch feat/web-search-answers
+- Rule (server-side, `app/websearch.allowed`): web search only when `book.kind == "textbook"` or `spoilers` is on, and
+  `WEB_SEARCH` is true (default). A novel read spoiler-safe never gets the tool (the web would leak later events):
+  enforced in `/api/answer` and in the public `/api/public/answer` (a client can only opt out, `web_search: false`).
+- API (google-genai 2.31, Vertex docs): `GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())])`.
+  gemini-2.5-flash is supported. Sources are `candidate.grounding_metadata.grounding_chunks[].web.{uri,title,domain}`;
+  on Vertex the uri is a `vertexaisearch.cloud.google.com/grounding-api-redirect/...` link and the title is the domain.
+  Limits: 1M grounded prompts/day; search tools cannot be combined with function calling in one request.
+- Pricing (cloud.google.com/vertex-ai/generative-ai/pricing, read 2026-10-23): Gemini 2.0 Flash, 2.5 Flash and 2.5
+  Flash-Lite share 1,500 free Grounding Prompts per day; past that $35 per 1,000 grounded prompts (one charge per prompt
+  however many queries), billed only when the prompt returns at least one web source. (Gemini 3: 5,000 free queries
+  per month, then $14 per 1,000 queries, per query.) Search-result input tokens are not charged. gemini-2.5-flash
+  tokens: $0.30 / 1M in, $2.50 / 1M out.
+- Display terms (Vertex "Grounding with Google Search" docs): show the Search Suggestions
+  (`search_entry_point.rendered_content`, Google's HTML/CSS) exactly as provided, visible whenever the grounded answer
+  is, the same width as the answer; tapping a chip goes straight to the Google results page (in-app or separate
+  browser), nothing between; no other search results next to it. Its CSS handles light/dark itself
+  (`prefers-color-scheme`); the docs say nothing about scripts, iframes or new tabs. Done: the backend passes the markup
+  unmodified (string <= 32 KB, `websearch.clean_suggestions`) as `search_suggestions` on the `sources` line (local
+  route, public route, and the clone re-checks what the service sends); the reply shows it in
+  `<iframe class="search-suggestions" srcdoc sandbox="allow-popups allow-popups-to-escape-sandbox"
+  referrerpolicy="no-referrer">` (no scripts, opaque origin), full bubble width, fixed 64 px height (a sandbox without
+  scripts cannot measure itself; Google's chips are one scrollable row). The srcdoc wraps the markup in a document with
+  `<base target="_blank">` (chips open google.com in a new tab: a framed google.com page refuses to load) and
+  `color-scheme: light dark`; the markup itself is not changed. Plain source links stay above it. Not checked against a
+  live rendered_content in the browser (no paid call): if Google's markup is taller than one row it is clipped/scrolls
+  inside the frame; adjust `SUGGESTIONS_HEIGHT` after a manual look.
+- Prompt: `personas.WEB_SEARCH_RULE`, appended after the length cap and before the spoken-output + emotion rules (the
+  emotion rule stays last, the language rule stays first). Book passages stay the main source; web for background,
+  definitions, author/history, (textbooks) current facts and worked examples; say "outside the book" briefly; keep the
+  voice; at most four short sentences; no URLs spoken.
+- Stream: `GeminiAnswerer.stream_sentences(..., web_search=True, on_sources=cb)` collects grounding chunks, cleans them
+  (`websearch.clean_sources`: http(s) only, dedup, <= 5) and reports them after the last sentence; the route sends one
+  NDJSON `{"type":"sources","sources":[{uri,title}]}` line before `done`. If the grounded request is refused at start
+  it retries once without the tool. Usage log: `usage.record("llm", ..., grounded=True, sources=n)`.
+- Caps: local `GROUNDED_DAILY_CAP` (default 100/UTC day, `data/usage/grounded_answers.json`), past it the plain answer.
+  Public service: `PUBLIC_GROUNDED_DAILY_CAP` (default 50, `public_grounded_answers.json`) and each grounded answer
+  reserves an extra $0.035 (`GROUNDED_USD`, worst case past the free tier) on the existing daily answer budget, settled
+  to that fee only when sources came back; no room -> plain answer. Generic `DailyCount` moved to `app/daily_count.py`.
+- Frontend: `api.streamAnswer(..., onSources)`, `chatLog.setSources` + `ChatMessage.sources` (re-cleaned on load from
+  sessionStorage, never in the history sent back), `reader/SourceLinks.tsx` under character bubbles. useTalk.ts change
+  is one line (the extra callback) to keep merges with the TalkClient/handsFree work easy.
+- Realtime path (ANSWER_BACKEND=realtime / Boson): unchanged. Boson's own web_search tool was not added; voice answers
+  through Realtime never search the web.
+- Live check (3 real calls, ~$0.0025 of model tokens, grounding inside the free daily tier): a textbook question
+  (tf-idf vs BM25) came back grounded with 5 sources (sigmacomputing, wikipedia, ibm, myscale, medium) but ran to 12
+  sentences, so the rule now caps answers at four sentences. A spoilers-on Alice question ("who inspired you, when was
+  it published") had the tool but the model answered from memory both times (0 sources, no "outside the book" phrase):
+  Gemini decides when to search; well-known facts often skip it. Not re-checked after the four-sentence rule (call
+  budget). Also seen: the sentence splitter breaks after "Mr." (pre-existing, `_split`).
+
 ## Textbook figures in the reader (#40, 2026-10-23)
 - The IR textbook's figures (01bool, Figures 1.1-1.7) contain no vector drawings and no real pictures: they are text (matrix cells, posting lists, pseudocode) plus rules and boxes stored as thin embedded images. So `get_images` / `get_drawings` alone would find none of them. Figures are found from their caption instead (`_take_figures`): a "Figure N" line set small or bold, and everything between it and the nearest prose above it (else below it). The crop (page.get_pixmap(clip=...), 150 dpi, longest side <= 2000 px) is saved to `data/books/<id>/figures/fig-N.png`, and the figure becomes a paragraph of kind "figure" (text = caption, read aloud by default) placed between paragraphs. The text inside the figure no longer leaks into the body text.
 - Prose test: a body-size line of 5+ words that starts at the document's text column left edge (indent allowed) and reaches its right edge; a block with such a line is a paragraph, so its short last line is too. Below a caption any 5-word sentence stops the walk. The column is measured over the whole document: a page that is mostly figure measured 179-437 pt instead of 167-501 and made Figure 1.4's "Doc 2" lines look like prose.
@@ -758,4 +1118,4 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
 - A figure met mid-sentence (at the top of the page a sentence runs on to) goes after that paragraph, so the sentence stays whole.
 - Served by GET /api/books/<id>/figures/fig-N.png with the book's gate (access code + guard_book); the reader fetches it with the access header into an object URL. "Read captions" (player bar, textbooks with figures) skips caption chunks in continuous reading and prefetch without changing the chunk list, so saved positions stay valid.
 - Only new uploads get figures (a figure adds a paragraph); re-upload older textbooks. Tables ("Table N") are still dropped as before.
-- Text markers from pdf_to_text to parse(): \x01 heading, \x02 code listing, \x03 + \x04 equation (#41), \x05 figure. Each feature needs its own (both #40 and #41 first used \x03; a test with a figure and an equation on one page guards it).
+- Text markers from pdf_to_text to parse(): \x01 heading, \x02 code listing, \x03 + \x04 display equation (#41), \x05 + \x06 inline formula (main), \x07 figure. Each feature needs its own: #40 first used \x03 (taken by #41), then \x05 (taken by inline formulas, whose parser also strips stray \x05 / \x06). A test with a figure and an equation on one page guards it.

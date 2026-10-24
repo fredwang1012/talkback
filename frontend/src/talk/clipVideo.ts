@@ -30,3 +30,17 @@ export async function openClipVideo(audioUrl: string, voice: string, faceId: str
 export function lipSyncClip(audioUrl: string, voice: string, faceId: string | null, open = openClipVideo): Clip {
   return faceId && voice ? { audio_url: audioUrl, openVideo: () => open(audioUrl, voice, faceId) } : { audio_url: audioUrl };
 }
+
+type SpeakFn = (text: string, voice: string, emotion?: string, language?: string | null) => Promise<{ audio_url: string; timestamps?: unknown }>;
+
+/**
+ * One answer sentence of the Gemini path as a clip: Boson TTS in the answer's language (`language`, ISO 639-3, only
+ * when not English, #135), lip-synced when a face is shown. A non-English sentence comes back with `timestamps: null`
+ * (the backend asks Boson for normalized speech, which has no word timing): nothing here needs it, because answers are
+ * shown and played a sentence at a time.
+ */
+export async function answerClip(speakFn: SpeakFn, text: string, voice: string, opts: { emotion?: string; language?: string | null; faceId: string | null },
+  open = openClipVideo): Promise<Clip> {
+  const r = await speakFn(text, voice, opts.emotion, opts.language ?? null);
+  return lipSyncClip(r.audio_url, voice, opts.faceId, open);
+}

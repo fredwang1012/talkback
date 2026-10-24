@@ -59,6 +59,18 @@ class MathBlock(BaseModel):
     spoken: str | None = None
 
 
+class InlineMath(BaseModel):
+    """A formula inside a prose paragraph whose extracted text is garbled: text[start:end] shows that garble."""
+    id: str
+    start: int
+    end: int
+    page: int
+    bbox: list[float]
+    image: str | None = None
+    latex: str | None = None
+    spoken: str | None = None
+
+
 class Paragraph(BaseModel):
     idx: int
     section_id: str
@@ -69,6 +81,7 @@ class Paragraph(BaseModel):
     # "figure": a textbook figure (#40), `text` is its caption (read aloud) and `figure` the image file name
     kind: Literal["code", "math", "figure"] | None = None
     math: MathBlock | None = None
+    inline_math: list[InlineMath] = []
     figure: str | None = None  # under data/books/<id>/figures/, served by /api/books/<id>/figures/<name>
 
 
@@ -96,6 +109,9 @@ class Narrator(BaseModel):
 class Summary(BaseModel):
     upto_para: int
     text: str
+    # Textbooks: the section (chapter or numbered subsection) this note summarises; upto_para is that section's last
+    # paragraph. Novel "story so far" notes leave it unset.
+    section_id: str | None = None
 
 
 class KindDetected(BaseModel):
@@ -120,3 +136,8 @@ class Book(BaseModel):
     # Books of one series (same `series`, ordered by `series_index`): a reader of book N already knows books 1..N-1.
     series: str | None = None
     series_index: int | None = None
+    # series slugs the library reconciliation (enrich/series_link.py) already asked about for this book: once each
+    series_checked: list[str] = []
+    # ttschunks.CHUNK_RULES_VERSION the tts_chunks were built with (0 = before the version existed). The server
+    # re-chunks an older book once after loading it (books.load_book), keeping segment styles.
+    chunk_rules: int = 0

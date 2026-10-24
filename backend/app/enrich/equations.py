@@ -33,6 +33,7 @@ SYSTEM = """You transcribe typeset mathematics from pictures cropped out of a te
 For each picture, by its id:
 - latex: the equation in LaTeX math mode for KaTeX, without $ or \\[ delimiters and without \\begin{equation}. Several lines: use \\begin{aligned} ... \\end{aligned}. Leave out the equation number such as (3.4).
 - spoken: how a teacher reads it aloud, in plain English words only (no LaTeX, no symbols), at most 35 words, e.g. "y hat equals beta zero hat plus beta one hat times x".
+Pictures whose id starts with "m" are formulas from inside a sentence: their spoken reading replaces the formula in that sentence, so keep it short (at most 15 words), e.g. "beta one hat".
 The extracted text given with each picture is often garbled; trust the picture.
 If a picture is not an equation (prose, a table, a figure, blank), give an empty latex and an empty spoken."""
 
@@ -89,13 +90,27 @@ def _parts(batch: list[tuple[str, bytes, str]]) -> list:
     return out
 
 
+def fitting(n: int, spent: float = 0.0) -> int:
+    """How many of n pictures fit under the per-book cap after `spent`."""
+    while n and estimate(n) + spent > settings.upload_book_cap_usd:
+        n = n * 9 // 10
+    return n
+
+
 async def transcribe(book_id: str, crops: dict[str, tuple[bytes, str]], *, llm: LLM | None = None,
-                     parts=_parts) -> dict[str, dict]:
-    """{equation id: {latex, spoken}} for the pictures Gemini could read. `crops` is {id: (PNG, extracted text)}."""
+                     parts=_parts, fit: bool = False) -> dict[str, dict]:
+    """{equation id: {latex, spoken}} for the pictures Gemini could read. `crops` is {id: (PNG, extracted text)}.
+    With `fit` (inline formulas, after the display equations on the same `llm`), only the first pictures that fit
+    under the per-book cap are sent instead of none."""
     if not crops:
         return {}
+    spent = llm.usd if llm is not None else 0.0
+    if fit:
+        crops = dict(list(crops.items())[:fitting(len(crops), spent)])
+        if not crops:
+            return {}
     est = estimate(len(crops))
-    reason = check_caps(est)
+    reason = check_caps(est + spent)
     if reason:
         log.info("equations of %s not transcribed: %s ($%.2f estimated)", book_id, reason, est)
         return {}
@@ -111,8 +126,23 @@ async def transcribe(book_id: str, crops: dict[str, tuple[bytes, str]], *, llm: 
 
     llm.on_usage = on_usage
     items = [(k, png, hint) for k, (png, hint) in crops.items()]
-    batches = [items[i:i + BATCH] for i in range(0, len(items), BATCH)]
     found: dict[str, dict] = {}
+    try:
+        await read(items, llm, found, parts)
+    except SpendLimit as e:
+        log.warning("equations of %s stopped: %s", book_id, e)
+    finally:
+        await asyncio.shield(asyncio.to_thread(spend.flush))
+    log.info("equations of %s: %d of %d read, $%.4f in %d calls", book_id, len(found), len(crops), llm.usd, llm.calls)
+    return found
+
+
+async def read(items: list[tuple[str, bytes, str]], llm: LLM, found: dict[str, dict], parts=None) -> None:
+    """Read (id, PNG, extracted text) pictures BATCH per call, in parallel, into `found` ({id: {latex, spoken}}).
+    A failed batch stays pictures; a SpendLimit cancels the other batches and is raised (what was read is kept).
+    Also used by the public API (public_api.py), whose caps sit on `llm.on_usage`."""
+    parts = parts or _parts
+    batches = [items[i:i + BATCH] for i in range(0, len(items), BATCH)]
 
     async def one(batch: list[tuple[str, bytes, str]]) -> None:
         ids = {k for k, _png, _hint in batch}
@@ -131,12 +161,8 @@ async def transcribe(book_id: str, crops: dict[str, tuple[bytes, str]], *, llm: 
     tasks = [asyncio.ensure_future(one(b)) for b in batches]
     try:
         await asyncio.gather(*tasks)
-    except SpendLimit as e:
-        log.warning("equations of %s stopped: %s", book_id, e)
+    except BaseException:
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-    finally:
-        await asyncio.shield(asyncio.to_thread(spend.flush))
-    log.info("equations of %s: %d of %d read, $%.4f in %d calls", book_id, len(found), len(crops), llm.usd, llm.calls)
-    return found
+        raise

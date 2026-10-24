@@ -24,6 +24,7 @@ import { lipSyncTargetFor, readClipsOn, readFaceFor, speechSeconds, type ReadFac
 import Stage from "../reader/Stage";
 import { toggleMode, validSpeaker } from "../reader/talkbackLogic";
 import TalkbackView, { ModeToggle } from "../reader/TalkbackView";
+import { loadNaturalSpeed, saveNaturalSpeed, speedTagFor, type SpeedTag } from "../reader/naturalSpeed";
 import { loadSpoilers, saveSpoilers } from "../reader/spoilers";
 import VoiceLab from "../reader/VoiceLab";
 import { spend, type SpendSnapshot } from "../spend";
@@ -47,6 +48,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const [naturalSpeed, setNaturalSpeed] = useState(loadNaturalSpeed); // #78: opt-in, remembered
   const [autoResume, setAutoResume] = useState(true);
   const [readCaptions, setReadCaptions] = useState(loadReadCaptions); // figure captions read aloud (#40)
   const [speakerId, setSpeakerId] = useState("narrator");
@@ -88,6 +90,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [readSpeaking, setReadSpeaking] = useState(false);
   const getAudio = useCallback(() => (engineRef.current?.currentAudio() as unknown as FollowAudio | null) ?? null, []);
   const indexRef = useRef(0);
+  const speedRef = useRef<{ speed: number; tag: SpeedTag | null }>({ speed: 1, tag: null }); // what a rebuilt engine starts with
   const playingRef = useRef(false);
   const readCaptionsRef = useRef(readCaptions);
   indexRef.current = index;
@@ -127,8 +130,8 @@ export default function Reader({ bookId }: { bookId: string }) {
   useEffect(() => {
     if (!book || !audioAvailable || chunks.length === 0) return;
     const engine = new ReaderEngine(chunks, {
-      fetchTts: async (chunk, voice) => {
-        const r = await fetchTts(book.id, chunk.id, voice, demo); // demo: pre-rendered only
+      fetchTts: async (chunk, voice, speedTag) => {
+        const r = await fetchTts(book.id, chunk.id, voice, demo, speedTag); // demo: pre-rendered only
         if (!r.cached) spend.addTts(chunk.tts_text.length); // only freshly synthesised speech costs money
         return r;
       },
@@ -136,6 +139,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       sync: readSync.current as FaceSync,
     }, indexRef.current);
     engineRef.current = engine;
+    engine.setSpeed(speedRef.current.speed, speedRef.current.tag); // a rebuilt engine keeps the speed (and tag) the UI shows
     engine.setSkipCaptions(!readCaptionsRef.current);
     const off = engine.on((s) => {
       setIndex(s.index);
@@ -160,7 +164,7 @@ export default function Reader({ bookId }: { bookId: string }) {
         speech = { ...SPEECH_IDLE, speaking: sounding };
       } else {
         levelRef.current = lvl;
-        speech = sounding ? stepSpeech(speech, lvl, now - last) : SPEECH_IDLE;
+        speech = sounding ? stepSpeech(speech, lvl, now - last) : { ...SPEECH_IDLE, peak: speech.peak }; // keep the voice's peak across pauses
       }
       last = now;
       setReadSpeaking((cur) => (cur === speech.speaking ? cur : speech.speaking));
@@ -218,10 +222,11 @@ export default function Reader({ bookId }: { bookId: string }) {
   const toolDeps = useRef<{ ctx: () => ToolContext; act: ToolActions } | null>(null);
   toolDeps.current = book ? {
     ctx: () => ({
-      bookId: book.id, sections: book.sections, paragraphs: book.paragraphs, characters: book.characters, chunks,
+      bookId: book.id, kind: book.kind, sections: book.sections, paragraphs: book.paragraphs, characters: book.characters, chunks,
       index: indexRef.current, readerPara: readerPara(chunks, indexRef.current), spoilers: spoilers && book.kind === "novel",
       playing: engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current,
       speed, speeds: SPEEDS, voiceMode: voiceMode(cast), narrator: narratorGender(cast), inSeries: !!book.series,
+      textbook: book.kind === "textbook",
     }),
     act: {
       seek: (i) => { lastManualScroll.current = 0; const next = clampIndex(i, chunks.length); if (engineRef.current) engineRef.current.seek(next); else setIndex(next); },
@@ -229,7 +234,8 @@ export default function Reader({ bookId }: { bookId: string }) {
       setVoiceMode: (m) => changeCast(withVoiceMode(cast, m)),
       setNarrator: (g) => changeCast({ ...cast, narrator_gender: g }),
       setSpeed,
-      openRecap: (scope) => recap({ scope, label: scope === "chapter" ? "Last chapter" : scope === "book" ? "This book so far" : "The series so far" }),
+      openRecap: (scope, section) => recap(section ? { scope: "chapter", label: "Chapter recap", section: section.id }
+        : { scope, label: scope === "chapter" ? (book.kind === "textbook" ? "This chapter" : "Last chapter") : scope === "book" ? "This book so far" : "The series so far" }),
       showCast: () => setLabOpen(true),
     },
   } : null;
@@ -253,6 +259,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     voiceFor: talkVoiceFor,
     narratorVoice: audioAvailable ? narratorVoice : null,
     tools: toolRunner,
+    bookKind: book?.kind,
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
       currentIndex: () => indexRef.current,
@@ -290,7 +297,11 @@ export default function Reader({ bookId }: { bookId: string }) {
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
   }, [audioAvailable, pttDown, pttUp]);
 
-  useEffect(() => { engineRef.current?.setSpeed(speed); }, [speed, audioAvailable, book]);
+  // natural speed (#78) needs new audio, which a demo (pre-rendered only) cannot have
+  const speedTag = speedTagFor(speed, naturalSpeed && !demo);
+  speedRef.current = { speed, tag: speedTag };
+  useEffect(() => { engineRef.current?.setSpeed(speed, speedTag); }, [speed, speedTag, audioAvailable, book, chunks, demo]);
+  useEffect(() => { saveNaturalSpeed(naturalSpeed); }, [naturalSpeed]);
   // a changed cast applies at once, from the local copy (the save runs in the background)
   useEffect(() => {
     engineRef.current?.setVoiceResolver(book && castLoaded
@@ -310,7 +321,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     if (mode !== "talk") changeMode("talk");
     const at = para;
     void talk.narrate(c.label, async () => {
-      const r = await fetchScopedRecap(book.id, at, c.scope);
+      const r = await fetchScopedRecap(book.id, at, c.scope, c.section);
       return { text: r.text, heading: recapHeading(c, r), empty: nothingYet(at) };
     });
   };
@@ -462,9 +473,10 @@ export default function Reader({ bookId }: { bookId: string }) {
       )}
       {debugEnabled() && <DebugDrawer entries={talk.logs} spend={spendNow} />}
       {mode === "read" && <PlayerBar
-        playing={playing} loading={loading} onToggle={toggle} onRecap={recap} inSeries={!!book.series}
+        playing={playing} loading={loading} onToggle={toggle} onRecap={recap} inSeries={!!book.series} textbook={book.kind === "textbook"}
         onPrev={() => { lastManualScroll.current = 0; step(-1); }} onNext={() => { lastManualScroll.current = 0; step(1); }}
         speed={speed} speeds={SPEEDS} onSpeed={setSpeed}
+        naturalSpeed={naturalSpeed && !demo} onNaturalSpeed={demo ? undefined : setNaturalSpeed}
         onVoices={() => setLabOpen(true)}
         autoResume={autoResume} onAutoResume={setAutoResume}
         hasFigures={book.kind === "textbook" && book.paragraphs.some((p) => p.kind === "figure")}

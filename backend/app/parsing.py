@@ -2,7 +2,7 @@
 import re
 import unicodedata
 
-from .schema import MathBlock, Paragraph, Section
+from .schema import InlineMath, MathBlock, Paragraph, Section
 
 HEADING_MARK = "\x01"  # prefix pdf_to_text puts on headings found by font size alone
 CODE_MARK = "\x02"     # prefix pdf_to_text puts on a program / pseudocode listing (its lines separated by \n)
@@ -10,7 +10,14 @@ CODE_MARK = "\x02"     # prefix pdf_to_text puts on a program / pseudocode listi
 # \x1c-\x1f count as whitespace for str.split and re's \s, so the separator must be below them.
 EQ_MARK = "\x03"
 EQ_SEP = "\x04"
-FIGURE_MARK = "\x05"   # prefix pdf_to_text puts on a figure: its image file name, a newline, then its caption
+# an inline formula inside a prose line: IM_OPEN, five private-use chars (page, x0, y0, x1, y1 in tenths of a point,
+# each as chr(IM_BASE + n)), the extracted text, IM_CLOSE
+IM_OPEN = "\x05"
+IM_CLOSE = "\x06"
+IM_BASE = 0xF0000
+_INLINE = re.compile(IM_OPEN + "([\U000F0000-\U000FFFFD]{5})([^" + IM_OPEN + IM_CLOSE + "]*)" + IM_CLOSE)
+_INLINE_STRAY = re.compile("[" + IM_OPEN + IM_CLOSE + "]")
+FIGURE_MARK = "\x07"   # prefix pdf_to_text puts on a figure: its image file name, a newline, then its caption
 _EQ_NUMBER = re.compile(r"\s*\((\d{1,3}(?:\.\d{1,3}){0,2}[a-z]?)\)[.,;]?$")
 EQUATION_TEXT = "(equation)"  # the shown text of an equation whose glyphs did not extract at all
 
@@ -21,6 +28,37 @@ def split_equation_number(text: str) -> tuple[str, str | None]:
     if not m:
         return text, None
     return text[:m.start()].rstrip(" ,;"), m.group(1)
+
+
+def inline_marker(page: int, bbox: tuple[float, float, float, float], text: str) -> str:
+    nums = [page] + [round(v * 10) for v in bbox]
+    return IM_OPEN + "".join(chr(IM_BASE + max(0, min(n, 0xFFFD))) for n in nums) + text + IM_CLOSE
+
+
+def strip_inline(text: str) -> str:
+    """`text` with inline-formula markers removed and their extracted text kept."""
+    return _INLINE_STRAY.sub("", _INLINE.sub(lambda m: m.group(2), text))
+
+
+def split_inline(text: str, first: int) -> tuple[str, list[InlineMath]]:
+    """(text without markers, its inline formulas numbered from `first`) from a normalized paragraph."""
+    out: list[str] = []
+    found: list[InlineMath] = []
+    pos = size = 0
+    for m in _INLINE.finditer(text):
+        out.append(_INLINE_STRAY.sub("", text[pos:m.start()]))
+        size += len(out[-1])
+        pos = m.end()
+        inner = m.group(2).strip()
+        if not inner:
+            continue
+        nums = [ord(c) - IM_BASE for c in m.group(1)]
+        found.append(InlineMath(id=f"m{first + len(found)}", start=size, end=size + len(inner), page=nums[0],
+                                bbox=[n / 10 for n in nums[1:]]))
+        out.append(inner)
+        size += len(inner)
+    out.append(_INLINE_STRAY.sub("", text[pos:]))
+    return "".join(out), found
 
 
 def _equation(block: str, n: int) -> tuple[str, MathBlock] | None:
@@ -97,7 +135,7 @@ def parse(raw: str, start_marker: str | None, end_marker: str | None,
     sections: list[Section] = []
     paragraphs: list[Paragraph] = []
     current = None
-    equations = 0
+    equations = inline_count = 0
     for block in BLANK_LINE.split(body):
         block = block.strip()
         if not block:
@@ -126,9 +164,10 @@ def parse(raw: str, start_marker: str | None, end_marker: str | None,
                 if current is None:
                     current = Section(id="s1", title="", start_para=len(paragraphs))
                     sections.append(current)
-                paragraphs.append(Paragraph(idx=len(paragraphs), section_id=current.id, text=normalize(caption) or "Figure",
-                                            kind="figure", figure=name.strip()))
+                paragraphs.append(Paragraph(idx=len(paragraphs), section_id=current.id,
+                                            text=normalize(strip_inline(caption)) or "Figure", kind="figure", figure=name.strip()))
             continue
+        marked, block = block, strip_inline(block)
         if heading and block.count("\n") == 1 and len(block) < 70:
             block = block.replace("\n", " ")  # "CHAPTER 8" on one line, its title on the next
         is_heading = bool(heading.match(block)) if heading else bool(ROMAN.match(block))
@@ -142,7 +181,8 @@ def parse(raw: str, start_marker: str | None, end_marker: str | None,
         if current is None:
             current = Section(id="s1", title="", start_para=len(paragraphs))
             sections.append(current)
-        text = normalize(block)
+        text, inline = split_inline(normalize(marked), inline_count + 1)
         if text:
-            paragraphs.append(Paragraph(idx=len(paragraphs), section_id=current.id, text=text))
+            inline_count += len(inline)
+            paragraphs.append(Paragraph(idx=len(paragraphs), section_id=current.id, text=text, inline_math=inline))
     return sections, paragraphs

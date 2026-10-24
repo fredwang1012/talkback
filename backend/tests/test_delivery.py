@@ -159,3 +159,26 @@ def test_enrich_segment_schema_accepts_style():
     with pytest.raises(Exception):
         SegItem(speaker="ron", text="x", emotion=None, style="singing")
     assert "style" in SegResult.model_json_schema()["$defs"]["SegItem"]["properties"]
+
+
+# ---------- natural reading speed (#78) ----------
+
+def test_apply_speed_puts_the_tag_first_and_keeps_the_rest():
+    from app.delivery import apply_speed
+    text = "<|prosody:pitch_low|><|style:whispering|><|prosody:pause|>Hello there."
+    out = apply_speed(text, "slow")
+    assert out == "<|prosody:speed_slow|>" + text
+    assert out.endswith("Hello there.")
+
+
+def test_apply_speed_none_is_identity_and_replaces_a_voice_speed_tag():
+    from app.delivery import apply_speed
+    assert apply_speed("Hi.", None) == "Hi."
+    assert apply_speed("<|prosody:speed_fast|>Hi.", "slow") == "<|prosody:speed_slow|>Hi."
+
+
+def test_apply_speed_rejects_unknown_values():
+    import pytest
+    from app.delivery import apply_speed
+    with pytest.raises(ValueError):
+        apply_speed("Hi.", "warp")

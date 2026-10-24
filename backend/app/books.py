@@ -1,9 +1,18 @@
 """Read books produced by the preprocess pipeline from data/books/<id>/book.json."""
+import logging
+import os
 import re
+import threading
 import time
+import uuid
+from pathlib import Path
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 
 from .config import settings
 from .schema import Book
+from .ttschunks import CHUNK_RULES_VERSION, needs_rechunk, rechunk_book
+
+log = logging.getLogger(__name__)
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
@@ -45,7 +54,77 @@ def load_book(book_id: str) -> Book | None:
     if book.narrator:
         book.narrator.portrait = book.narrator.portrait or portrait_url(book_id, "narrator")
     _cache[key] = (stamp, book)
+    if settings.auto_rechunk and needs_rechunk(book):
+        _schedule_upgrade(key, path, stamp)
     return book
+
+
+# Auto-upgrade of books whose tts_chunks were built with older chunk rules (ttschunks.CHUNK_RULES_VERSION).
+# Re-chunking HP5 (18k chunks) takes ~2 s, so it runs on one background thread and requests keep the old chunks
+# until the new book.json is saved; the next load_book sees the new mtime and serves it (main._book_bodies follows).
+_upgrade_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rechunk")
+_upgrade_lock = threading.Lock()
+_upgrading: dict[str, Future] = {}   # resolved book.json path -> running / queued upgrade
+_upgrade_failed: dict[str, tuple[int, int]] = {}   # path -> file stamp that failed: not retried until the file changes
+
+
+def _stamp(path) -> tuple[int, int]:
+    st = path.stat()
+    return st.st_mtime_ns, st.st_size
+
+
+def _schedule_upgrade(key: str, path, stamp: tuple[int, int]) -> None:
+    with _upgrade_lock:
+        if key in _upgrading or _upgrade_failed.get(key) == stamp:
+            return
+        _upgrading[key] = _upgrade_pool.submit(_upgrade, key, path, stamp)
+
+
+def _upgrade(key: str, path, stamp: tuple[int, int]) -> bool:
+    """Re-chunk one book.json with the current rules, keeping segment styles, and save it atomically. Works on a fresh
+    parse (never the cached object, which requests share). Skips the write if the file changed since `stamp` (another
+    writer won; its next load schedules again). Any failure leaves the old file in place and is logged."""
+    try:
+        if _stamp(path) != stamp:
+            return False
+        book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+        if not needs_rechunk(book):
+            return False
+        before = book.chunk_rules
+        rechunk_book(book)
+        with write_lock(path):   # the stamp check and the save are atomic against every other book.json writer
+            if _stamp(path) != stamp:
+                return False
+            save_book(path, book)
+        log.info("re-chunked %s (chunk rules %s -> %s)", path.parent.name, before, CHUNK_RULES_VERSION)
+        return True
+    except Exception:
+        log.exception("re-chunking %s failed; serving its old chunks", path.parent.name)
+        _upgrade_failed[key] = stamp
+        return False
+    finally:
+        with _upgrade_lock:
+            _upgrading.pop(key, None)
+
+
+def schedule_all_upgrades() -> None:
+    """Queue the upgrade of every out-of-date book (called at startup), whoever may see it."""
+    for path in sorted(_books_dir().glob("*/book.json")):
+        try:
+            load_book(path.parent.name)
+        except Exception:  # an unreadable book.json is reported where it is served
+            log.warning("could not load %s for re-chunking", path.parent.name)
+
+
+def wait_for_upgrades(timeout: float | None = 60) -> None:
+    """Block until every queued upgrade has finished (tests, scripts)."""
+    while True:
+        with _upgrade_lock:
+            pending = list(_upgrading.values())
+        if not pending:
+            return
+        if wait(pending, timeout=timeout).not_done:
+            return
 
 
 SERIES_TTL = 60.0  # seconds; the index is also dropped when the books dir changes or a book is saved
@@ -71,13 +150,24 @@ def _series_entries() -> list[tuple[str, str, int]]:
     return entries
 
 
+def same_library(a: str, b: str) -> bool:
+    """Built-in books join built-in books; an upload ("u-" id) only joins uploads of the same owner, so one account's
+    book never feeds another account's recap or answers (#115)."""
+    if a.startswith("u-") != b.startswith("u-"):
+        return False
+    if not a.startswith("u-"):
+        return True
+    from . import users
+    return users.book_owner_ns(a) == users.book_owner_ns(b)
+
+
 def earlier_in_series(book: Book) -> list[Book]:
-    """Books of the same series that come before `book`, in series order (all already read by its reader)."""
+    """Books of the same series and library that come before `book`, in series order (all already read by its reader)."""
     if not book.series or book.series_index is None:
         return []
     out = []
     for bid, series, idx in _series_entries():
-        if series == book.series and idx < book.series_index:
+        if series == book.series and idx < book.series_index and same_library(book.id, bid):
             other = load_book(bid)
             if other:
                 out.append(other)
@@ -118,7 +208,11 @@ def list_books(hidden: bool = False) -> list[dict]:
     for path in sorted(_books_dir().glob("*/book.json")):
         if not users.can_see_book(path.parent.name) or (path.parent.name in hidden_ids) != hidden:
             continue
-        book = load_book(path.parent.name)
+        try:
+            book = load_book(path.parent.name)
+        except Exception as e:  # one unreadable book.json (e.g. written by a newer version) must not hide the library
+            logging.getLogger(__name__).warning("skipping book %s: %s", path.parent.name, type(e).__name__)
+            continue
         if book is None:
             continue
         out.append({
@@ -132,10 +226,57 @@ def list_books(hidden: bool = False) -> list[dict]:
     return sorted(out, key=lambda b: (b["series"] or "", b["series_index"] or 0, b["id"]))
 
 
+_write_locks: dict[str, threading.RLock] = {}
+_write_locks_guard = threading.Lock()
+
+
+def write_lock(path) -> threading.RLock:
+    """The one lock of a book.json, shared by every writer (rechunk upgrade, equations, textbook notes, kind change,
+    enrich checkpoints, ingest). A read-modify-write holds it from the read to the save; save_book takes it too
+    (re-entrant), so whole-book saves never interleave either."""
+    key = os.path.normcase(os.path.abspath(path))
+    with _write_locks_guard:
+        lock = _write_locks.get(key)
+        if lock is None:
+            lock = _write_locks[key] = threading.RLock()
+        return lock
+
+
+def _replace(tmp: Path, path: Path) -> None:
+    """os.replace; on Windows a reader that has book.json open makes it fail for a moment, so retry briefly."""
+    for attempt in range(20):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == 19:
+                raise
+            time.sleep(0.01 * (attempt + 1))
+
+
 def save_book(path, book: Book) -> None:
-    """Write book.json atomically (temp file + rename) so a running server never reads a half-written book."""
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(book.model_dump_json(indent=1), encoding="utf-8")
-    tmp.replace(path)
+    """Write book.json atomically (temp file + rename) so a running server never reads a half-written book. Each call
+    has its own temp file in the same folder: two writers never truncate one temp file (slow on GCS FUSE)."""
+    path = Path(path)
+    data = book.model_dump_json(indent=1)
+    with write_lock(path):
+        tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(data, encoding="utf-8")
+            _replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
     global _series_index
     _series_index = None
+
+
+def update_book(path, change) -> Book:
+    """Read-modify-write of book.json under its write lock: `change(book)` edits a fresh parse (never the cached
+    object), which is then saved. Returns the saved book."""
+    path = Path(path)
+    with write_lock(path):
+        book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+        change(book)
+        save_book(path, book)
+    return book

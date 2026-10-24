@@ -20,6 +20,17 @@ export type MathBlock = {
   latex?: string | null;
   spoken?: string | null;
 };
+/** A formula inside a sentence whose extracted text is garbled: p.text[start:end] is that text. */
+export type InlineMath = {
+  id: string;
+  start: number;
+  end: number;
+  page: number;
+  bbox: number[];
+  image?: string | null;
+  latex?: string | null;
+  spoken?: string | null;
+};
 export type Paragraph = {
   idx: number;
   section_id: string;
@@ -28,6 +39,7 @@ export type Paragraph = {
   tts_chunks: TtsChunk[];
   kind?: "code" | "math" | "figure" | null; // code: a textbook listing, shown in a code font, not read aloud; math: an equation; figure (#40): `text` is its caption
   math?: MathBlock | null;
+  inline_math?: InlineMath[];
   figure?: string | null; // the figure's image file (kind "figure"), see figureUrl
 };
 export type Character = {
@@ -141,18 +153,20 @@ export const fetchRecap = (bookId: string, para: number) =>
 export type RecapScope = "chapter" | "book" | "series";
 /** One scope's recap; `chapter` is the chapter it covers (scope "chapter") or the one the reader is in. Spoiler-safe. */
 export type ScopedRecap = { scope: RecapScope; upto_para: number | null; chapter: string; text: string };
-export const fetchScopedRecap = (bookId: string, para: number, scope: RecapScope) =>
-  getJson<ScopedRecap>(`/api/books/${encodeURIComponent(bookId)}/recap?para=${Math.max(0, Math.floor(para))}&scope=${scope}`);
+/** `section`: that chapter / subsection instead (a textbook: any; a novel: only as far as the reader has read). */
+export const fetchScopedRecap = (bookId: string, para: number, scope: RecapScope, section?: string) =>
+  getJson<ScopedRecap>(`/api/books/${encodeURIComponent(bookId)}/recap?para=${Math.max(0, Math.floor(para))}&scope=${scope}`
+    + (section ? `&section=${encodeURIComponent(section)}` : ""));
 
 export type WordTiming = { start: number; end: number; char_start: number; char_end: number };
 export type TtsResponse = { chunk_id: string; voice: string; audio_url: string; timestamps: WordTiming[] | null; cached: boolean };
 
 /** Throws an Error carrying the server's readable message (e.g. a missing key or a billing refusal). */
-export async function fetchTts(bookId: string, chunkId: string, voiceOverride?: string, cachedOnly = false): Promise<TtsResponse> {
+export async function fetchTts(bookId: string, chunkId: string, voiceOverride?: string, cachedOnly = false, speed?: string | null): Promise<TtsResponse> {
   const res = await timedFetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ book_id: bookId, chunk_id: chunkId, voice_override: voiceOverride ?? null, cached_only: cachedOnly }),
+    body: JSON.stringify({ book_id: bookId, chunk_id: chunkId, voice_override: voiceOverride ?? null, cached_only: cachedOnly, ...(speed ? { speed } : {}) }),
   }, 60000); // a cache miss synthesises speech, which can take a while
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
@@ -182,14 +196,47 @@ export async function fetchRetrieve(bookId: string, query: string, readerPara: n
   return res.json() as Promise<RetrieveResponse>;
 }
 
+/** A web page a grounded answer used (#web search): shown as a link under the reply, never spoken. */
+export type Source = { uri: string; title: string };
+export const MAX_SOURCES = 5;
+export const MAX_SUGGESTIONS = 32_000;
+/** What a grounded answer sends in its `sources` line: the web links and Google's Search Suggestions markup. */
+export type Grounding = { sources: Source[]; suggestions?: string };
+
 /**
- * Streams the spoken answer from /api/answer (NDJSON: `sentence` lines, then `done` or `error`).
+ * Google's Search Suggestions HTML (search_entry_point.rendered_content), unmodified: Google's terms require showing it
+ * as provided. Only a string of plausible size is kept; it is displayed only inside a sandboxed iframe (SourceLinks).
+ */
+export function cleanSuggestions(raw: unknown): string | undefined {
+  return typeof raw === "string" && raw.trim() && raw.length <= MAX_SUGGESTIONS ? raw : undefined;
+}
+
+/** Plain http(s) links from untrusted data (the stream, sessionStorage): no other schemes, no duplicates, short. */
+export function cleanSources(raw: unknown): Source[] {
+  const out: Source[] = [];
+  if (!Array.isArray(raw)) return out;
+  for (const s of raw) {
+    const uri = (s as { uri?: unknown })?.uri;
+    const title = (s as { title?: unknown })?.title;
+    if (typeof uri !== "string" || uri.length > 2048 || !/^https?:\/\/[^\s]+$/i.test(uri) || out.some((o) => o.uri === uri)) continue;
+    let host = "";
+    try { host = new URL(uri).hostname; } catch { continue; }
+    out.push({ uri, title: (typeof title === "string" && title.trim() ? title.trim() : host).slice(0, 120) });
+    if (out.length >= MAX_SOURCES) break;
+  }
+  return out;
+}
+
+/**
+ * Streams the spoken answer from /api/answer (NDJSON: `sentence` lines, then `done` or `error`). A grounded answer
+ * (web search: textbooks, or novels with spoilers on) also sends one `sources` line, reported through `onSources`.
  * Only the response headers have a deadline; the body can take as long as the model needs. `signal` aborts it.
  */
 export async function streamAnswer(
   bookId: string, query: string, readerPara: number, speakerId: string,
-  onSentence: (text: string) => void, signal?: AbortSignal, spoilers = false,
+  onSentence: (text: string, emotion?: string) => void, signal?: AbortSignal, spoilers = false,
   history: { role: "user" | "character"; text: string }[] = [],
+  onSources?: (grounding: Grounding) => void,
 ): Promise<void> {
   const res = await timedFetch("/api/answer", {
     method: "POST",
@@ -210,9 +257,16 @@ export async function streamAnswer(
   let buf = "";
   const handle = (line: string) => {
     if (!line.trim()) return;
-    let msg: { type?: string; text?: string; message?: string };
+    let msg: { type?: string; text?: string; message?: string; emotion?: unknown; sources?: unknown; search_suggestions?: unknown };
     try { msg = JSON.parse(line); } catch { return; } // tolerate a garbled line
-    if (msg.type === "sentence" && typeof msg.text === "string") onSentence(msg.text);
+    if (msg.type === "sentence" && typeof msg.text === "string") {
+      onSentence(msg.text, typeof msg.emotion === "string" && msg.emotion ? msg.emotion : undefined); // #14
+    }
+    else if (msg.type === "sources") {
+      const sources = cleanSources(msg.sources);
+      const suggestions = cleanSuggestions(msg.search_suggestions);
+      if (sources.length || suggestions) onSources?.({ sources, ...(suggestions ? { suggestions } : {}) });
+    }
     else if (msg.type === "error") throw new Error(msg.message || "The answer failed.");
   };
   try {
@@ -236,12 +290,17 @@ export async function streamAnswer(
   }
 }
 
-/** Synthesises one sentence in a voice (cached server-side) and returns where to fetch the audio. */
-export async function speak(text: string, voice: string): Promise<TtsResponse> {
+/**
+ * Synthesises one sentence in a voice (cached server-side) and returns where to fetch the audio. `emotion` (#14) is an
+ * answer sentence's feeling; the server checks it and sends it to Boson as a delivery tag.
+ */
+/** `language`: ISO 639-3 of a non-English answer (#135); the backend then asks Boson for normalized speech without
+ * word timestamps (the response's `timestamps` is null). Never sent for English. */
+export async function speak(text: string, voice: string, emotion?: string, language?: string | null): Promise<TtsResponse> {
   const res = await timedFetch("/api/speak", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ text, voice }),
+    body: JSON.stringify({ text, voice, ...(emotion ? { emotion } : {}), ...(language && language !== "eng" ? { language } : {}) }),
   }, 30000);
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
@@ -340,7 +399,8 @@ export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 export type BookKind = "novel" | "textbook";
 /** What the upload form can send: "auto" lets the server decide. */
 export type UploadKind = BookKind | "auto";
-/** Novel enrichment (characters, voices, recap) that runs after a novel is readable. Absent for textbooks. */
+/** Enrichment that runs once a book is readable: characters, voices and recap for a novel; only the recap study
+ * notes for a textbook (`summaries_only`). */
 export type EnrichStatus = {
   status: "awaiting_confirmation" | "running" | "done" | "refused" | "error";
   stage?: string;       // queued | cast | segment | summaries | index | done
@@ -348,9 +408,11 @@ export type EnrichStatus = {
   message?: string;
   degraded?: boolean;    // done, but without a working LLM (simple fallback cast)
   estimate_usd?: number; // only in testing mode (UPLOAD_CONFIRM)
+  summaries_only?: boolean; // a textbook: recap study notes only
 };
 /** The line shown when enrichment finished: the full-success wording only when an LLM really did the work. */
 export function enrichDoneNote(e: EnrichStatus): string {
+  if (e.summaries_only) return "study notes for the recap are ready";
   return e.degraded && e.message ? e.message : "characters, voices and recap are ready";
 }
 /** Cloud search indexing after the book is readable (it uses basic search until state is "done"). */

@@ -101,8 +101,12 @@ def estimate_usd() -> float:
 
 
 async def detect(image: bytes, ext: str) -> dict | None:
-    """{x, y, w, h} of the main face as fractions of the image, or None."""
+    """{x, y, w, h} of the main face as fractions of the image, or None. A clone with no GCP project of its own asks
+    the public processing service (its own caps and rate limits apply there)."""
     if not settings.gcp_project:
+        from . import public_client
+        if public_client.active():
+            return await public_client.detect_face(image, ext)
         return None
     est = estimate_usd()
     if spend.total_usd() + est > settings.upload_total_cap_usd or not _take_llm_call():

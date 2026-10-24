@@ -166,17 +166,18 @@ function setup(opts: { playing?: boolean; gemini?: boolean; spoilers?: boolean }
   };
   const tools = (name: string, args: Record<string, unknown>): ToolOutcome => runTool(name, args, ctx(), act);
   const spoken: string[] = [];
+  const asked: string[] = [];
   const talk = new TalkController({
     session, reader, tools, onToolRun: (c) => chips.push(c),
     retrieve: async () => ({ instructions: "INSTR" }),
     ...(opts.gemini ? {
-      answer: async (_q: string, _p: number, _s: string, onSentence: (t: string) => void) => { onSentence("An answer."); },
+      answer: async (q: string, _p: number, _s: string, onSentence: (t: string) => void) => { asked.push(q); onSentence("An answer."); },
       speaker: { play: async (t: string) => { spoken.push(t); }, prefetch: () => {}, stop: () => {} },
     } : {}),
     voiceFor: () => "marcus",
     onState: (s) => states.push(s), onToast: (m) => toasts.push(m),
   });
-  return { session, reader, talk, states, toasts, chips, actions, spoken };
+  return { session, reader, talk, states, toasts, chips, actions, spoken, asked };
 }
 const tick = (ms: number) => vi.advanceTimersByTimeAsync(ms);
 
@@ -351,5 +352,143 @@ describe("TalkController tools (Gemini path: intent parse, no model call)", () =
     await ask(h, "What happens in chapter three?");
     await tick(0);
     expect(h.spoken).toEqual(["An answer."]);
+  });
+});
+
+describe("TalkController tools (Gemini path: a tool that needs an answer)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("'explain that' pauses reading and asks Gemini the tool's question instead of ending silently", async () => {
+    const h = setup({ gemini: true, playing: true });
+    await ask(h, "Explain that.");
+    await tick(0);
+    expect(h.chips).toEqual(["Explaining this paragraph"]);
+    expect(h.asked).toHaveLength(1);
+    expect(h.asked[0]).toMatch(/2-4 sentences/);
+    expect(h.spoken).toEqual(["An answer."]);
+    await tick(5000);
+    expect(h.reader.log).not.toContain("play");
+    expect(h.reader.log.filter((l) => l.startsWith("resumeAt"))).toEqual([]);
+  });
+});
+
+describe("TalkController quiz mode", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+  const responds = (h: ReturnType<typeof setup>) => h.session.calls.filter((c) => c.startsWith("respond:")).map((c) => c.slice(8));
+
+  async function startQuiz(h: ReturnType<typeof setup>) {
+    await ask(h, "Quiz me");
+    h.session.emit({ type: "tool-call", calls: [{ callId: "q1", name: "quiz_me", args: {} }] });
+    await finishSpeaking(h); // the model asks question 1
+  }
+
+  it("the next three turns carry the quiz rules, text and progress; the turn after the end does not", async () => {
+    const h = setup({ playing: false });
+    await startQuiz(h);
+    expect(h.chips).toEqual(["Quiz: Two"]);
+    for (const n of [1, 2, 3]) { await ask(h, `answer ${n}`); await finishSpeaking(h); }
+    const r = responds(h);
+    expect(r).toHaveLength(4);
+    expect(r[0]).toBe("INSTR"); // the turn that asked for the quiz
+    expect(r[1]).toMatch(/^INSTR/); // normal grounding is kept
+    expect(r[1]).toMatch(/QUIZ.*question 1 of 3/s);
+    expect(r[1]).toContain("p4"); // the section text
+    expect(r[1]).toMatch(/ask question 2/);
+    expect(r[2]).toMatch(/question 2 of 3/);
+    expect(r[3]).toMatch(/question 3 of 3/);
+    expect(r[3]).toMatch(/final score/);
+    await ask(h, "What happens next?");
+    expect(responds(h).at(-1)).toBe("INSTR");
+    expect(h.reader.log.filter((l) => l === "play" || l.startsWith("resumeAt"))).toEqual([]); // reading stayed paused
+  });
+
+  it("a navigation command, 'keep reading' or stop ends the quiz", async () => {
+    for (const said of ["Jump to chapter two", "keep reading", "stop the quiz", "cancel"]) {
+      const h = setup({ playing: false });
+      await startQuiz(h);
+      await ask(h, said);
+      expect(responds(h).at(-1), said).toBe("INSTR");
+      await finishSpeaking(h);
+      await ask(h, "answer");
+      expect(responds(h).at(-1), said).toBe("INSTR");
+    }
+  });
+
+  it("another tool call or a speaker switch ends it", async () => {
+    const h = setup({ playing: false });
+    await startQuiz(h);
+    await ask(h, "answer one");
+    h.session.emit({ type: "tool-call", calls: [{ callId: "c2", name: "bookmark", args: {} }] });
+    await finishSpeaking(h);
+    await ask(h, "answer two");
+    expect(responds(h).at(-1)).toBe("INSTR");
+
+    const g = setup({ playing: false });
+    await startQuiz(g);
+    await g.talk.setSpeaker("someone-else");
+    await ask(g, "answer one");
+    expect(responds(g).at(-1)).toBe("INSTR");
+  });
+
+  it("reading on (Play, or a mic tap that resumes the story) ends the quiz: the next question is a plain one", async () => {
+    const h = setup({ playing: false });
+    await startQuiz(h);
+    h.reader.play(); // the reader pressed Play and reads on
+    await ask(h, "Who is the knight?");
+    expect(responds(h).at(-1)).toBe("INSTR");
+
+    const g = setup({ playing: false });
+    await startQuiz(g);
+    await g.talk.pttDown();
+    await tick(50);
+    await g.talk.pttUp(); // a tap: the story plays again
+    expect(g.reader.log.at(-1)).toBe("play");
+    g.reader.pause(); // even if it is paused again before the next question
+    await ask(g, "Who is the knight?");
+    expect(responds(g).at(-1)).toBe("INSTR");
+  });
+
+  it("endQuiz (the chat is cleared) ends it", async () => {
+    const h = setup({ playing: false });
+    await startQuiz(h);
+    h.talk.endQuiz();
+    await ask(h, "answer one");
+    expect(responds(h).at(-1)).toBe("INSTR");
+  });
+
+  it("only completed answers count: an answer cut off by a barge-in is asked again as the same question", async () => {
+    const h = setup({ playing: false });
+    await startQuiz(h);
+    await ask(h, "answer one");
+    h.session.emit({ type: "audio-start" });
+    await tick(0);
+    await ask(h, "answer one, again"); // barge-in before the grading finished
+    expect(responds(h).at(-1)).toMatch(/question 1 of 3/);
+    await finishSpeaking(h);
+    await ask(h, "answer two");
+    expect(responds(h).at(-1)).toMatch(/question 2 of 3/);
+    await finishSpeaking(h);
+    await ask(h, "answer three");
+    expect(responds(h).at(-1)).toMatch(/question 3 of 3/);
+    await finishSpeaking(h);
+    await ask(h, "What happens next?");
+    expect(responds(h).at(-1)).toBe("INSTR");
+  });
+
+  it("Gemini path: the answers go to Gemini wrapped with the quiz progress, then plain again", async () => {
+    const h = setup({ gemini: true, playing: false });
+    await ask(h, "quiz me");
+    await tick(0);
+    expect(h.asked[0]).toMatch(/Quiz me on "Two"/);
+    for (const n of [1, 2, 3]) { await ask(h, `answer ${n}`); await tick(0); }
+    expect(h.asked[1]).toMatch(/question 1 of 3/);
+    expect(h.asked[1]).toContain("answer 1");
+    expect(h.asked[3]).toMatch(/final score/);
+    expect(h.asked.every((q) => q.length <= 500)).toBe(true);
+    await ask(h, "What happens next?");
+    await tick(0);
+    expect(h.asked[4]).toBe("What happens next?");
   });
 });

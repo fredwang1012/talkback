@@ -36,7 +36,7 @@ class FakeAnswerer:
     def __init__(self, sentences=("He smiled.", "Then he left."), fail=False):
         self.sentences, self.fail, self.prompts = sentences, fail, []
 
-    async def stream_sentences(self, system, user, on_usage=None):
+    async def stream_sentences(self, system, user, on_usage=None, **kw):  # kw: web_search, on_sources
         self.prompts.append((system, user))
         if self.fail:
             raise RuntimeError(f"boom {MARKER}")
@@ -81,7 +81,9 @@ def wait_done(c, job_id, timeout=20):
 
 def test_only_the_public_routes_exist(pub):
     paths = {r.path for r in public_api.app.routes if hasattr(r, "methods")}
-    assert paths == {"/api/health", "/api/public/enrich", "/api/public/enrich/{job_id}", "/api/public/answer"}
+    assert paths == {"/api/health", "/api/public/enrich", "/api/public/enrich/{job_id}", "/api/public/answer",
+                     "/api/public/translate", "/api/public/detect", "/api/public/describe", "/api/public/series",
+                     "/api/public/faces/detect", "/api/public/equations", "/api/public/equations/{ticket}"}
     assert pub.get("/api/health").json() == {"ok": True, "public": True}
     for path in ["/", "/index.html", "/api/books", "/api/books/demo", "/api/answer", "/api/retrieve", "/api/tts",
                  "/api/realtime/token", "/media/tts/a.mp3", "/media/avatar/a.mp4", "/portraits/a.png", "/docs",
@@ -244,7 +246,8 @@ def test_answer_prompt_matches_the_local_prompt(pub, monkeypatch):
     assert fake.prompts[0] == build_answer_prompt(book, "harry", "Things happened.", passages, "What now?")
     body["spoilers"], body["speaker_id"] = True, "narrator"
     pub.post("/api/public/answer", json=body)
-    assert fake.prompts[1] == build_answer_prompt(book, "narrator", "Things happened.", passages, "What now?", spoilers=True)
+    assert fake.prompts[1] == build_answer_prompt(book, "narrator", "Things happened.", passages, "What now?", spoilers=True,
+                                                  web_search=True)   # spoilers on: web search (websearch.allowed)
 
 
 # ---------- never log request bodies ----------

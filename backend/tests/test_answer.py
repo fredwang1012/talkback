@@ -12,7 +12,7 @@ class FakeAnswerer:
     def __init__(self, sentences, fail_after=None):
         self.sentences, self.fail_after, self.prompts = sentences, fail_after, []
 
-    async def stream_sentences(self, system, user):
+    async def stream_sentences(self, system, user, on_usage=None, **kw):  # kw: web_search, on_sources
         self.prompts.append((system, user))
         for i, s in enumerate(self.sentences):
             if self.fail_after is not None and i == self.fail_after:
@@ -169,3 +169,81 @@ def test_answer_endpoint_passes_history_to_the_model(env, monkeypatch):
     assert r.status_code == 200
     assert "Reader: Earlier question" in fake.prompts[0][1]
     assert post(client, history=[{"role": "user", "text": "x"}] * 9).status_code == 422
+
+
+# ---------- non-English answers (#135) ----------
+
+def test_language_codes_are_the_documented_102():
+    from app import tts_lang
+    assert len(tts_lang.LANGUAGES) == 102 and "spa" in tts_lang.LANGUAGES and "fra" in tts_lang.LANGUAGES
+    assert tts_lang.valid("fra") and not tts_lang.valid("fr") and not tts_lang.valid("xxx") and not tts_lang.valid("")
+    assert tts_lang.is_english("eng") and not tts_lang.is_english("fra")
+    assert tts_lang.has_timestamps("eng") and not tts_lang.has_timestamps("spa") and not tts_lang.has_timestamps("cmn")
+    assert not tts_lang.has_timestamps("fra")
+
+
+def test_speak_rejects_unknown_language(env):
+    client, _ = env
+    r = client.post("/api/speak", json={"text": "Bonjour.", "voice": "marcus", "language": "fr"})
+    assert r.status_code == 422
+    assert client.post("/api/speak", json={"text": "Bonjour.", "voice": "marcus", "language": "zzz"}).status_code == 422
+
+
+def _capture(monkeypatch, audio=b"RAWMP3"):
+    import httpx
+    from app.boson import BosonClient
+    bodies = []
+
+    def handler(req: httpx.Request):
+        body = json.loads(req.content)
+        bodies.append(body)
+        if body.get("timestamps"):
+            import base64
+            return httpx.Response(200, json={"audio": base64.b64encode(audio).decode(), "timestamps": None})
+        return httpx.Response(200, content=audio, headers={"content-type": "audio/mpeg"})
+
+    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    return bodies
+
+
+def test_speak_french_sends_language_no_timestamps_and_normalizes(env, monkeypatch):
+    client, _ = env
+    bodies = _capture(monkeypatch)
+    r = client.post("/api/speak", json={"text": "Il a 3 chats.", "voice": "marcus", "language": "fra"})
+    assert r.status_code == 200
+    out = r.json()
+    assert out["timestamps"] is None and out["cached"] is False
+    assert len(bodies) == 1
+    b = bodies[0]
+    assert b["language"] == "fra" and not b.get("timestamps") and b.get("normalize", True) is True
+    from app.config import settings
+    assert (settings.data_dir / "cache" / "tts" / out["audio_url"].rsplit("/", 1)[1]).read_bytes() == b"RAWMP3"
+
+
+def test_speak_english_keeps_timestamps_and_spanish_normalizes(env, monkeypatch):
+    client, _ = env
+    bodies = _capture(monkeypatch)
+    client.post("/api/speak", json={"text": "Hello there.", "voice": "marcus"})
+    client.post("/api/speak", json={"text": "Hello again.", "voice": "marcus", "language": "eng"})
+    client.post("/api/speak", json={"text": "El 3 de mayo.", "voice": "marcus", "language": "spa"})
+    assert [bool(b.get("timestamps")) for b in bodies] == [True, True, False]
+    assert "language" not in bodies[0] and "normalize" not in bodies[0]  # English path unchanged
+    assert "language" not in bodies[1]
+    assert bodies[2]["language"] == "spa" and bodies[2]["normalize"] is True
+
+
+def test_cache_key_includes_language_and_leaves_english_unchanged():
+    base = tts_cache.cache_key("Hi.", "v")
+    assert base == tts_cache.cache_key("Hi.", "v", language=None)
+    assert base == tts_cache.cache_key("Hi.", "v", language="eng")
+    assert tts_cache.cache_key("Hi.", "v", timestamps=False, language="fra") != tts_cache.cache_key("Hi.", "v", timestamps=False, language="deu")
+    assert tts_cache.cache_key("Hi.", "v", timestamps=False, language="fra") != base
+
+
+def test_speak_french_cached_second_time(env, monkeypatch):
+    client, _ = env
+    bodies = _capture(monkeypatch)
+    body = {"text": "Bonjour tout le monde.", "voice": "marcus", "language": "fra"}
+    assert client.post("/api/speak", json=body).json()["cached"] is False
+    assert client.post("/api/speak", json=body).json()["cached"] is True
+    assert len(bodies) == 1

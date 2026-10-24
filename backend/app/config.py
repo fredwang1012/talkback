@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # Who writes talk-mode answers. None = follow retrieval_backend (vertex -> gemini, local -> realtime).
     answer_backend: Literal["gemini", "realtime"] | None = None
     gemini_model: str = "gemini-2.5-flash"
+    # Web search (Grounding with Google Search) on Gemini answers: textbooks and novels with spoilers on only (websearch.py).
+    web_search: bool = True
+    grounded_daily_cap: int = 100        # grounded answers per UTC day on this app, persisted (data/usage)
+    public_grounded_daily_cap: int = 50  # public service: grounded answers per UTC day, on top of the answer budget
 
     def gemini_region(self) -> str:
         return self.gemini_location or self.gcp_region
@@ -39,6 +43,9 @@ class Settings(BaseSettings):
     # Uploaded novels: cast, dialogue split and summaries by an LLM after the text ingest (app/enrich).
     usage_log_file: bool = True       # append every billable call to data/cache/usage.jsonl (off on Cloud Run: logs only)
     upload_enrich: bool = True
+    # Re-chunk (and save) a book whose tts_chunks were built with older rules (ttschunks.CHUNK_RULES_VERSION), in a
+    # background thread at startup / on first load. No LLM, no API call; changed chunks are re-voiced when played.
+    auto_rechunk: bool = True
     minor_voices: bool = True  # uncast speakers in uploaded novels read in one of two generic voices (enrich/minor.py)
     upload_llm: Literal["claude", "gemini"] = "claude"   # developer-only; claude falls back to gemini when out of credit
     upload_confirm: bool = False      # testing mode: show the estimate and wait for POST /api/books/{id}/enrich

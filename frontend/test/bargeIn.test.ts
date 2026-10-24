@@ -3,7 +3,7 @@
  * order (truncate at what was heard, then cancel, then listen), fakes for the loop, pure tests for the voice gate.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TalkClient, type MicLike, type PlayerLike, type SocketLike } from "../src/talk/TalkClient";
+import { BARGE_PREROLL_MS, PREROLL_MS, TalkClient, type MicLike, type PlayerLike, type SocketLike } from "../src/talk/TalkClient";
 import { TalkController, type ReaderControl, type SessionEvent, type TalkSession, type TalkState } from "../src/talk/TalkController";
 import { HANDS_FREE, HANDS_FREE_OVER_SPEECH, createVoiceGate, type VoiceGateEvent } from "../src/talk/handsFree";
 import { INTERRUPTED_MARK, addQuestion, appendSentence, finishAnswer, markInterrupted, priorTurns } from "../src/talk/chatLog";
@@ -34,6 +34,14 @@ class FakePlayer implements PlayerLike {
   async close() {}
 }
 const flush = () => new Promise((r) => setTimeout(r, 0));
+/** A distinct 100 ms PCM16 chunk at 24 kHz (4800 bytes), base64, like MicCapture hands over. */
+const pcmCache = new Map<string, string>();
+function pcm(tag: string): string {
+  let b = pcmCache.get(tag);
+  if (!b) { const head = `${tag}|`; b = btoa(head + "\0".repeat(4800 - head.length)); pcmCache.set(tag, b); }
+  return b;
+}
+const appended = (ws: FakeSocket) => ws.sent.filter((e) => e.type === "input_audio_buffer.append").map((e) => e.audio as string);
 
 async function openClient() {
   const sockets: FakeSocket[] = [];
@@ -99,21 +107,119 @@ describe("barge-in on the wire (TalkClient)", () => {
     expect(ws.types()).toEqual(["session.update"]);
   });
 
-  it("hands-free monitor keeps the mic open, keeps only the last ~300 ms, and sends it first when a turn starts", async () => {
+  it("hands-free monitor keeps the mic open, sends nothing while monitoring, and a pressed turn gets only the last ~300 ms", async () => {
     const { client, ws, micLog, chunk } = await openClient();
     await client.setMonitor(true);
     expect(micLog).toEqual(["start"]);
-    ["A", "B", "C", "D", "E"].forEach(chunk); // monitoring: nothing is sent
-    expect(ws.types().filter((t) => t === "input_audio_buffer.append")).toHaveLength(0);
-    await client.startMic();
-    chunk("F");
-    expect(ws.sent.filter((e) => e.type === "input_audio_buffer.append").map((e) => e.audio)).toEqual(["C", "D", "E", "F"]);
+    ["A", "B", "C", "D", "E"].map((t) => pcm(t)).forEach(chunk); // monitoring: nothing is sent
+    expect(appended(ws)).toHaveLength(0);
+    await client.startMic(); // a press, not the voice gate
+    chunk(pcm("F"));
+    expect(appended(ws)).toEqual(["C", "D", "E", "F"].map((t) => pcm(t)));
     await client.stopMic();
     expect(micLog).toEqual(["start", "start"]); // never stopped while monitoring
-    chunk("G"); // back to monitoring
-    expect(ws.sent.filter((e) => e.type === "input_audio_buffer.append").map((e) => e.audio)).toEqual(["C", "D", "E", "F"]);
+    chunk(pcm("G")); // back to monitoring
+    expect(appended(ws)).toEqual(["C", "D", "E", "F"].map((t) => pcm(t)));
     await client.setMonitor(false);
     expect(micLog.at(-1)).toBe("stop");
+  });
+
+  it("#114: a voice-started turn sends the rolling pre-roll (PREROLL_MS) first, then live audio, in order", async () => {
+    const { client, ws, chunk } = await openClient();
+    await client.setMonitor(true);
+    const before = Array.from({ length: 30 }, (_, i) => pcm(`b${i}`)); // 3 s of 100 ms chunks while listening
+    before.forEach(chunk);
+    expect(appended(ws)).toHaveLength(0);
+    await client.startMic(true);
+    chunk(pcm("live1"));
+    chunk(pcm("live2"));
+    const n = Math.ceil(PREROLL_MS / 100);
+    expect(PREROLL_MS).toBeGreaterThanOrEqual(1000);
+    expect(PREROLL_MS).toBeLessThanOrEqual(1500);
+    expect(appended(ws)).toEqual([...before.slice(-n), pcm("live1"), pcm("live2")]);
+    // the pre-roll is used once: the next turn starts from what came after
+    await client.stopMic();
+    chunk(pcm("c1"));
+    await client.startMic(true);
+    expect(appended(ws).slice(-1)).toEqual([pcm("c1")]);
+  });
+
+  it("a voice-started turn over the character (barge-in) keeps only the short BARGE_PREROLL_MS: less echo is transcribed", async () => {
+    const { client, ws, chunk } = await openClient();
+    await client.setMonitor(true);
+    const before = Array.from({ length: 30 }, (_, i) => pcm(`b${i}`));
+    before.forEach(chunk);
+    await client.startMic(true, true);
+    expect(BARGE_PREROLL_MS).toBeGreaterThanOrEqual(400);
+    expect(BARGE_PREROLL_MS).toBeLessThanOrEqual(500);
+    expect(appended(ws)).toEqual(before.slice(-Math.ceil(BARGE_PREROLL_MS / 100)));
+  });
+
+  it("#114: push-to-talk without hands-free has no pre-roll: audio before the press is never sent", async () => {
+    const { client, ws, chunk } = await openClient();
+    chunk(pcm("x1"));
+    chunk(pcm("x2"));
+    await client.startMic();
+    chunk(pcm("p1"));
+    await client.stopMic();
+    chunk(pcm("x3"));
+    client.commit();
+    expect(appended(ws)).toEqual([pcm("p1")]);
+    expect(ws.types().at(-1)).toBe("input_audio_buffer.commit");
+  });
+
+  it("#114: hands-free barge-in over the character keeps the first words: pre-roll and the cancel-wait audio go out after the ack, in order, never cleared", async () => {
+    let now = 0;
+    const { client, ws, chunk } = await openClient();
+    const reader: ReaderControl = { isPlaying: () => false, currentIndex: () => 0, currentPara: () => 0, pause() {}, play() {}, resumeAt() {} };
+    const talk = new TalkController({ session: client, reader, retrieve: async () => ({ instructions: "INSTR" }), voiceFor: () => "marcus", now: () => now, tapMs: 300 });
+    await talk.setHandsFree(true);
+    // a first question by the mic button, then the character answers
+    await talk.pttDown();
+    now += 600;
+    const up = talk.pttUp();
+    for (let i = 0; i < 5; i++) await flush();
+    ws.recv({ type: "conversation.item.input_audio_transcription.completed", transcript: "Who is Alice?" });
+    for (let i = 0; i < 5; i++) await flush();
+    await up;
+    ws.recv({ type: "response.created", response: { id: "r1" } });
+    ws.recv({ type: "response.output_item.added", item: { id: "item_a", type: "message" } });
+    ws.recv({ type: "response.output_audio.delta", item_id: "item_a", delta: "AAAA" });
+    expect(talk.state).toBe("answering");
+    const mark = ws.sent.length;
+
+    // the mic hears the character's echo for a second, then the reader: a soft first syllable, a dip, then clear speech
+    const frame = (rms: number, tag: string) => { now += 100; talk.noteLevel(rms); chunk(pcm(tag)); }; // MicCapture order: level, then chunk
+    for (let i = 0; i < 10; i++) frame(0.06, `e${i}`);
+    const speech: [number, string][] = [[0.2, "s0"], [0.05, "s1"], [0.2, "s2"], [0.2, "s3"], [0.2, "s4"], [0.2, "s5"], [0.2, "s6"], [0.2, "s7"], [0.2, "s8"], [0.2, "s9"]];
+    let startedAt = -1;
+    speech.forEach(([rms, tag], i) => {
+      frame(rms, tag);
+      if (startedAt < 0 && talk.state === "listening") startedAt = i;
+    });
+    expect(startedAt).toBeGreaterThanOrEqual(4); // the gate opened 400+ ms into the speech
+    await flush();
+    const wire = ws.sent.slice(mark);
+    expect(wire.map((e) => e.type)).toContain("response.cancel");
+    expect(wire.filter((e) => e.type === "input_audio_buffer.append")).toHaveLength(0); // held until the ack
+
+    ws.recv({ type: "response.done", response: { id: "r1", status: "cancelled", output: [] } });
+    for (let i = 0; i < 3; i++) await flush();
+    const after = ws.sent.slice(mark);
+    const cancelAt = after.findIndex((e) => e.type === "response.cancel");
+    const audio = after.filter((e) => e.type === "input_audio_buffer.append").map((e) => e.audio as string);
+    expect(after.findIndex((e) => e.type === "input_audio_buffer.append")).toBeGreaterThan(cancelAt);
+    // over the character the pre-roll is short (BARGE_PREROLL_MS): every word from where the sustained speech began
+    // (s2, after the dip), in order; the soft first syllable before the dip may go, and no echo before it is sent
+    const words = speech.slice(2).map(([, t]) => pcm(t));
+    expect(audio.slice(-words.length)).toEqual(words);
+    const all = [...Array.from({ length: 10 }, (_, i) => pcm(`e${i}`)), ...speech.map(([, t]) => pcm(t))];
+    expect(all.slice(-audio.length)).toEqual(audio); // contiguous, in order
+    expect(audio.filter((a) => all.slice(0, 10).includes(a))).toEqual([]); // none of the character's echo
+    expect(after.map((e) => e.type)).not.toContain("input_audio_buffer.clear");
+
+    frame(0.2, "s10"); // live audio after the ack goes straight out
+    expect(ws.sent.at(-1)).toEqual({ type: "input_audio_buffer.append", audio: pcm("s10") });
   });
 });
 
@@ -173,7 +279,7 @@ class FakeSession implements TalkSession {
   monitor: boolean | null = null;
   async ensureOpen(voice: string) { this.calls.push(`open:${voice}`); }
   async setVoice() {}
-  async startMic() { this.calls.push("mic-start"); }
+  async startMic(voiceStarted = false, overSpeech = false) { this.calls.push(voiceStarted ? (overSpeech ? "mic-start:barge" : "mic-start:voice") : "mic-start"); }
   async stopMic(discard = false) { this.calls.push(discard ? "mic-discard" : "mic-stop"); }
   commit() { this.calls.push("commit"); }
   respond(instructions: string) { this.calls.push(`respond:${instructions}`); }
@@ -293,6 +399,7 @@ describe("barge-in in the loop (TalkController)", () => {
     expect(h.interrupted()).toBe(1);
     await tick(0);
     expect(h.session.calls.filter((c) => c === "interrupt")).toHaveLength(1);
+    expect(h.session.calls.at(-1)).toBe("mic-start:barge"); // #114: a voice-started turn over the character: a short pre-roll
     // then goes quiet
     for (let i = 0; i < 40; i++) { h.talk.noteLevel(0.01); await tick(20); }
     expect(h.talk.state).toBe("transcribing");
@@ -331,6 +438,8 @@ describe("barge-in in the loop (TalkController)", () => {
     await tick(300);
     for (let i = 0; i < 10; i++) { h.talk.noteLevel(0.06); await tick(20); } // the same level once the room is quiet: the reader
     expect(h.talk.state).toBe("listening");
+    await tick(0);
+    expect(h.session.calls.at(-1)).toBe("mic-start:voice"); // the character is quiet: the full pre-roll
   });
 
   it("hands-free: pressing the mic while the character speaks still interrupts, and silence then ends that turn", async () => {

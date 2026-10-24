@@ -123,7 +123,11 @@ simple local cast with a degraded message that says which. Typed answers: `/api/
 locally and posts only the eligible passages, the persona and the question to `POST /api/public/answer`, which builds the
 same prompt as `personas.build_answer_prompt` and streams Gemini's sentences back. `/api/health` reports
 `answer_backend: "gemini"` only while the service answers its health check, so a closed service means Realtime answers.
-Caps, rate limits and the deploy are in DEPLOY.md.
+The other Gemini features go through it too on such a clone: question translation for search (`multilingual.translate`,
+inside the same 4 s limit, else the original question is searched), novel/textbook detection and Add book title/author
+(`public_client.RemoteLLM` in `detect_kind` / `describe`, else the heuristic / file metadata), the face box for the crop
+(`face_detect.detect`, else a centred square) and textbook equation readings (`public_client.transcribe_equations`,
+else the pictures stay). Spoiler filtering never leaves the clone. Caps, rate limits and the deploy are in DEPLOY.md.
 
 ## Retrieval sizes
 
