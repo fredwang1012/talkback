@@ -164,7 +164,7 @@ class GeminiProvider:
             from google import genai
             client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
         self.client = client
-        self.model = model or settings.gemini_model
+        self.model = model or settings.enrich_gemini_model or settings.gemini_model
         self._sleep = sleep
         self._pacer = pacer
 

@@ -464,3 +464,13 @@ def test_settle_says_ready_when_the_index_is_already_rebuilt(monkeypatch):
                                                                   "index": {"state": "done"}}})
     main._settle_index_only_failure("u-x-00000000", SimpleNamespace(characters=[1], summaries=[1]))
     assert calls == [pipeline.READY]
+
+
+def test_book_processing_can_use_its_own_gemini_model(monkeypatch):
+    from app.config import settings
+    from app.enrich.llm import GeminiProvider
+    monkeypatch.setattr(settings, "gemini_model", "gemini-2.5-flash")
+    monkeypatch.setattr(settings, "enrich_gemini_model", "gemini-2.5-flash-lite")
+    assert GeminiProvider(client=object()).model == "gemini-2.5-flash-lite"
+    monkeypatch.setattr(settings, "enrich_gemini_model", "")
+    assert GeminiProvider(client=object()).model == "gemini-2.5-flash"   # default: same model as answers

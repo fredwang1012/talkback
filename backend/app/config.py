@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Who writes talk-mode answers. None = follow retrieval_backend (vertex -> gemini, local -> realtime).
     answer_backend: Literal["gemini", "realtime"] | None = None
     gemini_model: str = "gemini-2.5-flash"
+    # book processing (cast, dialogue, recap notes, equations, series checks); empty = gemini_model. Flash-Lite runs on a
+    # separate, less congested Vertex pool, so uploads are not throttled by Talk answers or busy shared capacity.
+    enrich_gemini_model: str = ""
     # Web search (Grounding with Google Search) on Gemini answers: textbooks and novels with spoilers on only (websearch.py).
     web_search: bool = True
     grounded_daily_cap: int = 100        # grounded answers per UTC day on this app, persisted (data/usage)
