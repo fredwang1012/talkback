@@ -275,7 +275,7 @@ def _drop_contents(blocks: list[list[tuple]]) -> list[list[tuple]]:
 
 
 _BARE_INDEX = re.compile(r"^\d{1,3}$")
-_NUMBERED = re.compile(r"^\d{1,3}\s+\S")
+_CODE_NUMBERED = re.compile(r"^\d{1,3}\s+\S")  # "12  x <- 0"; not "1. If ..." (a numbered prose list)
 _CODE_SYMBOLS = re.compile("[←⇐≠]")  # assignment arrows and "not equal"; prose also uses angle brackets, <= and ->
 _CODE_WORDS = re.compile(r"\b(?:if|then|else|elseif|while|do|for each|return|NIL|null|until|repeat|end)\b")
 _CODE_TITLE = re.compile(r"^[A-Z][A-Z0-9_-]{3,}\(.*\)$")  # "INTERSECTWITHSKIPS(p1, p2)"
@@ -296,7 +296,7 @@ def _code_score(blk: list[tuple]) -> bool:
         return False
     arrows = sum(1 for t in others if _CODE_SYMBOLS.search(t))
     words = sum(1 for t in others if _CODE_SYMBOLS.search(t) or _CODE_WORDS.search(t))
-    numbered = numbers + sum(1 for t in others if _NUMBERED.match(t))
+    numbered = numbers + sum(1 for t in others if _CODE_NUMBERED.match(t))
     if arrows >= 2 and arrows >= 0.4 * len(others):
         return True
     return numbered >= 0.4 * len(lines) and numbered >= 3 and words >= 0.6 * len(others) and words >= 2
@@ -636,13 +636,13 @@ def _cap_paragraphs(sections: list[Section], paragraphs: list[Paragraph]) -> lis
     return out
 
 
-_NUMBERED = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){0,5})(?![\d.]*\w)")
+_SECTION_NUMBER = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){0,5})(?![\d.]*\w)")
 MAX_LEVEL = 4
 
 
 def section_level(title: str) -> int:
     """Nesting depth from the heading's number: "2" or "Chapter 2" is 1, "2.1" is 2, "2.1.1" is 3 (capped)."""
-    m = _NUMBERED.match(title.strip())
+    m = _SECTION_NUMBER.match(title.strip())
     return min(m.group(1).count(".") + 1, MAX_LEVEL) if m else 1
 
 

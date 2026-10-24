@@ -61,6 +61,17 @@ def test_prose_with_a_few_keywords_is_not_code():
     assert all(p.kind is None for p in paras)
 
 
+def test_numbered_prose_list_is_not_code():
+    """A numbered exercise/step list ("1. If ... then ...") is prose, even with code-like keywords on every line."""
+    def ln(t, y):
+        return (t, 72.0, y, 400.0, y + 10, 10.0, False, False)
+    rows = ["1. If the index is too large, then split it.", "2. For each term, do a lookup in the dictionary.",
+            "3. Return the list of postings until done."]
+    blk = [ln(t, 100 + 12 * i) for i, t in enumerate(rows)]
+    assert not ingest_upload._code_score(blk)
+    assert ingest_upload.section_level("2.1 Heading") == 2   # the section-number regex is separate and still works
+
+
 def test_mark_code_detects_arrows_and_numbered_lines_in_tuples():
     def ln(t, y):
         return (t, 72.0, y, 200.0, y + 10, 10.0, False, False)
