@@ -136,7 +136,7 @@ DEMO_HEAD = """# Talkback demo
 ## 90-second script
 
 1. (0:00) Open the library. One line: "Talkback reads books aloud and answers questions by voice, without spoilers."
-2. (0:10) Pick Book 3, Prisoner of Azkaban. Jump to a chapter listed for it below.
+2. (0:10) Pick Alice's Adventures in Wonderland (ships with the repo; the Harry Potter books need your own PDF). Jump to a chapter listed for it below.
 3. (0:20) Press play and let a few sentences read aloud; point out the sentence highlighting following the voice.
 4. (0:35) Push-to-talk one "already read" question from the list below. The answer comes from the text so far.
 5. (0:50) Push-to-talk one "future" question. The app declines rather than spoil the story.
@@ -182,6 +182,11 @@ async def main() -> None:
         positions = await asyncio.gather(*(one(book, p) for p in pick_positions(book)))
         out.append({"book_id": book.id, "title": book.title, "positions": list(positions)})
     (llm.ROOT / "data/demo").mkdir(parents=True, exist_ok=True)
+    existing = llm.ROOT / "data/demo/questions.json"
+    if existing.exists():  # keep hand-written entries (e.g. the shipped Alice sample); only hp* books are generated
+        generated = {e["book_id"] for e in out}
+        out = [e for e in json.loads(existing.read_text(encoding="utf-8"))
+               if not e["book_id"].startswith("hp") and e["book_id"] not in generated] + out
     (llm.ROOT / "data/demo/questions.json").write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8")
     (llm.ROOT / "docs/DEMO.md").write_text(build_docs(out), encoding="utf-8")
     print("wrote data/demo/questions.json and docs/DEMO.md")
