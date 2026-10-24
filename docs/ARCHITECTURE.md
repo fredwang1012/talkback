@@ -163,6 +163,13 @@ Caps, rate limits and the deploy are in DEPLOY.md.
 
 - Keys never reach the browser. On a public deployment, `TALKBACK_ACCESS_TOKEN` gates every endpoint that spends
   money and the full-text book endpoint (copyrighted text).
-- Per-IP rate limits on answers, retrieval, TTS cache misses, lip-sync renders, uploads and clones.
+- Per-account separation on the live deploy (`PER_USER=true`, `backend/app/users.py`): the IAP JWT is verified on every
+  request (cached briefly) and the resulting namespace decides where voices, faces and cast settings are read and written
+  (`data/users/<sha256(email)[:16]>/`; `public` when there is no valid JWT). A request-scoped context variable carries the
+  identity, so `voices.py`, `faces.py` and `cast.py` keep their signatures and fall back to the shared `data/` paths when
+  `PER_USER` is off. Every book route returns 404 for another account's upload (`u-*` books carry an `owner.txt`) and for
+  `OWNER_ONLY_BOOKS` ids unless the caller is in `OWNER_EMAILS`; `/portraits` is a `StaticFiles` subclass that serves
+  `faces/` from the caller's own folder and hides the shared `faces/` and `voices/` folders. See docs/DEPLOY.md.
+- Per-IP (per-account when signed in) rate limits on answers, retrieval, TTS cache misses, lip-sync renders, uploads and clones.
 - The cloned voice and face (`data/voices.json`, `data/faces.json`, `data/portraits/`) and the books
   (`data/books/hp*`) are gitignored. The deploy script syncs `data/books` to the private bucket but never portraits.
