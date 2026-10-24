@@ -210,7 +210,7 @@ export class TalkController {
   }
 
   private afterAnswer(): void {
-    if (this.autoResume && this.resumeIndex !== null) {
+    if (this.autoResume && this.resumeIndex !== null && this.wasPlayingBeforePress) {
       const turn = this.turn;
       this.set("resuming");
       this.resumeTimer = setTimeout(() => {
@@ -223,12 +223,18 @@ export class TalkController {
     }
   }
 
+  /** Back to where we were: resume reading only if the story was playing when the question started. */
   private backToReading(): void {
     const index = this.resumeIndex;
+    const wasPlaying = this.wasPlayingBeforePress;
     this.resumeIndex = null;
     this.clearResumeTimer();
-    this.set("reading");
-    if (index !== null) this.d.reader.resumeAt(index);
+    if (index !== null && wasPlaying) {
+      this.set("reading");
+      this.d.reader.resumeAt(index);
+    } else {
+      this.set(index !== null ? "talk-idle" : "reading"); // Talk mode without reading: stay idle, never start playing
+    }
   }
 
   private fail(turn: number, e: unknown, message?: string): void {

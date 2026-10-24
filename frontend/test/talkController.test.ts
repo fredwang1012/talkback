@@ -200,6 +200,24 @@ describe("TalkController core loop", () => {
     expect(h.reader.log).toEqual(["pause"]);
   });
 
+  it("when the reader was paused (Talk mode), an answer ends in talk-idle and never starts playback", async () => {
+    const h = setup({ playing: false });
+    await ask(h);
+    await finishAnswer(h);
+    await tick(5000);
+    expect(h.talk.state).toBe("talk-idle");
+    expect(h.reader.log).toEqual([]); // nothing was playing, so nothing is paused or resumed
+    expect(h.reader.playing).toBe(false);
+  });
+
+  it("a failed lookup while the reader was paused also stays idle instead of starting playback", async () => {
+    const h = setup({ playing: false, retrieve: () => Promise.reject(new Error("offline")) });
+    await ask(h);
+    expect(h.toasts[0]).toContain("offline");
+    expect(h.talk.state).toBe("talk-idle");
+    expect(h.reader.playing).toBe(false);
+  });
+
   it("surfaces a real session error and goes back to reading", async () => {
     const h = setup();
     await ask(h);

@@ -40,3 +40,8 @@ Rule for now: do **not** use the Anthropic key (user instruction, 2026-10-15). B
 - [x] `prerender_tts.py` written (dry run verified: 365 chunks, ~$0.69); run needs the Boson key.
 - [x] Access code is visitor-entered (sessionStorage), never baked into the bundle (security review follow-up).
 - [x] Debug drawer + cost guard in the UI (backtick).
+
+## Brief audit (2026-10-15, checked against docs/BRIEF.md and the code)
+Not built, no key needed: textbook mode in cast.py + textbook headings in ingest.py; language indicator (M7); `T` key; portrait rendering in Stage and Cast panel; Stage "thinking shimmer" and speaking waveform; lock icon on unmet characters; frontend request timeouts (only the retrieve call has one); retry/backoff on close code 1013 (currently a toast); `eval_spoilers.py`; `prerender_avatar.py`, `/api/avatar/{chunk_id}`, boson.py video calls; hands-free mode (stretch); mobile/dark-mode/browser-mic checks; `cover` in /api/books; clone duration check only works for WAV (browser recordings rely on Boson's own 400).
+Deviations kept on purpose: server starts without BOSON_API_KEY (error surfaces at call time); BM25 rebuilt at load instead of a pickle.
+Fixed during audit: after an answer, Talk mode with a paused reader stays idle instead of starting playback.
