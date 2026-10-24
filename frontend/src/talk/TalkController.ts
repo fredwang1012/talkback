@@ -8,16 +8,33 @@ import { micErrorMessage } from "../audio/mediaErrors";
 
 import type { SentenceSpeaker } from "./sentencePlayer";
 import type { TimingEvent } from "./speechGate";
-import { HANDS_FREE_OVER_SPEECH, createVoiceGate } from "./handsFree";
+import { HANDS_FREE, HANDS_FREE_OVER_SPEECH, createEchoFloor, createVoiceGate } from "./handsFree";
+import { PRESS_PREROLL_MS } from "./TalkClient";
 import { transcriptionHint } from "./language";
 import { QUIZ_QUESTIONS, endsQuiz, parseIntent, quizGeminiQuery, quizTurnInstructions, type Quiz, type ToolOutcome, type ToolRunner } from "./tools";
 
 /**
- * #135: how long to wait for the transcript of a committed turn before saying "I didn't catch that". Boson never sends
- * transcription `.failed`; live the transcript comes 0.15-0.4 s after the commit, or not at all (e.g. a wrong
- * language hint), so a missing one is known well before the old 6 s window.
+ * #135: how long to wait for the transcript of a server turn before saying "I didn't catch that". Boson never sends
+ * transcription `.failed`; live the transcript of a 2 s question came 0.15-0.4 s after the commit, or not at all (e.g.
+ * a wrong language hint). The first 1.5 s was too short for longer turns in real use (the message showed, then the
+ * transcript arrived), so the wait is 2.5 s plus a quarter of the turn's length, at most 5 s.
  */
-export const FAST_FAIL_MS = 1500;
+export const FAIL_WAIT_MS = 2500;
+export function failWaitMs(turnMs: number): number {
+  return Math.min(5000, FAIL_WAIT_MS + Math.max(0, turnMs) / 4);
+}
+/** A server turn with less speech than this (by the local level) is a click, a breath or a noise: it never says
+ * "I didn't catch that", it is dropped quietly (and removed from the conversation). */
+export const MIN_TURN_MS = 400;
+/**
+ * Server turns: the mic is held (nothing sent) while the character speaks and this long after its playback ends, so the
+ * server never hears our own voice (#103 did the same for the local gate). A barge-in the local gate hears releases it.
+ */
+export const MIC_HOLD_TAIL_MS = 600;
+/** A barge-in the local gate heard but the server never confirmed (no speech_started) ends quietly after this long. */
+export const BARGE_CONFIRM_MS = 2500;
+/** This many real server turns in a row without a transcript: hands-free falls back to the local voice gate. */
+export const EMPTY_TURNS_FALLBACK = 2;
 /**
  * #135: after the server ends a turn, speech that starts again within this window continues the same question (live,
  * the server VAD split one spoken question into two committed turns). The transcript takes about this long anyway.
@@ -78,6 +95,15 @@ export interface TalkSession {
   setServerTurns?(on: boolean): void;
   /** #135: remove a turn from the server's conversation (it was the character's echo). Optional. */
   deleteItem?(itemId: string): void;
+  /**
+   * Empty the server's input audio buffer. Live (probe 2026-10-24): with `create_response: false` the server never
+   * clears it itself; every committed turn reuses one item id and is transcribed with all the audio since the last
+   * clear, so a hands-free turn must end with this or the next question carries every earlier one. Optional.
+   */
+  clearInput?(): void;
+  /** Server turns: hold the mic (nothing sent) while our own playback could be heard; release it with a pre-roll
+   * (ms of the held audio sent first, a barge-in) or without (the held audio is dropped). Optional. */
+  setMicHold?(hold: boolean, preRollMs?: number): void;
   /** #135: the transcription language hint (ISO 639-1), or null. Optional. */
   setLanguageHint?(code: string | null): void;
   /** Whether the socket is open now. Optional. */
@@ -140,6 +166,20 @@ export interface TalkDeps {
   tapMs?: number;
 }
 
+/**
+ * The transcripts of one spoken question so far, with the latest one. Live, a server-detected turn is transcribed with
+ * the whole input buffer (everything since our last clear), so when the server splits a question in two, the second
+ * transcript repeats the first: it then replaces what was heard; a transcript of only the new words is appended.
+ */
+export function mergeTranscript(sofar: string[], text: string): string[] {
+  const t = text.trim();
+  if (!t) return sofar;
+  const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const prev = norm(sofar.join(" "));
+  if (prev && norm(t).startsWith(prev)) return [t];
+  return [...sofar, t];
+}
+
 export class TalkController {
   private d: Required<Pick<TalkDeps, "now" | "autoResumeDelayMs" | "transcriptTimeoutMs" | "retrieveTimeoutMs" | "tapMs">> & TalkDeps;
   private _state: TalkState = "reading";
@@ -169,11 +209,21 @@ export class TalkController {
   private quietSince = Number.NEGATIVE_INFINITY; // when the character last stopped speaking (hands-free echo tail, #103)
   // #135 hands-free on Boson's turn detection
   private serverMode = false;
-  private strongGate = createVoiceGate(HANDS_FREE_OVER_SPEECH); // the echo guard: clear speech over the character
-  /** The question the server is hearing now: its transcripts so far, whether speech goes on, when it last stopped. */
-  private srv: { transcripts: string[]; speaking: boolean; heardSpeech: boolean; stoppedAt: number; timer: ReturnType<typeof setTimeout> | null } | null = null;
-  private pendingEcho: string | null = null; // a speech_started over the character, not yet confirmed by the local level
-  private echoItems = new Set<string>(); // server turns that were judged echo: deleted on commit, transcripts ignored
+  private strongGate = createVoiceGate(HANDS_FREE_OVER_SPEECH); // the barge-in gate: clear speech over the character
+  private echo = createEchoFloor(); // the character's own voice as the mic hears it: barge-in must be well over it
+  /** The question the server is hearing now: its transcripts so far, whether speech goes on, when it last stopped,
+   * how much speech the local level heard in it, and its server items (removed if the turn is dropped). */
+  private srv: {
+    transcripts: string[]; speaking: boolean; heardSpeech: boolean; stoppedAt: number; startedAt: number;
+    voicedMs: number; items: string[]; pressed: boolean; timer: ReturnType<typeof setTimeout> | null;
+  } | null = null;
+  private micHeld = false; // server turns: the mic is held (the character speaks, or its tail)
+  private bargeOpen = false; // the reader cut in (or pressed): the mic stays open until the character speaks again
+  private holdTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastLevelAt: number | null = null;
+  private voiced: { t: number; ms: number }[] = []; // the reader's speech by the local level, last 2 s (not while held)
+  private emptyTurns = 0; // real server turns in a row without a transcript
+  private serverGaveUp = false; // fell back to the local gate after EMPTY_TURNS_FALLBACK of them
   private recentQuestions: string[] = []; // for the transcription language hint
   private hint: string | null = null;
   private off: () => void;
@@ -221,9 +271,33 @@ export class TalkController {
   private setSpeaking(v: boolean): void {
     if (v === this.speaking) return;
     this.speaking = v;
+    if (v) this.bargeOpen = false; // the character speaks (again): hold the mic again
     if (!v) this.quietSince = this.d.now();
+    this.updateMicHold();
     this.d.onSpeaking?.(v);
   }
+
+  /**
+   * Server turns: the server must never hear the character (user report: it heard itself, cut itself off and made
+   * questions of its own words). The mic is held while it speaks and MIC_HOLD_TAIL_MS after, unless the reader cut in.
+   */
+  private updateMicHold(): void {
+    if (this.holdTimer) { clearTimeout(this.holdTimer); this.holdTimer = null; }
+    const now = this.d.now();
+    const tail = this.quietSince + TalkController.MIC_HOLD_TAIL - now;
+    const want = this.handsFree && this.serverMode && !this.bargeOpen && (this.speaking || tail > 0);
+    if (want && !this.speaking) this.holdTimer = setTimeout(() => { this.holdTimer = null; this.updateMicHold(); }, tail);
+    this.applyHold(want);
+  }
+
+  private applyHold(on: boolean, preRollMs = 0): void {
+    if (on === this.micHeld) return;
+    this.micHeld = on;
+    if (on) this.strongGate.reset();
+    this.d.session.setMicHold?.(on, preRollMs);
+  }
+
+  private static readonly MIC_HOLD_TAIL = MIC_HOLD_TAIL_MS;
 
   /** The sentence audio started or stopped coming out of the speakers (drives the face and the waveform). */
   notePlaying(on: boolean): void { this.setSpeaking(on && this._state === "answering"); }
@@ -256,6 +330,8 @@ export class TalkController {
 
   dispose(): void {
     this.clearSrv();
+    if (this.holdTimer) clearTimeout(this.holdTimer);
+    this.holdTimer = null;
     this.endQuiz();
     this.off();
     this.clearResumeTimer();
@@ -282,12 +358,17 @@ export class TalkController {
     this.handsFree = on;
     this.gate.reset();
     this.strongGate.reset();
-    this.pendingEcho = null;
-    const canServer = !!this.d.serverTurns && !!this.d.session.setServerTurns;
+    this.echo.reset();
+    this.bargeOpen = false;
+    this.emptyTurns = 0;
+    if (on) this.serverGaveUp = false; // a fresh hands-free session gives Boson's turn detection another chance
+    if (!on) this.applyHold(false);
+    const canServer = !!this.d.serverTurns && !!this.d.session.setServerTurns && !this.serverGaveUp;
     this.serverMode = on && canServer;
     if (canServer) this.d.session.setServerTurns?.(this.serverMode);
     try { await this.d.session.setMonitor?.(on); } catch (e) {
       this.handsFree = false;
+      this.applyHold(false);
       if (this.serverMode) { this.serverMode = false; this.d.session.setServerTurns?.(false); }
       this.d.onToast?.(micErrorMessage(e));
       return;
@@ -306,21 +387,29 @@ export class TalkController {
   noteLevel(rms: number): void {
     if (!this.handsFree) return;
     const now = this.d.now();
-    if (this.serverMode) { // #135: the server decides the turns; the level is the echo guard (and wakes a closed session)
-      this.strongGate.feed(rms, now);
-      const idle = this.gate.feed(rms, now);
-      if (this.pendingEcho !== null && this.strongGate.speaking) {
-        this.pendingEcho = null; // confirmed: the reader is talking over the character
-        if (["reading", "talk-idle", "answering", "resuming"].includes(this._state)) void this.beginTurn(true, true, true);
+    const dt = this.lastLevelAt === null ? 0 : Math.min(200, Math.max(0, now - this.lastLevelAt));
+    this.lastLevelAt = now;
+    if (this.speaking) this.echo.feed(rms, now); // what the mic hears of the character: barge-in must be well over it
+    if (this.serverMode) { // #135: the server decides the turns; the level detects barge-in (and wakes a closed session)
+      if (this.micHeld) { // the character speaks (or its tail): the server hears nothing; clear speech over it cuts in
+        const ev = this.strongGate.feed(rms, now, this.echo.profile());
+        if (ev === "start" && ["reading", "talk-idle", "answering", "resuming"].includes(this._state)) this.bargeIn();
+        return;
       }
-      else if (idle === "start" && this.d.session.isOpen === false && ["reading", "talk-idle", "resuming"].includes(this._state)) {
+      if (rms >= HANDS_FREE.threshold) { // the reader's speech, for telling a real turn from a click or a breath
+        this.voiced.push({ t: now, ms: dt });
+        if (this.srv) this.srv.voicedMs += dt;
+      }
+      while (this.voiced.length && now - this.voiced[0].t > 2000) this.voiced.shift();
+      const idle = this.gate.feed(rms, now);
+      if (idle === "start" && this.d.session.isOpen === false && ["reading", "talk-idle", "resuming"].includes(this._state)) {
         // the session closed (idle timeout): reopen; the mic audio held meanwhile goes first, so the server hears the question
         void this.d.session.ensureOpen(this.d.voiceFor(this.speakerId)).catch(() => {});
       }
       return;
     }
     const overSpeech = this._state !== "listening" && (this.speaking || now - this.quietSince < TalkController.ECHO_TAIL_MS);
-    const ev = this.gate.feed(rms, now, overSpeech ? HANDS_FREE_OVER_SPEECH : undefined);
+    const ev = this.gate.feed(rms, now, overSpeech ? this.echo.profile() : undefined);
     if (ev === "start" && ["reading", "talk-idle", "answering", "resuming"].includes(this._state)) void this.beginTurn(true, overSpeech);
     else if (ev === "stop" && this._state === "listening") { this.handsFreeTurn = true; void this.pttUp(); } // a pressed turn ends on silence too, and is never a tap
   }
@@ -329,12 +418,35 @@ export class TalkController {
 
   pttDown(): Promise<void> { return this.beginTurn(false); }
 
-  /** `serverStarted` (#135): Boson's VAD opened the turn; the mic is already streaming to it. */
-  private async beginTurn(handsFree: boolean, overSpeech = false, serverStarted = false): Promise<void> {
+  /** Server turns: the local gate heard the reader over the character. Cut it off now, and let the server hear them
+   * (the held audio's last BARGE_PREROLL_MS first); the server's speech_started then continues this turn. */
+  private bargeIn(): void {
+    void this.beginTurn(true, true, true, true);
+  }
+
+  /** Speech the local level heard in the last `ms` (before the server's speech_started arrived). */
+  private recentVoiced(ms: number): number {
+    const now = this.d.now();
+    return this.voiced.filter((v) => now - v.t <= ms).reduce((a, v) => a + v.ms, 0);
+  }
+
+  /**
+   * `serverStarted` (#135): Boson's VAD opened the turn; the mic is already streaming to it. `awaitServer`: a barge-in
+   * the local gate heard; the server has not reported speech yet (if it never does, the turn ends quietly).
+   */
+  private async beginTurn(handsFree: boolean, overSpeech = false, serverStarted = false, awaitServer = false, itemId?: string): Promise<void> {
     this.handsFreeTurn = handsFree;
     this.clearSrv();
-    this.pendingEcho = null;
-    if (this.serverMode) this.srv = { transcripts: [], speaking: serverStarted, heardSpeech: serverStarted, stoppedAt: 0, timer: null };
+    if (this.serverMode) {
+      this.bargeOpen = true; // a turn is starting: the server must hear it, whatever is playing
+      // a barge-in: the speech began about minSpeechMs before the gate opened; keep that much, little echo comes along
+      this.applyHold(false, awaitServer ? HANDS_FREE_OVER_SPEECH.minSpeechMs + 50 : serverStarted ? 0 : PRESS_PREROLL_MS);
+      const heard = serverStarted && !awaitServer;
+      this.srv = {
+        transcripts: [], speaking: heard, heardSpeech: heard, stoppedAt: 0, startedAt: this.d.now(),
+        voicedMs: awaitServer ? HANDS_FREE_OVER_SPEECH.minSpeechMs : this.recentVoiced(1500), items: itemId ? [itemId] : [], pressed: !handsFree, timer: null,
+      };
+    }
     this.clearResumeTimer(); // pressing during the 1.5 s window starts a follow-up question
     const turn = ++this.turn;
     this.pressedAt = this.d.now();
@@ -353,6 +465,7 @@ export class TalkController {
     if (this.d.reader.isPlaying()) this.d.reader.pause();
     this.d.onCaption?.("", false);
     this.set("listening");
+    if (awaitServer) this.armSrv(BARGE_CONFIRM_MS);
 
     // Cancel, connect and capture all at once (#100, #99): the mic starts now so the first words over the old answer
     // are kept; the session holds that audio and the commit until the cancel is acknowledged and the socket is open.
@@ -393,8 +506,9 @@ export class TalkController {
       if (turn !== this.turn || this.srv !== srv) return;
       this.d.session.commit();
       srv.stoppedAt = this.d.now();
+      srv.voicedMs = Math.max(srv.voicedMs, held); // a pressed turn is the reader's on purpose: always a real one
       this.set("transcribing");
-      this.armSrv(FAST_FAIL_MS);
+      this.armSrv(failWaitMs(held));
       return;
     }
     this.set("transcribing");
@@ -405,7 +519,7 @@ export class TalkController {
     const t0 = this.d.now();
     this.d.session.commit();
     // push-to-talk and the local gate keep the full window: a long question can take its time to transcribe (#141);
-    // FAST_FAIL_MS is for server turns only (armSrv)
+    // the shorter failWaitMs is for server turns only (armSrv)
     const transcript = await this.waitFor((e) => e.type === "transcript", this.d.transcriptTimeoutMs);
     if (turn !== this.turn) return;
     const query = transcript && transcript.type === "transcript" ? transcript.text.trim() : "";
@@ -417,17 +531,40 @@ export class TalkController {
     await this.answerQuery(turn, query);
   }
 
-  /** Nothing usable was heard: say so now, and drop a language hint that may be the cause (#135). */
-  private noTranscript(): void {
-    this.d.onToast?.("I didn't catch that. Try again.");
+  /**
+   * Nothing usable was heard: say so now, and drop a language hint that may be the cause (#135). `serverTurn`: a real
+   * hands-free turn on Boson's turn detection; after EMPTY_TURNS_FALLBACK in a row, hands-free falls back to the local gate.
+   */
+  private noTranscript(serverTurn = false): void {
+    const giveUp = serverTurn && ++this.emptyTurns >= EMPTY_TURNS_FALLBACK;
+    this.d.onToast?.(giveUp ? "I didn't catch that. Hands-free now uses the local voice gate." : "I didn't catch that. Try again.");
     this.turn++;
     this.clearSrv();
     this.backToReading();
+    if (giveUp) this.fallBackToLocal();
     if (this.hint !== null) { // live: a wrong hint swallowed the transcript entirely
       this.recentQuestions = [];
       this.hint = null;
       this.d.session.setLanguageHint?.(null);
     }
+  }
+
+  /** Server turns keep failing: the local voice gate runs hands-free from now on (this session). */
+  private fallBackToLocal(): void {
+    this.serverGaveUp = true;
+    this.serverMode = false;
+    this.applyHold(false);
+    this.gate.reset();
+    this.clearSrv();
+    this.d.session.setServerTurns?.(false);
+  }
+
+  /** A server turn that was not a question (a click, a breath, echo): end it without a word and remove its items. */
+  private dropTurn(srv: NonNullable<TalkController["srv"]>): void {
+    for (const id of srv.items) this.d.session.deleteItem?.(id);
+    this.turn++;
+    this.clearSrv();
+    this.backToReading();
   }
 
   /** A question was asked (spoken or typed): update the transcription language hint from the recent ones (#135). */
@@ -453,51 +590,51 @@ export class TalkController {
     srv.timer = setTimeout(() => { if (this.srv === srv) { srv.timer = null; void this.finishSrv(); } }, ms);
   }
 
-  private markEcho(itemId: string | undefined): void {
-    if (!itemId) return;
-    if (this.echoItems.size > 50) this.echoItems.clear();
-    this.echoItems.add(itemId);
-  }
-
-  /** speech_started: a new question, more of the current one, a barge-in, or (over the character) maybe their echo. */
+  /**
+   * speech_started: a new question, more of the current one, or (busy, or the mic held over the character) stray
+   * echo, which is simply ignored: its commit clears the buffer (onCommitted) and its transcript finds no turn. The
+   * item id is no key for that (live, every committed turn carries the same id).
+   */
   private onServerSpeech(itemId: string | undefined): void {
     const srv = this.srv;
     if (srv && (this._state === "listening" || this._state === "transcribing")) { // the same question goes on
       if (srv.timer) { clearTimeout(srv.timer); srv.timer = null; }
       srv.speaking = true;
       srv.heardSpeech = true;
+      if (itemId && !srv.items.includes(itemId)) srv.items.push(itemId);
       if (this._state === "transcribing") this.set("listening");
       return;
     }
-    if (!["reading", "talk-idle", "answering", "resuming"].includes(this._state)) { this.markEcho(itemId); return; } // busy: not a question we answer
-    const overSpeech = this.speaking || this.d.now() - this.quietSince < TalkController.ECHO_TAIL_MS;
-    // Echo guard: over the character (speakers), the server's VAD alone may be hearing them. A barge-in needs clear
-    // local speech too (the strict gate, #103); until then this speech is on probation (noteLevel may confirm it).
-    if (overSpeech && !this.strongGate.speaking) { this.pendingEcho = itemId ?? ""; return; }
-    void this.beginTurn(true, overSpeech, true);
+    if (!["reading", "talk-idle", "answering", "resuming"].includes(this._state)) return; // busy: not a question we answer
+    // The mic is held while the character speaks, so the server cannot hear them now; a speech_started anyway is for
+    // audio sent before the hold (their first syllable) or stray: echo. A barge-in comes from the local gate (bargeIn).
+    if (this.micHeld || (this.speaking && !this.bargeOpen)) return;
+    void this.beginTurn(true, false, true, false, itemId);
   }
 
   private onServerStop(): void {
-    if (this.pendingEcho !== null) { this.markEcho(this.pendingEcho); this.pendingEcho = null; return; } // never confirmed: echo
     const srv = this.srv;
     if (!srv || this._state !== "listening") return;
     srv.speaking = false;
     srv.stoppedAt = this.d.now();
     this.set("transcribing");
-    this.armSrv(FAST_FAIL_MS);
+    this.armSrv(failWaitMs(srv.stoppedAt - srv.startedAt));
   }
 
   private onCommitted(itemId: string | undefined): void {
-    if (itemId && this.echoItems.has(itemId)) { this.d.session.deleteItem?.(itemId); return; }
     const srv = this.srv;
-    if (srv && this._state === "transcribing" && !srv.speaking && srv.transcripts.length === 0) this.armSrv(FAST_FAIL_MS); // the transcript is due shortly
+    if (!srv || !["listening", "transcribing"].includes(this._state)) {
+      // a stray turn (echo, a noise while the character speaks or thinks): its audio must not lead the next question
+      this.d.session.clearInput?.();
+      return;
+    }
+    if (itemId && !srv.items.includes(itemId)) srv.items.push(itemId);
   }
 
-  private onServerTranscript(text: string, itemId: string | undefined): void {
-    if (itemId && this.echoItems.has(itemId)) return;
+  private onServerTranscript(text: string, _itemId: string | undefined): void {
     const srv = this.srv;
     if (!srv || !["listening", "transcribing"].includes(this._state)) return;
-    if (text.trim()) srv.transcripts.push(text.trim());
+    srv.transcripts = mergeTranscript(srv.transcripts, text);
     if (srv.speaking) return; // more of the question is coming
     this.armSrv(Math.max(0, srv.stoppedAt + MERGE_MS - this.d.now()));
   }
@@ -507,9 +644,16 @@ export class TalkController {
     const srv = this.srv;
     if (!srv) return;
     this.clearSrv();
+    this.d.session.clearInput?.(); // the question's audio is transcribed: the next question starts from an empty buffer
     const turn = this.turn;
     const query = srv.transcripts.join(" ").trim();
-    if (!query) { this.noTranscript(); return; }
+    if (!query) {
+      if (srv.voicedMs < MIN_TURN_MS) { this.dropTurn(srv); return; } // a click, a breath, a noise: not worth a word
+      for (const id of srv.items) this.d.session.deleteItem?.(id); // an empty user turn must not stay in the conversation
+      this.noTranscript(!srv.pressed); // a pressed turn never counts towards giving up on server turns
+      return;
+    }
+    this.emptyTurns = 0;
     this.latency = { commitToTranscriptMs: this.d.now() - srv.stoppedAt };
     this.d.onTranscript?.(query);
     this.noteQuestion(query);
@@ -518,11 +662,17 @@ export class TalkController {
     await this.answerQuery(turn, query);
   }
 
+  /** A half-heard server turn is abandoned (a typed question, Stop): its audio must not lead the next question. */
+  private abandonSrv(): void {
+    if (this.srv) this.d.session.clearInput?.();
+    this.clearSrv();
+  }
+
   /** A typed question: the same turn as a spoken one, without the mic. */
   async ask(text: string): Promise<void> {
     const query = text.trim();
     if (!query) return;
-    this.clearSrv();
+    this.abandonSrv();
     this.clearResumeTimer();
     const turn = ++this.turn;
     const wasAnswering = this._state === "answering";
@@ -553,7 +703,7 @@ export class TalkController {
 
   /** Stop speaking and drop the current answer (Stop button). */
   async stop(): Promise<void> {
-    this.clearSrv();
+    this.abandonSrv();
     const viaAnswer = this.run !== null;
     this.cancelAnswer();
     this.turn++;
@@ -734,9 +884,9 @@ export class TalkController {
     if (e.type === "heard") this.d.onHeard?.(e.text);
     if (e.type === "turn-mode" && !e.server && this.serverMode) { // refused: the local gate takes over hands-free
       this.serverMode = false;
+      this.applyHold(false);
       this.gate.reset();
       this.clearSrv();
-      this.pendingEcho = null;
       if (["listening", "transcribing"].includes(this._state)) { this.turn++; this.backToReading(); }
     }
     if (this.serverMode) {

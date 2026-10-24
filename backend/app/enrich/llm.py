@@ -7,11 +7,11 @@ Gemini; Claude being unavailable never breaks an upload. Token usage is priced p
 """
 import asyncio
 import logging
-import random
 from typing import Callable, Protocol, TypeVar
 
 from pydantic import BaseModel
 
+from .. import pacer as pacing
 from ..config import settings
 from ..gcp import usage as usage_log
 
@@ -156,38 +156,43 @@ class ClaudeProvider:
 class GeminiProvider:
     """Gemini 2.5 Flash on Vertex AI (project and region from settings), JSON output."""
     name = "gemini"
-    RETRIES = 5
+    RETRIES = pacing.BACKGROUND["attempts"]   # 6 attempts: 429s, 5xx and network errors, backoff to 30 s + jitter
+    priority: pacing.Priority = "background"     # queued behind Talk answers and translations in the shared pacer
 
-    def __init__(self, client=None, model: str | None = None):
+    def __init__(self, client=None, model: str | None = None, sleep=None, pacer: "pacing.Pacer | None" = None):
         if client is None:
             from google import genai
             client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
         self.client = client
-        self.model = model or settings.gemini_model
+        self.model = model or settings.enrich_gemini_model or settings.gemini_model
+        self._sleep = sleep
+        self._pacer = pacer
 
     async def complete(self, system, user, schema, tier, max_tokens, effort) -> Raw:
         from google.genai import types
         # Gemini 3 rejects thinking_budget; drop it and retry once when the model says so.
         thinking = True
-        for attempt in range(self.RETRIES):
+
+        def config():
             # Gemini 3 ignores thinking_budget and spends the output cap on hidden thoughts, so leave room for them.
-            config = types.GenerateContentConfig(
+            return types.GenerateContentConfig(
                 system_instruction=system, max_output_tokens=max(max_tokens, 1024) + (0 if thinking else 8192),
                 response_mime_type="application/json", response_json_schema=schema,
                 **({"thinking_config": types.ThinkingConfig(thinking_budget=0)} if thinking else {}),
             )
+
+        async def once():
+            nonlocal thinking
             try:
-                resp = await self.client.aio.models.generate_content(model=self.model, contents=user, config=config)
-                break
+                return await self.client.aio.models.generate_content(model=self.model, contents=user, config=config())
             except Exception as e:
-                if thinking and "Thinking budget is not supported" in str(e):
-                    thinking = False
-                    continue
-                code = getattr(e, "code", None)
-                retryable = code == 429 or (isinstance(code, int) and code >= 500)
-                if not retryable or attempt == self.RETRIES - 1:
+                if not thinking or "Thinking budget is not supported" not in str(e):
                     raise
-                await asyncio.sleep(min(30.0, 2 ** attempt) + random.random())
+                thinking = False
+            return await self.client.aio.models.generate_content(model=self.model, contents=user, config=config())
+
+        resp = await (self._pacer or pacing.shared).call(once, priority=self.priority, what="gemini call",
+                                                         attempts=self.RETRIES, sleep=self._sleep)
         meta = getattr(resp, "usage_metadata", None)
         n_in = (getattr(meta, "prompt_token_count", 0) or 0) if meta else 0
         n_out = ((getattr(meta, "candidates_token_count", 0) or 0)

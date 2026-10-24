@@ -61,9 +61,11 @@ async def lifespan(_: FastAPI):
     await asyncio.to_thread(users.migrate_on_startup)  # PER_USER only; never raises
     task = asyncio.create_task(asyncio.to_thread(_warm_up))
     resume = asyncio.create_task(_resume_enrichments())   # no job survives a restart: pick up the interrupted ones
+    reindex = asyncio.create_task(_retry_failed_indexes())   # Vertex indexes a transient error left in state "error"
     yield
     task.cancel()
     resume.cancel()
+    reindex.cancel()
 
 
 app = FastAPI(title="Talkback", lifespan=lifespan, dependencies=[Depends(users.bind_identity)])
@@ -218,6 +220,21 @@ def restore_book(book_id: str):
 
 
 _book_bodies: dict[str, tuple[Book, bytes, bytes]] = {}  # book id -> (book object, json, gzipped json)
+
+
+_FIGURE_NAME = re.compile(r"^fig-\d{1,4}\.png$")
+
+
+@app.get("/api/books/{book_id}/figures/{name}", dependencies=[Depends(require_access)])
+def get_figure(book_id: str, name: str):
+    """A textbook figure (#40), gated like the book itself: the same access code and per-account visibility."""
+    if not books._ID.match(book_id) or not _FIGURE_NAME.match(name):  # both come from the URL: no path walking
+        raise HTTPException(404, "Figure not found")
+    users.guard_book(book_id)
+    path = ingest_upload.figures_dir(book_id) / name
+    if not path.is_file():
+        raise HTTPException(404, "Figure not found")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @app.get("/api/books/{book_id}", response_model=Book, dependencies=[Depends(require_access)])
@@ -705,8 +722,7 @@ async def _index_in_background(book: Book, chunks) -> None:
     except Exception as e:  # the book stays readable and keeps the BM25 fallback
         if book_id not in _deleted:
             logging.getLogger(__name__).warning("vertex indexing failed: %s", type(e).__name__)
-            final = {"state": "error", "done": 0, "total": total,
-                     "message": "Search indexing failed; using basic search."}
+            final = {"state": "error", "done": 0, "total": total, "message": INDEX_FAILED_MESSAGE}
     finally:
         _index_jobs.discard(book_id)
         _index_for.cache_clear()
@@ -729,11 +745,16 @@ def _set_enrich(book_id: str, **fields) -> None:
     _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", enrich=enrich, index=_mem_index(book_id), **extra)
 
 
-_enrich_lock = asyncio.Lock()  # one enrichment at a time (cost control and rate limits)
+_enrich_lock = asyncio.Semaphore(max(1, settings.enrich_parallel))  # ENRICH_PARALLEL uploads at a time (rate limits)
+
+
+INDEX_FAILED_MESSAGE = "Search indexing failed; using basic search."
 
 
 async def _enrich_indexer(book: Book) -> None:
-    """Final stage: refresh the Vertex index with the speakers (the local index needs no change)."""
+    """Final stage: refresh the Vertex index with the speakers (the local index needs no change). A failure (after the
+    store's and embedder's own retries) is recorded as index state "error", so retrieval falls back to BM25 and the
+    next start retries it (_retry_failed_indexes); it is then raised for the pipeline, which finishes the book anyway."""
     if settings.retrieval_backend == "vertex":
         from .gcp.indexing import index_book, load_chunks
         embedder, store = _vertex_deps()
@@ -744,8 +765,86 @@ async def _enrich_indexer(book: Book) -> None:
         try:
             async with _index_slot():
                 await index_book(book, chunks, embedder, store)
+        except Exception as e:
+            if book.id not in _deleted:
+                logging.getLogger(__name__).warning("vertex re-indexing failed: %s", type(e).__name__)
+                _set_index(book.id, state="error", done=0, total=len(chunks), message=INDEX_FAILED_MESSAGE)
+            raise
         finally:
             _index_jobs.discard(book.id)
+            _index_for.cache_clear()
+
+
+MAX_STARTUP_REINDEX = 20   # failed indexes retried per start (each is a paid embedding job)
+
+
+def _failed_indexes() -> list[str]:
+    """Uploads whose status.json says the Vertex index failed (a transient error at upload or enrichment time)."""
+    out = []
+    for path in sorted((settings.data_dir / "books").glob("u-*/status.json")):
+        book_id = path.parent.name
+        if books._ID.match(book_id) and ((ingest_upload.read_status(book_id) or {}).get("index") or {}).get("state") == "error":
+            out.append(book_id)
+    return out
+
+
+async def _retry_failed_indexes() -> None:
+    """Startup: rebuild the Vertex index of books whose last indexing failed, at most MAX_STARTUP_REINDEX of them and
+    once per start (a book that fails again waits for the next start). Never raises."""
+    await asyncio.to_thread(_settle_all_index_only_failures)
+    if settings.retrieval_backend != "vertex":
+        return
+    try:
+        from .gcp.indexing import load_chunks
+        for book_id in (await asyncio.to_thread(_failed_indexes))[:MAX_STARTUP_REINDEX]:
+            if book_id in _deleted or book_id in _index_jobs:
+                continue
+            book = await asyncio.to_thread(books.load_book, book_id)
+            if book is None:
+                continue
+            _settle_index_only_failure(book_id, book)
+            chunks = await asyncio.to_thread(load_chunks, book)
+            await _index_in_background(book, chunks)   # never raises; records done or error in status.json
+            if (book_status_or_empty(book_id).get("index") or {}).get("state") == "done":
+                en = book_status_or_empty(book_id).get("enrich") or {}
+                if en.get("status") == "done" and en.get("message") == enrich_pipeline.INDEX_PENDING:
+                    _set_enrich(book_id, status="done", stage="done", progress=1.0, message=enrich_pipeline.READY)
+    except Exception as e:
+        logging.getLogger(__name__).warning("retrying failed indexes failed: %s", type(e).__name__)
+
+
+def book_status_or_empty(book_id: str) -> dict:
+    """The stored status without the per-user guard (startup work has no request identity)."""
+    try:
+        return _upload_status.get(book_id) or ingest_upload.read_status(book_id) or {}
+    except Exception:
+        return {}
+
+
+def _settle_all_index_only_failures() -> None:
+    """Startup: every upload an older version left "stopped early" at the index step, whatever its index state now."""
+    for path in sorted((settings.data_dir / "books").glob("u-*/status.json")):
+        book_id = path.parent.name
+        try:
+            en = (ingest_upload.read_status(book_id) or {}).get("enrich") or {}
+            if en.get("status") != "error" or en.get("stage") != "index":
+                continue
+            book = books.load_book(book_id)
+            if book is not None:
+                _settle_index_only_failure(book_id, book)
+        except Exception as e:
+            logging.getLogger(__name__).warning("settling %s failed: %s", book_id, type(e).__name__)
+
+
+def _settle_index_only_failure(book_id: str, book) -> None:
+    """A book an older version marked "stopped early" only because its last step (indexing) failed: its characters
+    and recap are saved, so it is done; search uses basic mode until the index is rebuilt."""
+    en = book_status_or_empty(book_id).get("enrich") or {}
+    if en.get("status") == "error" and en.get("stage") == "index" and book.characters and book.summaries:
+        indexed = ((book_status_or_empty(book_id).get("index") or {}).get("state") == "done"
+                   or settings.retrieval_backend != "vertex")
+        _set_enrich(book_id, status="done", stage="done", progress=1.0,
+                    message=enrich_pipeline.READY if indexed else enrich_pipeline.INDEX_PENDING)
 
 
 MAX_ENRICH_RETRIES = 3          # user retries per book (persisted in status.json as enrich_retries)
@@ -906,6 +1005,8 @@ async def _ingest(book_id: str, title: str, author: str, kind: str, data: bytes,
     if ready is not None and kind == "textbook" and ext == ".pdf" and any(p.kind == "math" or p.inline_math
                                                                          for p in ready.paragraphs):
         _start_equations(book_id, data)
+    if ready is not None and kind == "novel" and book_id not in _deleted:
+        _start_series_early(book_id)   # stacks the volume within seconds, before indexing and the queued enrichment
     if ready is not None and settings.retrieval_backend == "vertex":
         await _index_in_background(ready, chunks)
     if ready is not None and settings.upload_enrich and book_id not in _deleted:
@@ -937,7 +1038,7 @@ async def _ingest_work(book_id: str, title: str, author: str, kind: str, data: b
     _set_status(book_id, "processing", "Reading the PDF" if ext == ".pdf" else "Reading the text")
     raw, detected = None, None
     if kind == "auto":  # decide novel or textbook from the extracted text
-        raw = await asyncio.to_thread(ingest_upload.extract_text, data, ext)
+        raw = await asyncio.to_thread(ingest_upload.extract_text, data, ext, ingest_upload.figures_dir(book_id))
         kind, confidence, method = await detect_kind(ingest_upload.plain_text(raw), book_id=book_id)
         detected = {"kind": kind, "confidence": confidence, "method": method}
     book, chunks = await asyncio.to_thread(ingest_upload.process_upload, book_id, title, author, kind, data, ext,
@@ -1171,6 +1272,8 @@ async def start_enrichment(book_id: str, background: BackgroundTasks):
     # check without an await before the new status is written: a second request then sees the job and gets a 409
     if book_id in _kind_claims or book_id in _enrich_jobs or book_id in _equation_jobs:   # a job or kind change is running
         raise HTTPException(409, "This book is still being processed; try again when it finishes.")
+    if state == "done":   # a stale "Try again" on a book that has finished meanwhile: just report it
+        return st
     if state not in ("awaiting_confirmation", "error", "refused"):
         raise HTTPException(409, "This book is not waiting for confirmation.")
     if not settings.upload_enrich:   # UPLOAD_ENRICH=false: no paid processing, not even a retry

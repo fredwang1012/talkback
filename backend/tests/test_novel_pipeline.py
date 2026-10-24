@@ -563,7 +563,9 @@ def test_pipeline_error_leaves_book_readable_with_plain_message(data_dir):
         raise ValueError("secret internals")
 
     ok, events, _ = run_pipeline("u-test-aaaaaaaa", indexer=broken_indexer)
-    assert not ok and events[-1] == {"status": "error", "stage": "index", "message": pipeline.FAILED}
+    # the index is the last stage and everything is saved by then: the book finishes with basic search (test_resilience)
+    assert ok and events[-1]["status"] == "done" and events[-1]["message"] == pipeline.INDEX_PENDING
+    assert "secret" not in json.dumps(events)
     book = saved(data_dir)  # every earlier stage had landed
     assert [c.id for c in book.characters] == ["alice", "bob"] and book.summaries
 
@@ -624,12 +626,16 @@ def test_confirm_mode_waits_then_starts_on_post(client, monkeypatch):
     st = client.get(f"/api/books/{book_id}/status").json()
     assert st["enrich"]["status"] == "done"
     assert client.get(f"/api/books/{book_id}").json()["characters"]
-    assert client.post(f"/api/books/{book_id}/enrich").status_code == 409  # already done
+    calls = len(client.fake.calls)
+    again = client.post(f"/api/books/{book_id}/enrich")   # already done: the status is reported, nothing runs again
+    assert again.json()["enrich"]["status"] == "done" and len(client.fake.calls) == calls
 
 
-def test_enrich_endpoint_409_without_waiting_book_and_404(client):
-    book_id = upload(client).json()["book_id"]   # enriched already: neither waiting nor failed (a failed job may be retried)
-    assert client.post(f"/api/books/{book_id}/enrich").status_code == 409
+def test_enrich_endpoint_on_a_done_book_and_404(client):
+    book_id = upload(client).json()["book_id"]   # enriched already: a stale Try again just reports it as done
+    calls = len(client.fake.calls)
+    r = client.post(f"/api/books/{book_id}/enrich")
+    assert r.json()["enrich"]["status"] == "done" and len(client.fake.calls) == calls
     assert client.post("/api/books/nope-nope/enrich").status_code == 404
 
 
@@ -812,3 +818,17 @@ def test_attribution_and_rechunk_run_off_the_event_loop_once(data_dir, cpu_calls
     assert ok
     assert ("attribute", False) in cpu_calls and all(not on_loop for _, on_loop in cpu_calls), cpu_calls
     assert [n for n, _ in cpu_calls].count("rechunk") == 1, cpu_calls
+
+
+def test_a_novel_upload_starts_the_early_series_check(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(main, "_start_series_early", lambda book_id: seen.append(book_id))
+    book_id = upload(client).json()["book_id"]
+    assert seen == [book_id]   # wired into the ingest, not only defined
+
+
+def test_a_textbook_upload_skips_the_early_series_check(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(main, "_start_series_early", lambda book_id: seen.append(book_id))
+    upload(client, kind="textbook")
+    assert seen == []

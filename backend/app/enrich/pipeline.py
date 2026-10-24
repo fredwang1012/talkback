@@ -45,6 +45,12 @@ BUDGET_USED = "Character processing is paused for now; this book will be read by
 FAILED = "Character processing stopped early; you can try again. The book is still readable with the narrator."
 INTERRUPTED = "Character processing was interrupted; you can try again. The book is still readable with the narrator."
 FALLBACK_DONE = "Characters detected with a simple fallback (no LLM key configured). Add ANTHROPIC_API_KEY for full voices and recap."
+READY = "Characters, recap and search are ready."
+INDEX_PENDING = "Characters and recap are ready; search uses basic mode until the index is rebuilt."
+
+
+def notes_skipped_note(n: int) -> str:
+    return f" {n} recap note{'s' if n != 1 else ''} could not be written." if n else ""
 # textbooks: only recap notes (no characters, no dialogue split)
 TEXTBOOK_MESSAGE = "Writing study notes for the recap"
 TEXTBOOK_DONE = "Study notes for the recap are ready."
@@ -183,7 +189,7 @@ async def enrich_textbook(book_id: str, report: Report, *, llm: LLM | None = Non
     out: list = []
     capped = False
     try:
-        book = Book.model_validate_json(_book_path(book_id).read_text(encoding="utf-8"))
+        book = Book.model_validate_json(books.read_bytes(_book_path(book_id)))
         _, subs = tb_mod.plan(book)
         await run_textbook_stage(book, report, llm, state=state, include_subsections=subs, out=out)
         if not out:   # every section call failed: nothing to save, and the notes from before stay
@@ -221,12 +227,29 @@ async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save:
     With allow_fallback=False a missing LLM is an error instead of a name-based cast. With resume=True, the cast is not
     redone when the book already has one, and cast + segmentation are not redone when it already has summaries (each
     stage is saved only when complete, and the summaries stage runs after the other two).
+
+    A checkpoint that cannot be written (Windows: a reader holding book.json open, see books._replace) is retried at
+    the next stage, and the last one before indexing must land. The index stage never fails the run: the characters,
+    segments and summaries are saved by then; a failed (re)index sets `state["index_failed"]` and the caller says
+    search stays in basic (BM25) mode. `state["notes_skipped"]` counts the recap notes that could not be written.
     """
     degraded = False
+    unsaved = False
 
-    async def checkpoint() -> None:
-        if save is not None:
+    async def checkpoint(final: bool = False) -> None:
+        nonlocal unsaved
+        if save is None:
+            return
+        try:
             await save(book)
+            unsaved = False
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if final:
+                raise
+            unsaved = True
+            log.warning("checkpoint after %s could not be written (%s); retrying at the next stage", stage, type(e).__name__)
 
     have_cast, have_summaries = resume and bool(book.characters), resume and bool(book.summaries)
     stage = state["stage"] = "cast"
@@ -267,13 +290,23 @@ async def run_stages(book: Book, report: Report, llm: LLM, *, state: dict, save:
 
         stage = state["stage"] = "summaries"
         report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
-        book.summaries = await sum_mod.build_summaries(book, llm, _Throttle(report, stage))
+        stats: dict = {}
+        book.summaries = await sum_mod.build_summaries(book, llm, _Throttle(report, stage), stats=stats)
+        state["notes_skipped"] = stats.get("skipped", 0)
         await checkpoint()
+    if unsaved:   # the last checkpoint is the one that must land (every stage's result rides on it)
+        await checkpoint(final=True)
 
     stage = state["stage"] = "index"
     report(status="running", stage=stage, progress=_offset(stage), message=MESSAGES[stage])
     if indexer is not None:
-        await indexer(book)
+        try:
+            await indexer(book)
+        except (asyncio.CancelledError, SpendLimit):
+            raise
+        except Exception as e:   # everything is saved: the book keeps basic search until the index is rebuilt
+            log.warning("indexing of %s failed (%s); search stays in basic mode", book.id, type(e).__name__)
+            state["index_failed"] = True
     return degraded
 
 
@@ -301,11 +334,15 @@ async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Inde
         await asyncio.to_thread(books.save_book, path, book)
 
     try:
-        book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+        book = Book.model_validate_json(books.read_bytes(path))
         degraded = await run_stages(book, report, llm, state=state, save=save, indexer=indexer, resume=resume)
+        index_failed, skipped = bool(state.get("index_failed")), int(state.get("notes_skipped") or 0)
+        # the fallback wording already says there was no LLM for the recap: no note count on top of it
+        message = FALLBACK_DONE if degraded else (INDEX_PENDING if index_failed else READY) + notes_skipped_note(skipped)
         report(status="done", stage="done", progress=1.0, degraded=degraded or None,
-               message=FALLBACK_DONE if degraded else "Characters, recap and search are ready.")
-        log.info("enriched %s: $%.4f in %d calls", book_id, llm.usd, llm.calls)
+               index_failed=index_failed or None, notes_skipped=skipped or None, message=message)
+        log.info("enriched %s: $%.4f in %d calls (%d notes skipped%s)", book_id, llm.usd, llm.calls, skipped,
+                 ", index pending" if index_failed else "")
         await series_link.reconcile(book_id, llm)   # stack with the same author's other uploads (#134); never raises
         return True
     except asyncio.CancelledError:

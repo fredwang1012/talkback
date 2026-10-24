@@ -1060,6 +1060,44 @@ the deployed talkback-public-00001 is the Oct 21 code):
 - Not verified live: the echo guard with real laptop speakers (needs a person), how fine `.length` fragments are for
   long answers, `semantic_vad` on real (not TTS) speech with pauses.
 
+## Hands-free echo, "didn't catch that", stacking answers, barge-in (fix/handsfree-echo, 2026-10-23)
+User reports on #135 server-turn hands-free: the character heard itself, "I didn't catch that" came often, answers
+stacked in the chat, interrupting it was unreliable. Root causes (code reading + fake-socket repros, no live probe):
+- The mic streamed to Boson all the time, also while the character played. The echo guard only gated barge-in, so the
+  server VAD still committed turns of the character's own voice: a speech_started arriving after the 300 ms echo tail
+  (VAD + network delay) became a real turn, transcribed as the character's own words (a question bubble with them, and
+  an answer to itself), and a loud echo that passed the strict gate cut the character off.
+- Every committed server turn (clicks, breaths, noise, echo) that had no transcript after 1.5 s showed "I didn't catch
+  that"; 1.5 s was also shorter than the transcription of longer real turns.
+- A barge-in after our response.create but before its response.created: the cancel was "not active", the late
+  response.created reset the drop flag, so the cut-off answer played and its captions went into the bubbles; output was
+  never checked against its response id. The interrupted bubble also stayed pending (late text could land in it), chat
+  writes went to "the last pending bubble", and an empty interrupted bubble was left behind.
+- One clearly Spanish question set the transcription hint (a wrong hint gives no transcript at all).
+Fixes:
+- Mic hold (TalkClient.setMicHold, driven by TalkController.updateMicHold): while the character speaks and
+  MIC_HOLD_TAIL_MS (600) after, no mic audio goes to the server; the held audio is dropped, except on a barge-in.
+- Barge-in in server mode comes from the local strict gate (HANDS_FREE_OVER_SPEECH, now 250 ms) with a threshold
+  relative to the echo: max(0.10, 2.5 x median mic level over the last 2 s of playback; createEchoFloor; the first
+  300 ms always count, later only readings under the bar, so the reader's speech never raises it). On it: cut now
+  (flush + cancel/truncate), release the hold with ~300 ms pre-roll, the server's speech_started continues the turn; if
+  the server never reports speech within BARGE_CONFIRM_MS (2.5 s) the turn ends quietly. The local gate mode uses the
+  same relative threshold.
+- Turns: a server speech_started while held is echo (item deleted on commit). A turn with < MIN_TURN_MS (400 ms) of
+  speech by the local level and no transcript is dropped silently and its items deleted. A real turn without a
+  transcript waits failWaitMs = 2.5 s + turn/4 (max 5 s) before "I didn't catch that", and its items are deleted.
+  EMPTY_TURNS_FALLBACK (2) real empty turns in a row: hands-free switches to the local gate for this session, with
+  the note "I didn't catch that. Hands-free now uses the local voice gate."
+- Response binding: TalkClient tracks the current response id; a cancel before response.created cancels that response
+  when it shows up; any output, caption or response.done of another id is ignored.
+- Chat: useTalk writes captions/sentences only to the answer bubble its question created (setTextOf/appendSentenceTo
+  by id); markInterrupted closes the bubble (an empty one is removed); cutHeard only trims the newest reply; no empty
+  question bubbles.
+- Language: the transcription hint needs the two newest clear questions (of the last three) in the same non-English
+  language; a failed real turn still clears it. The TTS answer language still follows the newest clear question.
+- Not verified live (needs a person with speakers): the echo-relative threshold on real laptop echo, the 600 ms tail
+  for rooms with long reverb, and whether Boson's VAD minds the gaps in the audio while held.
+
 ## Web search on Talk answers (Grounding with Google Search), branch feat/web-search-answers
 - Rule (server-side, `app/websearch.allowed`): web search only when `book.kind == "textbook"` or `spoilers` is on, and
   `WEB_SEARCH` is true (default). A novel read spoiler-safe never gets the tool (the web would leak later events):
@@ -1110,3 +1148,83 @@ the deployed talkback-public-00001 is the Oct 21 code):
   it published") had the tool but the model answered from memory both times (0 sources, no "outside the book" phrase):
   Gemini decides when to search; well-known facts often skip it. Not re-checked after the four-sentence rule (call
   budget). Also seen: the sentence splitter breaks after "Mr." (pre-existing, `_split`).
+
+## Textbook figures in the reader (#40, 2026-10-23)
+- The IR textbook's figures (01bool, Figures 1.1-1.7) contain no vector drawings and no real pictures: they are text (matrix cells, posting lists, pseudocode) plus rules and boxes stored as thin embedded images. So `get_images` / `get_drawings` alone would find none of them. Figures are found from their caption instead (`_take_figures`): a "Figure N" line set small or bold, and everything between it and the nearest prose above it (else below it). The crop (page.get_pixmap(clip=...), 150 dpi, longest side <= 2000 px) is saved to `data/books/<id>/figures/fig-N.png`, and the figure becomes a paragraph of kind "figure" (text = caption, read aloud by default) placed between paragraphs. The text inside the figure no longer leaks into the body text.
+- Prose test: a body-size line of 5+ words that starts at the document's text column left edge (indent allowed) and reaches its right edge; a block with such a line is a paragraph, so its short last line is too. Below a caption any 5-word sentence stops the walk. The column is measured over the whole document: a page that is mostly figure measured 179-437 pt instead of 167-501 and made Figure 1.4's "Doc 2" lines look like prose.
+- Pages with prose in both halves (two columns) are skipped (captions dropped as before). Figures are taken before the contents-page test: a numeric table made its whole page look like a contents page, which drops the page's prose too.
+- A figure met mid-sentence (at the top of the page a sentence runs on to) goes after that paragraph, so the sentence stays whole.
+- Served by GET /api/books/<id>/figures/fig-N.png with the book's gate (access code + guard_book); the reader fetches it with the access header into an object URL. "Read captions" (player bar, textbooks with figures) skips caption chunks in continuous reading and prefetch without changing the chunk list, so saved positions stay valid.
+- Only new uploads get figures (a figure adds a paragraph); re-upload older textbooks. Tables ("Table N") are still dropped as before.
+- Text markers from pdf_to_text to parse(): \x01 heading, \x02 code listing, \x03 + \x04 display equation (#41), \x05 + \x06 inline formula (main), \x07 figure. Each feature needs its own: #40 first used \x03 (taken by #41), then \x05 (taken by inline formulas, whose parser also strips stray \x05 / \x06). A test with a figure and an equation on one page guards it.
+
+## Hands-free: questions accumulated, every answer "interrupted", stuck turns (fix/handsfree-transcripts, 2026-10-24)
+User report (textbook, Tutor, Gemini answers): each hands-free question contained all the earlier ones ("Hey, what is
+Boolean retrieval? Hey, I don't understand anything. Yes, see, okay."), so retrieval and answers drifted; every answer
+was labelled interrupted; sometimes it stuck until hands-free was toggled. Push-to-talk and typed questions were fine.
+- Live probe (`scripts/probe_realtime_turns.py`, capture `scripts/captures/realtime_semantic_turns.json`, < 1 cent):
+  five TTS utterances streamed in real time under `semantic_vad` + `create_response: false`, no response.create in
+  between (the Gemini path never sends one). **The server never clears the input audio buffer**: every committed turn
+  carried the SAME item_id (`1a91cb05`, five times) and its transcript was all the audio since the session start:
+  "What is Boolean retrieval?", "What is Boolean retrieval? I don't understand anything.", ... A 3 s gap with no
+  audio (the mic hold), an assistant text item (`conversation.item.create`) and deleting the item changed nothing;
+  `input_audio_buffer.clear` did: the next transcript was only the new utterance.
+- Consequences in our code: (1) the query sent to retrieval/Gemini was the cumulative transcript; (2) the echo guard
+  keyed echo turns by item_id, so one stray speech_started while the character spoke marked THE id and every later
+  real transcript was ignored ("I didn't catch that" after 2.5-5 s, then the local-gate fallback, which the hands-free
+  toggle never undid); (3) `conversation.item.delete` of an "echo" item deleted the real question's item.
+- Fixes (TalkController, TalkClient): `TalkSession.clearInput` sends `input_audio_buffer.clear`; it is sent when a
+  server turn finishes (finishSrv, after the transcript is taken, also for dropped/empty turns), on a committed event
+  outside a turn (echo, noise while the character speaks or thinks), and when a half-heard turn is abandoned (typed
+  question, Stop). Echo is no longer tracked by item id (ignored by state; nothing deleted). Within one turn, a
+  transcript that repeats the earlier one (the server splitting a question re-transcribes the whole buffer) replaces it
+  (`mergeTranscript`), a transcript of only new words is still appended. Turning hands-free on again resets the
+  local-gate fallback. Push-to-talk never clears (only a tap discards, as before).
+- Not changed, for a person to check: the "interrupted" label on an answer whose full text is on screen but whose
+  voice is still queued (text streams ahead of TTS; speaking then is a real barge-in), and the barge-in bar relative to
+  the speaker echo (max(0.10, 2.5 x echo median) can be out of reach of a normal voice on a laptop mic with speakers).
+
+## Upload enrichment resilience to transient failures (fix/enrich-resilience, 2026-10-24)
+- Seen on Windows with Gemini on Vertex: `enrichment ... failed in summaries: PermissionError at books.py _replace`
+  (a reader or an antivirus scan holding book.json / the fresh temp file blocks os.replace for a moment), `summary note
+  skipped (ReadError)` and `enrichment ... failed in index: ReadError` (httpx network blips raised without a `code`, so
+  GeminiProvider's 429/5xx-only retry and the vector store's status-only retry let them through). A book with 10
+  characters and 116 summaries ended as enrich status "error" in stage index.
+- `app/retrying.py`: one policy. Transient = httpx TransportError (ReadError/ConnectError/RemoteProtocolError/
+  timeouts), connection resets, 429, 5xx, google.api_core names (ServiceUnavailable...). Never: 401/402/403,
+  insufficient_quota / billing text, every other 4xx. Equal-jitter exponential backoff, bounded attempts, logs only the
+  exception type. Used by GeminiProvider (5 attempts, base 1 s, cap 30 s), GeminiEmbedder, VectorStore._send (network
+  errors now retried like 429/5xx), GeminiAnswerer (only before the first token: a stream that broke after speaking
+  is not replayed), multilingual.translate (2 attempts, 0.3 s, inside its 4 s timeout). Textbook notes, equations and
+  series checks go through GeminiProvider and inherit it.
+- Pipeline: the index stage never fails the run (everything is saved by then); a failed (re)index reports done with
+  `INDEX_PENDING` ("search uses basic mode until the index is rebuilt") and `index_failed: true`. main._enrich_indexer
+  records index state "error", retrieval falls back to BM25, and `_retry_failed_indexes` (startup, at most
+  MAX_STARTUP_REINDEX=20 books, once per start) rebuilds them through _index_in_background. A checkpoint that cannot be
+  written is retried at the next stage; the last one before indexing must land (else the usual FAILED error).
+  Summaries: notes whose call failed get a second pass; still-missing ones are counted (`notes_skipped`, "N recap notes
+  could not be written." in the done message; the frontend shows it like the degraded note).
+- books.retry_permission: Windows PermissionError retried with backoff for ~3 s (os.replace in save_book, status.json
+  writes). book.json / status.json reads use read_bytes (open-read-close; pydantic validates bytes).
+- ENRICH_PARALLEL default 3 -> 1000 (no practical limit on parallel uploads; each book still bounded by
+  UPLOAD_CONCURRENCY=24 LLM calls; 429s are retried with jitter). Lower it if Gemini rate limits bite.
+
+## Shared adaptive Gemini limiter (feat/gemini-pacer, 2026-10-24)
+- Seen locally (ENRICH_PARALLEL=1000, UPLOAD_CONCURRENCY=24, gemini-2.5-flash on Vertex, GEMINI_LOCATION=global made no
+  difference): two novels enriching together logged hundreds of `gemini call failed (ClientError); retry n/4` a minute,
+  many reaching 4/4, then `12 of 74 summary notes skipped`. One live burst of 60 tiny calls (~$0.001) read the real
+  error: google.genai `ClientError`, HTTP 429, status `RESOURCE_EXHAUSTED`, no Retry-After header, no RetryInfo; 13 of
+  60 concurrent calls were refused. So the quota is a per-minute budget that a few dozen concurrent calls already exceed.
+- `app/pacer.py`: one process-wide AIMD concurrency limit for every Gemini call site (GeminiProvider: enrichment,
+  textbook notes, equations, series checks, public jobs; GeminiAnswerer; multilingual.translate; face_detect). Starts at
+  GEMINI_CONCURRENCY_START=8, +1 after 10 consecutive successes up to GEMINI_CONCURRENCY_MAX=32, halves on a 429 (once per
+  generation: the 429s of calls already in flight at the cut count as the same overload), floor 1. Honours a Retry-After
+  header or RetryInfo.retryDelay when one exists. Callers over the limit queue instead of failing; a cancelled waiter or
+  holder gives its slot back. Interactive calls (answers, translation, face upload) are served first and keep one
+  reserved slot background work may not take. Retries: background 6 attempts, backoff 1-2, 2-4, 4-8, 8-16, 15-30 s with
+  jitter (about a minute in all), slot released while sleeping; interactive keeps retrying's short defaults (4 attempts,
+  cap 8 s; translate 2 x 0.3 s). Per-book UPLOAD_CONCURRENCY still caps each book. Log: `gemini rate limited
+  (ClientError 429): concurrency 8 -> 4` at each cut and `gemini pacer: limit, in flight, queued, 429s in the last
+  minute` every ~30 s while throttled; retry lines now name the status (`ClientError 429`), never the message.
+- face_detect builds its client with settings.gemini_region() like the other Gemini clients (embeddings stay regional).
+- Embeddings (gcp/embed.py, sync worker threads) are not under the pacer: a different quota, and no 429s seen there.

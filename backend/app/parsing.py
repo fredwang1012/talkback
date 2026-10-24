@@ -17,6 +17,7 @@ IM_CLOSE = "\x06"
 IM_BASE = 0xF0000
 _INLINE = re.compile(IM_OPEN + "([\U000F0000-\U000FFFFD]{5})([^" + IM_OPEN + IM_CLOSE + "]*)" + IM_CLOSE)
 _INLINE_STRAY = re.compile("[" + IM_OPEN + IM_CLOSE + "]")
+FIGURE_MARK = "\x07"   # prefix pdf_to_text puts on a figure: its image file name, a newline, then its caption
 _EQ_NUMBER = re.compile(r"\s*\((\d{1,3}(?:\.\d{1,3}){0,2}[a-z]?)\)[.,;]?$")
 EQUATION_TEXT = "(equation)"  # the shown text of an equation whose glyphs did not extract at all
 
@@ -156,6 +157,15 @@ def parse(raw: str, start_marker: str | None, end_marker: str | None,
                     current = Section(id="s1", title="", start_para=len(paragraphs))
                     sections.append(current)
                 paragraphs.append(Paragraph(idx=len(paragraphs), section_id=current.id, text=code, kind="code"))
+            continue
+        if block.startswith(FIGURE_MARK):
+            name, _, caption = block[1:].partition("\n")
+            if name.strip():
+                if current is None:
+                    current = Section(id="s1", title="", start_para=len(paragraphs))
+                    sections.append(current)
+                paragraphs.append(Paragraph(idx=len(paragraphs), section_id=current.id,
+                                            text=normalize(strip_inline(caption)) or "Figure", kind="figure", figure=name.strip()))
             continue
         marked, block = block, strip_inline(block)
         if heading and block.count("\n") == 1 and len(block) < 70:

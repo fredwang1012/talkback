@@ -10,13 +10,13 @@ ROOT = Path(__file__).resolve().parents[2]  # talkback/
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore")
 
-    boson_api_key: str = ""
-    anthropic_api_key: str = ""
+    boson_api_key: str = Field(default="", repr=False)   # never in a repr (tracebacks, test output)
+    anthropic_api_key: str = Field(default="", repr=False)
     boson_base_url: str = "https://api.boson.ai"
     data_dir: Path = ROOT / "data"
     # Optional shared secret. When set, endpoints that spend Boson credit require header X-Talkback-Token.
     # Env var is TALKBACK_ACCESS_TOKEN (README, DEPLOY.md); plain ACCESS_TOKEN still works.
-    access_token: str = Field(default="", validation_alias=AliasChoices("TALKBACK_ACCESS_TOKEN", "ACCESS_TOKEN"))
+    access_token: str = Field(default="", repr=False, validation_alias=AliasChoices("TALKBACK_ACCESS_TOKEN", "ACCESS_TOKEN"))
     # True only behind a trusted proxy (Cloud Run): client_ip then uses the right-most X-Forwarded-For entry.
     trust_proxy: bool = False
     # Comma-separated browser origins allowed by CORS (the single-container deploy is same-origin and needs none).
@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Who writes talk-mode answers. None = follow retrieval_backend (vertex -> gemini, local -> realtime).
     answer_backend: Literal["gemini", "realtime"] | None = None
     gemini_model: str = "gemini-2.5-flash"
+    # book processing (cast, dialogue, recap notes, equations, series checks); empty = gemini_model. Flash-Lite runs on a
+    # separate, less congested Vertex pool, so uploads are not throttled by Talk answers or busy shared capacity.
+    enrich_gemini_model: str = ""
     # Web search (Grounding with Google Search) on Gemini answers: textbooks and novels with spoilers on only (websearch.py).
     web_search: bool = True
     grounded_daily_cap: int = 100        # grounded answers per UTC day on this app, persisted (data/usage)
@@ -49,7 +52,12 @@ class Settings(BaseSettings):
     minor_voices: bool = True  # uncast speakers in uploaded novels read in one of two generic voices (enrich/minor.py)
     upload_llm: Literal["claude", "gemini"] = "claude"   # developer-only; claude falls back to gemini when out of credit
     upload_confirm: bool = False      # testing mode: show the estimate and wait for POST /api/books/{id}/enrich
-    upload_concurrency: int = 24      # parallel LLM calls during enrichment
+    upload_concurrency: int = 24      # parallel LLM calls per book during enrichment (the shared pacer caps the total)
+    enrich_parallel: int = 1000       # uploads processed at the same time: no practical limit (app/pacer.py shares one limit)
+    # Process-wide adaptive concurrency for every Gemini call (app/pacer.py): starts here, halves on a 429, grows by one
+    # after 10 consecutive successes up to the max. Vertex's per-minute quota on a fresh project tolerates a few dozen.
+    gemini_concurrency_start: int = 8
+    gemini_concurrency_max: int = 32
     upload_book_cap_usd: float = 4.0      # refuse a book whose estimate is above this
     upload_total_cap_usd: float = 15.0    # hard stop on cumulative upload enrichment spend (data/usage)
 

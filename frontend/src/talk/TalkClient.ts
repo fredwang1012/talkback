@@ -16,7 +16,7 @@ export const PREROLL_MS = 1500;
  * (HANDS_FREE_OVER_SPEECH.minSpeechMs): before that the mic hears the character, and any echo leak would be transcribed. */
 export const BARGE_PREROLL_MS = 500;
 /** A turn started by the mic button while hands-free is on keeps only this much (the reader presses, then speaks). */
-const PRESS_PREROLL_MS = 300;
+export const PRESS_PREROLL_MS = 300;
 
 /** Server-mode hands-free (#135): mic audio held while the socket is not open (or a cancel is out), newest kept. */
 export const STREAM_HOLD_MS = 3000;
@@ -192,6 +192,12 @@ export class TalkClient implements TalkSession {
   private sessionAcked = false; // its session.created was seen
   private expectResponse = 0; // response.create calls not yet matched by a response.created
   private language: string | null = null;
+  // the character must never hear itself: while held (it speaks, and a short tail after) mic audio is kept, not sent
+  private micHeld = false;
+  // answers bound to their response id: a cancelled answer's late output is never played or captioned
+  private currentResponseId: string | null = null;
+  private cancelledIds = new Set<string>();
+  private cancelUncreated = 0; // cancelled after response.create but before its response.created arrived
   // #135 voice-timed captions
   private segs: CaptionSegment[] = [];
   private segMs = 0;
@@ -308,6 +314,7 @@ export class TalkClient implements TalkSession {
     if (on === this.wantServer) return;
     this.wantServer = on;
     this.vadIndex = 0;
+    this.micHeld = false;
     if (!on) this.pendingAudio = []; // held for a server session that will not come: never the start of the next press
     if (!this.ws || (this.sessionServer === on && !this.sessionRefused)) { this.modeChangeDue = false; return; }
     if (this.turnBusy) this.modeChangeDue = true; // #141: never drop the socket under an answer; switch once it drained
@@ -334,6 +341,10 @@ export class TalkClient implements TalkSession {
 
   /** Remove an item from the server's conversation (#135: a turn that was only the character's echo). */
   deleteItem(itemId: string): void { this.send({ type: "conversation.item.delete", item_id: itemId }); }
+
+  /** Empty the server's input audio buffer: a server-detected turn is over (live, the server never clears it itself,
+   * and transcribes every turn with all the audio since the last clear). */
+  clearInput(): void { this.send({ type: "input_audio_buffer.clear" }); }
 
   /** The transcription language hint (ISO 639-1, or null for none) (#135); sent at once when a session is open. */
   setLanguageHint(code: string | null): void {
@@ -405,11 +416,34 @@ export class TalkClient implements TalkSession {
     else if (!this.micOn) await this.mic.stop();
   }
 
+  /**
+   * Server turns (hands-free): hold the mic so the server never hears our own playback (the character speaking, and a
+   * short tail after). Held audio is kept briefly; releasing with `preRollMs` (a barge-in the local gate heard) sends
+   * the last `preRollMs` of it first, so the reader's first words are kept; without, the held audio (echo) is dropped.
+   */
+  setMicHold(hold: boolean, preRollMs = 0): void {
+    if (hold === this.micHeld) return;
+    this.micHeld = hold;
+    const pre = this.recent.splice(0);
+    this.recentMs = 0;
+    if (hold || preRollMs <= 0) return;
+    let from = pre.length;
+    for (let ms = 0; from > 0 && ms < preRollMs; ) ms += pre[--from].ms;
+    for (const c of pre.slice(from)) this.onMicChunk(c.b64);
+  }
+
   /** Audio and commits may go out: the socket is open and no cancel is waiting for its acknowledgement. */
   private get ready(): boolean { return this.isOpen && !this.interrupting; }
 
   private onMicChunk(b64: string): void {
     if (this.monitor && this.wantServer) { // #135: the server listens all the time and decides the turns
+      if (this.micHeld) { // the character is speaking: keep just enough for a barge-in's pre-roll, send nothing
+        const ms = chunkMs(b64);
+        this.recent.push({ b64, ms });
+        this.recentMs += ms;
+        while (this.recent.length > 1 && this.recentMs - this.recent[0].ms >= PREROLL_MS) this.recentMs -= this.recent.shift()!.ms;
+        return;
+      }
       if (this.ready) { this.flushPending(); this.send(inputAudioAppend(b64)); return; }
       this.pendingAudio.push(b64);
       let ms = 0;
@@ -461,6 +495,7 @@ export class TalkClient implements TalkSession {
     this.resetResponse();
     this.lastInstructions = instructions;
     this.responseActive = true;
+    this.currentResponseId = null;
     if (question?.trim()) this.send(userTextItem(question.trim()));
     this.expectResponse++;
     this.send({ type: "response.create", response: { instructions, max_output_tokens: 600 } });
@@ -471,6 +506,7 @@ export class TalkClient implements TalkSession {
     this.toolsOut = false;
     for (const r of results) this.send(functionCallOutput(r.callId, r.output));
     this.responseActive = true;
+    this.currentResponseId = null;
     this.expectResponse++;
     this.send({ type: "response.create", response: { instructions: this.lastInstructions, max_output_tokens: 600 } });
   }
@@ -489,7 +525,14 @@ export class TalkClient implements TalkSession {
    */
   async interrupt(): Promise<void> {
     const active = this.responseActive;
-    if (active) { this.interrupting = true; this.dropOutput = true; }
+    if (active) {
+      this.interrupting = true;
+      this.dropOutput = true;
+      // bind the cancel to the response: its late output (or, if it was not created yet, the whole of it) is dropped
+      if (this.currentResponseId) this.markCancelled(this.currentResponseId);
+      else if (this.expectResponse > 0) { this.expectResponse--; this.cancelUncreated++; }
+      this.currentResponseId = null;
+    }
     this.stopCaptionTimer();
     const segs = this.segs;
     const heardAudio = this.audioStarted;
@@ -531,6 +574,19 @@ export class TalkClient implements TalkSession {
       const h = (e: ServerEvent) => { if (pred(e)) { clearTimeout(t); this.waiters = this.waiters.filter((w) => w !== h); resolve(e); } };
       this.waiters.push(h);
     });
+  }
+
+  private markCancelled(id: string): void {
+    if (this.cancelledIds.size > 50) this.cancelledIds.clear();
+    this.cancelledIds.add(id);
+  }
+
+  /** Output of a response that is not the current one (cancelled, or an older one): never played or captioned. */
+  private stale(evt: ServerEvent): boolean {
+    if (this.dropOutput) return true;
+    const rid = typeof evt.response_id === "string" ? evt.response_id : null;
+    if (rid === null) return false;
+    return this.cancelledIds.has(rid) || (this.currentResponseId !== null && rid !== this.currentResponseId);
   }
 
   private resetResponse(): void {
@@ -625,12 +681,24 @@ export class TalkClient implements TalkSession {
       case "conversation.item.input_audio_transcription.failed":
         this.emit({ type: "transcript", text: "" }); // nothing usable was heard: the turn ends now, not after the timeout
         break;
-      case "response.created":
-        if (this.expectResponse === 0 && this.sessionServer) { // #135: the server answered a turn by itself; never play it
+      case "response.created": {
+        const rid = (evt.response as { id?: unknown } | undefined)?.id;
+        const id = typeof rid === "string" ? rid : null;
+        if (id !== null && this.cancelledIds.has(id)) break; // already cancelled
+        if (this.cancelUncreated > 0) { // the answer the reader cut off before it started: cancel it, never play it
+          this.cancelUncreated--;
+          if (id !== null) this.markCancelled(id);
           this.dropOutput = true;
           this.send({ type: "response.cancel" });
           break;
         }
+        if (this.expectResponse === 0 && this.sessionServer) { // #135: the server answered a turn by itself; never play it
+          if (id !== null) this.markCancelled(id);
+          this.dropOutput = true;
+          this.send({ type: "response.cancel" });
+          break;
+        }
+        this.currentResponseId = id;
         this.expectResponse = Math.max(0, this.expectResponse - 1);
         this.clearCaptions();
         this.player.reset(); // zero the played-sample counter so audio_end_ms measures this reply only
@@ -640,14 +708,15 @@ export class TalkClient implements TalkSession {
         this.audioStarted = false;
         this.caption = "";
         break;
+      }
       case "response.output_item.added": {
-        if (this.dropOutput) break;
+        if (this.stale(evt)) break;
         const item = evt.item as { id?: string; type?: string } | undefined;
         if (item?.type === "message" && typeof item.id === "string") this.assistantItemId = item.id;
         break;
       }
       case "response.output_audio.delta":
-        if (this.dropOutput) break; // the cut-off answer, generated ahead of what was heard
+        if (this.stale(evt)) break; // the cut-off answer, generated ahead of what was heard
         if (typeof evt.delta === "string" && evt.delta) {
           if (typeof evt.item_id === "string") this.assistantItemId = evt.item_id;
           this.player.enqueueBase64(evt.delta);
@@ -656,12 +725,12 @@ export class TalkClient implements TalkSession {
         }
         break;
       case "response.output_audio_transcript.delta":
-        if (this.dropOutput) break;
+        if (this.stale(evt)) break;
         this.caption += String(evt.delta ?? "");
         if (!this.timed) this.emit({ type: "caption", text: this.caption, done: false });
         break;
       case "response.output_audio_transcript.length": { // Boson: the fragment again, with its audio duration (#135)
-        if (this.dropOutput || !this.timed) break;
+        if (this.stale(evt) || !this.timed) break;
         const len = Number(evt.length_ms);
         if (!Number.isFinite(len) || len < 0) break;
         this.segs.push({ text: String(evt.delta ?? ""), start: this.segMs, end: this.segMs + len });
@@ -670,18 +739,20 @@ export class TalkClient implements TalkSession {
         break;
       }
       case "response.output_audio_transcript.done":
-        if (this.dropOutput) break;
+        if (this.stale(evt)) break;
         if (this.timed && this.segs.length) { this.finalCaption = String(evt.transcript ?? this.caption); break; } // shown as it is heard
         this.emit({ type: "caption", text: String(evt.transcript ?? this.caption), done: true });
         break;
       case "response.function_call_arguments.done":
-        if (this.dropOutput) break;
+        if (this.stale(evt)) break;
         if (typeof evt.call_id === "string" && typeof evt.name === "string") {
           this.pendingCalls.push({ callId: evt.call_id, name: evt.name, args: parseArgs(evt.arguments) });
         }
         break;
       case "response.done": {
         const status = (evt.response as { status?: string } | undefined)?.status;
+        const doneId = (evt.response as { id?: unknown } | undefined)?.id;
+        if (typeof doneId === "string" && (this.cancelledIds.has(doneId) || (this.currentResponseId !== null && doneId !== this.currentResponseId))) break; // not the current answer
         this.responseActive = false;
         if (this.dropOutput) { this.pendingCalls = []; break; } // the cancelled answer's end is not the new turn's end (the interrupt waiter saw it)
         const calls = status === "cancelled" ? [] : this.clientCalls(evt.response);

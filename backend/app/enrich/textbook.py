@@ -14,6 +14,7 @@ from typing import Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict
 
+from .. import retrying
 from ..config import settings
 from ..schema import Book, Paragraph, Summary
 from .llm import SpendLimit, effective_provider, estimate_usd
@@ -186,7 +187,7 @@ async def build(book: Book, call: CallFn, on_progress: Callable[[float], None] |
         except SpendLimit:
             raise
         except Exception as e:  # refusal / bad JSON / provider failure: this section has no note
-            log.warning("textbook note skipped (%s)", type(e).__name__)
+            log.warning("textbook note skipped (%s)", retrying.describe(e))
         tick()
 
     await gather_or_cancel(one(t) for t in ts if t.level != 1)
@@ -203,7 +204,7 @@ def save_summaries(book_id: str, summaries: list[Summary]) -> bool:
     path = settings.data_dir / "books" / book_id / "book.json"
     with books.write_lock(path):   # read-modify-write: shared with every other book.json writer
         try:
-            book = Book.model_validate_json(path.read_text(encoding="utf-8"))
+            book = Book.model_validate_json(books.read_bytes(path))
         except (OSError, ValueError):
             return False
         if book.kind != "textbook":

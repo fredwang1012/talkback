@@ -1,0 +1,311 @@
+[
+ {
+  "event_id": "3b62b876-b537-4178-aac3-a65db5680fb9",
+  "type": "session.created",
+  "session": {
+   "id": "682f89fa",
+   "type": "realtime",
+   "object": "realtime.session",
+   "audio": {
+    "input": {
+     "format": {
+      "rate": 24000,
+      "type": "audio/pcm"
+     },
+     "noise_reduction": null,
+     "transcription": {
+      "language": null,
+      "model": "higgs-stt-3.1"
+     },
+     "turn_detection": {
+      "type": "semantic_vad",
+      "create_response": false,
+      "interrupt_response": false,
+      "min_speech_duration": 0.125,
+      "prefix_padding_ms": 300,
+      "silence_duration_ms": 500,
+      "threshold": 0.6
+     }
+    },
+    "output": {
+     "format": {
+      "rate": 24000,
+      "type": "audio/pcm"
+     },
+     "voice": "oliver"
+    }
+   },
+   "instructions": "You are a spoken reading companion.",
+   "max_output_tokens": "inf",
+   "model": "higgs-realtime",
+   "output_modalities": [
+    "audio"
+   ],
+   "tools": [],
+   "tool_choice": "auto",
+   "truncation": "auto",
+   "temperature": 0.3
+  }
+ },
+ {
+  "event_id": "e4edb31d-f5b1-4689-a678-70d3addf3a7e",
+  "type": "input_audio_buffer.speech_started",
+  "item_id": "1a91cb05",
+  "audio_start_ms": 0
+ },
+ {
+  "event_id": "86613ca5-cf07-455d-a7c6-52c4b7d5f8a8",
+  "type": "input_audio_buffer.speech_stopped",
+  "item_id": "1a91cb05",
+  "audio_end_ms": 2804
+ },
+ {
+  "event_id": "2320d3ba-093d-467f-8341-11051d306cc2",
+  "type": "input_audio_buffer.committed",
+  "previous_item_id": null,
+  "item_id": "1a91cb05"
+ },
+ {
+  "event_id": "bc34721c-7bc8-4548-86fb-3179798dd881",
+  "type": "conversation.item.added",
+  "item": {
+   "id": "1a91cb05",
+   "object": "realtime.item",
+   "type": "message",
+   "role": "user",
+   "status": "completed",
+   "content": [
+    {
+     "type": "input_audio",
+     "audio": "",
+     "end_timestamps_ms": null
+    }
+   ]
+  },
+  "previous_item_id": null
+ },
+ {
+  "event_id": "615fd1e7-49bd-4ef9-aedc-2a8c719f9404",
+  "type": "conversation.item.input_audio_transcription.completed",
+  "item_id": "1a91cb05",
+  "content_index": 0,
+  "transcript": "What is Boolean retrieval?"
+ },
+ {
+  "event_id": "0e0b2211-bc63-4363-8d98-8239bc955117",
+  "type": "input_audio_buffer.speech_started",
+  "item_id": "1a91cb05",
+  "audio_start_ms": 3380
+ },
+ {
+  "event_id": "d9c712bf-9524-4622-bba9-821b0873e995",
+  "type": "input_audio_buffer.speech_stopped",
+  "item_id": "1a91cb05",
+  "audio_end_ms": 6324
+ },
+ {
+  "event_id": "a3aa5e6a-75e9-47bf-85ca-ea14cf7a7c4c",
+  "type": "input_audio_buffer.committed",
+  "previous_item_id": null,
+  "item_id": "1a91cb05"
+ },
+ {
+  "event_id": "bd0bad9c-bd79-4236-b4bb-195d633377fe",
+  "type": "conversation.item.added",
+  "item": {
+   "id": "1a91cb05",
+   "object": "realtime.item",
+   "type": "message",
+   "role": "user",
+   "status": "completed",
+   "content": [
+    {
+     "type": "input_audio",
+     "audio": "",
+     "end_timestamps_ms": null
+    }
+   ]
+  },
+  "previous_item_id": null
+ },
+ {
+  "event_id": "ffa4b331-4001-44c9-bfb8-5f022600eb93",
+  "type": "conversation.item.input_audio_transcription.completed",
+  "item_id": "1a91cb05",
+  "content_index": 0,
+  "transcript": "What is Boolean retrieval? I don't understand anything."
+ },
+ {
+  "event_id": "98be40a6-83a7-491a-a64e-4901bf44409d",
+  "type": "conversation.item.added",
+  "item": {
+   "id": "bff9b387",
+   "object": "realtime.item",
+   "type": "message",
+   "role": "assistant",
+   "status": "in_progress",
+   "content": [
+    {
+     "type": "text",
+     "text": "Boolean retrieval matches documents by exact term logic."
+    },
+    {
+     "type": "audio",
+     "audio": null
+    }
+   ]
+  },
+  "previous_item_id": "1a91cb05"
+ },
+ {
+  "event_id": "6811dbd7-6ae5-48df-a153-4e50a338212b",
+  "type": "input_audio_buffer.speech_started",
+  "item_id": "1a91cb05",
+  "audio_start_ms": 7028
+ },
+ {
+  "event_id": "477274eb-0c3d-491c-86aa-c0841c7684cd",
+  "type": "input_audio_buffer.speech_stopped",
+  "item_id": "1a91cb05",
+  "audio_end_ms": 9396
+ },
+ {
+  "event_id": "064998c3-02fd-4625-ba8a-e422512d7685",
+  "type": "input_audio_buffer.committed",
+  "previous_item_id": null,
+  "item_id": "1a91cb05"
+ },
+ {
+  "event_id": "6468365f-a98f-434f-90b7-e2e7a58d41a0",
+  "type": "conversation.item.added",
+  "item": {
+   "id": "1a91cb05",
+   "object": "realtime.item",
+   "type": "message",
+   "role": "user",
+   "status": "completed",
+   "content": [
+    {
+     "type": "input_audio",
+     "audio": "",
+     "end_timestamps_ms": null
+    }
+   ]
+  },
+  "previous_item_id": null
+ },
+ {
+  "event_id": "ce6e7656-d091-4967-b6d9-12d856ea9200",
+  "type": "conversation.item.input_audio_transcription.completed",
+  "item_id": "1a91cb05",
+  "content_index": 0,
+  "transcript": "What is Boolean retrieval? I don't understand anything. Can you give me an example?"
+ },
+ {
+  "event_id": "a8e5c050-2726-492e-878e-9cb226dd5f18",
+  "type": "conversation.item.deleted",
+  "item_id": "1a91cb05"
+ },
+ {
+  "event_id": "ae0339ed-fa12-4363-9053-8032e15d1715",
+  "type": "conversation.item.deleted",
+  "item_id": "1a91cb05"
+ },
+ {
+  "event_id": "7222cfce-3c14-48c8-8471-11d7e5811c05",
+  "type": "conversation.item.deleted",
+  "item_id": "1a91cb05"
+ },
+ {
+  "event_id": "e946240d-3089-4cb5-87d5-e2fb947d2317",
+  "type": "input_audio_buffer.speech_started",
+  "item_id": "1a91cb05",
+  "audio_start_ms": 10196
+ },
+ {
+  "event_id": "5ec85453-89f1-4dea-ad9f-86e8cdae2d35",
+  "type": "input_audio_buffer.speech_stopped",
+  "item_id": "1a91cb05",
+  "audio_end_ms": 12756
+ },
+ {
+  "event_id": "5d8311bc-378f-422a-a50a-b25159f81b0d",
+  "type": "input_audio_buffer.committed",
+  "previous_item_id": "bff9b387",
+  "item_id": "1a91cb05"
+ },
+ {
+  "event_id": "cf33ac2c-9af2-4d36-a7a0-88ebb95545d3",
+  "type": "conversation.item.added",
+  "item": {
+   "id": "1a91cb05",
+   "object": "realtime.item",
+   "type": "message",
+   "role": "user",
+   "status": "completed",
+   "content": [
+    {
+     "type": "input_audio",
+     "audio": "",
+     "end_timestamps_ms": null
+    }
+   ]
+  },
+  "previous_item_id": "bff9b387"
+ },
+ {
+  "event_id": "25fa7042-cf95-44b1-bfcb-2593a0519758",
+  "type": "conversation.item.input_audio_transcription.completed",
+  "item_id": "1a91cb05",
+  "content_index": 0,
+  "transcript": "What is Boolean retrieval? I don't understand anything. Can you give me an example? Thanks, that helps a lot."
+ },
+ {
+  "event_id": "5bac8789-a2ae-445a-ab26-bc7da2a90c26",
+  "type": "input_audio_buffer.cleared"
+ },
+ {
+  "event_id": "2745afd3-d51d-4c65-8e7d-df871138fb3d",
+  "type": "input_audio_buffer.speech_started",
+  "item_id": "1a91cb05",
+  "audio_start_ms": 13396
+ },
+ {
+  "event_id": "19956266-e49a-47df-a2a8-7846dc8db4fb",
+  "type": "input_audio_buffer.speech_stopped",
+  "item_id": "1a91cb05",
+  "audio_end_ms": 15668
+ },
+ {
+  "event_id": "440f386d-eab6-49dd-8250-d6417e0a3032",
+  "type": "input_audio_buffer.committed",
+  "previous_item_id": "bff9b387",
+  "item_id": "1a91cb05"
+ },
+ {
+  "event_id": "2ef77ef2-315e-4b2e-b011-fd03f68afcc7",
+  "type": "conversation.item.added",
+  "item": {
+   "id": "1a91cb05",
+   "object": "realtime.item",
+   "type": "message",
+   "role": "user",
+   "status": "completed",
+   "content": [
+    {
+     "type": "input_audio",
+     "audio": "",
+     "end_timestamps_ms": null
+    }
+   ]
+  },
+  "previous_item_id": "bff9b387"
+ },
+ {
+  "event_id": "c2c994b2-0d49-48a7-91b7-e5790bf59920",
+  "type": "conversation.item.input_audio_transcription.completed",
+  "item_id": "1a91cb05",
+  "content_index": 0,
+  "transcript": "Goodbye for now."
+ }
+]
