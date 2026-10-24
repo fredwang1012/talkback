@@ -84,9 +84,11 @@ def estimate(book: Book, provider: str | None = None) -> float:
     return round(usd * ESTIMATE_MARGIN, 4)
 
 
-def check_caps(estimate_usd_: float, textbook: bool = False) -> str | None:
-    """None when enrichment may start; else the plain message to show the reader."""
-    if estimate_usd_ > settings.upload_book_cap_usd:
+def check_caps(estimate_usd_: float, textbook: bool = False, book_id: str | None = None) -> str | None:
+    """None when enrichment may start; else the plain message to show the reader. With `book_id`, what the book has
+    already cost (earlier runs and retries) counts against the per-book cap too."""
+    already = spend.book_usd(book_id) if book_id else 0.0
+    if estimate_usd_ + already > settings.upload_book_cap_usd:
         return TEXTBOOK_TOO_LONG if textbook else TOO_LONG
     if spend.total_usd() + estimate_usd_ > settings.upload_total_cap_usd:
         return TEXTBOOK_BUDGET_USED if textbook else BUDGET_USED
@@ -131,7 +133,7 @@ def _meter(book_id: str, llm: LLM) -> None:
             asyncio.get_running_loop().create_task(asyncio.to_thread(spend.flush))
         if total >= settings.upload_total_cap_usd:
             raise SpendLimit("upload budget used")
-        if llm.usd > cap:
+        if spend.book_usd(book_id) > cap:   # cumulative over every run of this book, not just this one
             raise SpendLimit("book cap")
 
     llm.on_usage = on_usage
@@ -175,6 +177,7 @@ async def enrich_textbook(book_id: str, report: Report, *, llm: LLM | None = Non
     _meter(book_id, llm)
     state = {"stage": "summaries"}
     out: list = []
+    capped = False
     try:
         book = Book.model_validate_json(_book_path(book_id).read_text(encoding="utf-8"))
         _, subs = tb_mod.plan(book)
@@ -193,6 +196,7 @@ async def enrich_textbook(book_id: str, report: Report, *, llm: LLM | None = Non
         raise
     except SpendLimit as e:
         log.warning("textbook notes for %s stopped: %s", book_id, e)
+        capped = True
         msg = TEXTBOOK_BUDGET_USED if "budget" in str(e) else TEXTBOOK_TOO_LONG
     except Exception as e:
         log.warning("textbook notes for %s failed: %s", book_id, type(e).__name__)
@@ -201,7 +205,7 @@ async def enrich_textbook(book_id: str, report: Report, *, llm: LLM | None = Non
         await asyncio.shield(asyncio.to_thread(spend.flush))
     if out:
         await asyncio.to_thread(tb_mod.save_summaries, book_id, list(out))
-    report(status="error", stage=state["stage"], message=msg)
+    report(status="refused" if capped else "error", stage=state["stage"], message=msg)   # a cap stop is final: no retry
     return False
 
 
@@ -297,7 +301,7 @@ async def _run(book_id: str, path: Path, report: Report, llm: LLM, indexer: Inde
         raise
     except SpendLimit as e:
         log.warning("enrichment of %s stopped in %s: %s", book_id, state["stage"], e)
-        report(status="error", stage=state["stage"], message=BUDGET_USED if "budget" in str(e) else TOO_LONG)
+        report(status="refused", stage=state["stage"], message=BUDGET_USED if "budget" in str(e) else TOO_LONG)  # final: no retry
     except Exception as e:
         log.warning("enrichment of %s failed in %s: %s", book_id, state["stage"], type(e).__name__)
         report(status="error", stage=state["stage"], message=FAILED)

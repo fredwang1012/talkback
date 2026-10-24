@@ -707,8 +707,10 @@ def _set_enrich(book_id: str, **fields) -> None:
     """Record the novel enrichment sub-status next to the (ready) ingest status."""
     if book_id in _deleted:
         return
+    retries = fields.pop("enrich_retries", None)
     enrich = {k: v for k, v in fields.items() if v is not None}
-    _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", enrich=enrich, index=_mem_index(book_id))
+    extra = {"enrich_retries": retries} if retries is not None else {}
+    _upload_status[book_id] = ingest_upload.write_status(book_id, "ready", enrich=enrich, index=_mem_index(book_id), **extra)
 
 
 _enrich_lock = asyncio.Lock()  # one enrichment at a time (cost control and rate limits)
@@ -730,6 +732,7 @@ async def _enrich_indexer(book: Book) -> None:
             _index_jobs.discard(book.id)
 
 
+MAX_ENRICH_RETRIES = 3          # user retries per book (persisted in status.json as enrich_retries)
 _enrich_jobs: set[str] = set()   # books with an enrichment job queued or running
 _kind_claims: set[str] = set()   # books whose kind change is being handled (check-and-claim, see change_kind)
 
@@ -810,7 +813,7 @@ async def _resume_enrichments() -> None:
                     continue
             textbook = book.kind == "textbook"
             flag = {"summaries_only": True} if textbook else {}
-            reason = enrich_pipeline.check_caps(enrich_pipeline.estimate_for(book), textbook=textbook)
+            reason = enrich_pipeline.check_caps(enrich_pipeline.estimate_for(book), textbook=textbook, book_id=book_id)
             if reason:
                 _set_enrich(book_id, status="refused", message=reason, **flag)
                 continue
@@ -830,7 +833,7 @@ def _decide_enrichment(book_id: str, book: Book) -> bool:
     textbook = book.kind == "textbook"
     flag = {"summaries_only": True} if textbook else {}
     est = enrich_pipeline.estimate_for(book)
-    reason = enrich_pipeline.check_caps(est, textbook=textbook)
+    reason = enrich_pipeline.check_caps(est, textbook=textbook, book_id=book_id)
     if reason:
         _set_enrich(book_id, status="refused", message=reason, **flag)
     elif settings.upload_confirm:
@@ -1107,7 +1110,7 @@ def book_status(book_id: str):
             st = {"status": "error", "message": "Processing was interrupted; please upload again."}
         elif st and (st.get("enrich") or {}).get("status") in ("running", "queued"):  # restarted mid-enrichment
             st = {"status": "ready", "enrich": {"status": "error", "stage": st["enrich"].get("stage"),
-                  "message": enrich_pipeline.INTERRUPTED}}
+                  "message": enrich_pipeline.INTERRUPTED}} | ({"enrich_retries": st["enrich_retries"]} if "enrich_retries" in st else {})
         if st and (st.get("index") or {}).get("state") in ("running", "queued"):  # restarted mid-indexing: BM25 keeps serving
             st = {**st, "index": {**st["index"], "state": "error", "message": "Search indexing was interrupted."}}
     if st is None:
@@ -1130,18 +1133,22 @@ async def start_enrichment(book_id: str, background: BackgroundTasks):
     # check without an await before the new status is written: a second request then sees the job and gets a 409
     if book_id in _kind_claims or book_id in _enrich_jobs or book_id in _equation_jobs:   # a job or kind change is running
         raise HTTPException(409, "This book is still being processed; try again when it finishes.")
-    if state not in ("awaiting_confirmation", "error"):
+    if state not in ("awaiting_confirmation", "error"):   # also "refused": a cap stop is final
         raise HTTPException(409, "This book is not waiting for confirmation.")
+    retries = int(st.get("enrich_retries") or 0)
+    if retry and retries >= MAX_ENRICH_RETRIES:
+        raise HTTPException(409, "Character processing has failed several times; the book stays readable with the narrator.")
     book = books.load_book(book_id)
     if book is None:
         raise HTTPException(404, "Book not found")
     textbook = book.kind == "textbook"
     flag = {"summaries_only": True} if textbook else {}
-    reason = enrich_pipeline.check_caps(enrich_pipeline.estimate_for(book), textbook=textbook)  # re-checked at start
+    reason = enrich_pipeline.check_caps(enrich_pipeline.estimate_for(book), textbook=textbook, book_id=book_id)  # re-checked at start
     if reason:
         _set_enrich(book_id, status="refused", message=reason, **flag)
         return _upload_status[book_id]
-    _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start", **flag)
+    extra = {"enrich_retries": retries + 1} if retry else {}
+    _set_enrich(book_id, status="running", stage="queued", progress=0.0, message="Waiting to start", **flag, **extra)
     background.add_task(_run_enrichment, book_id, resume=retry)
     return _upload_status[book_id]
 

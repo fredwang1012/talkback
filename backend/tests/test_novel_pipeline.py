@@ -544,7 +544,7 @@ def test_job_stops_when_cumulative_cap_is_reached_mid_job(data_dir, monkeypatch)
     monkeypatch.setattr(settings, "upload_total_cap_usd", 15.0)
     fake = FakeProvider()
     ok, events, _ = run_pipeline("u-test-aaaaaaaa", fake)
-    assert not ok and events[-1]["status"] == "error" and events[-1]["message"] == pipeline.BUDGET_USED
+    assert not ok and events[-1]["status"] == "refused" and events[-1]["message"] == pipeline.BUDGET_USED
     assert len(fake.calls) == 1  # the cast call went out, every later call was refused locally
     assert saved(data_dir).paragraphs  # still readable
 

@@ -1579,7 +1579,7 @@ def discard_book(book_id: str) -> None:
         tmp.unlink(missing_ok=True)
 
 
-KIND_KEYS = ("kind", "kind_detected")
+KIND_KEYS = ("kind", "kind_detected", "enrich_retries")   # carried over from the previous status
 
 
 def write_status(book_id: str, status: str, message: str | None = None, enrich: dict | None = None,

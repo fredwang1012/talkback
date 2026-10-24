@@ -7,7 +7,7 @@ import pytest
 from app import ingest_upload, main, users
 from app.config import settings
 from app.enrich import pipeline
-from tests.test_novel_pipeline import FakeProvider, client, data_dir, make_book_on_disk, make_llm, saved  # noqa: F401
+from tests.test_novel_pipeline import FakeProvider, client, data_dir, make_book_on_disk, make_llm, run_pipeline, saved  # noqa: F401
 from tests.test_api import env  # noqa: F401
 from tests.test_per_user import ALICE, BOB, h, pu, token  # noqa: F401
 
@@ -216,3 +216,72 @@ def test_retry_per_user_permissions(pu, monkeypatch):  # noqa: F811
     assert not started
     r = client.post("/api/books/u-alice-1/enrich", headers=h(token(ALICE)))
     assert r.status_code == 202 and started == [("u-alice-1", True)]
+
+
+# ---------- cap bypass: cap stops are final, the per-book cap is cumulative, retries are limited ----------
+
+def test_cap_stop_is_recorded_as_refused_and_not_retryable(rig, monkeypatch):
+    monkeypatch.setattr(settings, "upload_total_cap_usd", 0.0001)   # the first call pushes the total past the cap
+    make_book_on_disk(settings.data_dir, book_id=BID)
+    ingest_upload.write_status(BID, "ready", enrich={"status": "error", "message": pipeline.FAILED})
+    main._upload_status.clear()
+    monkeypatch.setattr(pipeline, "check_caps", lambda *a, **k: None)   # let the job start; the meter then stops it
+    assert rig.post(f"/api/books/{BID}/enrich").status_code == 202
+    assert st(BID)["status"] == "refused" and st(BID)["message"] == pipeline.BUDGET_USED
+    calls = len(rig.fake.calls)
+    assert rig.post(f"/api/books/{BID}/enrich").status_code == 409   # refused: no retry
+    assert len(rig.fake.calls) == calls
+
+
+def test_per_book_cap_is_cumulative(data_dir, monkeypatch):
+    from app.enrich import spend
+    monkeypatch.setattr(settings, "upload_book_cap_usd", 1.0)
+    assert pipeline.check_caps(0.6, book_id=BID) is None
+    spend.add(BID, "gemini", 0.7)
+    assert pipeline.check_caps(0.6, book_id=BID) == pipeline.TOO_LONG   # 0.7 already spent + 0.6 > 1.0
+    assert pipeline.check_caps(0.2, book_id=BID) is None
+    assert pipeline.check_caps(0.6, book_id="u-other-cccccccc") is None   # other books are unaffected
+    assert spend.book_usd(BID) == pytest.approx(0.7)
+
+
+def test_meter_stops_on_cumulative_book_spend(data_dir, monkeypatch):
+    from app.enrich import spend
+    make_book_on_disk(data_dir)
+    monkeypatch.setattr(settings, "upload_book_cap_usd", 1.0)
+    spend.add(BID, "fake", 1.26)   # earlier runs already used the whole allowance (cap * margin = 1.25)
+    ok, events, _ = run_pipeline(BID)
+    assert not ok and events[-1]["status"] == "refused" and events[-1]["message"] == pipeline.TOO_LONG
+
+
+def test_retry_and_resume_use_the_cumulative_check(rig, monkeypatch):
+    from app.enrich import spend
+    stale(BID)
+    spend.add(BID, "fake", 3.999)   # cap 4.0: nothing left for this book's estimate
+    asyncio.run(main._resume_enrichments())
+    assert st(BID)["status"] == "refused" and not rig.fake.calls
+    make_book_on_disk(settings.data_dir, book_id=BID2)
+    ingest_upload.write_status(BID2, "ready", enrich={"status": "error", "message": pipeline.FAILED})
+    spend.add(BID2, "fake", 3.999)
+    main._upload_status.clear()
+    r = rig.post(f"/api/books/{BID2}/enrich")
+    assert r.json()["enrich"]["status"] == "refused" and not rig.fake.calls
+
+
+def test_retries_are_limited_and_persisted(rig, monkeypatch):
+    make_book_on_disk(settings.data_dir, book_id=BID)
+
+    class Boom(FakeProvider):
+        async def complete(self, system, user, schema, *a):
+            raise ValueError("boom")
+    monkeypatch.setattr(pipeline, "make_llm", lambda *a, **k: make_llm(Boom()))
+    monkeypatch.setattr(settings, "upload_total_cap_usd", 1000.0)
+    ingest_upload.write_status(BID, "ready", enrich={"status": "error", "message": pipeline.FAILED})
+    main._upload_status.clear()
+    for n in range(1, main.MAX_ENRICH_RETRIES + 1):
+        r = rig.post(f"/api/books/{BID}/enrich")
+        assert r.status_code == 202
+        assert ingest_upload.read_status(BID)["enrich_retries"] == n   # survives the job's own status writes
+        main._upload_status.clear()   # as after a restart: the count comes from status.json
+        assert st(BID)["status"] == "error"
+    r = rig.post(f"/api/books/{BID}/enrich")
+    assert r.status_code == 409 and "several times" in r.json()["detail"]

@@ -208,7 +208,7 @@ def test_total_cap_stops_a_running_job_and_keeps_what_was_written(data_dir, monk
     on_disk(data_dir)
     monkeypatch.setattr(settings, "upload_total_cap_usd", 1e-9)  # the first call's usage passes it
     ok, events = run_textbook()
-    assert not ok and events[-1]["status"] == "error" and events[-1]["message"] == pipeline.TEXTBOOK_BUDGET_USED
+    assert not ok and events[-1]["status"] == "refused" and events[-1]["message"] == pipeline.TEXTBOOK_BUDGET_USED
     assert len(saved(data_dir).summaries) <= 1
 
 
