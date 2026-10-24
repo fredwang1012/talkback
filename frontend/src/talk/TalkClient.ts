@@ -120,6 +120,8 @@ export interface TalkClientDeps {
 
 /** Close code 1013 before the session opened: too many concurrent connections. Safe to retry after a pause. */
 export class ConnectionLimitError extends Error {}
+/** The socket was dropped before it opened (a turn-mode change): openWithBackoff opens the next one at once. */
+class SupersededError extends Error {}
 
 export type SessionOptions = { turnDetection?: Record<string, unknown> | null; language?: string | null };
 
@@ -182,6 +184,9 @@ export class TalkClient implements TalkSession {
 
   // #135 server turn detection: wanted (hands-free), and the VAD type the open (or next) session uses
   private wantServer = false;
+  private modeChangeDue = false; // #141: the session's turn mode is wrong, but an answer is playing: switch when it ends
+  private sessionRefused = false; // #141: the open session's turn detection was refused; it is replaced once idle
+  private toolsOut = false; // tool calls handed to the reader, returnTools not called yet
   private vadIndex = 0;
   private sessionServer = false; // the open session was configured with server turn detection
   private sessionAcked = false; // its session.created was seen
@@ -218,6 +223,7 @@ export class TalkClient implements TalkSession {
   // ---- connection --------------------------------------------------------------------------------------------
 
   ensureOpen(voice: string): Promise<void> {
+    this.applyModeChange(false); // a deferred mode change not made yet (#141): the session opened next has the right config
     if (this.isOpen) return voice === this.voice ? Promise.resolve() : this.setVoice(voice);
     if (this.opening) return this.opening;
     this.voice = voice;
@@ -230,6 +236,7 @@ export class TalkClient implements TalkSession {
       try {
         return await this.open(voice);
       } catch (e) {
+        if (e instanceof SupersededError) { attempt--; continue; } // dropped while connecting (a mode change): open the right one
         const wait = this.d.backoffMs[attempt];
         if (!(e instanceof ConnectionLimitError) || wait === undefined) throw e;
         this.d.onLog?.("info", "backoff", `Boson is at its connection limit; retrying in ${wait} ms`);
@@ -264,7 +271,7 @@ export class TalkClient implements TalkSession {
         if (wasThis) this.ws = null;
         const info = describeClose(ev.code, ev.reason);
         this.d.onLog?.("info", `close:${ev.code}`, info);
-        if (!wasThis) return;
+        if (!wasThis) { if (!opened) reject(new SupersededError()); return; } // never leave `opening` pending for ever
         this.resetResponse();
         this.dropOutput = false;
         this.interrupting = false;
@@ -301,7 +308,25 @@ export class TalkClient implements TalkSession {
     if (on === this.wantServer) return;
     this.wantServer = on;
     this.vadIndex = 0;
-    if (this.ws && this.sessionServer !== on) this.dropSocket("turn mode change");
+    if (!on) this.pendingAudio = []; // held for a server session that will not come: never the start of the next press
+    if (!this.ws || (this.sessionServer === on && !this.sessionRefused)) { this.modeChangeDue = false; return; }
+    if (this.turnBusy) this.modeChangeDue = true; // #141: never drop the socket under an answer; switch once it drained
+    else this.dropSocket("turn mode change");
+  }
+
+  /** A turn is in progress (audio going out, an answer generated, played or waiting for its tools): a socket dropped
+   * now would never report the answer's end, and the controller would stay "answering" (#141). */
+  private get turnBusy(): boolean {
+    return this.micOn || this.responseActive || (this.responseDone && this.audioStarted) || this.expectResponse > 0 || this.toolsOut;
+  }
+
+  /** The turn is idle again: make the deferred mode change (drop the session, open one with the right config). */
+  private applyModeChange(reopen = true): void {
+    if (!this.modeChangeDue || this.turnBusy) return;
+    this.modeChangeDue = false;
+    if (!this.ws || (this.sessionServer === this.wantServer && !this.sessionRefused)) return;
+    this.dropSocket(this.sessionRefused ? "turn mode fallback" : "turn mode change");
+    if (reopen) void this.ensureOpen(this.voice).catch((e: unknown) => this.emit({ type: "error", message: e instanceof Error ? e.message : String(e) }));
   }
 
   /** Boson's turn detection is in use for hands-free (wanted, and not refused). */
@@ -320,6 +345,10 @@ export class TalkClient implements TalkSession {
   private dropSocket(reason: string): void {
     const ws = this.ws;
     this.ws = null;
+    this.modeChangeDue = false;
+    this.sessionRefused = false;
+    this.pendingAudio = []; // held for the dropped session (#141)
+    this.commitWhenOpen = false;
     this.resetResponse();
     this.dropOutput = false;
     this.interrupting = false;
@@ -329,11 +358,12 @@ export class TalkClient implements TalkSession {
 
   /** The server refused this turn detection (#135): try the next type, or go back to manual turns and say so. */
   private refuseServerMode(why: string, toManual = false): void {
-    if (!this.sessionServer) return;
-    this.sessionServer = false;
+    if (!this.sessionServer || this.sessionRefused) return;
     this.d.onLog?.("info", "turn-mode", why);
     if (!toManual && this.vadIndex + 1 < VAD_TYPES.length) this.vadIndex++;
     else { this.wantServer = false; this.emit({ type: "turn-mode", server: false }); }
+    if (this.turnBusy) { this.sessionRefused = true; this.modeChangeDue = true; return; } // #141: once the answer drained
+    this.sessionServer = false;
     this.dropSocket("turn mode fallback");
     void this.ensureOpen(this.voice).catch((e: unknown) => this.emit({ type: "error", message: e instanceof Error ? e.message : String(e) }));
   }
@@ -438,6 +468,7 @@ export class TalkClient implements TalkSession {
 
   /** Tool calls done (#72): hand every result back, then ask for the spoken continuation under the same instructions. */
   returnTools(results: ToolResult[]): void {
+    this.toolsOut = false;
     for (const r of results) this.send(functionCallOutput(r.callId, r.output));
     this.responseActive = true;
     this.expectResponse++;
@@ -503,6 +534,7 @@ export class TalkClient implements TalkSession {
   }
 
   private resetResponse(): void {
+    this.toolsOut = false;
     this.responseActive = false;
     this.responseDone = false;
     this.audioStarted = false;
@@ -655,12 +687,13 @@ export class TalkClient implements TalkSession {
         const calls = status === "cancelled" ? [] : this.clientCalls(evt.response);
         this.pendingCalls = [];
         if (calls.length) { // the model stopped to act: run the tools, then returnTools() continues the answer
+          this.toolsOut = true;
           this.emit({ type: "tool-call", calls });
           break;
         }
         this.responseDone = true;
         this.emit({ type: "response-done", status: status === "cancelled" ? "cancelled" : status === "failed" ? "failed" : "completed" });
-        if (!this.audioStarted) this.emit({ type: "playback-drained" }); // nothing was spoken, nothing to wait for
+        if (!this.audioStarted) { this.emit({ type: "playback-drained" }); this.applyModeChange(); } // nothing was spoken, nothing to wait for
         break;
       }
       case "error": {
@@ -687,6 +720,7 @@ export class TalkClient implements TalkSession {
       if (this.timed && (this.segs.length || this.finalCaption !== null)) this.finishCaption();
       this.emit({ type: "playback-drained" });
       this.responseDone = false;
+      this.applyModeChange();
     }
   }
 }

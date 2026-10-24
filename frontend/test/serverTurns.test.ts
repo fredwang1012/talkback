@@ -535,3 +535,135 @@ describe("TalkController on Boson turn detection (#135)", () => {
   });
 });
 
+// ---- #141 review: a mode switch mid-answer, held audio after hands-free goes off ---------------------------------
+
+async function pttAnswerPlaying(l: ReturnType<typeof loop>) {
+  await l.talk.pttDown();
+  await settle();
+  l.ws().open();
+  await l.advance(600);
+  const up = l.talk.pttUp();
+  await settle();
+  l.ws().recv({ type: "input_audio_buffer.committed", item_id: "u1" });
+  l.ws().recv({ type: "conversation.item.input_audio_transcription.completed", item_id: "u1", transcript: "Who is Alice?" });
+  await settle();
+  await up;
+  await settle();
+  await characterSpeaks(l);
+  expect(l.talk.state).toBe("answering");
+}
+
+describe("turn-mode change while an answer plays (#141 review)", () => {
+  it("hands-free on mid-answer: the answer finishes, the turn ends normally, then a semantic_vad session opens", async () => {
+    const l = loop();
+    await pttAnswerPlaying(l);
+    await l.talk.setHandsFree(true);
+    await settle();
+    expect(l.sockets).toHaveLength(1);
+    expect(l.sockets[0].readyState).toBe(1); // not dropped under the playing answer
+    l.player.onSpeaking(false); // the answer drained
+    await settle();
+    expect(l.talk.state).not.toBe("answering");
+    expect(["resuming", "reading"]).toContain(l.talk.state);
+    expect(l.sockets[0].readyState).toBe(3);
+    expect(l.sockets).toHaveLength(2);
+    l.ws().open();
+    await settle();
+    expect(td(l.ws())).toMatchObject({ type: "semantic_vad" });
+    await l.advance(2000);
+    expect(l.reader.log.at(-1)).toBe("resumeAt:4"); // auto-resume still works
+  });
+
+  it("hands-free off mid-answer: the answer finishes and the turn ends; the next press uses a manual session", async () => {
+    const l = loop();
+    await handsFreeOn(l);
+    await speakTurn(l, "Who is Alice?");
+    await characterSpeaks(l);
+    expect(l.talk.state).toBe("answering");
+    await l.talk.setHandsFree(false);
+    await settle();
+    expect(l.sockets[0].readyState).toBe(1);
+    l.player.onSpeaking(false);
+    await settle();
+    expect(l.talk.state).not.toBe("answering");
+    expect(l.sockets[0].readyState).toBe(3);
+    await l.talk.pttDown();
+    await settle();
+    l.ws().open();
+    await settle();
+    expect(td(l.ws())).toBeNull();
+  });
+
+  it("a refused turn detection during an answer waits for the answer to drain", async () => {
+    const h = makeClient();
+    h.client.setServerTurns(true);
+    await open(h);
+    h.client.respond("INSTR");
+    h.ws().recv({ type: "response.created", response: { id: "r1" } });
+    h.ws().recv({ type: "response.output_audio.delta", item_id: "a", delta: "AAAA" });
+    h.ws().recv({ type: "response.done", response: { id: "r1", status: "completed", output: [] } });
+    h.ws().recv({ type: "error", error: { type: "invalid_request_error", message: "unsupported turn_detection type semantic_vad" } });
+    await settle();
+    expect(h.sockets).toHaveLength(1);
+    expect(h.sockets[0].readyState).toBe(1);
+    h.player.onSpeaking(false);
+    await settle();
+    expect(h.events).toContainEqual({ type: "playback-drained" });
+    expect(h.sockets[0].readyState).toBe(3);
+    expect(h.sockets).toHaveLength(2);
+    h.ws().open();
+    await settle();
+    expect(td(h.ws())).toMatchObject({ type: "server_vad" });
+  });
+
+  it("audio held in server mode is dropped when hands-free goes off: the next press sends only its own audio", async () => {
+    const h = makeClient();
+    h.client.setServerTurns(true);
+    await h.client.setMonitor(true);
+    for (let i = 0; i < 10; i++) h.chunk(btoa(`old${i}`.padEnd(4800, " "))); // held: no socket yet
+    h.client.setServerTurns(false);
+    await h.client.setMonitor(false);
+    await h.client.startMic();
+    h.chunk(btoa("new".padEnd(4800, " ")));
+    await open(h);
+    const appended = h.ws().sent.filter((e) => e.type === "input_audio_buffer.append").map((e) => atob(e.audio));
+    expect(appended.some((a) => a.startsWith("old"))).toBe(false);
+    expect(appended.some((a) => a.startsWith("new"))).toBe(true);
+  });
+
+  it("audio held while a socket connects in server mode is dropped; that socket then opens as a manual one", async () => {
+    const h = makeClient();
+    h.client.setServerTurns(true);
+    await h.client.setMonitor(true);
+    const p = h.client.ensureOpen("marcus");
+    await settle(); // connecting: not open yet
+    for (let i = 0; i < 5; i++) h.chunk(btoa(`old${i}`.padEnd(4800, " ")));
+    h.client.setServerTurns(false);
+    await h.client.setMonitor(false);
+    await h.client.startMic();
+    h.chunk(btoa("new".padEnd(4800, " ")));
+    h.ws().open();
+    await p;
+    expect(h.sockets).toHaveLength(1);
+    expect(td(h.ws())).toBeNull(); // the config is chosen when it opens
+    const appended = h.ws().sent.filter((e) => e.type === "input_audio_buffer.append").map((e) => atob(e.audio));
+    expect(appended.some((a) => a.startsWith("new"))).toBe(true);
+    expect(appended.some((a) => a.startsWith("old"))).toBe(false);
+  });
+
+  it("a socket dropped while it connects never leaves the open pending: the next one opens with the new config", async () => {
+    const h = makeClient();
+    h.client.setServerTurns(true);
+    await open(h);
+    h.ws().close(1000, "idle timeout"); // the server session ended; the client remembers it was a server one
+    const p = h.client.ensureOpen("marcus");
+    await settle(); // connecting
+    h.client.setServerTurns(false); // drops the connecting socket
+    await settle();
+    expect(h.sockets).toHaveLength(3);
+    h.ws().open();
+    await p;
+    expect(td(h.ws())).toBeNull();
+    expect(h.client.isOpen).toBe(true);
+  });
+});
