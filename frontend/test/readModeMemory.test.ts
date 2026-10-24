@@ -162,6 +162,27 @@ describe("read-mode mic questions keep the conversation", () => {
   });
 });
 
+describe("speaker switch then barge-in", () => {
+  it("Realtime: a barge-in after a mid-answer speaker switch goes to the new character's session, not the old one", async () => {
+    await mount("realtime", "alice");
+    await speakRealtime("Who is the White Rabbit?", "A rabbit in a waistcoat.");
+    await act(async () => { latest.pttDown(); await flush(); });
+    now += 1000;
+    await act(async () => { latest.pttUp(); await flush(); });
+    const ws = FakeSocket.all[0];
+    await act(async () => { ws.recv({ type: "conversation.item.input_audio_transcription.completed", transcript: "Hi?" }); await flush(); });
+    await act(async () => { ws.recv({ type: "response.created" }); ws.recv({ type: "response.output_audio.delta", delta: "AAAA", item_id: "i" }); await flush(); });
+    expect(latest.state).toBe("answering");
+    await switchTo("hatter");
+    expect(ws.readyState).toBe(1); // the answer plays on
+    await act(async () => { latest.pttDown(); await flush(); }); // the reader cuts in (answering -> listening, never idle)
+    expect(latest.state).toBe("listening");
+    expect(ws.readyState).toBe(3); // Alice's session is dropped before the Hatter's question goes anywhere
+    expect(FakeSocket.all).toHaveLength(2);
+    expect(seededOf(FakeSocket.all[1])).toEqual([]); // the Hatter never heard Alice's chat
+  });
+});
+
 describe("the remembered count in Talkback", () => {
   it("counts only the lines that are given back to the character (the last HISTORY_TURNS of this speaker)", () => {
     const messages: ChatMessage[] = [];
