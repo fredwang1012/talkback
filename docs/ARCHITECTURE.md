@@ -79,7 +79,7 @@ An uploaded **novel** is readable with the narrator seconds after upload (text i
 Then a background job enriches it; textbooks skip it. Stages, each saving `book.json` atomically so voices and recap
 switch on progressively: **cast** (one Sonnet-tier call, at most 8 main characters with voices from the presets and a
 `first_para` computed from the text; other speakers are read by the narrator) -> **segment** (Haiku-tier, 10 paragraphs
-per call, `UPLOAD_CONCURRENCY`=24 calls at once, verbatim check, narrator fallback; only main characters are speakers;
+per call, `UPLOAD_CONCURRENCY`=24 calls at once per book under one shared adaptive Gemini limit (`app/pacer.py`: starts at 8, halves on a 429, grows back), verbatim check, narrator fallback; only main characters are speakers;
 quotation marks a model drops are restored from the text) -> **summaries** (chapter notes in parallel: a checkpoint
 every ~40 paragraphs and at each chapter end, each written only from that chapter's text up to the checkpoint; the
 stored summary at paragraph P = condensed end-notes of completed chapters + the chapter's checkpoint at P, so nothing

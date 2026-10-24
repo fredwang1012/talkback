@@ -11,7 +11,7 @@ from typing import Callable, Protocol, TypeVar
 
 from pydantic import BaseModel
 
-from .. import retrying
+from .. import pacer as pacing
 from ..config import settings
 from ..gcp import usage as usage_log
 
@@ -156,15 +156,17 @@ class ClaudeProvider:
 class GeminiProvider:
     """Gemini 2.5 Flash on Vertex AI (project and region from settings), JSON output."""
     name = "gemini"
-    RETRIES = 5   # attempts in total: rate limits (429), 5xx and network errors are retried with backoff + jitter
+    RETRIES = pacing.BACKGROUND["attempts"]   # 6 attempts: 429s, 5xx and network errors, backoff to 30 s + jitter
+    priority: pacing.Priority = "background"     # queued behind Talk answers and translations in the shared pacer
 
-    def __init__(self, client=None, model: str | None = None, sleep=None):
+    def __init__(self, client=None, model: str | None = None, sleep=None, pacer: "pacing.Pacer | None" = None):
         if client is None:
             from google import genai
             client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
         self.client = client
         self.model = model or settings.gemini_model
         self._sleep = sleep
+        self._pacer = pacer
 
     async def complete(self, system, user, schema, tier, max_tokens, effort) -> Raw:
         from google.genai import types
@@ -189,8 +191,8 @@ class GeminiProvider:
                 thinking = False
             return await self.client.aio.models.generate_content(model=self.model, contents=user, config=config())
 
-        resp = await retrying.retry_async(once, what="gemini call", attempts=self.RETRIES, base=1.0, cap=30.0,
-                                          sleep=self._sleep)
+        resp = await (self._pacer or pacing.shared).call(once, priority=self.priority, what="gemini call",
+                                                         attempts=self.RETRIES, sleep=self._sleep)
         meta = getattr(resp, "usage_metadata", None)
         n_in = (getattr(meta, "prompt_token_count", 0) or 0) if meta else 0
         n_out = ((getattr(meta, "candidates_token_count", 0) or 0)

@@ -3,8 +3,8 @@ Vector Search over httpx / google-genai).
 
 Transient: network errors (httpx ReadError / ConnectError / RemoteProtocolError / timeouts, reset connections), rate
 limits (429) and server errors (5xx). Never retried: quota exhaustion (insufficient_quota, billing), auth (401/403) and
-every other client error, as CLAUDE.md's error-branching rule says. Logs name only the exception type (a message may quote
-book text or a host)."""
+every other client error, as CLAUDE.md's error-branching rule says. Logs name only the exception type and HTTP status (a
+message may quote book text or a host). Gemini calls add the shared adaptive limit of app/pacer.py on top."""
 import asyncio
 import logging
 import random
@@ -45,6 +45,12 @@ def status_of(exc: BaseException) -> int | None:
         if isinstance(code, int) and not isinstance(code, bool):
             return code
     return None
+
+
+def describe(exc: BaseException) -> str:
+    """"ClientError 429": the exception type and the HTTP status it (or its cause) carries; never the message."""
+    code = next((c for e in _chain(exc) if (c := status_of(e)) is not None), None)
+    return f"{type(exc).__name__} {code}" if code is not None else type(exc).__name__
 
 
 def is_quota_or_auth(exc: BaseException) -> bool:
@@ -93,7 +99,7 @@ async def retry_async(fn: Callable[[], Awaitable[T]], *, what: str, attempts: in
             if attempt >= attempts - 1 or not retry_if(e):
                 raise
             delay = backoff(attempt, base, cap)
-            log.warning("%s failed (%s); retry %d/%d in %.1fs", what, type(e).__name__, attempt + 1, attempts - 1, delay)
+            log.warning("%s failed (%s); retry %d/%d in %.1fs", what, describe(e), attempt + 1, attempts - 1, delay)
             await sleep(delay)
     raise AssertionError("unreachable")
 
@@ -108,6 +114,6 @@ def retry_sync(fn: Callable[[], T], *, what: str, attempts: int = ATTEMPTS, base
             if attempt >= attempts - 1 or not retry_if(e):
                 raise
             delay = backoff(attempt, base, cap)
-            log.warning("%s failed (%s); retry %d/%d in %.1fs", what, type(e).__name__, attempt + 1, attempts - 1, delay)
+            log.warning("%s failed (%s); retry %d/%d in %.1fs", what, describe(e), attempt + 1, attempts - 1, delay)
             sleep(delay)
     raise AssertionError("unreachable")
