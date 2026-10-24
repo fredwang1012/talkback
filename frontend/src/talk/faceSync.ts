@@ -14,7 +14,10 @@
  *    video's playbackRate, only a big one (>300 ms, at most once a second) seeks, a dead-band leaves it alone;
  *  - if the video `waiting`s (Boson renders slower than real time), the voice is paused (`holding`) so the two stay
  *    together; if the stall lasts longer than `stallMs` the face falls back to the talk loop and the voice carries
- *    on. When the video recovers it seeks to the voice and is shown again.
+ *    on. After that give-up the voice is never held again for this sentence: the face stays on the talk loop and
+ *    rejoins (seek to the voice, shown on the next `playing`) only after a back-off and once the stream has at
+ *    least REJOIN_LEAD_S buffered ahead of the voice; a rejoin that stalls hides the face again and doubles the
+ *    back-off. (Holding again would make a slower-than-real-time render stutter the voice every few seconds.)
  */
 
 import { needsResync } from "./speechGate";
@@ -26,6 +29,7 @@ export interface VideoLike {
   currentTime: number;
   playbackRate?: number;
   readyState?: number;
+  buffered?: { length: number; end(i: number): number };
   play(): Promise<void> | void;
   pause(): void;
   load?(): void;
@@ -55,6 +59,10 @@ export interface FaceSyncOptions {
   onStartOffset?: (offsetS: number) => void;
   now?: () => number; timers?: Timers;
 }
+
+const REJOIN_LEAD_S = 1;        // after a give-up: rejoin only with this much video buffered ahead of the voice
+const REJOIN_BACKOFF_MS = 2000; // first wait before a rejoin attempt; doubles after each failed one
+const REJOIN_BACKOFF_MAX_MS = 8000;
 
 export class FaceSync implements ClipSync {
   holding = false;
@@ -108,6 +116,12 @@ export class FaceSync implements ClipSync {
     const canListen = typeof audio.addEventListener === "function";
     let audioStarted = !canListen || (audio.currentTime ?? 0) > 0.02;
     let loaded = false;
+    let gaveUp = false;     // the stall fallback fired: the voice is never held again in this sentence
+    let rejoining = false;  // a rejoin seek + play is in flight: show the face on the next 'playing'
+    let backoffMs = REJOIN_BACKOFF_MS;
+    let rejoinTicks = 0;
+    let rejoinWaitTicks = 0;
+    const checkMs = this.opts.checkMs ?? 100;
     const voicePos = () => clk.sample(audio.currentTime ?? 0, this.now());
     if (audioStarted) clk.anchor(audio.currentTime ?? 0, this.now());
     const align = () => { // seek the video to where the voice is (once, on joining / rejoining)
@@ -117,6 +131,7 @@ export class FaceSync implements ClipSync {
     };
     const startVideo = () => { // only when the first frame is decoded AND the voice is really playing
       if (!loaded || !audioStarted || this.holding) return;
+      if (gaveUp && !this.shown) return; // fallen back: the tick decides when to rejoin
       align();
       void Promise.resolve(v.play()).catch(() => { /* autoplay refused: the talk loop stays */ });
     };
@@ -124,6 +139,30 @@ export class FaceSync implements ClipSync {
       if (!this.holding) return;
       this.holding = false;
       void Promise.resolve(audio.play()).catch(() => {});
+    };
+    const bufferedAhead = (): number | null => { // seconds of video buffered past where the voice is; null: unknown
+      const b = v.buffered;
+      if (!b) return null;
+      return b.length ? b.end(b.length - 1) - (voicePos() + ctrl.opts.startOffsetS) : 0;
+    };
+    const fallBack = () => { // the talk loop stands in; try again later, less eagerly each time
+      gaveUp = true;
+      rejoining = false;
+      this.show(false);
+      v.pause();
+      rejoinTicks = Math.ceil(backoffMs / checkMs);
+      backoffMs = Math.min(backoffMs * 2, REJOIN_BACKOFF_MAX_MS);
+    };
+    const tryRejoin = () => {
+      if (rejoinTicks > 0) rejoinTicks--;
+      if (rejoinTicks > 0) return;
+      const ahead = bufferedAhead();
+      if (ahead !== null && ahead < REJOIN_LEAD_S) return; // still rendering behind the voice: keep waiting
+      rejoining = true;
+      rejoinWaitTicks = 0;
+      v.pause(); // play() from paused fires 'playing' once the seeked-to frame is ready
+      align();
+      void Promise.resolve(v.play()).catch(() => { rejoining = false; });
     };
     const onLoaded = () => { loaded = true; startVideo(); };
     const onAudioPlaying = () => {
@@ -137,6 +176,10 @@ export class FaceSync implements ClipSync {
     };
     const onPlaying = () => {
       if (this.stall !== null) { timers.clearTimeout(this.stall); this.stall = null; }
+      if (gaveUp) { // only a rejoin we started may bring the face back
+        if (rejoining && !this.shown) { rejoining = false; this.show(true); }
+        return;
+      }
       if (this.holding) { // the video caught up: put the voice where the video is and carry on together
         if (needsResync(v.currentTime, audio.currentTime ?? 0)) audio.currentTime = v.currentTime;
         clk.anchor(v.currentTime, this.now(), false);
@@ -149,13 +192,14 @@ export class FaceSync implements ClipSync {
       this.show(true);
     };
     const onWaiting = () => {
+      if (gaveUp) { if (this.shown || rejoining) fallBack(); return; } // never hold the voice again
       if (!this.shown && !this.holding && (v.readyState ?? 0) < 2 && (audio.currentTime ?? 0) < 0.05) return; // still starting up
       if (!this.holding) { this.holding = true; audio.pause(); }
       if (this.stall === null) {
         this.stall = timers.setTimeout(() => { // too slow: the talk loop stands in and the voice goes on
           this.stall = null;
-          this.show(false);
           resumeVoice();
+          fallBack();
         }, stallMs);
       }
     };
@@ -186,11 +230,16 @@ export class FaceSync implements ClipSync {
       if (!audioStarted && canListen && (audio.currentTime ?? 0) > 0.02) { // missed the 'playing' event
         audioStarted = true; clk.anchor(audio.currentTime ?? 0, this.now()); startVideo();
       }
+      if (gaveUp && !this.shown && clk.isRunning && !this.holding) {
+        if (!rejoining) tryRejoin();
+        else if (++rejoinWaitTicks * checkMs >= stallMs) fallBack(); // the rejoin never got going
+        return;
+      }
       if (!this.shown || this.holding || audio.currentTime === undefined || !clk.isRunning) return;
       const act = ctrl.update(v.currentTime, voicePos(), this.now());
       if (act.kind === "seek") v.currentTime = act.to;
       else if (act.kind === "rate" && v.playbackRate !== undefined) v.playbackRate = act.rate;
-    }, this.opts.checkMs ?? 100);
+    }, checkMs);
   }
 
   /** Detach from the sentence: the voice resumes if it was held, the video is emptied and hidden. */

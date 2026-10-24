@@ -111,9 +111,54 @@ describe("FaceSync", () => {
     expect(sync.holding).toBe(false);
     expect(a.resumes).toBe(1);
     a.currentTime = 5; // the voice carried on
+    vi.advanceTimersByTime(2000); // back-off, then (no buffer info) the face tries again: seek, show on playing
+    expect(Math.abs(v.currentTime - 5)).toBeLessThan(0.5);
+    expect(shown).toEqual([true, false]);
     v.fire("playing");
-    expect(v.currentTime).toBe(5);
     expect(shown).toEqual([true, false, true]);
+  });
+
+  it("after giving up it never pauses the voice again, and rejoins only once buffered ahead", () => {
+    const { sync, v, a, shown } = setup();
+    let bufferedEnd = 0;
+    (v as FakeVideo & { buffered: unknown }).buffered = { get length() { return 1; }, end: () => bufferedEnd };
+    sync.join(a, { url: "u", release: vi.fn() });
+    v.fire("loadeddata"); v.fire("playing");
+    a.currentTime = 1; v.currentTime = 1; bufferedEnd = 1;
+    v.fire("waiting");
+    vi.advanceTimersByTime(1000); // gave up
+    expect(a.pauses).toBe(1);
+    a.currentTime = 4; bufferedEnd = 4.3; // rendering is slower than real time
+    v.fire("playing"); // the hidden video plays a bit
+    vi.advanceTimersByTime(3000);
+    expect(shown).toEqual([true, false]); // not enough buffered ahead of the voice: stay on the talk loop
+    v.fire("waiting");
+    expect(a.pauses).toBe(1); // the voice is never held again
+    expect(sync.holding).toBe(false);
+    a.currentTime = 6; bufferedEnd = 9;
+    for (let i = 0; i < 80 && Math.abs(v.currentTime - a.currentTime) > 1; i++) vi.advanceTimersByTime(100);
+    expect(Math.abs(v.currentTime - a.currentTime)).toBeLessThan(1); // rejoined: seeked to the voice
+    v.fire("playing");
+    expect(shown).toEqual([true, false, true]);
+    v.fire("waiting"); // stalls again while shown: hide, but still no hold
+    expect(a.pauses).toBe(1);
+    expect(shown).toEqual([true, false, true, false]);
+  });
+
+  it("a rejoin that never gets going falls back again instead of waiting forever", () => {
+    const { sync, v, a, shown } = setup();
+    sync.join(a, { url: "u", release: vi.fn() });
+    v.fire("loadeddata"); v.fire("playing");
+    a.currentTime = 1; v.currentTime = 1;
+    v.fire("waiting");
+    vi.advanceTimersByTime(1000);
+    a.currentTime = 5;
+    vi.advanceTimersByTime(2000); // rejoin attempt (seek to 5), no 'playing' follows
+    const plays = v.plays;
+    vi.advanceTimersByTime(1000 + 4000 + 100); // gives up on it, waits the doubled back-off, tries again
+    expect(v.plays).toBeGreaterThan(plays);
+    expect(a.pauses).toBe(1);
+    expect(shown).toEqual([true, false]);
   });
 
   it("leave hides the video, empties it and never touches the voice", () => {
