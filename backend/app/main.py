@@ -50,8 +50,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-(settings.data_dir / "cache").mkdir(parents=True, exist_ok=True)
-app.mount("/media", StaticFiles(directory=settings.data_dir / "cache"), name="media")
+(settings.data_dir / "cache" / "tts").mkdir(parents=True, exist_ok=True)
+# Only the TTS audio is public: the rest of data/cache holds the usage log and the LLM cache.
+app.mount("/media/tts", StaticFiles(directory=settings.data_dir / "cache" / "tts"), name="media")
 app.mount("/portraits", StaticFiles(directory=settings.data_dir / "portraits", check_dir=False), name="portraits")
 
 boson = BosonClient()
