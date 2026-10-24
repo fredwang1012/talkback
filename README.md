@@ -1,5 +1,19 @@
 # Talkback
 
+> ### ▶ [Click here to open the live app](https://talkback-272822965835.us-central1.run.app)
+> Sign in with Google. Access is open during the judging window; if it asks for access, run it locally instead.
+>
+> ### Or run it locally (only a Boson API key needed)
+> ```bash
+> git clone https://github.com/fredwang1012/talkback && cd talkback
+> cp .env.example .env     # then set BOSON_API_KEY=... in .env and leave the rest as it is
+> cd frontend && npm install && npm run build && cd ..
+> cd backend && uv sync && uv run uvicorn app.main:app --port 8000
+> ```
+> Open **http://localhost:8000**. Needs Python 3.12 + [uv](https://docs.astral.sh/uv/) and Node 20+ ([full steps](#quick-start-judges)).
+> `.env.example` already points `PUBLIC_API_URL` at the hosted processing service, so typed answers, web search and
+> upload processing work with no Google Cloud setup ([details](#the-public-processing-service-no-extra-key)).
+
 Talkback reads books aloud with a full expressive cast and lets you talk back to the characters. Narration and
 dialogue are voiced with **Higgs Audio TTS 3** (emotion, whispering and shouting, sound effects, singing, pauses),
 with each word highlighted as it is spoken and a lip-synced face for whoever is speaking. Stop at any point and ask a
