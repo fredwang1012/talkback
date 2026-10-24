@@ -49,28 +49,30 @@ const reducedMotion = () => typeof window !== "undefined" && !!window.matchMedia
 /**
  * The read-mode face. `speaking` follows the actual audio (see speechLevel): the talk loop shows only while there
  * is speech and the idle loop (or portrait) rests in pauses. With no talk loop, the picture pulses with the
- * loudness read from `levelRef`. Reduced motion shows the still portrait.
+ * loudness read from `levelRef`. Reduced motion shows the still portrait. While a lip-synced clip of the line is in
+ * step (`clipShown`, the Stage's persistent clip video on top), the generic talk loop stays down.
  */
-export function ReadFace({ face, speaking, levelRef }: { face: FaceT; speaking: boolean; levelRef: { current: number } }) {
+export function ReadFace({ face, speaking, levelRef, clipShown = false }: { face: FaceT; speaking: boolean; levelRef: { current: number }; clipShown?: boolean }) {
   const wrap = useRef<HTMLDivElement>(null);
   const talk = useRef<HTMLVideoElement>(null);
   const reduced = useMemo(reducedMotion, []);
   const hasTalk = !!face.talk && !reduced;
+  const showTalk = speaking && !clipShown;
 
   useEffect(() => {
     const v = talk.current;
     if (!v) return;
-    if (speaking) { void tryPlayQuietly(v); /* autoplay refused: the idle frame stays */ return; }
+    if (showTalk) { void tryPlayQuietly(v); /* autoplay refused: the idle frame stays */ return; }
     const t = window.setTimeout(() => v.pause(), 180); // after the cross-fade
     return () => window.clearTimeout(t);
-  }, [speaking, hasTalk]);
+  }, [showTalk, hasTalk]);
 
   useEffect(() => {
     const el = wrap.current;
     if (!el || hasTalk || reduced) return;
     let raf = 0, smooth = 0;
     const tick = () => {
-      const target = speaking ? pulseAmount(levelRef.current) : 0;
+      const target = showTalk ? pulseAmount(levelRef.current) : 0;
       smooth += (target - smooth) * 0.35;
       el.style.transform = `scale(${(1 + smooth * 0.045).toFixed(4)})`;
       el.style.filter = `brightness(${(1 + smooth * 0.12).toFixed(3)})`;
@@ -78,7 +80,7 @@ export function ReadFace({ face, speaking, levelRef }: { face: FaceT; speaking: 
     };
     raf = requestAnimationFrame(tick);
     return () => { cancelAnimationFrame(raf); el.style.transform = ""; el.style.filter = ""; };
-  }, [speaking, hasTalk, reduced, levelRef]);
+  }, [showTalk, hasTalk, reduced, levelRef]);
 
   return (
     <div className="read-face" ref={wrap}>
@@ -86,7 +88,7 @@ export function ReadFace({ face, speaking, levelRef }: { face: FaceT; speaking: 
         ? <video key={face.idle} src={face.idle} muted loop autoPlay playsInline preload="auto" />
         : <img src={face.image} alt="" />}
       {hasTalk && (
-        <video ref={talk} key={face.talk!} src={face.talk!} className={`rf-talk${speaking ? " on" : ""}`} muted loop playsInline preload="auto" />
+        <video ref={talk} key={face.talk!} src={face.talk!} className={`rf-talk${showTalk ? " on" : ""}`} muted loop playsInline preload="auto" />
       )}
     </div>
   );

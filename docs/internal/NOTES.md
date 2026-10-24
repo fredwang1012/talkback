@@ -553,3 +553,24 @@ Cost: rejudge ~$2.10 + rerun ~$2.11 Anthropic (Gemini answers on GCP). Results i
   (TTS-ready -> stream-end of 10.7 s for a 9.04 s clip). The first sentence's clip therefore cannot catch up with a voice
   that starts immediately; the voice now waits (bounded) for ~2 fragments before the first word.
 - TTS mp3s are 32 kbit/s 24 kHz, so `len(data)/16000` in main.py under-counts avatar seconds 4x in usage logging.
+## Read-mode lip-sync (#80, 2026-10-23, designed offline: no Boson calls)
+- Read mode used to play only the generic talk loop, so the mouth never matched the words. Now, behind "Lip-sync while
+  reading" (Stage, off by default, shown only when a face on screen is bound to a voice), ReaderEngine streams a Boson
+  avatar clip per TTS chunk through the same path as Talkback: `/api/avatar/stream` (talk/clipVideo -> avatarStream),
+  the start gate (talk/startGate, now shared with sentencePlayer) and FaceSync's drift control. Voice and clip start
+  together from 0; the voice is never paused or rewound; a stalled clip drops to the talk loop and rejoins by rendezvous.
+- Prefetch: the next chunk's clip opens the moment the current voice starts (READ_CLIP_AHEAD = 1, so at most two
+  renders in flight, inside the server's per-clip lock and 12/min bucket). With Boson's ~2 s start + real-time pace a
+  10 s chunk gives the next clip ~8 s of head start, so chained chunks pass the gate at once (fake-clock test: gap < 150
+  ms). Between chunks the gate waits at most 1 s (READ_CHAIN_WAIT_MS); after Play/seek, 6 s. A seek, skip or voice change
+  releases every clip outside [index, index+1]; a pause keeps the in-flight prefetch (aborting it would discard a paid,
+  nearly finished render: the server only caches streams that complete).
+- Faces: the server lip-syncs the face BOUND TO THE VOICE it is sent (`faces.voice_face_path`), and it does not check
+  that the audio was made with that voice. So a chunk is lip-synced on its own voice when the face shown for its speaker
+  is bound to it; a speaker with no face is read by the narrator's face (loop and clip), sent with the narrator's voice.
+  Resolution goes through the reader's existing speaker -> face / voice functions (reader/readLipSync.ReadFaces), so the
+  planned two-voice model only changes those.
+- Cost: Higgs Avatar 640x640 (the streamed size) is $0.09/min of video (docs.boson.ai/pricing), i.e. about $0.09 per
+  minute of reading; cached clips (any line read with lip-sync before, same voice) are free. The session estimate in the
+  debug drawer counts fresh renders (spend.addAvatar) from the chunk's text length.
+- Not measured live: the real gap between chunks and Boson's behaviour with two streams in flight for minutes at a time.

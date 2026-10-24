@@ -13,17 +13,20 @@ import { DEMO_SPEAKER, DEMO_START_PARA, firstChunkAtOrAfter, isDemo } from "../d
 import BookText from "../reader/BookText";
 import PlayerBar from "../reader/PlayerBar";
 import RecapPanel from "../reader/RecapPanel";
-import { ReaderEngine, type AudioLike } from "../reader/ReaderEngine";
+import { ReaderEngine, type AudioLike, type ClipSource } from "../reader/ReaderEngine";
 import type { FollowAudio } from "../reader/clipFollow";
 import { AudioLevelMeter } from "../reader/audioLevel";
 import { SPEECH_IDLE, stepSpeech } from "../reader/speechLevel";
 import { loopsToPreload, showReadingFace } from "../reader/readFace";
+import { lipSyncVoiceFor, readFaceFor, readLipSyncable, speechSeconds, type ReadFaces } from "../reader/readLipSync";
 import Stage from "../reader/Stage";
 import { toggleMode, validSpeaker } from "../reader/talkbackLogic";
 import TalkbackView, { ModeToggle } from "../reader/TalkbackView";
 import { loadSpoilers, saveSpoilers } from "../reader/spoilers";
 import VoiceLab from "../reader/VoiceLab";
 import { spend, type SpendSnapshot } from "../spend";
+import { openClipVideo } from "../talk/clipVideo";
+import { FaceSync } from "../talk/faceSync";
 import { useTalk } from "../talk/useTalk";
 import { DebugDrawer } from "../ui/DebugDrawer";
 import { debugEnabled } from "../ui/debugFlag";
@@ -66,6 +69,11 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [talkChoice, setTalkChoice] = useState<TalkChoice>(() => loadTalkChoice(bookId));
   useEffect(() => { setStyle(loadStyle(bookId)); setTalkChoice(loadTalkChoice(bookId)); }, [bookId]);
   const [lipSync, setLipSync] = useState(() => { try { return localStorage.getItem("talkback:lipsync") === "1"; } catch { return false; } });
+  // read-mode lip-sync (#80): off by default (it costs Boson credit); the face's clip video is driven by its own sync
+  const [readLipSync, setReadLipSync] = useState(() => { try { return localStorage.getItem("talkback:readlipsync") === "1"; } catch { return false; } });
+  const [readClipShown, setReadClipShown] = useState(false);
+  const readSync = useRef<FaceSync | null>(null);
+  if (!readSync.current) readSync.current = new FaceSync(setReadClipShown);
   const [spoilers, setSpoilers] = useState(() => loadSpoilers(bookId));
   useEffect(() => setSpoilers(loadSpoilers(bookId)), [bookId]);
   const [spendNow, setSpendNow] = useState<SpendSnapshot>(spend.snapshot());
@@ -117,6 +125,7 @@ export default function Reader({ bookId }: { bookId: string }) {
         return r;
       },
       createAudio: (url) => new Audio(url) as unknown as AudioLike, // the engine only assigns a plain onended callback
+      sync: readSync.current as FaceSync,
     }, indexRef.current);
     engineRef.current = engine;
     const off = engine.on((s) => {
@@ -166,13 +175,35 @@ export default function Reader({ bookId }: { bookId: string }) {
     book ? faceById(talkFaceId(cast, talkChoice, id, talkVoiceFor(id), faces)) : undefined;
   const narratorVoice = book ? oneVoice ?? castVoice(book, cast, "narrator") : null;
   const current = chunks[index];
+  // read mode: who reads a chunk, by the reader's own voice -> face resolution (the cast / one-voice style); a speaker
+  // without a face is read by the narrator's face (reader/readLipSync)
+  const readFaces: ReadFaces = {
+    faceFor: (s) => (book ? faceById(readingFaceId(book, cast, style, s)) ?? null : null),
+    voiceFor: (s) => (book ? oneVoice ?? castVoice(book, cast, isNovel(book) ? s : "narrator") : "marcus"),
+  };
+  const latestFaces = useRef(readFaces);
+  latestFaces.current = readFaces;
   // the face of whoever reads aloud right now (read mode)
   // mounted while the first chunk still loads, so its talking loop is ready on the first word (see reader/readFace)
-  const readingFace = book && current && showReadingFace({ playing, loading })
-    ? faceById(readingFaceId(book, cast, style, current.speaker)) ?? null : null;
+  const readingFace = book && current && showReadingFace({ playing, loading }) ? readFaceFor(readFaces, current.speaker) : null;
   const nextChunk = chunks[index + 1];
-  const nextReadingFace = book && nextChunk && playing ? faceById(readingFaceId(book, cast, style, nextChunk.speaker)) ?? null : null;
+  const nextReadingFace = book && nextChunk && playing ? readFaceFor(readFaces, nextChunk.speaker) : null;
   const preloadLoops = loopsToPreload(readingFace, nextReadingFace);
+  const readLipSyncAvailable = audioAvailable && !!book && readLipSyncable(readFaces, ["narrator", ...(current ? [current.speaker] : [])]);
+  // the engine's clip source: the chunk's clip on the voice whose bound face is on screen (null: no lip-sync for it)
+  const clipSource = useMemo<ClipSource | null>(() => {
+    if (!readLipSync || !audioAvailable) return null;
+    return (chunk, audioUrl, voice) => {
+      const faceVoice = lipSyncVoiceFor(latestFaces.current, chunk.speaker, voice);
+      if (!faceVoice) return null;
+      return openClipVideo(audioUrl, faceVoice, () => spend.addAvatar(speechSeconds(chunk.tts_text)));
+    };
+  }, [readLipSync, audioAvailable]);
+  useEffect(() => { engineRef.current?.setClipSource(clipSource); }, [clipSource, book, chunks, audioAvailable, demo]);
+  const toggleReadLipSync = useCallback((on: boolean) => {
+    setReadLipSync(on);
+    try { localStorage.setItem("talkback:readlipsync", on ? "1" : "0"); } catch { /* storage blocked */ }
+  }, []);
   const voiceOptions = useMemo(
     () => [...PRESETS.map((v) => ({ value: v, label: v })), ...Object.entries(cloned).map(([n, v]) => ({ value: v, label: `${n} (cloned)` }))],
     [cloned]);
@@ -373,7 +404,8 @@ export default function Reader({ bookId }: { bookId: string }) {
                  needsCode={needsCode} onCode={(c, rem) => { setAccessToken(c, rem); setCode(c); }} onOpenLab={() => setLabOpen(true)}
                  faceFor={talkFaceFor}
                  readingFace={readingFace} preloadLoops={preloadLoops} spoilers={spoilers}
-                 readSpeaking={readSpeaking} levelRef={levelRef} />
+                 readSpeaking={readSpeaking} levelRef={levelRef}
+                 readLipSync={{ available: readLipSyncAvailable, on: readLipSync, onToggle: toggleReadLipSync, sync: readSync.current as FaceSync, shown: readClipShown }} />
         )}
       </div>
       {labOpen && (

@@ -18,6 +18,13 @@ describe("SpendTracker", () => {
     expect(snap.usd).toBeCloseTo(RATES.audioInPerMin + RATES.transcriptionPerMin + RATES.audioOutPerMin, 6);
   });
 
+  it("prices freshly rendered lip-sync video per minute (read mode, #80)", () => {
+    const s = new SpendTracker();
+    s.addAvatar(30);
+    expect(s.snapshot().avatarSeconds).toBe(30);
+    expect(s.snapshot().usd).toBeCloseTo(RATES.avatarPerMin / 2, 6);
+  });
+
   it("notifies subscribers and can reset", () => {
     const s = new SpendTracker();
     const seen: number[] = [];

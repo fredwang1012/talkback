@@ -30,8 +30,10 @@ class Queue extends EventTarget {
   protected flush() { const p = this.pending; this.pending = []; for (const t of p) this.dispatchEvent(new Event(t)); }
 }
 
+type Stream = { arrivals: { end: number; at: number }[]; end: number };
+
 export class FakeStreamVideo extends Queue {
-  src = "";
+  private _src = "";
   playbackRate = 1;
   paused = true;
   seeking = false;
@@ -45,16 +47,35 @@ export class FakeStreamVideo extends Queue {
   private attachedAt: number | null = null;
   private loaded = false;
   private seekDoneAt = 0;
+  private streams = new Map<string, Stream>(); // per-URL streams (read mode: several clips, prefetched ahead)
   private now: Clock;
 
   constructor(now: Clock) { super(); this.now = now; }
 
-  /** The stream starts now: fragment k arrives at firstMs + k * fragMs * rtf (rtf > 1: slower than real time). */
-  startStream(clipS: number, firstMs: number, rtf = 1, fragMs = 750) {
+  /** Attaching a URL that `addStream` registered plays that clip's stream (its fragments arrive on their own clock). */
+  get src() { return this._src; }
+  set src(u: string) {
+    this._src = u;
+    const s = this.streams.get(u);
+    if (s) { this.arrivals = s.arrivals; this.streamEnd = s.end; }
+  }
+
+  private makeStream(clipS: number, firstMs: number, rtf: number, fragMs: number): Stream {
     const t0 = this.now();
     const ends = bosonFragmentEnds(clipS);
-    this.arrivals = ends.map((end, k) => ({ end, at: t0 + firstMs + k * fragMs * rtf }));
-    this.streamEnd = clipS;
+    return { arrivals: ends.map((end, k) => ({ end, at: t0 + firstMs + k * fragMs * rtf })), end: clipS };
+  }
+
+  /** The stream starts now: fragment k arrives at firstMs + k * fragMs * rtf (rtf > 1: slower than real time). */
+  startStream(clipS: number, firstMs: number, rtf = 1, fragMs = 750) {
+    const s = this.makeStream(clipS, firstMs, rtf, fragMs);
+    this.arrivals = s.arrivals;
+    this.streamEnd = s.end;
+  }
+
+  /** A clip's stream starts now and is played when `url` is attached (see `src`). */
+  addStream(url: string, clipS: number, firstMs: number, rtf = 1, fragMs = 750) {
+    this.streams.set(url, this.makeStream(clipS, firstMs, rtf, fragMs));
   }
 
   private arrivedEnd(): number {
@@ -82,7 +103,7 @@ export class FakeStreamVideo extends Queue {
   }
 
   load() { this.attachedAt = this.now(); this.loaded = false; this.readyState = 0; this.pos = 0; }
-  removeAttribute(n: string) { if (n === "src") { this.src = ""; this.attachedAt = null; this.loaded = false; this.readyState = 0; } }
+  removeAttribute(n: string) { if (n === "src") { this._src = ""; this.attachedAt = null; this.loaded = false; this.readyState = 0; this.pos = 0; } }
   play() {
     if (!this.paused) return Promise.resolve();
     this.paused = false;

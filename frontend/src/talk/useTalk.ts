@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchRealtimeKey, fetchRetrieve, lipSync, lipSyncStream, speak, streamAnswer, type Health } from "../api";
+import { fetchRealtimeKey, fetchRetrieve, speak, streamAnswer, type Health } from "../api";
 import { MicCapture } from "../audio/capture";
 import { RingPlayer } from "../audio/playback";
 import { spend } from "../spend";
@@ -8,7 +8,7 @@ import { addQuestion, appendSentence, finishAnswer, loadChat, priorTurns, saveCh
 import { detectLanguage, type Detected } from "./language";
 import { FaceSync } from "./faceSync";
 import { createPlayingGate, type TimingEvent } from "./speechGate";
-import { chooseLipSyncMode, openAvatarStream } from "./avatarStream";
+import { openClipVideo } from "./clipVideo";
 import { createSentenceSpeaker, type Clip, type VideoClip } from "./sentencePlayer";
 import { createReplayPlayer, createReplayStore, runPcm, runSentences, type ReplayItem } from "./replay";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
@@ -16,18 +16,6 @@ import { TalkController, type Latency, type ReaderControl, type TalkState } from
 
 /** Gemini (via /api/answer) writes the answer and Boson TTS speaks it only when the server says so; else Realtime answers itself. */
 export const answersViaGemini = (health: Health | null): boolean => health?.answer_backend === "gemini";
-
-/** The lip-sync video of one sentence: streamed when the browser can, else a plain clip URL. Cached clips come back at once. */
-async function openClipVideo(audioUrl: string, voice: string): Promise<VideoClip> {
-  if (chooseLipSyncMode() === "stream") {
-    const c = await openAvatarStream({
-      post: (signal) => lipSyncStream(audioUrl, voice, signal),
-      MediaSourceCtor: MediaSource, createObjectURL: (o) => URL.createObjectURL(o), revokeObjectURL: (u) => URL.revokeObjectURL(u),
-    });
-    return { url: c.url, release: c.release };
-  }
-  return { url: await lipSync(audioUrl, voice), release: () => {} };
-}
 
 export type TalkUi = {
   state: TalkState;
