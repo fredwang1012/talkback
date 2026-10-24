@@ -140,3 +140,10 @@ export function findTopic<S extends SectionLike>(sections: S[], paragraphs: Para
   if (title && title.score >= 0.5) return { section: title.section, para: title.section.start_para, via: "title" };
   return null;
 }
+
+/** The paragraph where section `s` ends (exclusive): the next section at its depth or shallower; Infinity for the last. */
+export function sectionEnd<S extends SectionLike>(sections: S[], s: S): number {
+  const i = sections.indexOf(s);
+  const next = sections.slice(i + 1).find((x) => (x.level ?? 1) <= (s.level ?? 1) && x.start_para > s.start_para);
+  return next ? next.start_para : Number.POSITIVE_INFINITY;
+}

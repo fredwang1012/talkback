@@ -166,17 +166,18 @@ function setup(opts: { playing?: boolean; gemini?: boolean; spoilers?: boolean }
   };
   const tools = (name: string, args: Record<string, unknown>): ToolOutcome => runTool(name, args, ctx(), act);
   const spoken: string[] = [];
+  const asked: string[] = [];
   const talk = new TalkController({
     session, reader, tools, onToolRun: (c) => chips.push(c),
     retrieve: async () => ({ instructions: "INSTR" }),
     ...(opts.gemini ? {
-      answer: async (_q: string, _p: number, _s: string, onSentence: (t: string) => void) => { onSentence("An answer."); },
+      answer: async (q: string, _p: number, _s: string, onSentence: (t: string) => void) => { asked.push(q); onSentence("An answer."); },
       speaker: { play: async (t: string) => { spoken.push(t); }, prefetch: () => {}, stop: () => {} },
     } : {}),
     voiceFor: () => "marcus",
     onState: (s) => states.push(s), onToast: (m) => toasts.push(m),
   });
-  return { session, reader, talk, states, toasts, chips, actions, spoken };
+  return { session, reader, talk, states, toasts, chips, actions, spoken, asked };
 }
 const tick = (ms: number) => vi.advanceTimersByTimeAsync(ms);
 
@@ -351,5 +352,23 @@ describe("TalkController tools (Gemini path: intent parse, no model call)", () =
     await ask(h, "What happens in chapter three?");
     await tick(0);
     expect(h.spoken).toEqual(["An answer."]);
+  });
+});
+
+describe("TalkController tools (Gemini path: a tool that needs an answer)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("'explain that' pauses reading and asks Gemini the tool's question instead of ending silently", async () => {
+    const h = setup({ gemini: true, playing: true });
+    await ask(h, "Explain that.");
+    await tick(0);
+    expect(h.chips).toEqual(["Explaining this paragraph"]);
+    expect(h.asked).toHaveLength(1);
+    expect(h.asked[0]).toMatch(/2-4 sentences/);
+    expect(h.spoken).toEqual(["An answer."]);
+    await tick(5000);
+    expect(h.reader.log).not.toContain("play");
+    expect(h.reader.log.filter((l) => l.startsWith("resumeAt"))).toEqual([]);
   });
 });

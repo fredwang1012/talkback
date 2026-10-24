@@ -12,7 +12,7 @@
 import type { RecapScope } from "../api";
 import type { FlatChunk } from "../reader/position";
 import type { VoiceMode } from "../reader/castLogic";
-import { adjacentSection, findSectionByNumber, findSectionByTitle, findTopic, titleNumber, titleText } from "./sections";
+import { adjacentSection, findSectionByNumber, findSectionByTitle, findTopic, sectionAt, sectionEnd, titleNumber, titleText } from "./sections";
 
 export type Gender = "male" | "female";
 
@@ -111,6 +111,16 @@ export const TEXTBOOK_TOOL_DEFS = [
     description: "Find where the book covers a topic (searches section titles and text) and move there. Use for 'where is X explained?'.",
     parameters: { type: "object", properties: { query: { type: "string", description: "The topic, in a few words" } }, required: ["query"] },
   },
+  {
+    type: "function", name: "quiz_me",
+    description: "Quiz the reader on a section: returns its text and the quiz rules. Default: the section being read. Reading stays paused.",
+    parameters: { type: "object", properties: { section: { type: "string", description: "Section or chapter number, title words, or 'this chapter'; omit for the current section" } } },
+  },
+  {
+    type: "function", name: "explain_here",
+    description: "Explain what was just read: the current paragraph, or the nearest equation or figure ('what does this equation mean?'). Returns the text to explain.",
+    parameters: { type: "object", properties: { what: { type: "string", enum: ["paragraph", "equation", "figure"] } } },
+  },
   { type: "function", name: "resume_reading", description: "Continue reading aloud from where the reader stopped.", parameters: { type: "object", properties: {} } },
   { type: "function", name: "pause_reading", description: "Stop reading aloud; keep the place.", parameters: { type: "object", properties: {} } },
   {
@@ -142,7 +152,7 @@ export type ToolContext = {
   /** A textbook has no spoiler limit and section tools; unset means a novel. */
   kind?: BookKind;
   sections: { id: string; title: string; start_para: number; level?: number }[];
-  paragraphs: { idx: number; text: string; kind?: string | null }[];
+  paragraphs: { idx: number; text: string; kind?: string | null; math?: { latex?: string | null; spoken?: string | null } | null }[];
   characters: { id: string; name: string; first_para: number; main?: boolean | null }[];
   chunks: Pick<FlatChunk, "para">[];
   index: number; // current chunk
@@ -176,8 +186,10 @@ export type ToolOutcome = {
   moveTo?: number;
   /** Reading must go on once the character has finished speaking (read_chapter, resume_reading). Unset: as before the question. */
   play?: boolean;
-  /** Reading should not go on afterwards (pause_reading). */
+  /** Reading should not go on afterwards (pause_reading, quiz_me, explain_here). */
   pause?: boolean;
+  /** The Gemini path (no Realtime model to read `output`): the question to answer aloud instead of ending the turn silently (<= 500 chars). */
+  ask?: string;
 };
 
 export type ToolRunner = (name: string, args: Record<string, unknown>) => ToolOutcome;
@@ -332,6 +344,25 @@ export function addBookmark(bookId: string, b: Omit<Bookmark, "at">): Bookmark[]
   return next;
 }
 
+// ---- quiz and explain: text handed to the model ----
+
+type Para = ToolContext["paragraphs"][number];
+
+/** A paragraph as the model should see it: an equation as LaTeX plus its spoken form, a figure as its caption; code is skipped. */
+export function paraForModel(p: Para): string | null {
+  if (p.kind === "code") return null;
+  if (p.kind === "math") {
+    const latex = p.math?.latex?.trim(), spoken = p.math?.spoken?.trim();
+    if (latex || spoken) return `[Equation${latex ? `: ${latex}` : ""}${spoken ? ` (read as: ${spoken})` : ""}]`;
+  }
+  if (p.kind === "figure") return `[Figure caption: ${p.text.trim()}]`;
+  return p.text.trim() || null;
+}
+
+const clip = (s: string, max: number) => (s.length <= max ? s : s.slice(0, max).replace(/\s+\S*$/, "") + " ...");
+
+const QUIZ_MAX = 3000;
+
 // ---- the dispatcher ----
 
 const refuse = (output: string): ToolOutcome => ({ ok: false, output, chip: null });
@@ -380,6 +411,58 @@ export function runTool(name: string, args: Record<string, unknown>, ctx: ToolCo
       if (!ctx.chunks.length) return refuse("There is nothing to go back to.");
       act.seek(i);
       return { ok: true, output: `Rewound to ${what}; reading resumes there after you answer. Say only a few words, like "Sure, again."`, chip: `Back to ${what}`, moveTo: i, play: true };
+    }
+    case "quiz_me": {
+      const want = typeof args.section === "string" ? args.section.trim() : "";
+      let sec: ToolContext["sections"][number] | null;
+      if (!want || /^(?:this|the|current)? ?(?:section|part|one|bit)?$/.test(norm(want)) || /^(?:this|that|it|what i (?:just )?read)$/.test(norm(want))) sec = sectionAt(ctx.sections, ctx.readerPara);
+      else if (/^(?:this|the current) chapter$/.test(norm(want))) sec = sectionAt(topSections(ctx.sections), ctx.readerPara);
+      else {
+        const p = ctx.kind === "textbook" ? resolveTextbookPlace(ctx, want) : null;
+        sec = p ? sectionAt(ctx.sections, p.para) : findChapter(ctx.sections, want);
+        if (p && sec && sec.start_para !== p.para) sec = sectionAt(ctx.sections, p.para); // a topic hit: the section it is in
+      }
+      if (!sec) return refuse(`No section matches "${want}". Say so briefly.`);
+      const end = Math.min(sectionEnd(ctx.sections, sec), unlimited(ctx) ? Number.POSITIVE_INFINITY : ctx.readerPara + 1);
+      if (end <= sec.start_para) return refuse(`${sec.title} is past where the reader has read, and spoilers are off. Say so briefly.`);
+      let text = "";
+      for (const p of ctx.paragraphs) {
+        if (p.idx < sec.start_para || p.idx >= end) continue;
+        const t = paraForModel(p);
+        if (!t) continue;
+        if (text.length + t.length > QUIZ_MAX) { text += (text ? "\n" : "") + clip(t, Math.max(0, QUIZ_MAX - text.length)); break; }
+        text += (text ? "\n" : "") + t;
+      }
+      if (!text.trim()) return refuse(`${sec.title} has no text to quiz on. Say so briefly.`);
+      act.pause();
+      return {
+        ok: true, pause: true, chip: `Quiz: ${sec.title}`,
+        output: `Quiz on "${sec.title}"; reading stays paused. Ask 3 short questions on the text below, one at a time. After each spoken answer say right or wrong with a one-line explanation. Then give the score and offer to keep reading.\nText:\n${text}`,
+        ask: `Quiz me on "${clip(sec.title, 120)}": ask me one short question about it, then wait for my answer. After I answer, say right or wrong in one line and ask the next; after 3 questions give my score.`,
+      };
+    }
+    case "explain_here": {
+      const what = args.what === "equation" ? "equation" : args.what === "figure" ? "figure" : "paragraph";
+      const cur = ctx.paragraphs.find((p) => p.idx === ctx.readerPara);
+      let target: Para | undefined = cur;
+      if (what !== "paragraph") {
+        const kind = what === "equation" ? "math" : "figure";
+        // the nearest one just read (or on screen just after): a few paragraphs back first, then one or two ahead
+        const near = ctx.paragraphs.filter((p) => p.kind === kind && p.idx >= ctx.readerPara - 6 && p.idx <= ctx.readerPara + 2);
+        target = near.filter((p) => p.idx <= ctx.readerPara).at(-1) ?? near[0];
+        if (!target) return refuse(`There is no ${what} near here. Say so briefly.`);
+      }
+      const body = target ? paraForModel(target) : null;
+      if (!target || !body) return refuse("There is nothing here to explain. Say so briefly.");
+      const prevP = [...ctx.paragraphs].reverse().find((p) => p.idx < target!.idx && paraForModel(p));
+      const before = prevP ? paraForModel(prevP) : null;
+      act.pause();
+      const label = what === "paragraph" ? (target.kind === "math" ? "the equation" : target.kind === "figure" ? "the figure" : "this paragraph") : `the ${what}`;
+      return {
+        ok: true, pause: true, chip: `Explaining ${label}`,
+        output: `Explain ${label} simply, in 2-4 sentences, then offer to continue reading.\n${before ? `Context before: ${clip(before, 800)}\n` : ""}To explain: ${clip(body, 1500)}`,
+        ask: `Explain ${label} simply, in 2-4 sentences: ${clip(body, 420 - label.length)}`,
+      };
     }
     case "find_topic": {
       const query = typeof args.query === "string" ? args.query.trim() : "";
@@ -462,6 +545,15 @@ export function parseIntent(text: string): Intent | null {
   if ((m = /^(?:which|what) (?:section|chapter|part) (?:covers|talks about|discusses|explains|introduces|describes|defines|is about) (.+)$/.exec(t))) return topic(m[1]);
   if ((m = /^(?:find|look up|search for) (?:the )?(?:section|part|chapter|bit) (?:on|about|covering|that covers|that explains) (.+)$/.exec(t))) return topic(m[1]);
   if ((m = /^where can i (?:read|learn|find out) about (.+)$/.exec(t))) return topic(m[1]);
+  // quiz me / explain this
+  if ((m = /^(?:please )?(?:quiz|test) me(?: (?:on|about) (.+))?$/.exec(t)) || (m = /^(?:give me|do|start) (?:a|the) (?:quick )?quiz(?: (?:on|about) (.+))?$/.exec(t))) {
+    const on = (m[1] ?? "").trim();
+    return { name: "quiz_me", args: !on || /^(?:this|the|this section|the section|that|it|what i (?:just )?read)$/.test(on) ? {} : { section: on } };
+  }
+  const explainWhat = (w: string | undefined): Record<string, unknown> =>
+    !w ? {} : /equation|formula|math/.test(w) ? { what: "equation" } : /figure|diagram|picture|image|graph|chart|table/.test(w) ? { what: "figure" } : {};
+  if ((m = /^(?:please )?(?:explain|break down)(?: (?:this|that|it|the))?(?: (equation|formula|math|figure|diagram|picture|image|graph|chart|table|paragraph|part|bit|passage))?(?: (?:to me|again|simply|more simply))?$/.exec(t))) return { name: "explain_here", args: explainWhat(m[1]) };
+  if ((m = /^what (?:does|did) (?:this|that|the|it)(?: (equation|formula|figure|diagram|picture|graph|chart|table|paragraph|passage))? ?(?:mean|show|say)$/.exec(t))) return { name: "explain_here", args: explainWhat(m[1]) };
   // next / previous section or chapter
   if ((m = /^(?:please )?(?:(?:go|skip|jump|move)(?: on| ahead| forward)? to )?(?:the )?next (section|chapter)$/.exec(t)) || (m = /^skip (?:this|the) (section|chapter)$/.exec(t)))
     return { name: "next_section", args: m[1] === "chapter" ? { unit: "chapter" } : {} };

@@ -21,13 +21,15 @@ const sections = [
   { id: "c3.1", title: "3.1 Search structures for dictionaries", start_para: 22, level: 2 },
   { id: "c3.2", title: "3.2 Wildcard queries", start_para: 25, level: 2 },
 ];
-const paragraphs: { idx: number; text: string; kind?: "code" | "math" | null }[] = Array.from({ length: 30 }, (_, i) => ({ idx: i, text: `Some text number ${i}.` }));
+const paragraphs: { idx: number; text: string; kind?: string | null; math?: { latex?: string | null; spoken?: string | null } | null }[] = Array.from({ length: 30 }, (_, i) => ({ idx: i, text: `Some text number ${i}.` }));
 paragraphs[7].text = "An inverted index maps each term to a postings list of the documents that contain it.";
 paragraphs[12].text = "Tokenization chops a character sequence into pieces called tokens.";
 paragraphs[15].text = "Porter's algorithm is the most common stemmer for English text.";
 paragraphs[23].text = "A B-tree keeps the dictionary sorted so a term can be found quickly.";
 paragraphs[26].text = "A permuterm index handles wildcard queries such as mon*.";
 paragraphs[28] = { idx: 28, text: "def frobnicate(): return permuterm", kind: "code" };
+paragraphs[24] = { idx: 24, text: "Figure 3.1: A binary tree over the dictionary.", kind: "figure" };
+paragraphs[27] = { idx: 27, text: "J ( A , B ) garbled", kind: "math", math: { latex: "J(A,B)=\\frac{|A \\cap B|}{|A \\cup B|}", spoken: "J of A and B equals the size of A intersect B over the size of A union B" } };
 // two chunks per paragraph; the code listing is not read aloud, so it has none
 const chunks = paragraphs.filter((p) => p.kind !== "code").flatMap((p) => [{ para: p.idx }, { para: p.idx }]);
 
@@ -53,7 +55,7 @@ beforeEach(() => localStorage.clear());
 describe("tools by book kind", () => {
   it("a textbook gets section tools and loses the cast / narrator / two-voice tools", () => {
     expect(names(toolDefsFor("textbook"))).toEqual([
-      "jump_to", "read_chapter", "next_section", "previous_section", "go_back", "find_topic", "resume_reading", "pause_reading", "set_speed", "open_recap", "bookmark"]);
+      "jump_to", "read_chapter", "next_section", "previous_section", "go_back", "find_topic", "quiz_me", "explain_here", "resume_reading", "pause_reading", "set_speed", "open_recap", "bookmark"]);
     const json = JSON.stringify(toolDefsFor("textbook"));
     expect(json).not.toMatch(/spoiler/i);
     expect(json).toContain("2.3");
@@ -246,5 +248,84 @@ describe("session.update by book kind", () => {
     expect(names(tools)).not.toContain("show_cast");
     const novel = (sessionConfig("v") as { session: { tools: { name: string }[] } }).session.tools;
     expect(names(novel)).toContain("show_cast");
+  });
+});
+
+describe("quiz_me", () => {
+  it("hands the model the text of the reader's section with the quiz rules, and keeps reading paused", () => {
+    const { a, log } = acts();
+    const r = runTool("quiz_me", {}, ctx(), a);
+    expect(r).toMatchObject({ ok: true, pause: true, chip: "Quiz: 2.1.1 Stop words" });
+    expect(r.output).toContain("Tokenization chops a character sequence");
+    expect(r.output).toMatch(/3 short questions/);
+    expect(r.output).toMatch(/one at a time/);
+    expect(r.output).toMatch(/score/);
+    expect(r.output).not.toContain("Porter"); // the next section
+    expect(log).toEqual(["pause"]);
+    expect(r.ask && r.ask.length).toBeLessThanOrEqual(500); // the Gemini path's question
+  });
+  it("any section or chapter, ahead of the reader too; code is left out, equations are spoken", () => {
+    const { a } = acts();
+    const r = runTool("quiz_me", { section: "chapter 3" }, ctx({ readerPara: 3, index: 6 }), a);
+    expect(r).toMatchObject({ ok: true, chip: "Quiz: 3 Dictionaries and tolerant retrieval" });
+    expect(r.output).toContain("permuterm index handles wildcard");
+    expect(r.output).toContain("A intersect B");
+    expect(r.output).not.toContain("frobnicate");
+    expect(runTool("quiz_me", { section: "this chapter" }, ctx(), a).chip).toBe("Quiz: 2 The term vocabulary");
+    expect(runTool("quiz_me", { section: "9.9" }, ctx(), a).ok).toBe(false);
+  });
+  it("caps the text near 3000 characters", () => {
+    const { a } = acts();
+    const long = paragraphs.map((p) => (p.idx === 12 ? { ...p, text: "word ".repeat(1500) } : p));
+    const r = runTool("quiz_me", {}, ctx({ paragraphs: long }), a);
+    expect(r.ok).toBe(true);
+    expect(r.output.length).toBeLessThan(3500);
+  });
+  it("a novel cannot be quizzed past the reader", () => {
+    const { a } = acts();
+    expect(runTool("quiz_me", { section: "3" }, ctx({ kind: "novel", readerPara: 3 }), a).ok).toBe(false);
+  });
+});
+
+describe("explain_here", () => {
+  it("explains the current paragraph with the one before as context, reading paused", () => {
+    const { a, log } = acts();
+    const r = runTool("explain_here", {}, ctx(), a);
+    expect(r).toMatchObject({ ok: true, pause: true, chip: "Explaining this paragraph" });
+    expect(r.output).toContain("Tokenization chops");
+    expect(r.output).toContain("Some text number 11");
+    expect(r.output).toMatch(/2-4 sentences/);
+    expect(r.output).toMatch(/offer to continue/i);
+    expect(log).toEqual(["pause"]);
+    expect(r.ask && r.ask.length).toBeLessThanOrEqual(500);
+  });
+  it("finds the nearest equation or figure just read, with its LaTeX and spoken form or its caption", () => {
+    const { a } = acts();
+    const eq = runTool("explain_here", { what: "equation" }, ctx({ readerPara: 29, index: 57 }), a);
+    expect(eq.output).toContain("\\frac");
+    expect(eq.output).toContain("A union B");
+    expect(eq.chip).toBe("Explaining the equation");
+    const fig = runTool("explain_here", { what: "figure" }, ctx({ readerPara: 26, index: 52 }), a);
+    expect(fig.output).toContain("Figure 3.1: A binary tree");
+    expect(runTool("explain_here", {}, ctx({ readerPara: 27, index: 54 }), a).output).toContain("A union B"); // on the equation itself
+    expect(runTool("explain_here", { what: "equation" }, ctx(), a).ok).toBe(false); // none nearby
+  });
+});
+
+describe("parseIntent: quiz and explain", () => {
+  it("quiz phrasings", () => {
+    expect(parseIntent("quiz me")).toEqual({ name: "quiz_me", args: {} });
+    expect(parseIntent("Quiz me on this section.")).toEqual({ name: "quiz_me", args: {} });
+    expect(parseIntent("can you quiz me on chapter 3")).toEqual({ name: "quiz_me", args: { section: "chapter 3" } });
+    expect(parseIntent("test me on this chapter")).toEqual({ name: "quiz_me", args: { section: "this chapter" } });
+    expect(parseIntent("give me a quiz on wildcard queries")).toEqual({ name: "quiz_me", args: { section: "wildcard queries" } });
+  });
+  it("explain phrasings", () => {
+    expect(parseIntent("What does this equation mean?")).toEqual({ name: "explain_here", args: { what: "equation" } });
+    expect(parseIntent("explain this figure")).toEqual({ name: "explain_here", args: { what: "figure" } });
+    expect(parseIntent("Explain that.")).toEqual({ name: "explain_here", args: {} });
+    expect(parseIntent("what does that mean")).toEqual({ name: "explain_here", args: {} });
+    expect(parseIntent("what does the diagram show")).toEqual({ name: "explain_here", args: { what: "figure" } });
+    for (const q of ["Explain why the index is sorted", "What does this mean for big collections?", "Is this quiz hard?"]) expect(parseIntent(q), q).toBeNull();
   });
 });

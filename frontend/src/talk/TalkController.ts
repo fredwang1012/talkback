@@ -372,6 +372,7 @@ export class TalkController {
       const intent = this.d.tools ? parseIntent(query) : null;
       if (intent && this.d.tools) {
         const outcome = this.runTool(intent.name, intent.args);
+        if (outcome.ok && outcome.ask) { void this.streamAndSpeak(turn, outcome.ask, r0); return; } // quiz / explain: Gemini answers it aloud
         if (outcome.ok) { this.turn++; this.endTurn(); return; }
         this.d.onToast?.(outcome.output); // refused (e.g. a spoiler jump): tell the reader, no question is sent
         this.turn++;
