@@ -300,3 +300,15 @@ button:disabled { cursor: not-allowed; }
 .recap-text { white-space: pre-line; line-height: 1.6; margin: 0; }
 .recap-empty { color: var(--ink-soft); margin: 0; }
 .recap-earlier summary { cursor: pointer; color: var(--ink-soft); margin-bottom: 8px; }
+
+/* Voices panel: cast table, face library; Talk voice/avatar pickers */
+.lab-cast li.cast-row { grid-template-columns: 1fr 1fr auto; }
+.lab-cast .cast-name { grid-column: 1 / -1; font-weight: 600; }
+.face-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.face-list li { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; align-items: center; }
+.face-list .face-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.face-list .face-error { grid-column: 1 / -1; font-size: 0.88rem; }
+.talk-pick { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; }
+.talk-pick label { font-size: 0.9rem; color: var(--ink-soft); }
+.talk-pick select { background: var(--ground-raised); color: var(--ink); border: 1px solid var(--brass-soft); border-radius: var(--radius); padding: 6px 8px; font: inherit; min-width: 0; }
+.lab .mode { margin-bottom: 4px; }

@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getAccessToken, setAccessToken } from "../accessToken";
-import { avatarUrl, fetchAvatars, fetchBook, fetchHealth, fetchTts, fetchVoiceFaces, type Book, type Health, type VoiceFace } from "../api";
+import {
+  avatarUrl, fetchAvatars, fetchBook, fetchCast, fetchFaces, fetchHealth, fetchTts, fetchVoices,
+  type Book, type Cast, type Face, type Health,
+} from "../api";
+import {
+  PRESETS, castVoice, createCastSaver, emptyCast, loadStyle, loadTalkChoice, migrateOldOverrides,
+  oneVoiceOverride, readingFaceId, saveStyle, saveTalkChoice, talkFaceId, talkVoice, type ReadingStyle, type TalkChoice,
+} from "../reader/castLogic";
 import { DEMO_SPEAKER, DEMO_START_PARA, firstChunkAtOrAfter, isDemo } from "../demo";
 import BookText from "../reader/BookText";
 import PlayerBar from "../reader/PlayerBar";
@@ -25,7 +32,6 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
-  const [fullCast, setFullCast] = useState(true);
   const [autoResume, setAutoResume] = useState(true);
   const [speakerId, setSpeakerId] = useState("narrator");
   const [avatars, setAvatars] = useState<Set<string>>(new Set());
@@ -37,13 +43,16 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [code, setCode] = useState(getAccessToken());
   const [labOpen, setLabOpen] = useState(false);
   const [recapOpen, setRecapOpen] = useState(false);
-  const [overrides, setOverrides] = useState<Record<string, string>>({});
-  const [faces, setFaces] = useState<Record<string, VoiceFace>>({});
+  const [cast, setCast] = useState<Cast>(emptyCast);
+  const [castError, setCastError] = useState<string | null>(null);
+  const [faces, setFaces] = useState<Face[]>([]);
+  const [cloned, setCloned] = useState<Record<string, string>>({});
+  const [style, setStyle] = useState<ReadingStyle>(() => loadStyle(bookId));
+  const [talkChoice, setTalkChoice] = useState<TalkChoice>(() => loadTalkChoice(bookId));
+  useEffect(() => { setStyle(loadStyle(bookId)); setTalkChoice(loadTalkChoice(bookId)); }, [bookId]);
   const [lipSync, setLipSync] = useState(() => { try { return localStorage.getItem("talkback:lipsync") === "1"; } catch { return false; } });
   const [spoilers, setSpoilers] = useState(() => loadSpoilers(bookId));
   useEffect(() => setSpoilers(loadSpoilers(bookId)), [bookId]);
-  const overridesRef = useRef<Record<string, string>>({});
-  overridesRef.current = overrides;
   const [spendNow, setSpendNow] = useState<SpendSnapshot>(spend.snapshot());
   useEffect(() => spend.subscribe(setSpendNow), []);
   const lastManualScroll = useRef(0);
@@ -59,12 +68,16 @@ export default function Reader({ bookId }: { bookId: string }) {
       const flat = flattenChunks(b);
       setIndex(demo ? firstChunkAtOrAfter(flat, DEMO_START_PARA) : loadPosition(b.id, flat.length));
       if (demo && b.characters.some((c) => c.id === DEMO_SPEAKER)) setSpeakerId(DEMO_SPEAKER); // pinned to the demo character
-      // voice choices are shared by every book of a series (pick the narrator once for all seven)
-      try { setOverrides(JSON.parse(localStorage.getItem(`talkback:voices:${b.series ?? b.id}`) ?? "{}")); } catch { /* none saved */ }
+      // the cast lives on the server; the old series-wide localStorage voices are moved into it once
+      fetchCast(b.id).then(async (c) => {
+        const migrated = await migrateOldOverrides(b, c);
+        setCast(migrated ?? c);
+      }).catch(() => { /* no cast: books keep their own voices */ });
     }).catch((e: Error) => setError(e.message));
     fetchHealth().then(setHealth).catch(() => setHealth(null));
     fetchAvatars(bookId).then((ids) => setAvatars(new Set(ids)));
-    fetchVoiceFaces().then(setFaces).catch(() => setFaces({}));
+    fetchFaces().then(setFaces).catch(() => setFaces([]));
+    fetchVoices().then(setCloned).catch(() => setCloned({}));
   }, [bookId, demo]);
 
   const chunks = useMemo(() => (book ? flattenChunks(book) : []), [book]);
@@ -78,7 +91,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     if (!book || !audioAvailable || chunks.length === 0) return;
     const engine = new ReaderEngine(chunks, {
       fetchTts: async (chunk, voice) => {
-        const r = await fetchTts(book.id, chunk.id, voice ?? overridesRef.current[chunk.speaker], demo); // demo: pre-rendered only
+        const r = await fetchTts(book.id, chunk.id, voice, demo); // demo: pre-rendered only
         if (!r.cached) spend.addTts(chunk.tts_text.length); // only freshly synthesised speech costs money
         return r;
       },
@@ -102,12 +115,22 @@ export default function Reader({ bookId }: { bookId: string }) {
   }, [book, chunks, audioAvailable, demo]);
 
 
-  const voiceFor = (id: string) =>
-    overrides[id] ?? (id === "narrator" ? book?.narrator?.voice : book?.characters.find((c) => c.id === id)?.voice) ?? "marcus";
-  const narratorVoice = overrides.narrator ?? book?.narrator?.voice ?? null;
+  const oneVoice = book ? oneVoiceOverride(book, cast, style) : null;
+  const readingVoiceFor = (id: string) => (book ? castVoice(book, cast, id) : "marcus");
+  const talkVoiceFor = (id: string) => (book ? talkVoice(book, cast, talkChoice, id) : "marcus");
+  const faceById = (id: string | null) => (id ? faces.find((f) => f.id === id) : undefined);
+  const talkFaceFor = (id: string) =>
+    book ? faceById(talkFaceId(cast, talkChoice, id, talkVoiceFor(id), faces)) : undefined;
+  const narratorVoice = book ? oneVoice ?? castVoice(book, cast, "narrator") : null;
   const current = chunks[index];
-  // the voice reading aloud right now (read mode), so a voice with a face can be seen speaking its lines
-  const readingVoice = playing && !loading && current ? (fullCast ? overrides[current.speaker] ?? current.voice : narratorVoice) : null;
+  // the face of whoever reads aloud right now (read mode)
+  const readingFace = book && playing && !loading && current
+    ? faceById(readingFaceId(book, cast, style, current.speaker)) ?? null : null;
+  const voiceOptions = useMemo(
+    () => [...PRESETS.map((v) => ({ value: v, label: v })), ...Object.entries(cloned).map(([n, v]) => ({ value: v, label: `${n} (cloned)` }))],
+    [cloned]);
+  const lipSyncFace = faceById(book ? talkFaceId(cast, talkChoice, speakerId, talkVoiceFor(speakerId), faces) : null);
+  const lipSyncable = !!lipSyncFace && lipSyncFace.voice === talkVoiceFor(speakerId);
 
   // Talk mode: push-to-talk questions, answered from what has been read so far (needs the Boson key).
   const talk = useTalk({
@@ -116,10 +139,10 @@ export default function Reader({ bookId }: { bookId: string }) {
     speakerId,
     autoResume,
     health,
-    faces,
+    canLipSync: (voice) => { const f = talkFaceFor(speakerId); return !!f && f.voice === voice; },
     lipSync,
     spoilers: spoilers && book?.kind === "novel",
-    voiceFor,
+    voiceFor: talkVoiceFor,
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
       currentIndex: () => indexRef.current,
@@ -157,8 +180,10 @@ export default function Reader({ bookId }: { bookId: string }) {
 
   useEffect(() => { engineRef.current?.setSpeed(speed); }, [speed, audioAvailable, book]);
   useEffect(() => {
-    engineRef.current?.setNarratorOnly(fullCast ? null : narratorVoice);
-  }, [fullCast, narratorVoice, audioAvailable]);
+    engineRef.current?.setNarratorOnly(oneVoice);
+  }, [oneVoice, audioAvailable]);
+  // a changed cast applies to chunks fetched ahead too
+  useEffect(() => { engineRef.current?.refreshAhead(); }, [cast, audioAvailable]);
 
   const changeMode = useCallback((m: "read" | "talk") => {
     setMode(m);
@@ -215,14 +240,14 @@ export default function Reader({ bookId }: { bookId: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [step, toggle, audioAvailable, mode, changeMode]);
 
-  const setOverride = (speaker: string, voice: string | null) => {
-    const next = { ...overridesRef.current };
-    if (voice) next[speaker] = voice; else delete next[speaker];
-    setOverrides(next);
-    overridesRef.current = next;
-    try { localStorage.setItem(`talkback:voices:${book?.series ?? bookId}`, JSON.stringify(next)); } catch { /* storage blocked */ }
-    engineRef.current?.refreshAhead(); // chunks fetched ahead used the old voice
-  };
+  const saver = useMemo(
+    () => createCastSaver(bookId, () => setCastError(null), setCastError),
+    [bookId]);
+  const changeCast = (next: Cast) => { setCast(next); setCastError(null); void saver(next); };
+  const changeStyle = (next: ReadingStyle) => { setStyle(next); saveStyle(bookId, next); };
+  const changeTalk = (next: TalkChoice) => { setTalkChoice(next); saveTalkChoice(bookId, next); };
+  const reloadCast = () => { fetchCast(bookId).then(setCast).catch(() => {}); };
+  const reloadFaces = () => { fetchFaces().then(setFaces).catch(() => {}); fetchVoices().then(setCloned).catch(() => {}); };
   const preview = async (speaker: string, voice: string) => {
     const chunk = chunks.find((c) => c.speaker === speaker) ?? chunks[0];
     if (!chunk) return;
@@ -268,16 +293,20 @@ export default function Reader({ bookId }: { bookId: string }) {
                avatarPlaying={playing && !loading} mode={mode} onMode={changeMode}
                pinned={demo && book.characters.some((c) => c.id === DEMO_SPEAKER) ? DEMO_SPEAKER : null}
                needsCode={needsCode} onCode={(c) => { setAccessToken(c); setCode(c); }} onOpenLab={() => setLabOpen(true)}
-               faces={faces} voiceFor={voiceFor} readingVoice={mode === "read" ? readingVoice : null}
+               faces={faces} voiceFor={talkVoiceFor} autoVoiceFor={readingVoiceFor} faceFor={talkFaceFor}
+               readingFace={mode === "read" ? readingFace : null} lipSyncable={lipSyncable}
+               choice={talkChoice} onChoice={changeTalk} voices={voiceOptions}
                spoilers={spoilers} onSpoilers={(on) => { setSpoilers(on); saveSpoilers(bookId, on); }}
                lipSync={lipSync} onLipSync={(on) => { setLipSync(on); try { localStorage.setItem("talkback:lipsync", on ? "1" : "0"); } catch { /* storage blocked */ } }} />
       </div>
       {labOpen && (
-        <VoiceLab book={book} overrides={overrides} onOverride={setOverride} onPreview={preview} onFaces={setFaces}
-                  audioAvailable={audioAvailable} onClose={() => setLabOpen(false)} />
+        <VoiceLab book={book} cast={cast} onCast={changeCast} castError={castError} style={style} onStyle={changeStyle}
+                  cloned={cloned} onCloned={setCloned} faces={faces} onFaces={setFaces}
+                  onFacesChanged={() => { reloadFaces(); reloadCast(); }}
+                  onPreview={preview} audioAvailable={audioAvailable} onClose={() => setLabOpen(false)} />
       )}
       {recapOpen && (
-        <RecapPanel bookId={book.id} para={para} voice={audioAvailable ? narratorVoice ?? voiceFor("narrator") : null}
+        <RecapPanel bookId={book.id} para={para} voice={audioAvailable ? narratorVoice : null}
                     onClose={() => setRecapOpen(false)} />
       )}
       <DebugDrawer entries={talk.logs} spend={spendNow} />
@@ -285,7 +314,7 @@ export default function Reader({ bookId }: { bookId: string }) {
         playing={playing} loading={loading} onToggle={toggle} onRecap={() => setRecapOpen(true)}
         onPrev={() => { lastManualScroll.current = 0; step(-1); }} onNext={() => { lastManualScroll.current = 0; step(1); }}
         speed={speed} speeds={SPEEDS} onSpeed={setSpeed}
-        fullCast={fullCast} onFullCast={setFullCast}
+        onVoices={() => setLabOpen(true)}
         autoResume={autoResume} onAutoResume={setAutoResume}
         para={para} totalParas={book.paragraphs.length}
         atStart={index === 0} atEnd={index >= last}
