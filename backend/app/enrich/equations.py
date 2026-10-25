@@ -3,7 +3,7 @@
 PDFs store drawn glyphs, not LaTeX, so the text alone cannot give the equation back. Each picture (see
 ingest_upload.render_equations) goes to Gemini Flash on Vertex, BATCH pictures per call, for its LaTeX (rendered by
 KaTeX in the reader) and a short plain-English reading (what the narrator says). Gemini only: the pictures are image
-parts of the request, and the Claude credit is gone (see CLAUDE.md).
+parts of the request, and the Claude credit is gone.
 
 Cost controls as for novel enrichment: an estimate before starting (refused above the per-book cap or when the upload
 budget cannot cover it), real spend added to data/usage/upload_spend.json, and a stop once the job passes the per-book
