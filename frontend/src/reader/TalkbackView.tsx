@@ -185,6 +185,7 @@ export default function TalkbackView({
                 })()}
               </div>
             ))}
+            {talk.searching && <div className="tool-chip searching" role="status">Searching the web…</div>}
           </div>
           <div className="tb-actions">
             {remembered > 0 && (
