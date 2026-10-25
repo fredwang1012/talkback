@@ -1,4 +1,5 @@
 import { getAccessToken } from "./accessToken";
+import { spend } from "./spend";
 
 export type Segment = { speaker: string; text: string; emotion: string | null };
 export type TtsChunk = {
@@ -85,7 +86,7 @@ export type BookSummary = {
   series?: string | null;
   series_index?: number | null;
 };
-export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean; answer_backend: "gemini" | "realtime" };
+export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean; answer_backend: "gemini" | "realtime"; avatar_size?: string };
 
 /** Sent when the server requires an access code (TALKBACK_ACCESS_TOKEN). Typed in by the visitor, never built in. */
 export function authHeaders(): Record<string, string> {
@@ -142,7 +143,7 @@ export const accountLabel = (me: Me | null): string | null => (me && me.per_user
 
 export const fetchBooks = () => getJson<BookSummary[]>("/api/books");
 export const fetchBook = (id: string) => getJson<Book>(`/api/books/${encodeURIComponent(id)}`);
-export const fetchHealth = () => getJson<Health>("/api/health");
+export const fetchHealth = () => getJson<Health>("/api/health").then((h) => { if (h.avatar_size) spend.setAvatarSize(h.avatar_size); return h; });
 
 export type Recap = { upto_para: number | null; chapter: string; text: string; earlier: string; earlier_full?: string };
 /** "Previously...": the latest stored summary written from text at or before `para`. */

@@ -93,25 +93,27 @@ class BosonClient:
 
     # ---- Higgs Avatar (stretch). Request/response shapes follow the docs; verify with scripts/probe_avatar.py. ----
 
-    async def create_video(self, ref_image_b64: str, audio_b64: str, *, size: str = "640x640",
+    async def create_video(self, ref_image_b64: str, audio_b64: str, *, size: str | None = None,
                            image_mime: str = "image/png", audio_mime: str = "audio/mpeg",
                            seconds: float | None = None) -> str:
         """Start an async avatar render from a portrait and a speech clip (at most 60 s). Returns the video id."""
+        size = size or settings.avatar_size
         body = {"model": "higgs-avatar", "size": size,
                 "ref_image": f"data:{image_mime};base64,{ref_image_b64}",
                 "input": f"data:{audio_mime};base64,{audio_b64}"}
         vid = (await self.request("POST", "/v1/videos", json=body)).json()["id"]
-        usage.record("boson_avatar", "higgs-avatar", **({"seconds": seconds} if seconds is not None else {}))
+        usage.record("boson_avatar", "higgs-avatar", size=size, **({"seconds": seconds} if seconds is not None else {}))
         return vid
 
     @asynccontextmanager
-    async def stream_video(self, ref_image_b64: str, audio_b64: str, *, size: str = "640x640",
+    async def stream_video(self, ref_image_b64: str, audio_b64: str, *, size: str | None = None,
                            image_mime: str = "image/png", audio_mime: str = "audio/mpeg",
                            seconds: float | None = None) -> AsyncIterator[tuple[str | None, AsyncIterator[bytes]]]:
         """POST /v1/videos/stream: yields (video id, fMP4 chunk iterator) once the 200 headers arrive.
 
         Transient failures (429, all_replicas_busy, 5xx) before any byte is sent are retried like request().
         """
+        size = size or settings.avatar_size
         body = {"model": "higgs-avatar", "size": size,
                 "ref_image": f"data:{image_mime};base64,{ref_image_b64}",
                 "input": f"data:{audio_mime};base64,{audio_b64}"}
@@ -121,7 +123,7 @@ class BosonClient:
             async with client:
                 async with client.stream("POST", "/v1/videos/stream", json=body) as resp:
                     if resp.is_success:
-                        usage.record("boson_avatar", "higgs-avatar", **({"seconds": seconds} if seconds is not None else {}))
+                        usage.record("boson_avatar", "higgs-avatar", size=size, **({"seconds": seconds} if seconds is not None else {}))
                         yield resp.headers.get("X-Video-Id"), resp.aiter_bytes()
                         return
                     await resp.aread()
