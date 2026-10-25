@@ -434,6 +434,31 @@ audio, and the next clip(s) as soon as the current voice starts.
 **Costs.** Boson TTS ~$0.015 per 1,000 characters (`spend.ts RATES`), only for cache misses; the debug drawer
 (`ui/DebugDrawer.tsx`, `?debug`) shows a running session estimate (`spend.ts SpendTracker`).
 
+### 7.1 Bilingual reading (B3)
+
+The player bar's **Second language** picker (remembered per book, `reader/bilingual.ts`) turns the chunk list into
+`readingChunks(book, {mode, lang})`: in "bilingual" mode every paragraph's chunks are followed by one **translation
+slot** per chunk (`id = "<chunk>@<lang>"`, same speaker, voice and paragraph, `translation: {lang, of}`); in "translated"
+mode the slots replace the originals. Code listings and equations stay as they are. Because a slot is an ordinary
+`FlatChunk`, the engine, prefetch, voice switches and lip-sync clips work unchanged, and the engine plays the original
+sentences of a paragraph and then their translation. A mode change keeps the reader on the same sentence
+(`remapIndex`), and the saved position stays an index into the book's own chunks.
+
+- **Translation** (`app/translate.py`, `POST /api/translate`): a paragraph is sent as the list of its chunks' texts and
+  comes back as one translated piece per chunk (a misaligned answer is redone piece by piece; a blank piece keeps the
+  English). The prompt keeps names as the book spells them. Gemini `TRANSLATE_MODEL` (Flash-Lite) on the interactive
+  lane of the shared pacer; on a clone without GCP, `POST /api/public/translate-passage` (small-call caps). Cached in
+  `data/cache/translations/<book>/<lang>/p<idx>.json` (under `data/users/<ns>/` with PER_USER), keyed by a hash of the
+  chunk texts. The reader asks only for the paragraphs of slots inside the TTS prefetch window
+  (`parasToTranslate`), never the whole book, so nothing past the reader is translated (spoiler rule).
+- **Voice** (`POST /api/tts/translated`): the chunk's voice and cast tags exactly as `/api/tts` would use them, then
+  `translate.tts_inputs`: the chunk's leading delivery tags (pitch, style, emotion, expressive, pause; `sfx` dropped)
+  plus the piece cut at <= 280 chars by `ttschunks.split_translation` (sentence ends incl. 。！？, then clauses).
+  Boson gets `language` (ISO 639-3), `normalize: true`, no timestamps (cache key includes the language). A piece that
+  needed several inputs is voiced part by part and joined into one MP3 (`mp3dur.join` drops the Info frames).
+- **Display**: `BookText` shows the translation under the paragraph (or alone), one span per piece, lit as a whole while
+  it plays.
+
 ---
 
 ## 8. Faces: library, voice cloning, camera capture, auto-crop, any voice × any face

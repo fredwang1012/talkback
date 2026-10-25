@@ -1,4 +1,5 @@
 import RecapMenu, { type RecapChoice } from "./RecapMenu";
+import { BILINGUAL_LANGUAGES, pickLanguage, type BiMode, type BiSettings } from "./bilingual";
 
 type Props = {
   playing: boolean; onToggle: () => void; onPrev: () => void; onNext: () => void;
@@ -12,6 +13,7 @@ type Props = {
   inSeries: boolean;
   textbook?: boolean;
   loading?: boolean; audioAvailable: boolean; audioError: string | null; audioNotice?: string | null;
+  bilingual?: { value: BiSettings; onChange: (s: BiSettings) => void }; // B3: second language, remembered per book
 };
 
 const Icon = ({ d }: { d: string }) => (
@@ -54,6 +56,25 @@ export default function PlayerBar(p: Props) {
           <input type="checkbox" checked={p.readCaptions ?? true} onChange={(e) => p.onReadCaptions?.(e.target.checked)} />
           Read captions
         </label>
+      )}
+      {p.bilingual && (
+        <span className="bilingual">
+          <label title="Read each paragraph again in another language, in the same voice. Translation uses Gemini; new audio uses Boson credit.">
+            Second language
+            <select value={p.bilingual.value.mode === "off" ? "" : p.bilingual.value.lang}
+                    onChange={(e) => p.bilingual?.onChange(pickLanguage(p.bilingual.value, e.target.value))}>
+              <option value="">Off</option>
+              {BILINGUAL_LANGUAGES.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
+            </select>
+          </label>
+          {p.bilingual.value.mode !== "off" && (
+            <select aria-label="Bilingual mode" value={p.bilingual.value.mode}
+                    onChange={(e) => p.bilingual?.onChange({ ...p.bilingual.value, mode: e.target.value as BiMode })}>
+              <option value="bilingual">Original, then translation</option>
+              <option value="translated">Translation only</option>
+            </select>
+          )}
+        </span>
       )}
       <RecapMenu className="recap-btn" inSeries={p.inSeries} textbook={p.textbook} onPick={p.onRecap} />
       <span className="pos">¶ {p.para + 1} / {p.totalParas}</span>

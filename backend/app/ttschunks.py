@@ -352,3 +352,49 @@ def _legacy_tts_text(spoken: str, voice_tags: str, emotion: str | None, style: s
     tags = voice_tags + (f"<|style:{style}|>" if style else "") + (f"<|emotion:{emotion}|>" if emotion else "")
     text = normalize_for_tts(spoken)
     return tags + (with_laughter(text) if sfx else text)
+
+
+# ---- translated text (bilingual reading, B3) ----
+
+# A sentence ends at . ! ? (followed by space) or at CJK full-width punctuation (no space follows it in CJK text).
+_T_SENT_END = re.compile(r"""[.!?]+["')\]»”’]*(?=\s)|[。！？!?…]+[」』”’)）]*""")
+_T_CLAUSE = re.compile(r"[,;:，、；：—]")
+
+
+def _cut_long(text: str, limit: int) -> list[str]:
+    """Split one over-long sentence at the last clause mark, else space, else hard at `limit`."""
+    out = []
+    while len(text) > limit:
+        window = text[:limit]
+        cut = max((m.end() for m in _T_CLAUSE.finditer(window)), default=-1)
+        if cut <= limit // 3:
+            cut = window.rfind(" ")
+        if cut <= limit // 3:
+            cut = limit
+        out.append(text[:cut])
+        text = text[cut:]
+    if text:
+        out.append(text)
+    return out
+
+
+def split_translation(text: str, language: str | None = None, limit: int = MAX_CHARS) -> list[str]:
+    """A translated piece cut into TTS inputs of at most `limit` characters, whole sentences packed greedily. Knows
+    full-width CJK sentence ends (。！？), which have no space after them. Each part is stripped."""
+    text = text.strip()
+    if len(text) <= limit:
+        return [text] if text else []
+    sentences, start = [], 0
+    for m in _T_SENT_END.finditer(text):
+        sentences.append(text[start:m.end()])
+        start = m.end()
+    if start < len(text):
+        sentences.append(text[start:])
+    pieces = [q for s in sentences for q in (_cut_long(s, limit) if len(s) > limit else [s])]
+    groups: list[str] = []
+    for s in pieces:
+        if groups and len((groups[-1] + s).strip()) <= limit:
+            groups[-1] += s
+        else:
+            groups.append(s)
+    return [g.strip() for g in groups if g.strip()]
