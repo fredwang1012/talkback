@@ -20,10 +20,22 @@ export function webSearchAllowed(kind: BookKind | undefined, spoilers: boolean):
   return kind === "textbook" || spoilers === true;
 }
 
+/** The reader's country (ISO 3166-1 alpha-2) from a locale like "en-CA", for local results; null when the locale has none. */
+export function localeCountry(locale: string | undefined): string | null {
+  const m = /^[a-z]{2,3}(?:[-_][A-Za-z]{4})?[-_]([A-Za-z]{2})(?![A-Za-z0-9])/.exec(locale ?? "");
+  return m ? m[1].toUpperCase() : null;
+}
+
+/** web_search for this reader: `location.country` when the browser locale names one (the API rejects full names). */
+export function webSearchTool(locale: string | undefined = typeof navigator === "undefined" ? undefined : navigator.language): Record<string, unknown> {
+  const country = localeCountry(locale);
+  return country ? { ...WEB_SEARCH_TOOL, location: { country } } : { ...WEB_SEARCH_TOOL };
+}
+
 /** The tools to declare for this book right now: its function tools, plus web_search when allowed. */
-export function sessionTools(kind: BookKind | undefined, spoilers: boolean): readonly unknown[] {
+export function sessionTools(kind: BookKind | undefined, spoilers: boolean, locale?: string): readonly unknown[] {
   const fns: readonly unknown[] = toolDefsFor(kind);
-  return webSearchAllowed(kind, spoilers) ? [...fns, WEB_SEARCH_TOOL] : fns;
+  return webSearchAllowed(kind, spoilers) ? [...fns, webSearchTool(locale)] : fns;
 }
 
 /**

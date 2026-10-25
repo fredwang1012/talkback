@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { TalkClient, type MicLike, type PlayerLike, type SocketLike } from "../src/talk/TalkClient";
 import type { SessionEvent } from "../src/talk/TalkController";
 import type { SentenceSpeaker } from "../src/talk/sentencePlayer";
-import { WEB_SEARCH_TOOL, sessionTools, sourcesFromSearchOutput, webSearchAllowed } from "../src/talk/webSearch";
+import { WEB_SEARCH_TOOL, localeCountry, sessionTools, sourcesFromSearchOutput, webSearchAllowed, webSearchTool } from "../src/talk/webSearch";
 
 class FakeSocket implements SocketLike {
   readyState = 0;
@@ -100,12 +100,29 @@ describe("web_search: when it may be declared", () => {
   });
   it("the tool list carries exactly one web_search entry when allowed, the plain open-web form, and never otherwise", () => {
     expect(WEB_SEARCH_TOOL).toEqual({ type: "web_search" }); // no allowed_domains: the docs warn a scoped search often returns nothing
-    const tb = sessionTools("textbook", false);
+    const tb = sessionTools("textbook", false, "en");
     expect(tb.filter((t) => (t as { type: string }).type === "web_search")).toEqual([WEB_SEARCH_TOOL]);
     expect(tb.some((t) => (t as { name?: string }).name === "find_topic")).toBe(true); // the textbook function tools are kept
-    expect(JSON.stringify(sessionTools("novel", false))).not.toContain("web_search");
-    expect(JSON.stringify(sessionTools("novel", true))).toContain("web_search");
-    expect(sessionTools("novel", false).some((t) => (t as { name?: string }).name === "show_cast")).toBe(true);
+    expect(JSON.stringify(sessionTools("novel", false, "en"))).not.toContain("web_search");
+    expect(JSON.stringify(sessionTools("novel", true, "en"))).toContain("web_search");
+    expect(sessionTools("novel", false, "en").some((t) => (t as { name?: string }).name === "show_cast")).toBe(true);
+  });
+});
+
+describe("web_search: the reader's country", () => {
+  it("reads the region from the browser locale, never a full name", () => {
+    expect(localeCountry("en-CA")).toBe("CA");
+    expect(localeCountry("zh-Hant-TW")).toBe("TW");
+    expect(localeCountry("fr_fr")).toBe("FR");
+    expect(localeCountry("en")).toBeNull();
+    expect(localeCountry(undefined)).toBeNull();
+    expect(localeCountry("es-419")).toBeNull(); // a UN region code, not a country
+  });
+  it("adds location.country only when there is one", () => {
+    expect(webSearchTool("en-CA")).toEqual({ type: "web_search", location: { country: "CA" } });
+    expect(webSearchTool("en")).toEqual({ type: "web_search" });
+    expect(sessionTools("textbook", false, "en-GB").filter((x) => (x as { type: string }).type === "web_search"))
+      .toEqual([{ type: "web_search", location: { country: "GB" } }]);
   });
 });
 
@@ -126,12 +143,12 @@ describe("web_search: source links from the result item", () => {
 
 describe("web_search on the wire (TalkClient, text mode)", () => {
   it("setTools changes the declared tools of an open session and is remembered for the next one", async () => {
-    const { client, ws, sockets } = await openClient({ tools: sessionTools("novel", false) });
+    const { client, ws, sockets } = await openClient({ tools: sessionTools("novel", false, "en") });
     expect(JSON.stringify(ws.sent[0].session.tools)).not.toContain("web_search");
-    client.setTools(sessionTools("novel", true)); // spoilers switched on
+    client.setTools(sessionTools("novel", true, "en")); // spoilers switched on
     expect(ws.sent.at(-1)).toMatchObject({ type: "session.update", session: { tools: expect.arrayContaining([WEB_SEARCH_TOOL]) } });
     const n = ws.sent.length;
-    client.setTools(sessionTools("novel", true)); // unchanged: nothing sent
+    client.setTools(sessionTools("novel", true, "en")); // unchanged: nothing sent
     expect(ws.sent.length).toBe(n);
     client.resetConversation();
     const p = client.ensureOpen("marcus");
@@ -140,7 +157,7 @@ describe("web_search on the wire (TalkClient, text mode)", () => {
   });
 
   it("a response ending in a server-run web_search is not a finished turn: no response-done, searching chip, sources, the server's own answer plays", async () => {
-    const { client, ws, events, speaker } = await openClient({ tools: sessionTools("textbook", false) });
+    const { client, ws, events, speaker } = await openClient({ tools: sessionTools("textbook", false, "en") });
     client.respond("Be the Tutor.", "who first proposed tf-idf?");
     const creates = () => ws.types().filter((t) => t === "response.create").length;
     serverSearchTurn(ws, SEARCH_OUTPUT);
@@ -183,7 +200,7 @@ describe("web_search on the wire (TalkClient, text mode)", () => {
   });
 
   it("a barge-in while the search runs cancels the answer the server then starts, and ends the searching chip", async () => {
-    const { client, ws, events, speaker } = await openClient({ tools: sessionTools("textbook", false) });
+    const { client, ws, events, speaker } = await openClient({ tools: sessionTools("textbook", false, "en") });
     client.respond("Be the Tutor.", "q");
     serverSearchTurn(ws, SEARCH_OUTPUT);
     await flush();
@@ -201,7 +218,7 @@ describe("web_search on the wire (TalkClient, text mode)", () => {
   });
 
   it("audio mode: the same server call does not end the turn either, and the server's answer audio plays", async () => {
-    const { client, ws, events, player } = await openClient({ answerMode: "audio", tools: sessionTools("textbook", false) });
+    const { client, ws, events, player } = await openClient({ answerMode: "audio", tools: sessionTools("textbook", false, "en") });
     client.respond("x", "q");
     ws.recv({ type: "response.created", response: { id: "r1" } });
     ws.recv({ type: "response.output_audio.delta", response_id: "r1", item_id: "m1", delta: "PRE" });
@@ -230,7 +247,7 @@ async function openServerMode() {
     createSocket: (url, protocols) => { const s = new FakeSocket(url, protocols); sockets.push(s); return s; },
     createPlayer: () => player, createMic: () => mic, cancelWaitMs: 20,
     createSpeaker: (onPlaying) => { speaker.onPlaying = onPlaying; return speaker; },
-    tools: sessionTools("textbook", false),
+    tools: sessionTools("textbook", false, "en"),
   });
   const events: SessionEvent[] = [];
   client.on((e) => events.push(e));
