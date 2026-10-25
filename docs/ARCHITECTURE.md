@@ -3,7 +3,7 @@
 This document describes the code at commit `7158c68` on `main`. Every diagram and table was checked against the code.
 Where it describes the author's Google Cloud deployment, it names the Cloud Run services and the Google Cloud products
 used, but it leaves out project ids, URLs, accounts and other environment details. To run Talkback yourself you need
-none of the cloud parts: see the [README quick start](../README.md#quick-start-judges).
+none of the cloud parts: see the [README quick start](../README.md#quick-start).
 
 Talkback is a read-aloud book app. It reads novels and textbooks aloud with Boson Higgs TTS, with word
 highlighting, character voices and lip-synced faces. The reader can stop and ask a question out loud. The answer
@@ -80,7 +80,7 @@ flowchart LR
 
 | Actor | How they use it |
 | --- | --- |
-| Signed-in user (team, invited judge) | The deployed site, behind IAP. Only accounts granted `roles/iap.httpsResourceAccessor` get in. `PER_USER=true` gives each account its own uploads, voices, faces and cast settings. |
+| Signed-in user (owner, invited users) | The deployed site, behind IAP. Only accounts granted `roles/iap.httpsResourceAccessor` get in. `PER_USER=true` gives each account its own uploads, voices, faces and cast settings. |
 | Judge with a fresh clone | Runs the backend (and optionally the Vite dev server) locally with only `BOSON_API_KEY`. If `PUBLIC_API_URL` is set and the machine has no Anthropic key and no usable Google Cloud credentials, `public_client.active()` sends Gemini work (enrichment, typed answers, translation, detection, face box, equation readings) to `talkback-public`. |
 | Boson AI | TTS, Realtime (speech-to-text, turn detection, function tools, spoken answers on the Realtime path), Avatar (lip-sync video), voice cloning. |
 | Google Cloud | Hosting, sign-in, storage, Gemini, embeddings, vector search, web grounding, secrets, logs, budget kill switch. |
@@ -346,7 +346,7 @@ The deployed service does not set it: IAP is the gate there.
 | `GET /api/me` | signed-in email and `per_user` | - |
 | `GET /api/books`, `GET /api/hidden-books`, `POST /api/books/{id}/hide`, `/restore` | library listing, per-account hiding of built-in books | - |
 | `GET /api/books/{id}` | full `book.json`, serialized and gzipped once per version (`_book_bodies`) | - |
-| `GET /api/books/{id}/figures/{fig-N.png}` | textbook figure image (#40) | - |
+| `GET /api/books/{id}/figures/{fig-N.png}` | textbook figure image | - |
 | `GET /api/books/{id}/equations/{eN or mN}.png` | equation crop. Not behind the access code (it is an `<img>`), but `guard_book` still applies | - |
 | `GET /api/books/{id}/recap?para&scope&section` | spoiler-safe recap from stored summaries (`recap.py`, no LLM) | - |
 | `POST /api/realtime/token` | mints an ephemeral Realtime key with a 600 s TTL | Boson `/v1/realtime/client_secrets` |
@@ -525,14 +525,13 @@ Read-mode details:
   thread (`books.schedule_all_upgrades` / `_schedule_upgrade`) with no API call. Changed chunks get new audio the
   next time they are played.
 - Boson tags come from `delivery.py` (styles whispering and shouting, sfx such as laughter, sigh, sneeze and humming,
-  singing, pauses, expressive) and from the cast prosody tags (`pitch_low`, `pitch_high`, `speed_slow`, `speed_fast`). Natural speed
-  (#78) adds a `prosody:speed_*` tag and so gets its own cache entry.
+  singing, pauses, expressive) and from the cast prosody tags (`pitch_low`, `pitch_high`, `speed_slow`, `speed_fast`). Natural speed adds a `prosody:speed_*` tag and so gets its own cache entry.
 - Code listings read "Code listing skipped.". A display equation reads its Gemini `spoken` text, else "Equation.".
   An inline formula's reading replaces its garbled glyphs, and `inline_spans` keeps word highlighting aligned.
 
 ## 6. Sequence: hands-free spoken question
 
-This is the cloud configuration: `answer_backend=gemini`, server turn detection (#135).
+This is the cloud configuration: `answer_backend=gemini`, server turn detection.
 
 ```mermaid
 sequenceDiagram
@@ -592,7 +591,7 @@ as text, is split into sentences in the browser and each sentence is voiced by H
 speaker's voice and lip-synced, exactly like steps 17-23 of the Gemini path (see HOW-IT-WORKS 12.1). With
 `?answers=audio` Boson speaks the answer itself through the playback worklet. Every server event carries a
 `response_id`. `TalkClient.stale()` drops output from a cancelled or older response, and `dropOutput` stays on until the
-next `response.created` (#100). A barge-in on that path calls `interrupt()`: it stops the sentence player (or flushes
+next `response.created`. A barge-in on that path calls `interrupt()`: it stops the sentence player (or flushes
 local playback and sends `conversation.item.truncate` at the played position), then `response.cancel`, and waits for
 the acknowledgement.
 
@@ -652,7 +651,7 @@ Tool sets declared to `session.update` (`tools.toolDefsFor(kind)`):
 - Novels (`TOOL_DEFS`): `jump_to`, `read_chapter`, `resume_reading`, `pause_reading`, `set_voice_mode`, `set_narrator`,
   `set_speed`, `open_recap`, `bookmark`, `show_cast`, `go_back`.
 - Textbooks (`TEXTBOOK_TOOL_DEFS`): `jump_to`, `read_chapter`, `next_section`, `previous_section`, `find_topic`
-  (tf-idf in `sections.ts`), `quiz_me` (3 questions), `explain_here`, `resume_reading`, `pause_reading`, `set_speed`,
+ (tf-idf in `sections.ts`), `quiz_me` (3 questions), `explain_here`, `resume_reading`, `pause_reading`, `set_speed`,
   `open_recap`, `bookmark`, plus `go_back`.
 - Boson's server-side `{"type": "web_search"}` tool is added for textbooks, and for novels only with spoilers on
   (`talk/webSearch.ts`, rebuilt before every turn). A web search about a spoiler-safe novel would give away spoilers.
@@ -948,7 +947,7 @@ equation requests 60.
 
 All settings are in `backend/app/config.py` (pydantic-settings, read from `talkback/.env`). "Local" means the code
 default, which is what a fresh clone gets. "Cloud" means what the deploy scripts set for the `talkback` service unless
-noted. The cap columns show the hackathon deploy values; the code defaults are the safe ones.
+noted. The cap columns show the deployed values; the code defaults are the safe ones.
 
 | Setting (env) | Code default / local | Cloud `talkback` | Cloud `talkback-public` | Effect |
 | --- | --- | --- | --- | --- |
@@ -968,7 +967,7 @@ noted. The cap columns show the hackathon deploy values; the code defaults are t
 | `GEMINI_MODEL` | `gemini-2.5-flash` | default | default | answers, translation, face box |
 | `ENRICH_GEMINI_MODEL` | empty (so `GEMINI_MODEL`) | `gemini-2.5-flash-lite` | `gemini-2.5-flash-lite` | book processing |
 | `WEB_SEARCH` | true | default | default | grounding allowed |
-| `GROUNDED_DAILY_CAP` | 100 | 100000 (hackathon) | n/a | grounded answers per UTC day |
+| `GROUNDED_DAILY_CAP` | 100 | 100000 | n/a | grounded answers per UTC day |
 | `PUBLIC_GROUNDED_DAILY_CAP` | 50 | n/a | default 50 | |
 | `VS_COLLECTION` | `chunks` | default | n/a | Vector Search collection |
 | `USAGE_LOG_FILE` | true | false (Cloud Logging only) | false | `data/cache/usage.jsonl` |
@@ -980,10 +979,10 @@ noted. The cap columns show the hackathon deploy values; the code defaults are t
 | `UPLOAD_CONCURRENCY` | 24 | default | default | LLM calls per book |
 | `ENRICH_PARALLEL` | 1000 | default | n/a | uploads enriched at once |
 | `GEMINI_CONCURRENCY_START` / `_MAX` | 8 / 32 | default | default | pacer AIMD |
-| `UPLOAD_BOOK_CAP_USD` / `UPLOAD_TOTAL_CAP_USD` | 4.0 / 15.0 | 1000 / 1000 (hackathon; overridable at deploy) | n/a | per-book estimate cap / cumulative cap |
+| `UPLOAD_BOOK_CAP_USD` / `UPLOAD_TOTAL_CAP_USD` | 4.0 / 15.0 | 1000 / 1000 (overridable at deploy) | n/a | per-book estimate cap / cumulative cap |
 | `PUBLIC_API` | false | false | true | public-only app |
 | `PUBLIC_API_URL` | empty (`.env.example` sets it for clones) | unset | n/a | clone client |
-| `PUBLIC_BOOK_CAP_USD`, `PUBLIC_TOTAL_CAP_USD`, `PUBLIC_IP_DAILY_CAP_USD`, `PUBLIC_ANSWER_DAILY_CAP_USD` | 1.5, 10, 2, 2 | n/a | 1000 each (hackathon; overridable at deploy) | |
+| `PUBLIC_BOOK_CAP_USD`, `PUBLIC_TOTAL_CAP_USD`, `PUBLIC_IP_DAILY_CAP_USD`, `PUBLIC_ANSWER_DAILY_CAP_USD` | 1.5, 10, 2, 2 | n/a | 1000 each (overridable at deploy) | |
 | `PER_USER` | false | true | n/a | requires `IAP_AUDIENCE` (validator) |
 | `IAP_AUDIENCE` | empty | `/projects/PROJECT_NUMBER/locations/REGION/services/talkback` (set by the deploy script) | n/a | |
 | `OWNER_EMAILS` | empty | the author's account | n/a | the first one inherits pre-account data |
