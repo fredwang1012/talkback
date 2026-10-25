@@ -82,7 +82,7 @@ def use(monkeypatch, fake):
 def test_the_new_routes_exist_and_nothing_else(par):
     paths = {r.path for r in public_api.app.routes if hasattr(r, "methods")}
     assert paths == {"/api/health", "/api/public/enrich", "/api/public/enrich/{job_id}", "/api/public/answer",
-                     "/api/public/translate", "/api/public/detect", "/api/public/describe",
+                     "/api/public/translate", "/api/public/translate-passage", "/api/public/detect", "/api/public/describe",
                      "/api/public/series", "/api/public/series-early", "/api/public/faces/detect", "/api/public/equations", "/api/public/equations/{ticket}"}
 
 

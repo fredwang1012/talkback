@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     # separate, less congested Vertex pool, so uploads are not throttled by Talk answers or busy shared capacity.
     enrich_gemini_model: str = ""
     enrich_fallback_on_429: bool = False   # send rate-limited processing calls to GEMINI_MODEL (pricier, faster when busy)
+    # bilingual reading (app/translate.py): paragraph translations, on the interactive lane. Empty = the enrichment model.
+    translate_model: str = "gemini-2.5-flash-lite"
     # Web search (Grounding with Google Search) on Gemini answers: textbooks and novels with spoilers on only (websearch.py).
     web_search: bool = True
     grounded_daily_cap: int = 100        # grounded answers per UTC day on this app, persisted (data/usage)
@@ -75,6 +77,9 @@ class Settings(BaseSettings):
     public_total_cap_usd: float = 10.0          # cumulative enrichment spend, persisted
     public_ip_daily_cap_usd: float = 2.0        # enrichment estimates per client address per UTC day, persisted
     public_answer_daily_cap_usd: float = 2.0    # Gemini answers per UTC day, persisted
+
+    # Lip-sync output size (docs.boson.ai input-options): 640x640 $0.09/min; 480x640 (3:4 portrait) and 640x480 $0.07/min.
+    avatar_size: Literal["640x640", "480x640", "640x480"] = "640x640"
 
     # Per-account separation for the live Cloud Run deploy (Google sign-in via IAP). Off everywhere else.
     per_user: bool = False

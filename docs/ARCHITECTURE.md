@@ -49,7 +49,7 @@ flowchart LR
 
   subgraph BOSON["Boson AI (api.boson.ai)"]
     TTS["higgs-tts-3<br/>/v1/audio/speech"]
-    RT["higgs-realtime WSS<br/>+ higgs-stt-3.1 transcription"]
+    RT["higgs-realtime-1.5-preview WSS<br/>(falls back to higgs-realtime)<br/>+ higgs-stt-3.1 transcription"]
     AV["higgs-avatar<br/>/v1/videos, /v1/videos/stream"]
     VC["Voice clone<br/>/v1/audio/voices"]
   end
@@ -168,7 +168,7 @@ flowchart LR
   UV -->|"ADC (gcloud auth application-default)<br/>if GCP_PROJECT set"| VERTEX["Vertex AI"]
   UV -.->|"RETRIEVAL_BACKEND=local (default)"| E5["BM25 (rank-bm25)<br/>+ optional intfloat/multilingual-e5-small<br/>(embed extra, sentence-transformers)"]
   UV -.->|"PUBLIC_API_URL, clone without own LLM"| PUBL["talkback-public"]
-  BR -->|"WSS with ephemeral key"| RTL["wss://api.boson.ai/v1/realtime?model=higgs-realtime"]
+  BR -->|"WSS with ephemeral key"| RTL["wss://api.boson.ai/v1/realtime?model=higgs-realtime-1.5-preview"]
 ```
 
 Local defaults (`backend/app/config.py`): `retrieval_backend=local`, so `answer_backend` resolves to `realtime`. Boson
@@ -539,7 +539,7 @@ sequenceDiagram
   participant M as Mic (capture worklet, 24 kHz PCM16)
   participant TC as TalkController.ts
   participant CL as TalkClient.ts
-  participant RT as Boson Realtime WSS (higgs-realtime, higgs-stt-3.1)
+  participant RT as Boson Realtime WSS (higgs-realtime-1.5-preview, higgs-stt-3.1)
   participant API as FastAPI /api/answer
   participant RET as retrieval / VertexIndex
   participant G as Vertex gemini-2.5-flash
@@ -603,7 +603,7 @@ sequenceDiagram
   actor R as Reader
   participant TC as TalkController.ts
   participant CL as TalkClient.ts
-  participant RT as Boson Realtime (higgs-realtime)
+  participant RT as Boson Realtime (higgs-realtime-1.5-preview)
   participant API as FastAPI
   participant T as tools.ts runTool
   participant RD as ReaderControl (ReaderEngine, Reader.tsx)
@@ -925,11 +925,11 @@ equation requests 60.
 | Backend | `/api/tts` -> `tts_cache.get_or_create` -> `BosonClient.create_speech` | `POST api.boson.ai/v1/audio/speech` | `higgs-tts-3` | read-mode chunk audio, mp3, `timestamps: true` |
 | Backend | `/api/speak` -> `tts_cache` | same | `higgs-tts-3` | answer and recap sentences, `<\|emotion:x\|>` tag, `language` (ISO 639-3); non-English sent with `normalize: true` and no timestamps |
 | Backend | `faces.animate` (`/api/faces/{id}/animate`) | `/v1/audio/speech` then `/v1/videos` x2 | `higgs-tts-3`, `higgs-avatar` | face talk and idle loops (about 0.05 USD) |
-| Backend | `/api/avatar/talk` | `POST /v1/videos`, `GET /v1/videos/{id}`, `GET /v1/videos/{id}/content` | `higgs-avatar` 640x640 | one lip-sync clip (render, then download) |
+| Backend | `/api/avatar/talk` | `POST /v1/videos`, `GET /v1/videos/{id}`, `GET /v1/videos/{id}/content` | `higgs-avatar` `AVATAR_SIZE` (default 640x640; 480x640 is $0.07/min) | one lip-sync clip (render, then download) |
 | Backend | `/api/avatar/stream` | `POST /v1/videos/stream` | `higgs-avatar` | streaming fMP4 (H.264 High 3.0 + AAC-LC), proxied to MSE |
 | Backend | `/api/voices/clone`, `DELETE /api/voices/{id}` | `POST/DELETE /v1/audio/voices` | voice clone | user voice clones (WAV at least 3 s, consent) |
 | Backend | `/api/realtime/token` | `POST /v1/realtime/client_secrets` | - | ephemeral key, `expires_after` 600 s |
-| Browser | `TalkClient.open` | `wss://api.boson.ai/v1/realtime?model=higgs-realtime` | `higgs-realtime`, `higgs-stt-3.1` | speech in, transcripts, semantic_vad / server_vad turns, function tools, spoken answers (Realtime path) |
+| Browser | `TalkClient.open` | `wss://api.boson.ai/v1/realtime?model=higgs-realtime-1.5-preview` (fallback `higgs-realtime`; `?rt=` overrides) | `higgs-realtime-1.5-preview`, `higgs-stt-3.1` | speech in, transcripts, semantic_vad / server_vad turns, function tools, spoken answers (Realtime path) |
 | Backend | `/api/answer` -> `GeminiAnswerer.stream_sentences` | Vertex `generate_content_stream` | `GEMINI_MODEL` (default `gemini-2.5-flash`) | in-character spoken answer. Optional `GoogleSearch` grounding tool. Location `GEMINI_LOCATION` or `GCP_REGION` |
 | Backend | `multilingual.translate` (from `/api/answer`, `/api/retrieve`) | Vertex `generate_content` | `GEMINI_MODEL` | non-English question to English for search (4 s limit) |
 | Backend | `face_detect.detect` (`/api/faces/detect`) | Vertex `generate_content` with an image part | `GEMINI_MODEL` | face bounding box for the crop |

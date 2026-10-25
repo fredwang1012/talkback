@@ -1,7 +1,8 @@
 import type { Book, Character, TtsChunk } from "../api";
 
-/** One readable unit: a TTS chunk plus where it sits in the book; `caption`: it reads a figure's caption (#40). */
-export type FlatChunk = TtsChunk & { para: number; caption?: boolean };
+/** One readable unit: a TTS chunk plus where it sits in the book; `caption`: it reads a figure's caption (#40);
+ * `translation`: it reads chunk `of` in a second language (bilingual reading, reader/bilingual.ts). */
+export type FlatChunk = TtsChunk & { para: number; caption?: boolean; translation?: { lang: string; of: string } };
 
 export function flattenChunks(book: Book): FlatChunk[] {
   return book.paragraphs.flatMap((p) => p.tts_chunks.map((c) => ({ ...c, para: p.idx, ...(p.kind === "figure" ? { caption: true } : {}) })));

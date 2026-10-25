@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from pydantic import BaseModel, Field, field_validator
 
-from . import books, cast, emotion, face_detect, faces, ingest_upload, multilingual, public_client, recap, retrieval, tts_cache, tts_lang, users, voices
+from . import books, cast, emotion, face_detect, faces, ingest_upload, multilingual, public_client, recap, retrieval, translate, tts_cache, tts_lang, users, voices
 from .delivery import apply_speed
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
@@ -311,6 +311,20 @@ class TtsRequest(BaseModel):
     speed: Literal["very_slow", "slow", "fast", "very_fast"] | None = None  # natural speed (#78): Boson speed tag, own cache entry
 
 
+def _chunk_voice_and_text(book: Book, c, voice_override: str | None) -> tuple[str, str]:
+    """The voice a chunk is read in (override, else the saved cast, else the book's) and its TTS text with the cast's
+    pitch/speed tags in place of the book's. 400 for an unknown voice."""
+    voice = voice_override or cast.voice_for(book, c.speaker) or c.voice
+    if not voices.is_known_voice(voice):
+        raise HTTPException(400, f"Unknown voice '{voice}'.")
+    tts_text = c.tts_text
+    ch = next((x for x in book.characters if x.id == c.speaker), None)
+    tags = cast.tags_for(book, c.speaker) if ch else None
+    if tags is not None and tts_text.startswith(ch.voice_tags):  # the user's pitch/speed replaces the book's
+        tts_text = tags + tts_text[len(ch.voice_tags):]
+    return voice, tts_text
+
+
 @app.post("/api/tts", dependencies=[Depends(require_access)])
 async def tts(req: TtsRequest, request: Request):
     users.guard_book(req.book_id)
@@ -320,14 +334,7 @@ async def tts(req: TtsRequest, request: Request):
     for p in book.paragraphs:
         for c in p.tts_chunks:
             if c.id == req.chunk_id:
-                voice = req.voice_override or cast.voice_for(book, c.speaker) or c.voice
-                if not voices.is_known_voice(voice):
-                    raise HTTPException(400, f"Unknown voice '{voice}'.")
-                tts_text = c.tts_text
-                ch = next((x for x in book.characters if x.id == c.speaker), None)
-                tags = cast.tags_for(book, c.speaker) if ch else None
-                if tags is not None and tts_text.startswith(ch.voice_tags):  # the user's pitch/speed replaces the book's
-                    tts_text = tags + tts_text[len(ch.voice_tags):]
+                voice, tts_text = _chunk_voice_and_text(book, c, req.voice_override)
                 tts_text = apply_speed(tts_text, req.speed)
                 cached = tts_cache.is_cached(tts_text, voice)
                 if req.cached_only and not cached:
@@ -340,6 +347,103 @@ async def tts(req: TtsRequest, request: Request):
                 except (BosonError, RuntimeError) as e:
                     raise boson_http_error(e)
                 return {"chunk_id": c.id, "voice": voice, **out}
+    raise HTTPException(404, "Chunk not found")
+
+
+# ---------- bilingual reading (B3): a paragraph in a second language, same voice ----------
+
+translate_bucket = TokenBucket(capacity=60, per_seconds=60)  # paragraph translations that miss the cache (Gemini credit)
+
+
+def _foreign_language(v: str) -> str:
+    if not tts_lang.valid(v) or tts_lang.is_english(v):
+        raise ValueError("language must be the ISO 639-3 code of a language other than English that Higgs TTS supports")
+    return v
+
+
+class TranslateRequest(BaseModel):
+    book_id: str
+    para: int = Field(ge=0)
+    language: str = Field(max_length=3)
+
+    _lang = field_validator("language")(classmethod(lambda cls, v: _foreign_language(v)))
+
+
+class TranslatedTtsRequest(BaseModel):
+    book_id: str
+    chunk_id: str
+    language: str = Field(max_length=3)
+    voice_override: str | None = None
+    cached_only: bool = False
+    speed: Literal["very_slow", "slow", "fast", "very_fast"] | None = None
+
+    _lang = field_validator("language")(classmethod(lambda cls, v: _foreign_language(v)))
+
+
+def _translatable_book(book_id: str) -> Book:
+    users.guard_book(book_id)
+    book = books.load_book(book_id)
+    if book is None:
+        raise HTTPException(404, "Book not found")
+    return book
+
+
+async def _pieces(book: Book, p, lang: str, request: Request) -> list[str]:
+    """The paragraph's translation (cached, else one Gemini call, rate-limited per reader)."""
+    if p.kind in translate.UNTRANSLATED_KINDS or not p.tts_chunks:
+        raise HTTPException(400, "This paragraph is not translated (code or equation).")
+    path = translate.cache_path(book.id, lang, p.idx)
+    if not path.exists() and not translate_bucket.allow(rate_key(request)):
+        raise HTTPException(429, "Too many new translations; wait a moment.")
+    try:
+        pieces, _ = await translate.paragraph_pieces(book, p, lang)
+    except translate.Unavailable as e:
+        raise HTTPException(503, str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.getLogger(__name__).warning("translation failed: %s", type(e).__name__)
+        raise HTTPException(502, "The translation failed; try again.")
+    return pieces
+
+
+@app.post("/api/translate", dependencies=[Depends(require_access)])
+async def translate_paragraph(req: TranslateRequest, request: Request):
+    """One paragraph in the reader's second language: a translated piece per TTS chunk (lazy, cached per book +
+    paragraph + language). Only paragraphs the reader is about to read are asked for, never the whole book."""
+    book = _translatable_book(req.book_id)
+    if req.para >= len(book.paragraphs):
+        raise HTTPException(404, "Paragraph not found")
+    p = book.paragraphs[req.para]
+    pieces = await _pieces(book, p, req.language, request)
+    return {"para": p.idx, "language": req.language, "chunk_ids": [c.id for c in p.tts_chunks], "pieces": pieces}
+
+
+@app.post("/api/tts/translated", dependencies=[Depends(require_access)])
+async def tts_translated(req: TranslatedTtsRequest, request: Request):
+    """A chunk's translation read aloud in the chunk's own voice and delivery tags (sfx dropped), with Boson's
+    `language`; no word timestamps (the whole piece is highlighted). A piece over MAX_CHARS is voiced in parts and
+    joined."""
+    book = _translatable_book(req.book_id)
+    for p in book.paragraphs:
+        for k, c in enumerate(p.tts_chunks):
+            if c.id != req.chunk_id:
+                continue
+            voice, tts_text = _chunk_voice_and_text(book, c, req.voice_override)
+            if req.cached_only and not translate.cache_path(book.id, req.language, p.idx).exists():
+                raise HTTPException(409, "This translation is not pre-rendered.")
+            piece = (await _pieces(book, p, req.language, request))[k]
+            inputs = translate.tts_inputs(tts_text, piece, req.language, req.speed)
+            cached = tts_cache.all_cached(inputs, voice, req.language)
+            if req.cached_only and not cached:
+                raise HTTPException(409, "This translation is not pre-rendered.")
+            if not cached and not tts_bucket.allow(rate_key(request)):
+                raise HTTPException(429, "Too many new audio requests; wait a moment.")
+            try:
+                out = await tts_cache.get_or_create_joined(boson, inputs, voice, piece, language=req.language)
+            except (BosonError, RuntimeError) as e:
+                raise boson_http_error(e)
+            return {"chunk_id": c.id, "voice": voice, "language": req.language, "text": piece, **out}
     raise HTTPException(404, "Chunk not found")
 
 
@@ -1813,7 +1917,9 @@ def _lipsync_inputs(req: LipSyncRequest) -> tuple[Path, Path, str]:
     audio = settings.data_dir / "cache" / "tts" / f"{m.group(1)}.mp3"
     if not audio.is_file():
         raise HTTPException(404, "That audio is not cached.")
-    return audio, face, f"{m.group(1)}-{hashlib.sha256(face.read_bytes()).hexdigest()[:16]}"
+    key = f"{m.group(1)}-{hashlib.sha256(face.read_bytes()).hexdigest()[:16]}"
+    # the size is part of the key (a 3:4 clip is not a 1:1 clip); the default keeps its old key so cached clips stay valid
+    return audio, face, key if settings.avatar_size == "640x640" else f"{key}-{settings.avatar_size}"
 
 
 @app.post("/api/avatar/talk", dependencies=[Depends(require_access)])

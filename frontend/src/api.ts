@@ -1,4 +1,5 @@
 import { getAccessToken } from "./accessToken";
+import { spend } from "./spend";
 
 export type Segment = { speaker: string; text: string; emotion: string | null };
 export type TtsChunk = {
@@ -85,7 +86,7 @@ export type BookSummary = {
   series?: string | null;
   series_index?: number | null;
 };
-export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean; answer_backend: "gemini" | "realtime" };
+export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean; answer_backend: "gemini" | "realtime"; avatar_size?: string };
 
 /** Sent when the server requires an access code (TALKBACK_ACCESS_TOKEN). Typed in by the visitor, never built in. */
 export function authHeaders(): Record<string, string> {
@@ -142,7 +143,7 @@ export const accountLabel = (me: Me | null): string | null => (me && me.per_user
 
 export const fetchBooks = () => getJson<BookSummary[]>("/api/books");
 export const fetchBook = (id: string) => getJson<Book>(`/api/books/${encodeURIComponent(id)}`);
-export const fetchHealth = () => getJson<Health>("/api/health");
+export const fetchHealth = () => getJson<Health>("/api/health").then((h) => { if (h.avatar_size) spend.setAvatarSize(h.avatar_size); return h; });
 
 export type Recap = { upto_para: number | null; chapter: string; text: string; earlier: string; earlier_full?: string };
 /** "Previously...": the latest stored summary written from text at or before `para`. */
@@ -173,6 +174,35 @@ export async function fetchTts(bookId: string, chunkId: string, voiceOverride?: 
     throw new Error(detail ?? `Audio request failed (${res.status})`);
   }
   return res.json() as Promise<TtsResponse>;
+}
+
+export type TranslationResponse = { para: number; language: string; chunk_ids: string[]; pieces: string[] };
+
+async function postJson<T>(path: string, body: unknown, timeoutMs: number, what: string): Promise<T> {
+  const res = await timedFetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
+  }, timeoutMs);
+  if (!res.ok) {
+    const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
+    throw new Error(typeof detail === "string" ? detail : `${what} failed (${res.status})`);
+  }
+  return res.json() as Promise<T>;
+}
+
+/** Bilingual reading (B3): one paragraph in `language` (ISO 639-3), a translated piece per TTS chunk (server-cached). */
+export function fetchTranslation(bookId: string, para: number, language: string): Promise<TranslationResponse> {
+  return postJson("/api/translate", { book_id: bookId, para, language }, 30000, "Translation");
+}
+
+/** A chunk's translation read aloud in the chunk's own voice (no word timestamps: the piece is lit as a whole). */
+export function fetchTranslatedTts(bookId: string, chunkId: string, language: string, voiceOverride?: string,
+  cachedOnly = false, speed?: string | null): Promise<TtsResponse & { text: string }> {
+  return postJson("/api/tts/translated", {
+    book_id: bookId, chunk_id: chunkId, language, voice_override: voiceOverride ?? null, cached_only: cachedOnly,
+    ...(speed ? { speed } : {}),
+  }, 90000, "Audio request");
 }
 
 export type RetrieveResponse = {
