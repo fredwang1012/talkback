@@ -156,6 +156,30 @@ def format_history(history: list | None) -> str:
     return "\n".join(lines)
 
 
+HISTORY_NOTE = "\n\nThe conversation so far (it may help you follow the question; it is not a source of story facts):\n"
+
+
+def realtime_instructions(book: Book, speaker_id: str, story_so_far: str, passages: list[dict], query: str, *,
+                          spoilers: bool = False, text_answer: bool = False, web_search: bool = False,
+                          history: list | None = None) -> str:
+    """The per-response instructions of the Realtime answer path (`/api/retrieve`).
+
+    `text_answer` (B1): the model writes the answer (output_modalities ["text"]) and Higgs TTS speaks it, so it gets the
+    same spoken-output and `[feeling]` marker rule as Gemini (ANSWER_SUFFIX) instead of the "show it in your voice" rule.
+    `web_search` (B2): the session declared Boson's web_search tool; the rule says when to use it. The caller enforces
+    when it may (websearch.allowed: textbooks, or a novel with spoilers on).
+    `history`: the chat so far with this speaker. Live (probe 2026-10-24) the model does not see the conversation's items
+    when a response carries instructions, so the history is written here, after the passages and before the rules.
+    The suffixes go after the length cap, so none of them is ever cut off."""
+    suffix = (WEB_SEARCH_RULE if web_search else "") + (ANSWER_SUFFIX if text_answer else "")
+    earlier = format_history(history)
+    note = (HISTORY_NOTE + earlier) if earlier else ""
+    body = build_instructions(book, speaker_id, story_so_far, passages, MAX_INSTRUCTIONS_CHARS - len(suffix) - len(note),
+                              spoilers=spoilers, reply_language=multilingual.foreign_language(query),
+                              voice_emotion=not text_answer)
+    return body + note + suffix
+
+
 def build_answer_prompt(book: Book, speaker_id: str, story_so_far: str, passages: list[dict], query: str,
                         *, spoilers: bool = False, history: list | None = None,
                         web_search: bool = False) -> tuple[str, str]:

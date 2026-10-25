@@ -584,12 +584,16 @@ sequenceDiagram
 ```
 
 On the Realtime answer path (the local default), step 13 calls `POST /api/retrieve` instead. It returns `instructions`
-(k at most 4, at most 8,000 chars, including `REALTIME_EMOTION_RULE` and `LANGUAGE_RULE`). `TalkClient.respond` then sends
-`response.create {instructions, max_output_tokens 600}`, and Boson speaks the answer in the session voice through the
-playback worklet. Every server event carries a `response_id`. `TalkClient.stale()` drops output from a cancelled or
-older response, and `dropOutput` stays on until the next `response.created`. A barge-in on that path calls
-`interrupt()`: it flushes local playback, sends `conversation.item.truncate` at the played position, then
-`response.cancel`, and waits for the acknowledgement.
+(k at most 4, at most 8,000 chars, including the chat so far, `LANGUAGE_RULE` and, in text mode, the spoken-output and
+`[feeling]` marker rule). `TalkClient.respond` then sends `response.create {instructions, input: [the question],
+max_output_tokens 600}`. By default Boson speaks the answer itself through the playback worklet. With `?answers=text` the session is in
+text mode (`output_modalities: ["text"]`): the answer streams back
+as text, is split into sentences in the browser and each sentence is voiced by Higgs TTS with its emotion tag in the
+speaker's voice and lip-synced, exactly like steps 17-23 of the Gemini path (see HOW-IT-WORKS 12.1). Every server event carries a
+`response_id`. `TalkClient.stale()` drops output from a cancelled or older response, and `dropOutput` stays on until the
+next `response.created`. A barge-in on that path calls `interrupt()`: it stops the sentence player (or flushes
+local playback and sends `conversation.item.truncate` at the played position), then `response.cancel`, and waits for
+the acknowledgement.
 
 ## 7. Sequence: push-to-talk, typed questions and reader tools
 
@@ -649,7 +653,8 @@ Tool sets declared to `session.update` (`tools.toolDefsFor(kind)`):
 - Textbooks (`TEXTBOOK_TOOL_DEFS`): `jump_to`, `read_chapter`, `next_section`, `previous_section`, `find_topic`
  (tf-idf in `sections.ts`), `quiz_me` (3 questions), `explain_here`, `resume_reading`, `pause_reading`, `set_speed`,
   `open_recap`, `bookmark`, plus `go_back`.
-- Boson's server-side `web_search` tool is never declared. A web search about a novel would give away spoilers.
+- Boson's server-side `{"type": "web_search"}` tool is added for textbooks, and for novels only with spoilers on
+  (`talk/webSearch.ts`, rebuilt before every turn). A web search about a spoiler-safe novel would give away spoilers.
 
 ## 8. Upload and enrichment pipeline
 
