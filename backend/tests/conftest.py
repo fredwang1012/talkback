@@ -50,6 +50,13 @@ def _public_api_off_unless_a_test_says_otherwise(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _default_caps_unless_a_test_says_otherwise(monkeypatch):
+    """A developer's .env (raised upload caps, ENRICH_FALLBACK_ON_429) never changes the cap and 429 tests."""
+    for name in ("upload_book_cap_usd", "upload_total_cap_usd", "enrich_fallback_on_429"):
+        monkeypatch.setattr(settings, name, type(settings).model_fields[name].default, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_auto_rechunk_unless_a_test_says_otherwise(monkeypatch):
     """Tests load the committed data/books: the server's background re-chunk (books._upgrade) must never rewrite them."""
     monkeypatch.setattr(settings, "auto_rechunk", False, raising=False)
