@@ -38,6 +38,9 @@ export const PRESS_PREROLL_MS = 300;
 export const STREAM_HOLD_MS = 3000;
 /** Caption reveal tick (#135): how often the played position is read while an answer plays. */
 export const CAPTION_TICK_MS = 100;
+/** Busy server (upstream_error before anything was heard): how many times the answer is asked again, and after how long. */
+export const BUSY_RETRIES = 1;
+export const BUSY_RETRY_MS = 800;
 /** Text mode (B1): how many answer sentences are synthesised ahead of the one being spoken. */
 export const TEXT_PREFETCH_DEPTH = 3;
 /** Boson's turn detection types, best first (#135); the next one is tried when the server refuses one. */
@@ -247,6 +250,10 @@ export class TalkClient implements TalkSession {
   private currentResponseId: string | null = null;
   private cancelledIds = new Set<string>();
   private cancelUncreated = 0; // cancelled after response.create but before its response.created arrived
+  // 1.5 preview capacity (Boson feedback #12): about 2 generations at once per key; the next fails with upstream_error
+  private lastCreate: ClientEvent | null = null; // the last response.create, sent again once when the server was busy
+  private busyRetries = 0;
+  private busyFailed = false; // this response failed with upstream_error before anything was heard
   // #135 voice-timed captions
   private segs: CaptionSegment[] = [];
   private segMs = 0;
@@ -579,7 +586,7 @@ export class TalkClient implements TalkSession {
     this.expectResponse++;
     const q = question?.trim() ?? "";
     this.lastQuestion = q;
-    this.send({ type: "response.create", response: { instructions, max_output_tokens: 600, ...(q ? { input: [userInput(q)] } : {}) } });
+    this.sendCreate({ type: "response.create", response: { instructions, max_output_tokens: 600, ...(q ? { input: [userInput(q)] } : {}) } });
   }
 
   /**
@@ -595,7 +602,15 @@ export class TalkClient implements TalkSession {
     this.currentResponseId = null;
     this.expectResponse++;
     const note = toolResultsNote(results, this.lastCallNames, this.lastQuestion);
-    this.send({ type: "response.create", response: { instructions: this.lastInstructions, max_output_tokens: 600, ...(note ? { input: [userInput(note)] } : {}) } });
+    this.sendCreate({ type: "response.create", response: { instructions: this.lastInstructions, max_output_tokens: 600, ...(note ? { input: [userInput(note)] } : {}) } });
+  }
+
+  /** A new response.create: remembered so a busy server (upstream_error) can be asked once more. */
+  private sendCreate(evt: ClientEvent): void {
+    this.lastCreate = evt;
+    this.busyRetries = 0;
+    this.busyFailed = false;
+    this.send(evt);
   }
 
   /** Pause / resume the reply being played (#90): the rest of the reply keeps arriving and waits in the ring buffer. */
@@ -988,6 +1003,25 @@ export class TalkClient implements TalkSession {
         if (typeof doneId === "string" && (this.cancelledIds.has(doneId) || (this.currentResponseId !== null && doneId !== this.currentResponseId))) break; // not the current answer
         this.responseActive = false;
         if (this.dropOutput) { this.pendingCalls = []; break; } // the cancelled answer's end is not the new turn's end (the interrupt waiter saw it)
+        if (this.busyFailed) {
+          this.busyFailed = false;
+          if (this.busyRetries < BUSY_RETRIES && this.lastCreate) { // the 1.5 preview was at capacity: ask again shortly
+            this.busyRetries++;
+            this.pendingCalls = [];
+            this.responseActive = true;
+            this.currentResponseId = null;
+            this.expectResponse++;
+            const create = this.lastCreate;
+            this.d.onLog?.("info", "busy-retry", `Boson was busy (upstream_error); asking again in ${BUSY_RETRY_MS} ms`);
+            setTimeout(() => { if (this.responseActive && this.lastCreate === create) this.send(create); }, BUSY_RETRY_MS);
+            break;
+          }
+          if (this.sessionModel !== REALTIME_MODEL_STABLE && !fellBackToStable) {
+            fellBackToStable = true; // the preview keeps refusing: the next session uses the stable model
+            this.d.onLog?.("info", "realtime-model", `${this.sessionModel} stayed busy; using ${REALTIME_MODEL_STABLE} from the next session`);
+          }
+          this.emit({ type: "error", message: "The voice service is busy right now. Try again in a moment." });
+        }
         const { client: calls, server } = status === "cancelled" ? { client: [], server: [] } : this.splitCalls(evt.response);
         this.pendingCalls = [];
         if (calls.length) { // the model stopped to act: run the tools, then returnTools() continues the answer
@@ -1025,6 +1059,10 @@ export class TalkClient implements TalkSession {
         }
         if (typeof err.event_id === "string" && err.event_id.startsWith("seed-")) break; // a history item was refused: the chat just starts fresh
         if (errorCode(evt) === "response_not_active") break; // cancelling an already-finished response is harmless
+        if (errorCode(evt) === "upstream_error" && this.responseActive && !this.audioStarted && !this.spoken.length) {
+          this.busyFailed = true; // its response.done follows: asked again there, or reported once out of retries
+          break;
+        }
         this.emit({ type: "error", message: err.message ?? "The voice service reported an error." });
         break;
       }
