@@ -749,7 +749,7 @@ must stay short; capped at 8,000 chars).
 `main.answer_backend()` -> `/api/health.answer_backend`, read by `useTalk.answersViaGemini`:
 - `ANSWER_BACKEND` explicit; else `vertex` retrieval -> **gemini**; local retrieval -> **realtime**; a clone with the
   public service reachable -> **gemini** (answers written by the service).
-- **Realtime path, text mode (the default, B1)**: `/api/retrieve` (`text_answer: true`) returns `instructions`
+- **Realtime path, text mode (opt-in, B1: `?answers=text` or localStorage `talkback:answers=text`)**: `/api/retrieve` (`text_answer: true`) returns `instructions`
   (persona + rules + story so far + passages + the chat so far + the spoken-output and `[feeling]` marker rule, the
   same `ANSWER_SUFFIX` Gemini gets) -> `TalkClient.respond` sends `response.create {instructions, input: [the
   question], max_output_tokens: 600}` to a session opened with `output_modalities: ["text"]` -> the answer arrives as
@@ -761,13 +761,12 @@ must stay short; capped at 8,000 chars).
   text comes almost at once (0.12 s to the first delta, 0.30 s to the whole answer); the first sentence's TTS takes
   about 2.5 s, so time to first audio is about 2.8 s against 0.6 s for direct audio (the lip-sync start gate adds its
   own wait, as on the Gemini path).
-- **Realtime path, direct audio (`?answers=audio`, or localStorage `talkback:answers=audio`)**: the old path for a
-  comparison: `output_modalities: ["audio"]`, Boson speaks the answer itself (PCM 24 kHz into `RingPlayer`), no
+- **Realtime path, direct audio (the default)**: `output_modalities: ["audio"]`, Boson speaks the answer itself (PCM 24 kHz into `RingPlayer`), no
   emotion tags and no lip-sync (the face uses its talk loop). `talk/answerMode.ts`.
 - **Gemini path**: `/api/answer` streams NDJSON sentences; the browser speaks each with Boson TTS (`/api/speak`) and
   lip-syncs it. No Realtime function calls: commands go through `parseIntent` (section 13).
 
-Live finding behind both Realtime modes (probes `scripts/probe_realtime_text*.py`, 2026-10-24, `higgs-realtime`): when
+Live finding behind both Realtime modes (live probes, 2026-10-24, `higgs-realtime`): when
 `response.create` carries per-response `instructions`, the model does not see the conversation's items: not a user
 text item, not the committed audio turn, not seeded history, not a `function_call_output`. Only `response.input` reaches
 it (a bare `response.create` without instructions does see the items), and a note appended to the instructions is not

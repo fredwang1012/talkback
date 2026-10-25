@@ -27,7 +27,7 @@ export function sessionTools(kind: BookKind | undefined, spoilers: boolean): rea
 }
 
 /**
- * Links in a web_search result. Live (scripts/captures/realtime_text_websearch.json) each result is a numbered block:
+ * Links in a web_search result. Live (captured 2026-10-24) each result is a numbered block:
  * "[1] Title", then the URL on its own line, then an excerpt. Any http(s) URL in the text counts; its title is the
  * "[n] ..." line just before it, else the host. At most `MAX_SOURCES`, deduplicated (cleanSources).
  */

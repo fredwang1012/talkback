@@ -125,13 +125,13 @@ describe("streaming sentence split", () => {
 });
 
 describe("answer mode switch", () => {
-  it("text by default; ?answers=audio or localStorage talkback:answers=audio brings the direct-audio path back", () => {
-    expect(answerMode("", null)).toBe("text");
-    expect(answerMode("?debug", "text")).toBe("text");
-    expect(answerMode("?answers=audio", null)).toBe("audio");
-    expect(answerMode("?x=1&answers=AUDIO", null)).toBe("audio");
-    expect(answerMode("", "audio")).toBe("audio");
-    expect(answerMode("?answers=text", "audio")).toBe("text"); // the URL wins
+  it("direct audio by default; ?answers=text or localStorage talkback:answers=text turns the expressive path on", () => {
+    expect(answerMode("", null)).toBe("audio");
+    expect(answerMode("?debug", "audio")).toBe("audio");
+    expect(answerMode("?answers=text", null)).toBe("text");
+    expect(answerMode("?x=1&answers=TEXT", null)).toBe("text");
+    expect(answerMode("", "text")).toBe("text");
+    expect(answerMode("?answers=audio", "text")).toBe("audio"); // the URL wins
   });
 });
 

@@ -147,7 +147,7 @@ export function userTextItem(text: string): ClientEvent {
 }
 
 /**
- * The reader's question as a `response.create` input message. Live (probe 2026-10-24, scripts/probe_realtime_text*.py):
+ * The reader's question as a `response.create` input message. Live (probe 2026-10-24):
  * when `response.create` carries per-response `instructions`, the model does not see the conversation's items (a text
  * item, the committed audio turn, seeded history or a function_call_output); only `response.input` reaches it. So the
  * question (typed, or the transcript of what was said) always travels here. The server appends it to the conversation.

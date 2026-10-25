@@ -586,10 +586,10 @@ sequenceDiagram
 On the Realtime answer path (the local default), step 13 calls `POST /api/retrieve` instead. It returns `instructions`
 (k at most 4, at most 8,000 chars, including the chat so far, `LANGUAGE_RULE` and, in text mode, the spoken-output and
 `[feeling]` marker rule). `TalkClient.respond` then sends `response.create {instructions, input: [the question],
-max_output_tokens 600}`. By default the session is in text mode (`output_modalities: ["text"]`): the answer streams back
+max_output_tokens 600}`. By default Boson speaks the answer itself through the playback worklet. With `?answers=text` the session is in
+text mode (`output_modalities: ["text"]`): the answer streams back
 as text, is split into sentences in the browser and each sentence is voiced by Higgs TTS with its emotion tag in the
-speaker's voice and lip-synced, exactly like steps 17-23 of the Gemini path (see HOW-IT-WORKS 12.1). With
-`?answers=audio` Boson speaks the answer itself through the playback worklet. Every server event carries a
+speaker's voice and lip-synced, exactly like steps 17-23 of the Gemini path (see HOW-IT-WORKS 12.1). Every server event carries a
 `response_id`. `TalkClient.stale()` drops output from a cancelled or older response, and `dropOutput` stays on until the
 next `response.created`. A barge-in on that path calls `interrupt()`: it stops the sentence player (or flushes
 local playback and sends `conversation.item.truncate` at the played position), then `response.cancel`, and waits for

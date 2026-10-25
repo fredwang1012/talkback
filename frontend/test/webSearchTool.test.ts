@@ -66,7 +66,7 @@ async function openClient(extra: Record<string, unknown> = {}) {
 }
 const types = (events: SessionEvent[]) => events.map((e) => e.type);
 
-/** The wire as captured live (scripts/captures/realtime_text_websearch.json): preamble, server call, result item, server-started answer. */
+/** The wire as captured live (2026-10-24): preamble, server call, result item, server-started answer. */
 function serverSearchTurn(ws: FakeSocket, output: string) {
   ws.recv({ type: "response.created", response: { id: "r1" } });
   ws.recv({ type: "response.output_item.added", response_id: "r1", output_index: 0, item: { id: "m1", type: "message", role: "assistant" } });

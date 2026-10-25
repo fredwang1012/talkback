@@ -176,8 +176,8 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       console.info("[talk] timing", e);
       setLogs((l) => [...l.slice(-299), { id: ++logSeq.current, dir: "info", type: `timing:${e.stage}`, at: Date.now(), raw: e }]);
     };
-    // B1: on the Realtime answer path the model writes the answer and Higgs TTS speaks each sentence with its emotion
-    // tag, lip-synced, like a Gemini answer; `?answers=audio` keeps Boson's own voice output for a comparison
+    // B1: on the Realtime answer path Boson speaks the answer itself by default; `?answers=text` has the model write it
+    // and Higgs TTS speak each sentence with its emotion tag, lip-synced, like a Gemini answer (slower to start)
     const answerMode = viaGemini ? "audio" : answerModeHere();
     /** B2: the tool list for this book right now; web_search only for a textbook or a novel with spoilers on. */
     const toolsNow = () => sessionTools(bookKind, latest.current.spoilers);
