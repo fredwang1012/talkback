@@ -159,6 +159,15 @@ def format_history(history: list | None) -> str:
 HISTORY_NOTE = "\n\nThe conversation so far (it may help you follow the question; it is not a source of story facts):\n"
 
 
+# Realtime tools under per-response instructions (which replace the session's): on the 1.5 preview the model often
+# claimed an action without calling its tool (Boson feedback #19; an example acknowledgement in the prompt made it worse,
+# "call the tool first, in the same turn" fixed most of it). No example phrases here on purpose.
+TOOL_RULE = ("\n\nWhen the reader asks you to do something to the book or the player (go to a chapter or a passage, read, "
+             "repeat, go back, pause, change speed or voices, recap, bookmark, find a topic, quiz), call the matching "
+             "tool first, in this same turn. Only after the call, say one short sentence. Never say you did something "
+             "you have not called a tool for.")
+
+
 def realtime_instructions(book: Book, speaker_id: str, story_so_far: str, passages: list[dict], query: str, *,
                           spoilers: bool = False, text_answer: bool = False, web_search: bool = False,
                           history: list | None = None) -> str:
@@ -170,8 +179,9 @@ def realtime_instructions(book: Book, speaker_id: str, story_so_far: str, passag
     when it may (websearch.allowed: textbooks, or a novel with spoilers on).
     `history`: the chat so far with this speaker. Live (probe 2026-10-24) the model does not see the conversation's items
     when a response carries instructions, so the history is written here, after the passages and before the rules.
+    TOOL_RULE: these instructions replace the session's, so the tool rule is repeated here.
     The suffixes go after the length cap, so none of them is ever cut off."""
-    suffix = (WEB_SEARCH_RULE if web_search else "") + (ANSWER_SUFFIX if text_answer else "")
+    suffix = TOOL_RULE + (WEB_SEARCH_RULE if web_search else "") + (ANSWER_SUFFIX if text_answer else "")
     earlier = format_history(history)
     note = (HISTORY_NOTE + earlier) if earlier else ""
     body = build_instructions(book, speaker_id, story_so_far, passages, MAX_INSTRUCTIONS_CHARS - len(suffix) - len(note),

@@ -131,6 +131,16 @@ def test_retrieve_never_returns_future_paragraphs(env):
     assert "Harry" in body["instructions"] and body["persona"] == "Precise."
 
 
+def test_retrieve_repeats_the_tool_rule(env):
+    """Per-response instructions replace the session's, so the Realtime tool rule rides along (Boson feedback #19)."""
+    from app.personas import TOOL_RULE
+    client, _ = env
+    r = client.post("/api/retrieve", json={"book_id": "demo", "query": "Read chapter two", "reader_para": 1, "speaker_id": "harry"})
+    assert r.status_code == 200
+    assert TOOL_RULE in r.json()["instructions"]
+    assert "first, in this same turn" in TOOL_RULE and '"' not in TOOL_RULE  # no example line to parrot
+
+
 def test_retrieve_refuses_a_character_not_yet_met(env):
     client, _ = env
     r = client.post("/api/retrieve", json={"book_id": "demo", "query": "hi", "reader_para": 1, "speaker_id": "king"})
