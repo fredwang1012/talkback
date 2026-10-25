@@ -81,6 +81,28 @@ class BosonClient:
         usage.record("boson_voice_clone", "boson-voice-clone", clones=1)  # count only, unpriced
         return data.get("voice") or data["voice_id"]  # schema says `voice`, guide says `voice_id`
 
+    async def list_voices(self) -> list[dict[str, str]]:
+        """GET /v1/audio/voices: the custom voices on this API key, as [{"id", "title"}] (presets are not listed)."""
+        data = (await self.request("GET", "/v1/audio/voices")).json()
+        items = data.get("data", data) if isinstance(data, dict) else data
+        out = []
+        for v in items if isinstance(items, list) else []:
+            if not isinstance(v, dict):
+                continue
+            vid = v.get("voice_id") or v.get("voice") or v.get("id")
+            if isinstance(vid, str) and vid:
+                out.append({"id": vid, "title": str(v.get("title") or v.get("description") or vid)})
+        return out
+
+    async def preview_voice(self, ref_audio_b64: str, ref_text: str, text: str) -> bytes:
+        """One-off cloning: speak `text` in the voice of a reference clip without saving a voice (ref_audio/ref_text)."""
+        body = {"model": "higgs-tts-3", "input": text, "ref_audio": ref_audio_b64, "ref_text": ref_text,
+                "response_format": "mp3", "stream": False}
+        async with TTS_SEMAPHORE:
+            resp = await self.request("POST", "/v1/audio/speech", json=body)
+        usage.record("boson_tts", "higgs-tts-3", chars=len(text))
+        return resp.content
+
     async def delete_voice(self, voice_id: str) -> bool:
         """DELETE /v1/audio/voices/{id}. True when removed, False when Boson no longer has it (404 = already gone)."""
         try:

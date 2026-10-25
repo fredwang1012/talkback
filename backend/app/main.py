@@ -2082,6 +2082,58 @@ async def clone_voice(request: Request, audio: UploadFile = File(...), transcrip
 _VOICE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
 
 
+@app.post("/api/voices/preview", dependencies=[Depends(require_access)])
+async def preview_voice(request: Request, audio: UploadFile = File(...), transcript: str = Form(..., max_length=2000)):
+    """Hear a recording as a voice before saving it: one-off cloning (ref_audio), nothing is stored at Boson."""
+    if not clone_bucket.allow(rate_key(request)):
+        raise HTTPException(429, "Too many voice previews; wait a moment.")
+    data = await audio.read(voices.MAX_BYTES + 1)
+    try:
+        voices.validate_clone_request(data, transcript, "preview", "true")
+    except voices.VoiceInputError as e:
+        raise HTTPException(400, str(e))
+    try:
+        mp3 = await boson.preview_voice(base64.b64encode(data).decode(), transcript, voices.PREVIEW_TEXT)
+    except (BosonError, RuntimeError) as e:
+        raise boson_http_error(e)
+    return Response(content=mp3, media_type="audio/mpeg")
+
+
+@app.get("/api/voices/account", dependencies=[Depends(require_access)])
+async def account_voices():
+    """Custom voices on the Boson account that this library has not saved yet (owner or local run only)."""
+    if not voices.can_see_account_voices():
+        raise HTTPException(404, "Not found")
+    try:
+        found = await boson.list_voices()
+    except (BosonError, RuntimeError) as e:
+        raise boson_http_error(e)
+    saved = set(voices.load_voices().values())
+    return [v for v in found if v["id"] not in saved]
+
+
+class ImportVoiceRequest(BaseModel):
+    voice_id: str = Field(..., max_length=200)
+    name: str = Field(..., min_length=1, max_length=60)
+
+
+@app.post("/api/voices/import", dependencies=[Depends(require_access)])
+async def import_voice(req: ImportVoiceRequest):
+    """Save a voice that already exists on the Boson account (made with another app or an earlier install)."""
+    if not voices.can_see_account_voices():
+        raise HTTPException(404, "Not found")
+    if not _VOICE_ID.match(req.voice_id):
+        raise HTTPException(400, "Bad voice id")
+    try:
+        found = await boson.list_voices()
+    except (BosonError, RuntimeError) as e:
+        raise boson_http_error(e)
+    if req.voice_id not in {v["id"] for v in found}:
+        raise HTTPException(404, "That voice is not on this Boson account.")
+    voices.save_voice(req.name.strip(), req.voice_id)
+    return {"voice": req.voice_id, "name": req.name.strip()}
+
+
 @app.delete("/api/voices/{voice_id}", dependencies=[Depends(require_access)])
 async def delete_voice(voice_id: str):
     """Delete a voice the caller cloned: at Boson and from the saved list. Its face stays in the library, only the link

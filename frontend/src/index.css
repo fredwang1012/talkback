@@ -114,9 +114,9 @@ button:disabled { cursor: not-allowed; }
 .dropzone-files { margin: 0; padding-left: 18px; color: var(--ink-soft); font-size: 0.88rem; }
 .hidden-books { margin-top: 32px; color: var(--ink-soft); font-size: 0.92rem; }
 .hidden-books ul { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-width: 520px; }
-.hidden-books li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.hidden-books li { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
 .hidden-books .by { font-family: var(--font-book); font-style: italic; }
-.volume-note { color: var(--ink-soft); font-size: 0.9rem; display: flex; flex-direction: column; gap: 6px; }
+.volume-note { color: var(--ink-soft); font-size: 0.9rem; display: flex; flex-direction: column; gap: var(--s2); }
 .volume-note progress { width: 100%; }
 
 .volume {
@@ -279,7 +279,7 @@ button:disabled { cursor: not-allowed; }
 .spoiler-toggle[aria-pressed="true"] { border-color: var(--seal-bright); color: var(--ink); background: var(--ground-raised); }
 .spoiler-toggle:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
-.cast-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.cast-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
 .cast-list button {
   width: 100%; text-align: left; padding: 9px 12px; border-radius: var(--radius);
   background: transparent; border: 1px solid transparent; color: var(--ink);
@@ -699,6 +699,9 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
 .add-dialog .lab-dialog { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s6); }
 .lab-dialog h2 { font-family: var(--font-title); font-weight: 400; font-size: 1.6rem; margin: 0; }
 .lab-dialog .lab-missing { margin: 0; color: var(--ink-soft); font-size: 0.88rem; }
+.lab-dialog .lab-subhead { margin: var(--s3) 0 0; font-size: 0.95rem; }
+.lab-account-voices { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.lab-account-voices li { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
 .lab-add { display: flex; gap: var(--s3); flex-wrap: wrap; }
 .add-book-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s3); }
 .add-book-head h2 { margin-bottom: var(--s4); }

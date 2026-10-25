@@ -631,6 +631,35 @@ export async function deleteVoice(id: string): Promise<void> {
 
 export const fetchVoices = () => getJson<Record<string, string>>("/api/voices");
 
+/** One-off cloning: the server speaks a sample line in the recording's voice (nothing is saved). Returns the MP3. */
+export async function previewVoice(audio: Blob, filename: string, transcript: string): Promise<Blob> {
+  const form = new FormData();
+  form.append("audio", audio, filename);
+  form.append("transcript", transcript);
+  const res = await timedFetch("/api/voices/preview", { method: "POST", headers: authHeaders(), body: form }, 60000);
+  if (!res.ok) throw await readError(res, "Could not preview the voice");
+  return res.blob();
+}
+
+export type AccountVoice = { id: string; title: string };
+/** Voices on the Boson account not saved here yet; null when this visitor may not see the account (not the owner). */
+export async function fetchAccountVoices(): Promise<AccountVoice[] | null> {
+  const res = await timedFetch("/api/voices/account", { headers: authHeaders() }, 30000);
+  if (res.status === 404) return null;
+  if (!res.ok) throw await readError(res, "Could not list the account's voices");
+  return res.json() as Promise<AccountVoice[]>;
+}
+
+/** Saves a voice that already exists on the Boson account under a name. */
+export async function importVoice(voiceId: string, name: string): Promise<CloneResult> {
+  const res = await timedFetch("/api/voices/import", {
+    method: "POST", headers: { ...authHeaders(), "Content-Type": "application/json" }, body: JSON.stringify({ voice_id: voiceId, name }),
+  }, 30000);
+  if (!res.ok) throw await readError(res, "Could not import the voice");
+  const out = (await res.json()) as { voice: string; name: string };
+  return { ...out, face: null };
+}
+
 /** A cloned voice's face: portrait plus optional muted loops (speaking, idle). Shown for any speaker using the voice. */
 export type VoiceFace = { image: string; talk: string | null; idle: string | null };
 export const fetchVoiceFaces = () => getJson<Record<string, VoiceFace>>("/api/voices/faces");
