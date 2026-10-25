@@ -1,7 +1,7 @@
 # Talkback: how every feature works
 
-Written from the code at commit `7158c68` on `main` (backend `backend/app`, frontend `frontend/src`, `preprocess/`,
-`scripts/`). Where `docs/internal/NOTES.md` disagrees with the code, this document follows the code and says so.
+Written from the code (backend `backend/app`, frontend `frontend/src`, `preprocess/`,
+`scripts/`).
 Paths are relative to the repository root. "Unconfirmed" marks anything that could not be verified from the code alone.
 See also [ARCHITECTURE.md](ARCHITECTURE.md) (diagrams, APIs, configuration) and [FEATURES.md](FEATURES.md) (feature list
 with status).
@@ -70,14 +70,14 @@ the library shows "This file is already in your library as “X”" with "Open t
    - `IngestGuard.acquire()`: at most `UPLOAD_QUEUE_MAX = 6` uploads in flight (accepted, not yet published); a hold
      older than 15 min whose task never started is taken over;
    - checks `.pdf`/`.txt`, size, `%PDF` magic;
-   - **duplicate detection (#82)**: `ingest_upload.content_hash` = sha256 of the bytes. Key `(account ns, digest)`.
+   - **duplicate detection**: `ingest_upload.content_hash` = sha256 of the bytes. Key `(account ns, digest)`.
      `_hash_claims` (in memory) catches the same file being added right now (409 `reason: processing`);
      `ingest_upload.find_upload` reads the per-account `upload_hashes.json` (digest -> book id) and checks the book:
      `book.json` present -> 409 `reason: duplicate` with `book_id` and title; a `deleting.json` tombstone while a delete
      runs -> 409 `reason: deleting` (the client waits 5 s and retries, up to 60 times); a tombstone from a dead delete
      or a failed ingest does not block.
    - `make_book_dir(title)` creates `u-<slug>-<8 hex>` (ids never reused); `users.claim_book` writes `owner.txt`
-     (PER_USER); the original file is saved to `data/uploads/<id>.<ext>`; the hash is recorded; status "Queued".
+    (PER_USER); the original file is saved to `data/uploads/<id>.<ext>`; the hash is recorded; status "Queued".
    - The background task `main._ingest` runs; the request returns 202 `{book_id}`.
 4. The client polls `GET /api/books/{id}/status` (`api.pollUpload`, every 2 s, tolerates 3 failures and up to 60 s of
    a restarting backend) until `uploads.uploadSettled`: error, or ready with indexing and enrichment no longer running.
@@ -101,7 +101,7 @@ could not be processed." otherwise (no details leak). After a restart, a status 
 
 ---
 
-## 2. Auto title and author (#83, #95)
+## 2. Auto title and author
 
 **What the user sees.** After choosing one file, "detecting title and author…" shows next to Title; the fields fill in
 unless the user already typed in them.
@@ -116,10 +116,10 @@ unless the user already typed in them.
    chars). Text: Project Gutenberg `Title:` / `Author:` header + opening lines.
 4. Junk metadata is discarded (`junk_title`: "Untitled", "Microsoft Word - …", file names; `junk_author`:
    "Administrator", "Adobe…"). Authors are split on `; / | newline and & ,` ("Austen, Jane" -> "Jane Austen") and
-   joined with ", " (#95). A 4+ word author with no separator ("Christopher D. Manning Prabhakar Raghavan Hinrich
+   joined with ", ". A 4+ word author with no separator ("Christopher D. Manning Prabhakar Raghavan Hinrich
    Schütze") is "run together": the model is asked for the list.
 5. If metadata gave both and is not run together -> `source: metadata`, no model call. Otherwise one fast-tier call
-   (`Guess{title, authors[]}`, `max_tokens` 200), guarded by: `UPLOAD_ENRICH`, the upload total cap (estimate is
+  (`Guess{title, authors[]}`, `max_tokens` 200), guarded by: `UPLOAD_ENRICH`, the upload total cap (estimate is
    reserved with `spend.add("describe", …)` before the call, overage added after), a global token bucket 20/min and a
    daily cap of 300 calls (in memory). A clone with no LLM uses the public service (`public_client.remote_llm("describe")`).
 6. `uploads.autoFill` never overwrites a field the user touched.
@@ -138,7 +138,7 @@ upload can be moved later with "Move to Textbooks / Novels".
 1. **LLM** (when `UPLOAD_ENRICH` and spend allows, or the public service on a clone): `sample()` takes ~3000 chars
    from start/middle/end; one fast call returns `KindGuess{kind, confidence}`; cost is added to the upload spend.
 2. **Heuristic** (`detect.heuristic`, always computed): over a 30k-char sample, positive score for textbook markers
-   ("Figure", "Exercises", "theorem", "for example", …), numbered headings ("2.3 Title"), captions, numbered lists,
+  ("Figure", "Exercises", "theorem", "for example", …), numbered headings ("2.3 Title"), captions, numbered lists,
    "Chapter N … Learning objectives"; negative for quoted text share, said-verbs, personal-pronoun density.
    `score > 0.5` -> textbook (ties go to novel, "the richer, reversible experience").
 3. If the model disagrees with a confident heuristic (`h_conf ≥ 0.7`) while itself under 0.7, the heuristic wins.
@@ -146,7 +146,7 @@ upload can be moved later with "Move to Textbooks / Novels".
 
 **Moving shelves** (`main.change_kind`, `POST /api/books/{id}/kind`, uploads only): textbook -> novel starts enrichment
 unless characters exist; novel -> textbook **re-reads the original PDF as a textbook** (`ingest_upload.rebuild_textbook_text`
-in a thread, outside the write lock) so equations, code listings and nested sections come back (figures do not yet, #148), applies it
+in a thread, outside the write lock) so equations, code listings and nested sections come back (figures do not yet), applies it
 under the book's write lock (`apply_textbook_text`; summaries are dropped because their paragraph numbers belong to
 the old text), rebuilds the local index, deletes stale Vertex datapoints, re-indexes, restarts the equations job, and
 writes textbook notes if needed. A kind change is refused (409) while any job runs (`_kind_claims`, `_enrich_jobs`,
@@ -165,11 +165,11 @@ writes textbook notes if needed. A kind change is refused (409) while any job ru
 3. Page furniture is dropped: first/last blocks repeated on ≥ 3 pages and ≥ 20 % of pages (digits normalized), bare
    page numbers, running headers "2.4 Title 39" (`_drop_running_headers`), table-of-contents pages and dot-leader lines.
 4. Layout: two-column pages are reordered (left column then right, between full-width blocks); small-font text
-   (< 0.85 × body size: footnotes, sidebars), captions and runs of numeric table cells are dropped (`_clean_layout`).
+  (< 0.85 × body size: footnotes, sidebars), captions and runs of numeric table cells are dropped (`_clean_layout`).
 5. Headings (`_mark_headings`): a short block matching `HEADING_REGEX` ("Chapter 3", "PART II", "12 The Wedding",
    "2.3 Title"), or set ≥ 1.15 × body size, or bold and ≥ 1.05 ×. Four headings in a row = a TOC (dropped). A bare big
    "1" over "Boolean retrieval" becomes "1 Boolean retrieval"; "CHAPTER 8" joins the title after it. Front matter
-   (©, ISBN, "University Press") is never a heading. Font-only headings get the `\x01` marker.
+  (©, ISBN, "University Press") is never a heading. Font-only headings get the `\x01` marker.
 6. `merge_lines` joins lines into paragraphs unless the previous line ends a sentence **and** there is a paragraph
    signal: indent > 6 pt, vertical gap > 0.5 × line height, or a short last line (< 75 % of text width). It
    de-hyphenates "exam-" + "ple".
@@ -191,7 +191,7 @@ keywords (if/then/while/return…). A run of code blocks (plus a "NAME(args)" ti
 `code`: shown in a code font (`para-code`), **spoken only as "Code listing skipped."** (`ttschunks.CODE_SPOKEN`), never
 fed to retrieval topic search or quizzes.
 
-### 4.3 Display equations (#41)
+### 4.3 Display equations
 
 **What the user sees.** In a textbook, an equation appears typeset (KaTeX); before Gemini has read it, the cropped
 picture from the PDF; if neither exists, the extracted text. The narrator says e.g. "Equation 3 point 4: y hat equals
@@ -237,7 +237,7 @@ character span.
 **Fallbacks.** No Gemini (no `GCP_PROJECT`): pictures only, or the public service on a clone
 (`public_client.transcribe_equations`, section 21). A failed batch stays pictures. Never raises.
 
-### 4.4 Figures (#40)
+### 4.4 Figures
 
 **What the user sees.** In an uploaded textbook, "Figure 1.3: The two parts of an inverted index" is shown as an image
 with its caption, which is read aloud by default ("Read captions" toggle in the player bar).
@@ -266,13 +266,13 @@ gate; `api.fetchFigure` fetches it with the access header into an object URL. Ca
    pipeline gives that paragraph to the narrator).
 4. `_groups`: `sentence_spans` (linear regex; skips "Mr.", initials "J. Smith", ellipses, lowercase continuations
    like `"Well?" said he.`), sentences > 280 split at the last `, ; : —` after a third of the limit, else a space
-   (`split_long`); then **greedy packing of whole sentences while the spoken text stays ≤ 280** (`MAX_CHARS`).
+  (`split_long`); then **greedy packing of whole sentences while the spoken text stays ≤ 280** (`MAX_CHARS`).
 5. Each group becomes a `TtsChunk {id "p<idx>c<n>", speaker, voice, tts_text, char_start, char_end}`.
    `tts_text = build_tts_text(...)`: `[voice prosody tags][<|style:…|>][<|emotion:…|>][<|prosody:expressive_*|>][<|prosody:pause|long_pause|>]` +
    `normalize_for_tts(spoken)` (numbers, years "1998" -> "nineteen ninety-eight", section numbers "2.3" -> "2 point 3",
    spoken math) with an sfx tag inserted before onomatopoeia.
 
-Why 280: a project invariant (Boson TTS chunk size, see `CLAUDE.md`). Why sentence-aligned: the reader resumes at chunk starts,
+Why 280: a project invariant (Boson TTS chunk size). Why sentence-aligned: the reader resumes at chunk starts,
 and word timestamps are per chunk.
 
 Note: the limit is measured on the spoken text **before** `normalize_for_tts` and without tags, so a chunk with many
@@ -284,7 +284,7 @@ A character's `voice_tags` (one of `""`, `<|prosody:pitch_low|>`, `pitch_high`, 
 the cast step. In the default two-voice mode the server drops them (`cast.tags_for` returns `""`) so the book really
 uses two voices; `/api/tts` swaps the book's tag prefix for the cast's choice only when `tts_text` starts with it.
 
-### 5.2 Expressive delivery rules (#73), all rule-based, no LLM (`app/delivery.py`)
+### 5.2 Expressive delivery rules, all rule-based, no LLM (`app/delivery.py`)
 
 - **Lead pauses** (`ttschunks.lead_pause`, only on a paragraph's first chunk): `long_pause` for the first paragraph of
   a section and right after a scene break; `pause` for a dialogue paragraph right after pure narration that ended a
@@ -298,10 +298,10 @@ uses two voices; `/api/tts` swaps the book's tag prefix for the cast's choice on
 - **expressive_high / expressive_low** (`detect_expressive`): whispered -> `expressive_low`; all-caps shouting, or a
   line ending in "!" whose tag says shout/scream -> `expressive_high`. Not repeated if the voice tags already have one.
 - **Sound effects** (`sfx_at`, only at the very start of a character's line, after the opening quote): laughter
-  ("Ha ha", "Hee hee", "Ho ho"), sneeze ("Achoo", "Atishoo"), cough ("Ahem", "Cough!"), sniff ("Sniff!"); sigh, crying,
+ ("Ha ha", "Hee hee", "Ho ho"), sneeze ("Achoo", "Atishoo"), cough ("Ahem", "Cough!"), sniff ("Sniff!"); sigh, crying,
   humming and screaming need the adjacent speech tag to confirm it ("she sighed", "sobbed", "hummed", "screamed"; a
   lone "Aaah!" needs capitals or a scream tag). The tag is inserted, the book text never changes.
-- **Singing** (#74, `sung_from`/`is_sing_lead_in`): a song is verse the story says is sung: a lead-in sentence that
+- **Singing** (`sung_from`/`is_sing_lead_in`): a song is verse the story says is sung: a lead-in sentence that
   mentions sing/sang/chorus/lullaby/hum… and ends on ":" (or on "sing"/"sang"), without repeat/recite/read or a
   negation, followed by a quoted or verse-like paragraph (`verse_score` ≥ 2: capitalised small words mid-line), or an
   inline song after "…began to sing: “". Continues for up to 8 paragraphs while the quote stays open or the text reads
@@ -310,7 +310,7 @@ uses two voices; `/api/tts` swaps the book's tag prefix for the cast's choice on
 
 ### 5.3 Chunk-rules versioning and auto-upgrade
 
-`ttschunks.CHUNK_RULES_VERSION = 2` (1 = #73/#74, 2 = sneeze/humming #135); `Book.chunk_rules` stamps the version a
+`ttschunks.CHUNK_RULES_VERSION = 2` (1 = expressive tags and singing, 2 = sneeze/humming); `Book.chunk_rules` stamps the version a
 book was chunked with (missing = 0). `books.load_book` queues `_upgrade` on a single background thread when a book is
 older (`AUTO_RECHUNK=true`), and `main._warm_up` queues every book at startup (`schedule_all_upgrades`). The upgrade
 re-parses book.json fresh (never the shared cached object), re-chunks (keeping segment styles), and saves under the
@@ -318,7 +318,7 @@ book's write lock only if the file did not change since (stamp = mtime + size); 
 version is not retried. Requests keep serving the old chunks until the new file lands. **Cost: zero API calls**; only
 chunks whose `tts_text` changed get new audio, and only when played (the cache key includes the text).
 
-### 5.4 Natural speed via prosody tags (#78)
+### 5.4 Natural speed via prosody tags
 
 **What the user sees.** A "Natural speed" toggle (remembered in localStorage `talkback.naturalSpeed`). Off: 0.75–1.5x
 uses `playbackRate` with `preservesPitch`. On: at 0.75x, 1.25x, 1.5x the chunk is re-voiced by Boson with
@@ -356,7 +356,7 @@ char_end}]` relative to the chunk.
 ## 6. Two-voice / one-voice narration and gender
 
 **What the user sees.** The Character Control panel (button "Character Control" in the player bar and Talkback;
-renamed from "Voices" in #164, component still `reader/VoiceLab.tsx`): for novels, One voice / Two voices (default Two), a
+renamed from "Voices", component still `reader/VoiceLab.tsx`): for novels, One voice / Two voices (default Two), a
 narrator pick (Male / Female voice), and two cards (male voice + face, female voice + face), plus a per-character
 gender override list. Textbooks: one card (the Tutor/narrator).
 
@@ -366,7 +366,7 @@ gender override list. Textbooks: one card (the Tutor/narrator).
 - `slot_voice(gender)`: the user's voice for that slot, else the narrator's own voice for its gender, else `jake` /
   `chloe`.
 - Textbooks read from `narrator.voice` only.
-- The old Full-cast mode ("cast") is read as "two" (#93); per-character assignments are kept but unused.
+- The old Full-cast mode ("cast") is read as "two"; per-character assignments are kept but unused.
 
 **Gender inference** (`app/genders.py`, free/offline, cached per loaded book): stand-in ids (`minor_m`/`minor_f`),
 then the name (titles "Mrs."/"Uncle", nouns "Queen"/"barge woman", a first-name list), then pronouns after its
@@ -376,7 +376,7 @@ the cast step picked.
 **Persistence.** Server: `PUT/GET /api/books/{id}/cast` -> `users.cast_json` (per account with PER_USER, else
 `data/books/<id>/cast_settings.json`); deleted voices/faces fall back to Auto. Browser: `createCastSaver` sends only
 the newest state; `ReaderEngine.setVoiceResolver` applies the change immediately (section 7). Talkback per-character
-Voice/Avatar picks (#106) live in localStorage `talkback:talk:<bookId>`.
+Voice/Avatar picks live in localStorage `talkback:talk:<bookId>`.
 
 **Preview.** One fixed line per voice (`PREVIEW_LINE`) through `/api/speak`: only the first preview of a voice costs.
 
@@ -420,15 +420,15 @@ sequenceDiagram
 5. **Word highlighting**: `Reader.tsx` runs a `requestAnimationFrame` loop calling `engine.activeWord()` = the last
    timestamp whose `start ≤ audio.currentTime`; `BookText.Spoken` wraps that char range in `<mark class="word">`. No
    timestamps (non-English, or alignment failed) = the whole chunk is lit. Only the current chapter is in the DOM.
-6. **Resume mid-sentence on a voice switch** (#37): `applyVoices` finds entries whose voice differs
-   (`voiceSwitch.staleIndexes`), refetches only those, and restarts the current chunk with `resume: true`: the old voice
+6. **Resume mid-sentence on a voice switch**: `applyVoices` finds entries whose voice differs
+  (`voiceSwitch.staleIndexes`), refetches only those, and restarts the current chunk with `resume: true`: the old voice
    keeps playing until the new audio is ready, then `voiceSwitch.resumeTime` continues at the same word index in the
    new audio.
 7. Autoplay blocks (`NotAllowedError`) set a "tap to play" notice instead of an error.
 8. Position is saved to localStorage `talkback:pos:<bookId>` on every index change (not in demo).
 9. `readerPara = chunks[index].para` drives the spoiler limit everywhere (it never runs ahead of the chunk).
 
-**Lip-sync in read mode** (#80/#92/#104/#105): see section 9. The engine opens each chunk's clip together with its
+**Lip-sync in read mode**: see section 9. The engine opens each chunk's clip together with its
 audio, and the next clip(s) as soon as the current voice starts.
 
 **Costs.** Boson TTS ~$0.015 per 1,000 characters (`spend.ts RATES`), only for cache misses; the debug drawer
@@ -471,8 +471,8 @@ shoulders; optional "Animate after upload (about $0.05, 1 to 2 min)".
 - **Camera capture** (`reader/CameraCapture.tsx`, `audio/camera.ts`): `getUserMedia({video:{facingMode:"user"}})`,
   a frame is drawn to a canvas, centre-square, ≤ 1024 px, JPEG 0.9 (`squareJpeg`); clear error messages per
   `NotAllowedError`/`NotFoundError`/`NotReadableError`.
-- **Gemini face auto-crop** (#109): `reader/FaceCropper.tsx` calls `api.detectFace` -> `POST /api/faces/detect`
-  (per-caller bucket 12/min, accounts only) -> `face_detect.detect`: one Gemini call (image + prompt "the main
+- **Gemini face auto-crop**: `reader/FaceCropper.tsx` calls `api.detectFace` -> `POST /api/faces/detect`
+ (per-caller bucket 12/min, accounts only) -> `face_detect.detect`: one Gemini call (image + prompt "the main
   person's face … top of the hair to the chin and ear to ear, as fractions"), structured JSON
   `{found,x,y,w,h}`, thinking off, interactive lane of the pacer. Guards: upload-budget reservation, global bucket
   20/min, 300/day. `clamp_box` clamps into the unit square and rescales a 0–1000 answer. `faceCrop.proposeCrop`: side =
@@ -495,15 +495,15 @@ library), and a mandatory consent box "This is my voice (and face), or I have pe
 2. `audio/toWav.ts:toCloneAudio`: Boson accepts wav/mp3/flac (and opus/pcm per the comment), so anything else is decoded
    with Web Audio and re-encoded as mono PCM16 WAV (`encodeWav`).
 3. `api.cloneVoice` -> `POST /api/voices/clone` (bucket 5/min). `voices.validate_clone_request`: `consent == "true"`
-   (server-side, refused otherwise), transcript and name required, ≤ 10 MB, WAV ≥ 3 s. Face id checked **before** the paid
+  (server-side, refused otherwise), transcript and name required, ≤ 10 MB, WAV ≥ 3 s. Face id checked **before** the paid
    call.
 4. `boson.create_voice(ref_audio_b64, ref_text, description=name)` -> voice id saved in the caller's `voices.json`.
-5. A linked face (`face_id`, #113) is bound by `faces.link_voice` (no copy, `linked: true`); an uploaded image creates a
+5. A linked face (`face_id`) is bound by `faces.link_voice` (no copy, `linked: true`); an uploaded image creates a
    new face bound to the voice.
 6. Delete (`DELETE /api/voices/{id}`): presets refused; Boson delete (404 = already gone); faces keep existing, only the
    link goes; casts using it fall back to Auto.
 
-### 8.3 Any voice × any face (#113)
+### 8.3 Any voice × any face
 
 Lip-sync requests name the **face on screen** (`face_id`) and the cached audio of whatever voice spoke; the server
 animates that face with that audio. So a cloned voice can drive any face and a preset voice can drive a cloned face.
@@ -542,7 +542,7 @@ sequenceDiagram
   `<key>.<rand>.stream.tmp`, renamed into the cache only if the stream completed.
 - **Non-streaming fallback** (`main.lipsync`, `/api/avatar/talk`): `create_video` + poll every 1 s (timeout 120 s) +
   download, cached the same way. Used when `MediaSource.isTypeSupported(AVATAR_STREAM_MIME)` is false
-  (`avatarStream.chooseLipSyncMode`).
+ (`avatarStream.chooseLipSyncMode`).
 - **Client** (`talk/avatarStream.ts:openAvatarStream`): POST, JSON = cached file URL; else a `MediaSource` + object URL,
   bytes queued and appended on `updateend`, `endOfStream()` at the end; `MdatScanner` parses top-level MP4 boxes and
   resolves "ready" at the first complete `mdat` (first playable fragment, ~0.79 s of video, ~1.5–3 s after the request
@@ -555,7 +555,7 @@ sequenceDiagram
 The voice (TTS mp3) is **the clock**; the muted video follows it and nothing ever pauses or seeks the voice
 (`talk/faceSync.ts:FaceSync`, shared by read mode, Talkback answers and recaps).
 - `AudioClock`: anchored when the voice starts, advanced by wall clock × playbackRate; raw `currentTime` only nudges it
-  (blend 0.1) or re-anchors after a jump > 0.2 s.
+ (blend 0.1) or re-anchors after a jump > 0.2 s.
 - `DriftController` (`DEFAULT_DRIFT`): EMA of (video − voice) with α 0.3; dead-band 0.04 s with hysteresis (enter below
   0.75×, leave above 1.25×); outside it `playbackRate = voiceRate × (1 − 0.6 × drift)`, clamped to ±8 %; a drift
   > 0.3 s (both smoothed and raw) allows a "seek", at most once per 1 s.
@@ -564,8 +564,8 @@ The voice (TTS mp3) is **the clock**; the muted video follows it and nothing eve
 - **Rendezvous rejoin**: only when ≥ 1 s is buffered ahead of the voice (never seek into unrendered MSE data, which the
   browser would clamp), seek to voice + 0.25 s, wait for `seeked`, then start the video with a timer at the moment the
   voice gets there; a slow seek doubles the lead (max 1 s); seek timeout 1.5 s.
-- Pause/resume of the voice freezes/unfreezes the face; the voice's `ended` takes the face down at once (#104).
-- Speed (#105): the clip plays at the voice's `playbackRate` × nudge, so 0.75–1.5x stays in step.
+- Pause/resume of the voice freezes/unfreezes the face; the voice's `ended` takes the face down at once.
+- Speed: the clip plays at the voice's `playbackRate` × nudge, so 0.75–1.5x stays in step.
 - Read mode's pre-rendered per-chunk clips (`/api/avatar/{chunk}`, rarely used) follow the same idea in
   `reader/clipFollow.ts` (seek lead 0.2 s doubling to 1.5 s, 100 ms tick).
 
@@ -614,7 +614,7 @@ speech is audible (`reader/FaceView.tsx`). Layers are never swapped (no black fl
    book was playing, pauses it, cancels any answer (barge-in), then in parallel: `session.interrupt()` (if a Realtime
    answer was active), `session.ensureOpen(voice)` and `session.startMic()`.
 2. `TalkClient.ensureOpen` (idempotent: React StrictMode would open two sockets) -> `fetchRealtimeKey`
-   (`POST /api/realtime/token`, 10/min, mints a 600 s ephemeral secret, never cached) -> WebSocket with subprotocols
+  (`POST /api/realtime/token`, 10/min, mints a 600 s ephemeral secret, never cached) -> WebSocket with subprotocols
    `["realtime", "bai-client-secret.<key>"]` -> `session.update` (`sessionConfig`: model higgs-realtime, short
    `SESSION_INSTRUCTIONS`, audio-only output, client function tools, PCM 24 kHz in/out, `turn_detection: null` for
    push-to-talk, transcription `higgs-stt-3.1`, `noise_reduction: near_field` for push-to-talk only, temperature 0.3),
@@ -629,15 +629,15 @@ speech is audible (`reader/FaceView.tsx`). Layers are never swapped (no black fl
    to reading.
 5. `answerQuery` (section 12).
 6. After the answer drains: `afterAnswer` -> `resuming` -> after 1.5 s `backToReading` -> `reader.resumeAt(resumeIndex)`
-   (only if it was playing before and auto-resume is on, or a tool forced it).
+  (only if it was playing before and auto-resume is on, or a tool forced it).
 
 ### 10.3 Typed questions
 
 `TalkbackView` form -> `useTalk.ask` -> `TalkController.ask`: same turn without the mic; on the Realtime path the
-question is first added as a user text item (`userTextItem`, #97), because the per-response instructions carry the
+question is first added as a user text item (`userTextItem`), because the per-response instructions carry the
 passages, not the question.
 
-### 10.4 Hands-free with Boson semantic_vad (#135)
+### 10.4 Hands-free with Boson semantic_vad
 
 **What the user sees.** "Hands-free (use headphones): on". The mic stays open: speak to ask, speak over the character
 to interrupt, silence ends the question.
@@ -660,7 +660,7 @@ sequenceDiagram
 
 **Flow.**
 1. `setHandsFree(true)`: server mode unless `?gate=local` / localStorage `talkback:gate=local`
-   (`handsFree.localGateForcedHere`). `setServerTurns(true)` drops a push-to-talk socket (turn detection cannot change
+  (`handsFree.localGateForcedHere`). `setServerTurns(true)` drops a push-to-talk socket (turn detection cannot change
    mid-session: live 400 error) and opens one with `turnDetection("semantic_vad")` = `{create_response: false,
    interrupt_response: false, threshold: 0.6, silence_duration_ms: 500}`, no near-field noise reduction (it started
    turns ~1 s late live). `setMonitor(true)` keeps the mic open.
@@ -684,12 +684,12 @@ sequenceDiagram
    ignored as echo.
 5. **Barge-in** (server mode): while held, the **local strict gate** decides: `HANDS_FREE_OVER_SPEECH` = threshold
    0.04 RMS, 250 ms sustained, with the threshold raised to `ECHO_RATIO (1) × median echo level`
-   (`createEchoFloor`: median of mic readings during the last 2 s of playback; the first 300 ms all count, later only
+  (`createEchoFloor`: median of mic readings during the last 2 s of playback; the first 300 ms all count, later only
    readings under the bar so the reader's own voice never raises it). On "start": cut the answer, release the hold with
    a pre-roll of `minSpeechMs + 50` = 300 ms of held audio so the first words survive, and wait up to 2.5 s
-   (`BARGE_CONFIRM_MS`) for the server's `speech_started`; if it never comes the turn ends quietly.
+  (`BARGE_CONFIRM_MS`) for the server's `speech_started`; if it never comes the turn ends quietly.
 6. Pre-roll elsewhere (`TalkClient`): local-gate turns send the last 1.5 s (`PREROLL_MS`), a barge-in over speech 0.5 s
-   (`BARGE_PREROLL_MS`), a press 0.3 s (`PRESS_PREROLL_MS`); server mode holds up to 3 s of audio while the socket is not
+  (`BARGE_PREROLL_MS`), a press 0.3 s (`PRESS_PREROLL_MS`); server mode holds up to 3 s of audio while the socket is not
    open (`STREAM_HOLD_MS`).
 7. **Auto fallback to the local gate** (`createVoiceGate(HANDS_FREE)`: 0.04 RMS for 150 ms starts, 700 ms of silence
    ends): used when forced, when the server mode is refused, or after 2 empty turns. While the character speaks (and
@@ -703,8 +703,8 @@ Note: NOTES.md (2026-10-23) describes the strict gate as 0.10 RMS and 2.5× echo
 
 - **Response binding** (`TalkClient`): `currentResponseId` is set on our `response.created`; audio/caption/done events
   of any other or cancelled id are dropped (`stale`); a cancel issued before `response.created` arrived
-  (`cancelUncreated`) cancels that response when it shows up. `dropOutput` discards the cut-off answer's late deltas
-  (the server generates faster than real time) until the next `response.created`.
+ (`cancelUncreated`) cancels that response when it shows up. `dropOutput` discards the cut-off answer's late deltas
+ (the server generates faster than real time) until the next `response.created`.
 - **Interrupt** (`TalkClient.interrupt`): flush local playback (`RingPlayer.flush` returns ms actually played),
   `conversation.item.truncate` at that position, `response.cancel`, wait ≤ 2 s for `response.done` (or
   `response_not_active`); mic audio and the commit wait until then; an unacknowledged cancel fails the turn ("The
@@ -719,7 +719,7 @@ Note: NOTES.md (2026-10-23) describes the strict gate as 0.10 RMS and 2.5× echo
 
 | Path | Wait before the message |
 |---|---|
-| Push-to-talk / local gate | up to `transcriptTimeoutMs` 6 s after the commit (#141: long questions take time) |
+| Push-to-talk / local gate | up to `transcriptTimeoutMs` 6 s after the commit (long questions take time) |
 | Server turn (semantic_vad) | `failWaitMs = min(5000, 2500 + turnMs/4)` after speech stopped |
 | Transcription `.failed` event | immediately (empty transcript) |
 
@@ -727,13 +727,13 @@ Note: NOTES.md (2026-10-23) describes the strict gate as 0.10 RMS and 2.5× echo
 
 ## 11. Retrieval: spoiler-safe search
 
-**Invariant** (CLAUDE.md, `retrieval.py` header): for a novel read spoiler-safe, a passage is eligible only if
+**Invariant** (`retrieval.py` header): for a novel read spoiler-safe, a passage is eligible only if
 `para_end <= reader_para`, and the "story so far" summary only if `upto_para <= reader_para`. Enforced on the server,
 never trusted to the client or the model.
 
 **Flow** (`main.retrieve` / `main.answer` -> `retrieval.aretrieve`):
 1. `_resolve_talk`: 404 for unknown/hidden books and speakers; `reader_para` clamped to the book; a minor character
-   (`main=False`) is refused (403); a novel character whose `first_para > reader_para` is refused (403, "has not
+  (`main=False`) is refused (403); a novel character whose `first_para > reader_para` is refused (403, "has not
    appeared yet") unless spoilers are on.
 2. `multilingual.search_query` translates a non-English question to English for search (section 12.4).
 3. `_clamp`: `spoiler_safe = kind == "novel" and not spoilers`. Textbooks and spoilers-on novels search the whole book.
@@ -748,10 +748,10 @@ never trusted to the client or the model.
      runs text search (started first, needs no embedding) and vector search (`gemini-embedding-001` RETRIEVAL_QUERY) in
      parallel with the same `spoiler_filter` (`book_id == X and para_end <= reader_para`, or `$in` earlier series
      books), 4k candidates each, fused with **RRF** (k = 60) keyed by book+chunk, then **post-filtered again in code**
-     ("never trust the store"). While the index is building or failed, BM25 on the same eligibility.
+    ("never trust the store"). While the index is building or failed, BM25 on the same eligibility.
 5. `_finish`: backstop filter (`is_eligible`), adds the **recent passage** (last 2 paragraphs up to `reader_para`) if not
    covered, sorts (earlier books first), then drops passages furthest from the reader until the text is under the cap
-   (never the recent one), trims a single oversized one. Story so far: `latest_summary(upto_para <= reader_para)`,
+  (never the recent one), trims a single oversized one. Story so far: `latest_summary(upto_para <= reader_para)`,
    prefixed with "Earlier books:" (each earlier volume's closing summary, ≤ 160 words cut at a sentence) for series;
    full-book mode uses the book's last summary + earlier books.
 
@@ -822,13 +822,13 @@ no sentence arrives within 15 s (`firstSentenceTimeoutMs`) and speaks sentences 
 - `chatLog.priorTurns(messages, speakerId, 6)`: finished user/character turns **with that speaker only**, each ≤ 500
   chars, interrupted replies marked, narrator recaps and the turn in progress left out. Sent as `history` to
   `/api/answer` (backend accepts ≤ 8, `MAX_HISTORY_TURNS = 8`) and put in the user message as "The conversation so far
-  (… not a source of story facts)"; the system prompt built from `reader_para` stays the only fact source.
+ (… not a source of story facts)"; the system prompt built from `reader_para` stays the only fact source.
 - Realtime: `historyProvider` seeds a new session with that character's turns; `useTalk.resetIfSpeakerChanged` drops the
   socket after a speaker switch once no answer is in progress, so each character's session holds only its own chat.
 - Chat is kept per book in memory + sessionStorage (`talkback:chat:<bookId>`, ≤ 50 messages); "Clear" also resets the
   Realtime conversation.
 
-### 12.4 Language rule and translated search (#12)
+### 12.4 Language rule and translated search
 
 `multilingual.detect_language`: a non-Latin script, or ≥ 2 stopwords of a language that outnumber English ones.
 `foreign_language` -> `LANGUAGE_RULE` ("Answer only in Spanish … translate the notes, keep names as the book has them").
@@ -840,7 +840,7 @@ hint (ISO 639-1); the newest clear question sets the TTS answer language (ISO 63
 Boson voices **without word timestamps** (only English has them in this code) and with normalization on; that sentence
 gets its own cache key.
 
-### 12.5 Emotion markers -> TTS emotion tags (#14)
+### 12.5 Emotion markers -> TTS emotion tags
 
 Gemini is told to start every sentence with `[feeling]` from the 20 Boson emotions (or `[neutral]`).
 `emotion.split_marker` strips leading markers in many shapes (`[sadness]`, `[Emotion: fear]`, full-width brackets,
@@ -936,7 +936,7 @@ the Talkback chat and reads it aloud on the narrator's face (lip-synced); withou
   "book" = each chapter's first 2 sentences, most recent chapters first, within 300 words.
 - **Voice recap**: `readAloud.createReadAloud` splits the text into parts ≤ 380 chars (`/api/speak` takes ≤ 400),
   synthesises 2 parts ahead (prefetching all of them queued behind the server's 4 TTS slots and timed out), lip-syncs
-  each part, and supports pause/resume mid-part (#88; up to 3 paused texts keep their clip). Recaps are never sent to
+  each part, and supports pause/resume mid-part (up to 3 paused texts keep their clip). Recaps are never sent to
   the model and are left out of chat memory.
 
 The legacy "Previously…" endpoint (no `scope`) returns the latest summary, the chapter title and earlier-books recaps.
@@ -1047,7 +1047,7 @@ until the index is rebuilt."
 - **Early detection** (`enrich/series_early.py`, started right after publish for novels): ONE fast call from title,
   author and ~1500 chars of opening text -> `EarlyGuess{series, series_index}`; set under the write lock only while the
   book has no series. Spend-capped; a clone uses `/api/public/series-early`. Then `series_link.reconcile`.
-- **Same-author reconciliation** (#134, `enrich/series_link.py`): first volumes often do not say they are one. For
+- **Same-author reconciliation** (`enrich/series_link.py`): first volumes often do not say they are one. For
   uploads of the same owner whose author keys match (`author_key`: sorted lowercase words, so "Herbert, Frank" ==
   "FRANK HERBERT."): if this book has a series, ask about each same-author upload without one; else ask whether this book
   belongs to each known series. One tiny call per question ("Is 'Dune' by Frank Herbert a volume of the 'dune' series?
@@ -1126,7 +1126,7 @@ answers"). Answers, translation and face detection stay on `GEMINI_MODEL` (2.5 F
   READY. `_settle_index_only_failures` turns old "stopped early at index" errors into done when characters and summaries
   exist.
 - **Windows file-lock retries** (`books.retry_permission`): a `PermissionError` from `os.replace` or a status.json write
-  (another handle, antivirus scanning the temp file) is retried with jittered backoff for ~3 s (Windows only). Reads use
+ (another handle, antivirus scanning the temp file) is retried with jittered backoff for ~3 s (Windows only). Reads use
   open-read-close (`read_bytes`) so no handle outlives a read.
 - **Book write lock** (`books.write_lock`): one re-entrant lock per book.json shared by every writer (rechunk upgrade,
   equations, textbook notes, kind change, enrich checkpoints, series updates, ingest). `update_book` does
@@ -1148,7 +1148,7 @@ answers"). Answers, translation and face detection stay on `GEMINI_MODEL` (2.5 F
   to start.
 - **Namespaces**: `ns = sha256(email)[:16]`; `data/users/<ns>/` holds `voices.json`, `faces.json`, `faces/`,
   `lipsync/`, `cast/<book>.json`, `hidden_books.json`, `upload_hashes.json`. Rate limits key on the account
-  (`users.rate_key`). Static mounts are per-user too (`LipsyncFiles`, `PortraitFiles`).
+ (`users.rate_key`). Static mounts are per-user too (`LipsyncFiles`, `PortraitFiles`).
 - **Book visibility** (`can_see_book`): uploads (`u-*`) only to their owner (`owner.txt`; uploads from before accounts
   belong to the first owner email); `OWNER_ONLY_BOOKS` globs (deploy: `hp*`) only to owner emails; built-ins to everyone.
   Hidden books get **404, never 403** (do not reveal existence).
@@ -1162,7 +1162,7 @@ answers"). Answers, translation and face detection stay on `GEMINI_MODEL` (2.5 F
 - **Hide** (built-in books, `POST /api/books/{id}/hide` / `restore`): per-account `hidden_books.json`; shared files are
   never touched. "Hidden books (N) · Restore" in the Library.
 - **Migration** (`users.migrate_on_startup`): the pre-accounts shared voices/faces/cast/lip-sync files are **copied**
-  (never moved) to the first owner's namespace and ownerless uploads marked theirs; idempotent.
+ (never moved) to the first owner's namespace and ownerless uploads marked theirs; idempotent.
 - Frontend: `api.fetchMe` shows the email and IAP's sign-out link (`/?gcp-iap-mode=CLEAR_LOGIN_COOKIE`).
 - Optional shared secret for other public deployments: `TALKBACK_ACCESS_TOKEN` -> header `X-Talkback-Token` required on
   paid/book endpoints (`main.require_access`); the page asks for an access code.
@@ -1183,8 +1183,8 @@ answers"). Answers, translation and face detection stay on `GEMINI_MODEL` (2.5 F
 | Rate limits (per account/IP, per minute) | `main.py` TokenBuckets | token 10, TTS misses 120, clone 5, answer 20, retrieve 30, uploads 6, describe 12, avatar renders 12, faces 10, face detect 12 | same |
 
 - **Spend ledger**: `enrich/spend.py` keeps cumulative enrichment dollars in `data/usage/upload_spend.json`
-  (`total_usd`, `by_provider`, `books`), totals in memory (caps act at once), flushed atomically off the event loop
-  (every 25 calls, and after every call once past 75 % of a cap, so a crash cannot lose spend and let a resume overshoot).
+ (`total_usd`, `by_provider`, `books`), totals in memory (caps act at once), flushed atomically off the event loop
+ (every 25 calls, and after every call once past 75 % of a cap, so a crash cannot lose spend and let a resume overshoot).
   Prices are the code's estimates (`enrich/llm.py PRICES`: Gemini $0.30 in / $2.50 out per 1M tokens for every Gemini
   model; Claude Haiku/Sonnet figures).
 - **Usage log**: `gcp/usage.record` appends every billable call (TTS chars, Realtime sessions, avatar seconds, clones,
@@ -1262,7 +1262,7 @@ translation/detect/describe/face -> local heuristics or nothing. "Busy" (429) wa
 - Startup (`main.lifespan`): per-user migration; `_warm_up` (rechunk upgrades, load every book's index, warm the Vertex
   connection, startup series pass); resume interrupted enrichments; retry failed indexes.
 - Offline tooling: `preprocess/` builds the shipped books (ingest, cast, segment, attribute, minor voices, summaries
-  (Sonnet-era rolling notes), index with e5 embeddings, spoiler evals); `scripts/index_vertex.py` (Vertex upsert with a
+ (Sonnet-era rolling notes), index with e5 embeddings, spoiler evals); `scripts/index_vertex.py` (Vertex upsert with a
   dry-run estimate), `bake_voices.py` (bakes a preset + pitch/speed tags into a custom Boson voice so Realtime, which
   takes no tags, sounds the same), `make_face_loops.py`, `probe_*.py` (live API probes), `usage.py`, `run_all.py`.
 
@@ -1303,12 +1303,12 @@ These are the real limitations of the current code. The full list of gaps, with 
    hybrid. With `RETRIEVAL_BACKEND=vertex`, search is hybrid (vector + full text).
 2. **Reading position is per browser.** It is kept in localStorage (`talkback:pos:<bookId>`, section 7), so it does not
    follow you to another browser or device.
-3. **Uploads must be in English** (#140). Sentence splitting, number normalization, delivery rules, heading detection
+3. **Uploads must be in English**. Sentence splitting, number normalization, delivery rules, heading detection
    and prompts all assume English. Talking to a character in another language works (section 12.4); a non-English book
    does not.
-4. **Moving a paper to Textbooks does not bring back its figures** (#148). Equations, code listings and nested
+4. **Moving a paper to Textbooks does not bring back its figures**. Equations, code listings and nested
    sections are restored (section 3), figures are not. Uploading it as a textbook in the first place keeps them.
-5. **Hands-free with speakers can interrupt itself.** The barge-in thresholds were lowered (#159, #162: 0.04 RMS,
+5. **Hands-free with speakers can interrupt itself.** The barge-in thresholds were lowered (0.04 RMS,
    echo ratio 1, section 10.4) so the reader can cut in easily. With laptop speakers instead of headphones, the
    character's own voice can then pass the gate and stop the answer. Use headphones, or push-to-talk.
 6. **Gemini quota can slow processing.** Vertex Gemini uses dynamic shared quota, so many books processed at once can

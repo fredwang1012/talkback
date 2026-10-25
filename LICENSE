@@ -1,0 +1,13 @@
+Copyright (c) 2026 Frederick Wang, Kent Chen and Siyi Zhu. All rights reserved.
+
+This repository is published for viewing only. No licence is granted to use, copy, modify, merge, publish,
+distribute, sublicense or sell any part of it, or to build on it, without the prior written permission of the
+copyright holders. Viewing and forking on GitHub are allowed only as GitHub's Terms of Service require.
+
+Exceptions:
+- Files adapted from boson-ai/higgs-realtime-tutorial keep their Apache-2.0 licence (see
+  frontend/THIRD_PARTY_NOTICES.md and frontend/THIRD_PARTY_LICENSE_higgs-realtime-tutorial.txt).
+- The texts of the sample books under data/ are in the public domain in the United States (Project Gutenberg).
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM THE SOFTWARE OR ITS USE.
