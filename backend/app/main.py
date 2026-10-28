@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from pydantic import BaseModel, Field, field_validator
 
-from . import books, cast, emotion, face_detect, faces, ingest_upload, multilingual, public_client, recap, retrieval, translate, tts_cache, tts_lang, users, voices
+from . import booklang, books, cast, emotion, face_detect, faces, ingest_upload, multilingual, public_client, recap, retrieval, translate, tts_cache, tts_lang, users, voices
 from .delivery import apply_speed
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
@@ -336,14 +336,18 @@ async def tts(req: TtsRequest, request: Request):
             if c.id == req.chunk_id:
                 voice, tts_text = _chunk_voice_and_text(book, c, req.voice_override)
                 tts_text = apply_speed(tts_text, req.speed)
-                cached = tts_cache.is_cached(tts_text, voice)
+                # a book in another language (#117): Boson gets its `language`, without word timestamps (the reader
+                # then lights the whole chunk); English sends exactly what it always did
+                lang = booklang.tts_language(book.language)
+                extra = {"language": lang} if lang else {}
+                cached = tts_cache.is_cached(tts_text, voice, **extra)
                 if req.cached_only and not cached:
                     raise HTTPException(409, "This line is not pre-rendered yet. Run preprocess/prerender_tts.py before the demo.")
                 if not cached and not tts_bucket.allow(rate_key(request)):
                     raise HTTPException(429, "Too many new audio requests; wait a moment.")
                 try:
                     out = await tts_cache.get_or_create(boson, tts_text, voice, p.text[c.char_start:c.char_end],
-                                                        inline_spans(p, c.char_start, c.char_end))
+                                                        inline_spans(p, c.char_start, c.char_end), **extra)
                 except (BosonError, RuntimeError) as e:
                     raise boson_http_error(e)
                 return {"chunk_id": c.id, "voice": voice, **out}
@@ -554,7 +558,8 @@ async def retrieve(req: RetrieveRequest, request: Request):
     if not retrieve_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many lookups; wait a moment.")
     book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
-    search = await multilingual.search_query(req.query)  # the book is English: a question in another language is translated
+    # an English book: a question in another language is searched in English; a book in another language (#117): in its own
+    search = await multilingual.search_query(req.query, book.language)
     # realtime (Boson) instructions must stay short: fewer passages and a smaller character cap than /api/answer
     out = await retrieval.aretrieve(book, _index_for(req.book_id), search, reader_para, min(req.k, REALTIME_K),
                                     spoilers=req.spoilers, max_chars=REALTIME_MAX_PASSAGE_CHARS, **_series_context(book))
@@ -586,7 +591,7 @@ async def answer(req: RetrieveRequest, request: Request):
         raise HTTPException(429, "Too many questions; wait a moment.")
     book, speaker, reader_para = _resolve_talk(req.book_id, req.speaker_id, req.reader_para, req.spoilers)
     t0 = time.monotonic()
-    search = await multilingual.search_query(req.query)  # searched in English; answered in the reader's language
+    search = await multilingual.search_query(req.query, book.language)  # in the book's language; answered in the reader's
     out = await retrieval.aretrieve(book, _index_for(req.book_id), search, reader_para, req.k, spoilers=req.spoilers,
                                     **_series_context(book))
     t_retrieved = time.monotonic()

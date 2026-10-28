@@ -276,6 +276,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     narratorVoice: audioAvailable ? narratorVoice : null,
     tools: toolRunner,
     bookKind: book?.kind,
+    bookLanguage: book?.language,
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
       currentIndex: () => indexRef.current,

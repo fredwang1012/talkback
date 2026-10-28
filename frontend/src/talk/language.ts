@@ -86,8 +86,13 @@ export function toIso6393(code: string | null | undefined): string | null {
   return (code && ISO_639_3[code]) || null;
 }
 
-/** The language to voice an answer in (ISO 639-3), when the reader's recent questions are clearly not English. */
-export function answerLanguage(recent: string[]): string | null {
+/**
+ * The language to voice an answer in (ISO 639-3), when the reader's recent questions are clearly not English. A book in
+ * another language (`bookLanguage`, #117) is answered in that language unless the reader clearly writes in another one
+ * (English included), as the server's prompt says (personas.answer_language).
+ */
+export function answerLanguage(recent: string[], bookLanguage?: string | null): string | null {
   const code = newestClear(recent); // the voice follows the newest clear question at once (a wrong guess only sounds odd)
+  if (code === null && bookLanguage && bookLanguage !== "eng") return bookLanguage;
   return code === "en" ? null : toIso6393(code);
 }

@@ -1,5 +1,5 @@
 """Talk prompts (brief section 7.4). All prompt logic lives here so it is testable; keep them short and behavioural."""
-from . import multilingual
+from . import booklang, multilingual
 from .schema import EMOTIONS, Book
 
 MAX_INSTRUCTIONS_CHARS = 8000   # Boson Realtime instructions
@@ -97,6 +97,33 @@ REALTIME_EMOTION_RULE = "Let the feeling of what you say show in your voice, as 
 
 LANGUAGE_RULE = ("The reader wrote in {lang}. Answer only in {lang}, even though the book, the notes and the passages "
                  "below are in English: translate what they say, but keep the names as the book has them.\n\n")
+# a book in another language (#117): answers are in the book's language unless the reader clearly wrote in another one
+BOOK_LANGUAGE_RULE = ("The book, the notes and the passages below are in {book}. Answer in {book}, unless the reader "
+                      "clearly writes in another language; keep the names as the book has them.\n\n")
+OTHER_LANGUAGE_RULE = ("The reader wrote in {lang}. Answer only in {lang}, even though the book, the notes and the "
+                       "passages below are in {book}: translate what they say, but keep the names as the book has "
+                       "them.\n\n")
+
+
+def answer_language(book: Book, query: str) -> str | None:
+    """The language (English name) the answer must be in, when the prompt has to say so.
+
+    An English book: the question's language when it is not English (#12), else None. A book in another language
+    (#117): the question's language when it clearly is one (English included), else the book's own."""
+    if booklang.is_english(book.language):
+        return multilingual.foreign_language(query)
+    clear = multilingual.clear_language(query)
+    return clear[1] if clear else booklang.name(book.language)
+
+
+def language_rule(book: Book, reply: str | None) -> str:
+    """The rule that leads the prompt for `reply` (see answer_language); "" for an English answer to an English book."""
+    if booklang.is_english(book.language):
+        return LANGUAGE_RULE.format(lang=reply) if reply else ""
+    own = booklang.name(book.language)
+    if not reply or reply == own:
+        return BOOK_LANGUAGE_RULE.format(book=own)
+    return OTHER_LANGUAGE_RULE.format(lang=reply, book=own)
 
 
 def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages: list[dict],
@@ -105,7 +132,8 @@ def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages:
     """Render the Talk prompt for `speaker_id` ("narrator" or a character id). Raises KeyError for unknown ids.
 
     `reply_language` (#12): the question's language when it is not English. The rule goes first, so it survives the
-    length cap and is not lost under a long English prompt."""
+    length cap and is not lost under a long English prompt. A book in another language (#117) always gets a rule:
+    see answer_language and language_rule."""
     text_passages = format_passages(passages)
     story = story_so_far.strip() or "(the story has only just begun)"
     if book.kind == "textbook":
@@ -120,8 +148,7 @@ def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages:
                                         tone=READER_TONE_RULE, story_so_far=story, passages=text_passages)
     if voice_emotion:  # Realtime answers are audio only: no tags, so the feeling has to come from the voice (#14)
         out = REALTIME_EMOTION_RULE + "\n\n" + out
-    if reply_language:
-        out = LANGUAGE_RULE.format(lang=reply_language) + out
+    out = language_rule(book, reply_language) + out   # a book in another language always gets one (#117)
     return out[:limit]
 
 
@@ -185,7 +212,7 @@ def realtime_instructions(book: Book, speaker_id: str, story_so_far: str, passag
     earlier = format_history(history)
     note = (HISTORY_NOTE + earlier) if earlier else ""
     body = build_instructions(book, speaker_id, story_so_far, passages, MAX_INSTRUCTIONS_CHARS - len(suffix) - len(note),
-                              spoilers=spoilers, reply_language=multilingual.foreign_language(query),
+                              spoilers=spoilers, reply_language=answer_language(book, query),
                               voice_emotion=not text_answer)
     return body + note + suffix
 
@@ -202,7 +229,7 @@ def build_answer_prompt(book: Book, speaker_id: str, story_so_far: str, passages
     length cap, before the spoken-output rule, so neither is cut off."""
     suffix = (WEB_SEARCH_RULE if web_search else "") + ANSWER_SUFFIX
     system = build_instructions(book, speaker_id, story_so_far, passages, MAX_ANSWER_PROMPT_CHARS - len(suffix),
-                                spoilers=spoilers, reply_language=multilingual.foreign_language(query))
+                                spoilers=spoilers, reply_language=answer_language(book, query))
     earlier = format_history(history)
     if earlier:
         return system + suffix, (
