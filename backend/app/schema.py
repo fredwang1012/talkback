@@ -126,6 +126,8 @@ class Book(BaseModel):
     author: str
     kind: Literal["novel", "textbook"]
     kind_detected: KindDetected | None = None  # set for uploads whose kind was auto-detected
+    # ISO 639-3 code of the book's language (#117, app/booklang.py): detected at upload. Older books are English.
+    language: str = "eng"
     license: str
     attribution: str | None = None
     sections: list[Section]
@@ -141,3 +143,9 @@ class Book(BaseModel):
     # ttschunks.CHUNK_RULES_VERSION the tts_chunks were built with (0 = before the version existed). The server
     # re-chunks an older book once after loading it (books.load_book), keeping segment styles.
     chunk_rules: int = 0
+
+    @field_validator("language")
+    @classmethod
+    def _known_language(cls, v: str) -> str:  # a code Boson does not know would fail every TTS request
+        from .tts_lang import valid
+        return v if valid(v) else "eng"
