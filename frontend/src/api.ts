@@ -62,6 +62,7 @@ export type Book = {
   author: string;
   kind: "novel" | "textbook";
   kind_detected?: KindDetected | null;
+  language?: string; // ISO 639-3 (#117); older books and English ones: "eng"
   license: string;
   attribution: string | null;
   sections: { id: string; title: string; start_para: number; level?: number }[];

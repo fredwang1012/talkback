@@ -24,7 +24,7 @@ from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 
-from . import books, retrieval
+from . import booklang, books, retrieval
 from .config import settings
 from .parsing import CODE_MARK, EQ_MARK, EQ_SEP, FIGURE_MARK, HEADING_MARK, inline_marker, parse, strip_inline
 from .schema import Book, Narrator, Paragraph, Section
@@ -38,23 +38,37 @@ MAX_PARAGRAPH_CHARS = 5_000
 NARRATOR_VOICE = "marcus"
 LICENSE = "Uploaded by the user"
 # A short (< 70 chars) block on its own becomes a section heading: "Chapter 3", "PART II", "CHAPTER ONE", "IV.",
-# or "12 The Wedding" (number then capitalised title without sentence punctuation).
+# or "12 The Wedding" (number then capitalised title without sentence punctuation). Books in other languages (#117):
+# the same labels in Spanish, French, German, Italian, Portuguese, Dutch, Polish and Russian ("Capítulo 3",
+# "Chapitre deux"), and Chinese / Japanese "第三章" / Korean "제3장" with an optional title.
 _NUMBER_WORDS = (r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|"
-                 r"seventeen|eighteen|nineteen|twenty\S*|thirty\S*|forty\S*|fifty\S*|hundred")
-HEADING_REGEX = (r"^(?=.{1,69}\Z)(?:(?i:(?:chapter|part|book|section|unit)\s+(?:\d+|[ivxlc]+|" + _NUMBER_WORDS
+                 r"seventeen|eighteen|nineteen|twenty\S*|thirty\S*|forty\S*|fifty\S*|hundred"
+                 r"|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|primero|primera|segundo|segunda|tercero|tercera"
+                 r"|un|une|deux|trois|quatre|cinq|sept|huit|neuf|dix|premier|première|deuxième|troisième"
+                 r"|eins|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn"
+                 r"|primo|prima|secondo|seconda|terzo|terza|quattro|cinque|sei|sette|otto|nove|dieci")
+_LABELS = (r"chapter|part|book|section|unit"
+           r"|capítulo|capitulo|parte|libro|sección|seccion|unidad|chapitre|partie|livre|tome|kapitel|teil|buch"
+           r"|abschnitt|capitolo|sezione|hoofdstuk|deel|boek|rozdział|część|księga|глава|часть|книга")
+_CJK_HEADING = r"第[0-9０-９一二三四五六七八九十百千零〇两]+[章回节節部卷篇幕][^。！？]*|제\s*\d+\s*[장부편][^.!?。]*"
+HEADING_REGEX = (r"^(?=.{1,69}\Z)(?:(?i:(?:" + _LABELS + r")\s+(?:\d+|[ivxlc]+|" + _NUMBER_WORDS
                  + r")\b[^,]*(?<!-))"
                  r"|[IVXLC]+\.|\d{1,3}\s+[A-Z][^.!?]*|\d{1,2}\.\d{1,2}(?:\.\d{1,2})?\s+[A-Z][^.!?]*"
+                 r"|" + _CJK_HEADING +
                  r"|\x01.+)\Z")  # \x01: a heading found by font size alone (see parsing.HEADING_MARK)
 _HEADING = re.compile(HEADING_REGEX)
 _BARE_NUMBER = re.compile(r"^\d{1,3}$")  # a chapter number set alone in a huge font above its title
-_BARE_LABEL = re.compile(r"^(?i:chapter|part|book|section|unit)\s+(?:\d+|[ivxlc]+|" + _NUMBER_WORDS + r")\s*$", re.I)
-_CONTENTS = re.compile(r"^(?:table of\s+)?contents$", re.I)
+_BARE_LABEL = re.compile(r"^(?i:" + _LABELS + r")\s+(?:\d+|[ivxlc]+|" + _NUMBER_WORDS + r")\s*$", re.I)
+_CONTENTS = re.compile(r"^(?:table of\s+)?contents$|^(?:índice|indice|contenido|table des matières|sommaire|"
+                       r"inhalt|inhaltsverzeichnis|sommario|inhoud|spis treści|содержание|目录|目錄|目次|목차)$", re.I)
 HEADING_BIG = 1.15     # a short line this much larger than the body text is a heading
 HEADING_BOLD = 1.05    # ... or bold and slightly larger
 TOC_RUN = 4            # this many headings in a row is a table of contents, not chapters
 
 _PAGE_NUMBER = re.compile(r"^\W*(?:page\s+)?(?:\d{1,5}|[ivxlc]{1,7})\W*$", re.IGNORECASE)
-_SENTENCE_END = re.compile(r"""[.!?]["'”’)\]]*$""")
+_SENTENCE_END = re.compile(r"""[.!?。！？]["'”’)\]»」』）]*$""")
+# Chinese / Japanese characters and full-width punctuation: lines of such text join without a space (#117)
+_CJK_CHAR = re.compile(r"[　-〿぀-ヿ㐀-䶿一-鿿豈-﫿＀-￯]")
 INDENT_PT = 6.0       # a line starting this far right of the page's left margin is indented
 GAP_FACTOR = 0.5      # a vertical gap above this fraction of the line height is a paragraph gap
 SHORT_FRACTION = 0.75  # a sentence-ending line shorter than this fraction of the text width ends a paragraph
@@ -125,6 +139,17 @@ def _starts_paragraph(prev: Line, cur: Line) -> bool:
     return prev.x1 < prev.left + SHORT_FRACTION * (prev.right - prev.left)
 
 
+def _join_lines(parts: list[str]) -> str:
+    """The lines of one paragraph joined by spaces, except between two Chinese / Japanese characters (a line break
+    inside CJK text is no word break)."""
+    out = [parts[0]]
+    for a, b in zip(parts, parts[1:]):
+        if not (_CJK_CHAR.match(a[-1:]) and _CJK_CHAR.match(b[:1])):
+            out.append(" ")
+        out.append(b)
+    return "".join(out)
+
+
 def merge_lines(lines: list[Line]) -> list[str]:
     """Group consecutive lines into paragraphs (linear: each paragraph's parts are joined once).
 
@@ -137,7 +162,7 @@ def merge_lines(lines: list[Line]) -> list[str]:
 
     def flush() -> None:
         if parts:
-            paras.append(" ".join(parts))
+            paras.append(_join_lines(parts))
             parts.clear()
         paras.extend(held)
         held.clear()
@@ -395,9 +420,12 @@ DROP_MAX_CAPS = 50     # a page with more drop caps than this is not a novel pag
 DROP_MAX_LINES = 5000  # ... and so is a page with more lines than this
 DROP_CHAPTERS = 3      # a book with this many drop-cap starts (no heading over them) has them as its chapters
 CHAPTER_MARK = "\x08"  # the line pdf_to_text puts where a drop-cap chapter starts; becomes "Chapter N"
-_PART = re.compile(r"^\x01?(?:book|part)\s+\S", re.I)
-_OPENING = re.compile(r"^\x01?(?:introduction|prologue|preface|foreword)\b", re.I)  # restarts chapter numbers
-_CHAPTER_TITLE = re.compile(r"^chapter\s+\S", re.I)
+_PART = re.compile(r"^\x01?(?:(?:book|part|libro|parte|livre|partie|teil|buch|deel|boek|księga|часть|книга)\s+\S"
+                   r"|第[0-9０-９一二三四五六七八九十百千零〇两]+[部卷])", re.I)
+_OPENING = re.compile(r"^\x01?(?:introduction|prologue|preface|foreword|introducción|prólogo|prefacio|préface|"
+                      r"avant-propos|einleitung|vorwort|prolog|introduzione|prologo|prefazione)\b", re.I)  # restarts chapter numbers
+_CHAPTER_TITLE = re.compile(r"^(?:(?:chapter|capítulo|capitulo|chapitre|kapitel|capitolo|hoofdstuk|rozdział|глава)\s+\S"
+                            r"|第[0-9０-９一二三四五六七八九十百千零〇两]+[章回])", re.I)
 _DASHES = ("—", "–", "―", "-")  # an epigraph's attribution starts with a dash ("—from ...")
 
 
@@ -1676,12 +1704,14 @@ def split_paragraph(text: str, limit: int = MAX_PARAGRAPH_CHARS) -> list[str]:
     return [text[s:e] for s, e in split_spans(text, limit)]
 
 
-def split_spans(text: str, limit: int = MAX_PARAGRAPH_CHARS, keep: list[tuple[int, int]] = ()) -> list[tuple[int, int]]:
-    """(start, end) pieces of split_paragraph; no cut falls inside a `keep` range (an inline formula)."""
+def split_spans(text: str, limit: int = MAX_PARAGRAPH_CHARS, keep: list[tuple[int, int]] = (),
+                language: str | None = None) -> list[tuple[int, int]]:
+    """(start, end) pieces of split_paragraph; no cut falls inside a `keep` range (an inline formula). `language`:
+    the book's (its sentence rules)."""
     if len(text) <= limit:
         return [(0, len(text))]
     pieces: list[tuple[int, int]] = []
-    for s, e in sentence_spans(text):
+    for s, e in sentence_spans(text, language):
         pieces += split_long(text[s:e], s, limit) if e - s > limit else [(s, e)]
     out: list[tuple[int, int]] = []
     gs = ge = None
@@ -1698,14 +1728,14 @@ def split_spans(text: str, limit: int = MAX_PARAGRAPH_CHARS, keep: list[tuple[in
     return out
 
 
-def _cap_paragraphs(sections: list[Section], paragraphs: list[Paragraph]) -> list[Paragraph]:
+def _cap_paragraphs(sections: list[Section], paragraphs: list[Paragraph], language: str | None = None) -> list[Paragraph]:
     """Re-index paragraphs after splitting over-long ones; section start_para values are remapped in place."""
     out: list[Paragraph] = []
     new_start: dict[int, int] = {}
     for p in paragraphs:
         new_start[p.idx] = len(out)
         keep = [(m.start, m.end) for m in p.inline_math]
-        for s, e in ([(0, len(p.text))] if p.kind == "math" else split_spans(p.text, keep=keep)):
+        for s, e in ([(0, len(p.text))] if p.kind == "math" else split_spans(p.text, keep=keep, language=language)):
             inline = [m.model_copy(update={"start": m.start - s, "end": m.end - s})
                       for m in p.inline_math if s <= m.start and m.end <= e]
             out.append(Paragraph(idx=len(out), section_id=p.section_id, text=p.text[s:e], kind=p.kind, math=p.math,
@@ -1725,9 +1755,14 @@ def section_level(title: str) -> int:
     return min(m.group(1).count(".") + 1, MAX_LEVEL) if m else 1
 
 
-def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_detected: dict | None = None) -> Book:
+def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_detected: dict | None = None,
+               language: str | None = None) -> Book:
+    """The book of an upload's text. `language` (ISO 639-3) is detected from the text when not given (#117): it sets
+    the sentence rules of the TTS chunks and is stored as Book.language."""
     sections, paragraphs = parse(raw, None, None, HEADING_REGEX)
-    paragraphs = _cap_paragraphs(sections, paragraphs)
+    if language is None:
+        language = booklang.detect("\n".join(p.text for p in paragraphs if p.kind is None))
+    paragraphs = _cap_paragraphs(sections, paragraphs, language)
     if kind != "textbook":  # only textbooks skip listings, set equations and show figures; elsewhere they are just text
         for p in paragraphs:
             p.kind = p.math = p.figure = None
@@ -1747,7 +1782,7 @@ def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_
     if not paragraphs:
         raise UploadError("No paragraphs were found in the file.")
     book = Book(id=book_id, title=title, author=author, kind=kind, kind_detected=kind_detected, license=LICENSE,
-                sections=sections, paragraphs=paragraphs, narrator=Narrator(voice=NARRATOR_VOICE))
+                language=language, sections=sections, paragraphs=paragraphs, narrator=Narrator(voice=NARRATOR_VOICE))
     rechunk_book(book)  # stamps Book.chunk_rules
     return book
 
@@ -1760,7 +1795,8 @@ def rebuild_textbook_text(book: Book, data: bytes) -> Book:
     cannot recover the pictures from that text; the original file is read again.
     """
     detected = book.kind_detected.model_dump() if book.kind_detected else None
-    return build_book(book.id, book.title, book.author, "textbook", extract_text(data, ".pdf"), detected)
+    return build_book(book.id, book.title, book.author, "textbook", extract_text(data, ".pdf"), detected,
+                      book.language)
 
 
 def apply_textbook_text(book: Book, rebuilt: Book) -> None:

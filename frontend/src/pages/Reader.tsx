@@ -280,6 +280,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     tools: toolRunner,
     bookKind: book?.kind,
     liveFace: live.face,
+    bookLanguage: book?.language,
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
       currentIndex: () => indexRef.current,

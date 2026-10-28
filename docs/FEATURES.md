@@ -8,7 +8,7 @@ Every feature below was checked against the code (main files in brackets). Paths
 
 | Area | Features |
 |---|---|
-| 1. Library & uploads | 19 |
+| 1. Library & uploads | 20 |
 | 2. Reading / read mode | 15 |
 | 3. Voices, faces & lip-sync | 21 |
 | 4. Talkback: talk to characters | 24 |
@@ -21,9 +21,9 @@ Every feature below was checked against the code (main files in brackets). Paths
 | 11. Public processing service (for clones) | 8 |
 | 12. Deployment & ops | 9 |
 | 13. Developer experience | 13 |
-| **Total** | **191** |
+| **Total** | **192** |
 
-By status: **177 works** and **14 partial or gap**. The partial ones are L14, R15, V18, V20, T6, T12, T20, X6, E6, E10, E11 and C9. The real gaps are R7 (the #44 server position sync is missing from the code) and X12 (tables). Open issues and other known gaps are listed in the last section.
+By status: **178 works** and **14 partial or gap**. The partial ones are L14, R15, V18, V20, T6, T12, T20, X6, E6, E10, E11 and C9. The real gaps are R7 (the #44 server position sync is missing from the code) and X12 (tables). Open issues and other known gaps are listed in the last section.
 Tests: the backend has about 1,080 test functions in 80 files (pytest, every provider faked). The frontend has about 675 `it`/`test` cases in 80 files (vitest).
 
 ---
@@ -51,6 +51,7 @@ Tests: the backend has about 1,080 test functions in 80 files (pytest, every pro
 | L17 | Card action menu | Move / Delete / Hide in a keyboard-navigable menu (arrow keys wrap) | — | works | [shelves.ts cardActions, wrapIndex] |
 | L18 | Robust listing | One unreadable book.json no longer takes the whole library down | — | works | [be/books.py, tests/test_books_listing_robust.py] |
 | L19 | Favicon | Talkback favicon on every version | — | works | [frontend/public] |
+| L20 | Uploads in other languages (#117) | A Spanish, French, Chinese (or other) PDF or .txt is detected, chaptered, read aloud in its language, cast, searchable and answered in its language. The reader lights a whole chunk (no word timing outside English); sound effects, singing and rule-based whisper/shout stay English-only | offline script + stopword detection; **Higgs TTS 3** `language` + `normalize`; CJK BM25 bigrams | works *(unverified live)* | [be/booklang.py, ttschunks.py, ingest_upload.py, personas.py, multilingual.py] |
 
 ## 2. Reading / read mode
 
@@ -298,7 +299,7 @@ Same image with `PUBLIC_API=true` (entry `app.asgi:app`), Cloud Run service `tal
 | Unified talk-while-reading screen (no Read/Talkback switch) | open, not built. Read-mode mic (T19) covers part of it |
 | Group scene: ask 2-3 characters at once | open, not built |
 | Share a character answer as an MP4 clip | open, not built |
-| Non-English uploads (parse, read aloud, talk about non-English PDFs). Splitting, normalization, delivery rules, headings and prompts all assume English | open, not built |
+| Non-English uploads: no word-level highlighting, and English-only sound effects, singing, rule-based whisper/shout and equation readings (L20) | partial |
 | Moving a paper to Textbooks restores equations but not figures (`rebuild_textbook_text` omits `figures_dir`) | open, bug |
 | Server-side reading-position sync. The code keeps the position only in the browser (localStorage), so it does not follow you to another browser or device | gap |
 | Demo mode is hard-wired to HP1, which clones do not have | gap |

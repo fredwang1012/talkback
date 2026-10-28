@@ -77,6 +77,8 @@ type Args = {
   narratorVoice?: string | null; // reads recaps aloud in the chat
   /** Picks the tools declared to the Realtime session: a textbook gets section / topic tools and no cast (tools.ts). */
   bookKind?: BookKind;
+  /** The book's language (ISO 639-3, #117): answers and read-aloud recaps of a book in another language are voiced in it. */
+  bookLanguage?: string;
   tools?: ToolRunner; // the reader tools the character may call (#72): jump, read chapter, pause/resume, voices, speed, recap, bookmark, cast
   /** #140: a live preset face in a LiveKit room. While set, answers are spoken through it (its own audio and video, in
    * sync) instead of local playback and per-sentence lip-sync clips. Null = today's clips. */
@@ -84,7 +86,7 @@ type Args = {
 };
 
 /** Owns the Talk session for the reader screen. The real mic, speaker and socket are created once per book. */
-export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, faceIdFor = () => null, narratorFaceId = () => null, spoilers = false, talkback = false, narratorVoice = null, tools, bookKind, liveFace = null }: Args): TalkUi {
+export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, faceIdFor = () => null, narratorFaceId = () => null, spoilers = false, talkback = false, narratorVoice = null, tools, bookKind, bookLanguage, liveFace = null }: Args): TalkUi {
   const [state, setState] = useState<TalkState>("reading");
   const [caption, setCaption] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -120,6 +122,8 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   // narrator recaps: one read-aloud for all of them, keyed by message id, in the narrator voice
   const narratorVoiceRef = useRef(narratorVoice);
   narratorVoiceRef.current = narratorVoice;
+  const bookLanguageRef = useRef(bookLanguage);
+  bookLanguageRef.current = bookLanguage;
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
   const [narratingKey, setNarratingKey] = useState<string | null>(null);
@@ -137,7 +141,8 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     // the still face stands in when no face is shown or a render fails
     narration.current = createReadAloud(() => createSentenceSpeaker(async (text) => {
       const voice = narratorVoiceRef.current ?? "";
-      const r = await speak(text, voice);
+      const lang = bookLanguageRef.current; // a recap of a book in another language is in that language (#117)
+      const r = lang && lang !== "eng" ? await speak(text, voice, undefined, lang) : await speak(text, voice);
       if (!r.cached) spend.addTts(text.length);
       return lipSyncClip(r.audio_url, voice, latest.current.narratorFaceId());
     }, undefined, { sync: faceSync.current as FaceSync, onPlaying: setSpeaking }), setNarratingKey, (e) => setToast(e instanceof Error ? e.message : String(e)));
@@ -192,7 +197,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       answerFaceId = latest.current.faceIdFor(speaker);
       answerMsgId = liveAnswerId ?? pendingId();
       answerEmotion.clear();
-      answerLang = answerLanguage([...priorTurns(msgs.current, speaker).filter((t) => t.role === "user").map((t) => t.text), lastQuestion]);
+      answerLang = answerLanguage([...priorTurns(msgs.current, speaker).filter((t) => t.role === "user").map((t) => t.text), lastQuestion], bookLanguageRef.current);
     };
     const client = new TalkClient({
       tokenProvider: fetchRealtimeKey,

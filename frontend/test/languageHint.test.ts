@@ -50,6 +50,13 @@ describe("ISO 639-3 for /api/speak (#135)", () => {
     expect(answerLanguage(["¿Quién escribió esta carta y por qué?"])).toBe("spa");
     expect(answerLanguage(["Who wrote this and why?"])).toBeNull();
   });
+  it("a book in another language (#117) is answered in it unless the reader clearly writes in another", () => {
+    expect(answerLanguage(["Sancho Panza?"], "spa")).toBe("spa"); // unclear question: the book's language
+    expect(answerLanguage(["Who wrote this and why?"], "spa")).toBeNull(); // clearly English
+    expect(answerLanguage(["Pourquoi est-ce qu'il est parti dans la forêt ?"], "spa")).toBe("fra");
+    expect(answerLanguage(["Alice?"], "eng")).toBeNull(); // an English book keeps the old rule
+    expect(answerLanguage(["Alice?"])).toBeNull();
+  });
 });
 
 describe("speak sends the language only when there is one (#135)", () => {

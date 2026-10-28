@@ -12,6 +12,7 @@ from typing import Awaitable, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from .. import booklang
 from ..schema import EMOTIONS, Book, Paragraph, Segment
 from .llm import SpendLimit
 from .tasks import gather_or_cancel
@@ -69,19 +70,28 @@ def _ws(text: str) -> str:
 
 
 _QUOTES = set("\"“”‘’'«»")
+# books in other languages (#117): also CJK corner brackets, German low quotes and the dialogue dash
+_FOREIGN_QUOTES = _QUOTES | set("「」『』„‚—―–")
 
 
-def _is_quotes(text: str) -> bool:
-    return bool(text) and set(text) <= _QUOTES
+def quote_marks(book: Book) -> set[str]:
+    """The marks validate_segments may put back for `book` (English keeps the old set)."""
+    return _QUOTES if booklang.is_english(book.language) else _FOREIGN_QUOTES
 
 
-def validate_segments(paragraph: str, items: list[SegItem], speakers: set[str]) -> list[Segment] | None:
+def _is_quotes(text: str, marks: set[str] = _QUOTES) -> bool:
+    return bool(text) and set(text) <= marks
+
+
+def validate_segments(paragraph: str, items: list[SegItem], speakers: set[str],
+                      marks: set[str] = _QUOTES) -> list[Segment] | None:
     """Return Segment objects if `items` tile `paragraph` exactly and use known speakers, else None.
 
     Quotation marks the model left out (Gemini often drops the quote marks around speech) are put back from the
     paragraph itself, so the repaired segments still tile it verbatim: an opening mark goes with the quote that
     follows it, a closing mark with the quote it ends. Every segment's text is a slice of the paragraph (spaces next
-    to a restored mark included), and the result is checked the way ttschunks.chunk_paragraph reads it.
+    to a restored mark included), and the result is checked the way ttschunks.chunk_paragraph reads it. `marks`:
+    see quote_marks.
     """
     if not items:
         return None
@@ -99,25 +109,25 @@ def validate_segments(paragraph: str, items: list[SegItem], speakers: set[str]) 
         start, end = at, at + len(text)
         opened = False
         if gap:
-            if not _is_quotes(gap):  # text missing, reordered, or something skipped between segments
+            if not _is_quotes(gap, marks):  # text missing, reordered, or something skipped between segments
                 return None
             g0 = cursor + len(raw_gap) - len(raw_gap.lstrip())   # the gap's first and last mark
             g1 = cursor + len(raw_gap.rstrip())
             prev = spans[-1] if spans else None
             prev_text = paragraph[prev[0]:prev[1]] if prev else ""
-            if prev is not None and prev_text[:1] in _QUOTES and prev_text[-1:] not in _QUOTES:
+            if prev is not None and prev_text[:1] in marks and prev_text[-1:] not in marks:
                 prev[1] = g1  # closing mark
             else:
                 start, opened = g0, True  # opening mark
         cursor = end
         if opened:  # an opening mark was added: take the closing mark that follows too
             tail = paragraph[cursor:cursor + 1]
-            if tail and tail in _QUOTES:
+            if tail and tail in marks:
                 end = cursor = cursor + 1
         spans.append([start, end, it])
     rest = paragraph[cursor:]
     if rest.strip():
-        if _is_quotes(rest.strip()):
+        if _is_quotes(rest.strip(), marks):
             spans[-1][1] = cursor + len(rest.rstrip())
         else:
             return None
@@ -151,7 +161,7 @@ def narrator_only(paragraph: str) -> list[Segment]:
 
 
 def needs_llm(book: Book, p: Paragraph) -> bool:
-    return book.kind == "novel" and bool(main_characters(book)) and '"' in p.text
+    return book.kind == "novel" and bool(main_characters(book)) and booklang.has_dialogue(p.text, book.language)
 
 
 def build_user(book: Book, p: Paragraph) -> str:
@@ -171,10 +181,11 @@ async def segment_paragraph(book: Book, p: Paragraph, call: CallFn, refusal_exc:
     user = build_user(book, p)
     for attempt in range(2):
         try:
-            result = await call(model, SYSTEM, user, SegResult, max_tokens=max(3000, 2 * len(p.text)), effort="low")
+            result = await call(model, SYSTEM + booklang.segment_note(book.language), user, SegResult,
+                                max_tokens=max(3000, 2 * len(p.text)), effort="low")
         except (refusal_exc, RuntimeError):  # refused, or ran out of tokens: the narrator reads this paragraph
             break  # refused: fall back to the narrator for this paragraph
-        ok = validate_segments(p.text, result.segments, speakers)
+        ok = validate_segments(p.text, result.segments, speakers, quote_marks(book))
         if ok:
             return ok, "llm" if attempt == 0 else "retry"
     return narrator_only(p.text), "fallback"
@@ -216,14 +227,14 @@ async def segment_batch(book: Book, paras: list[Paragraph], call: CallFn,
     speakers = speaker_ids(book)
     answers: dict[int, list[SegItem]] = {}
     try:
-        result = await call(model, BATCH_SYSTEM, build_batch_user(book, paras), BatchResult,
-                            max_tokens=4000 + 600 * len(paras), effort="low")
+        result = await call(model, BATCH_SYSTEM + booklang.segment_note(book.language), build_batch_user(book, paras),
+                            BatchResult, max_tokens=4000 + 600 * len(paras), effort="low")
         answers = {bp.para: bp.segments for bp in result.paragraphs}
     except (refusal_exc, RuntimeError):  # refused or out of tokens: each paragraph is retried on its own below
         pass
     out = []
     for p in paras:
-        ok = validate_segments(p.text, answers.get(p.idx, []), speakers)
+        ok = validate_segments(p.text, answers.get(p.idx, []), speakers, quote_marks(book))
         out.append((ok, "llm") if ok else await segment_paragraph(book, p, call, refusal_exc, model))
     return out
 
