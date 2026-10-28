@@ -105,3 +105,21 @@ def test_busy_boson_or_full_server_says_use_clips(env, lk, monkeypatch):  # noqa
     monkeypatch.setattr(settings, "live_avatar_max_sessions", 0)
     r = client.post("/api/live-avatar/sessions", json={"avatar_id": "builtin_claire_v1"})
     assert r.status_code == 503 and r.json()["detail"]["code"] == "live_unavailable"
+
+
+def test_parallel_starts_cannot_pass_the_cap(env, lk, monkeypatch):  # noqa: F811
+    """Two accounts starting at once: the lock makes check + start + record one step (security review)."""
+    import asyncio
+
+    monkeypatch.setattr(settings, "live_avatar_max_sessions", 1)
+
+    async def both():
+        reqs = [main.LiveAvatarStart(avatar_id="builtin_claire_v1") for _ in range(2)]
+        owners = iter(["acct-a", "acct-b"])
+        monkeypatch.setattr(main, "_live_owner", lambda request: next(owners))
+        monkeypatch.setattr(main, "rate_key", lambda request: "ip")
+        return await asyncio.gather(*(main.start_live_avatar(r, None) for r in reqs), return_exceptions=True)
+
+    out = asyncio.run(both())
+    assert sum(isinstance(o, dict) for o in out) == 1
+    assert len(lk["created"]) == 1

@@ -2171,6 +2171,9 @@ def list_voice_faces():
 live_avatar_bucket = TokenBucket(capacity=6, per_seconds=60)  # session starts per IP / account (each holds a paid slot)
 
 
+_live_lock = asyncio.Lock()
+
+
 def _live_owner(request: Request) -> str:
     ident = users.current()
     return ident.ns if ident.ns else rate_key(request)
@@ -2201,26 +2204,28 @@ async def start_live_avatar(req: LiveAvatarStart, request: Request):
     if not live_avatar_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many live face starts; wait a moment.")
     owner = _live_owner(request)
-    for old in live_avatar.held_by(owner):
-        live_avatar.pop(old.id, owner)
-        try:
-            await boson.release_avatar_session(old.id)
-        except (BosonError, RuntimeError):
-            logging.getLogger(__name__).warning("live avatar: could not release an older session")
-    if live_avatar.count() >= settings.live_avatar_max_sessions:
-        raise HTTPException(503, detail={"code": "live_unavailable", "message": "Live faces are busy; using clips."})
-    plan = live_avatar.plan(owner, req.avatar_id)
-    try:
-        made = await boson.create_avatar_session(plan["body"])
-    except BosonError as e:
-        if e.status in (429, 503) and e.type != "insufficient_quota":
+    async with _live_lock:  # check, start and record as one step, so parallel starts cannot pass the cap together
+        for old in live_avatar.held_by(owner):
+            try:
+                await boson.release_avatar_session(old.id)
+            except (BosonError, RuntimeError):
+                logging.getLogger(__name__).warning("live avatar: could not release an older session")
+                continue   # still held: it keeps counting until it expires
+            live_avatar.pop(old.id, owner)
+        if live_avatar.count() >= settings.live_avatar_max_sessions:
             raise HTTPException(503, detail={"code": "live_unavailable", "message": "Live faces are busy; using clips."})
-        if e.status == 404:
-            raise HTTPException(404, "That face is not available for live sessions.")
-        raise boson_http_error(e)
-    except RuntimeError as e:
-        raise boson_http_error(e)
-    live_avatar.add(live_avatar.Session(made["id"], owner, plan["room"], req.avatar_id))
+        plan = live_avatar.plan(owner, req.avatar_id)
+        try:
+            made = await boson.create_avatar_session(plan["body"])
+        except BosonError as e:
+            if e.status in (429, 503) and e.type != "insufficient_quota":
+                raise HTTPException(503, detail={"code": "live_unavailable", "message": "Live faces are busy; using clips."})
+            if e.status == 404:
+                raise HTTPException(404, "That face is not available for live sessions.")
+            raise boson_http_error(e)
+        except RuntimeError as e:
+            raise boson_http_error(e)
+        live_avatar.add(live_avatar.Session(made["id"], owner, plan["room"], req.avatar_id))
     return {"session": made["id"], "url": settings.livekit_url, "token": plan["token"], "identity": plan["identity"],
             "avatar_identity": made.get("avatar_identity") or live_avatar.AVATAR_IDENTITY,
             "expires_at": made.get("expires_at"), "max_seconds": settings.live_avatar_max_seconds}
