@@ -113,6 +113,31 @@ class BosonClient:
             raise
         return True
 
+    # ---- Live avatar sessions (#140): a preset face rendered into a LiveKit room. ----
+
+    async def list_avatars(self) -> list[dict]:
+        """GET /v1/avatars: the faces this key can start a live session with (today Boson's presets only)."""
+        data = (await self.request("GET", "/v1/avatars")).json()
+        return [a for a in data.get("data", []) if isinstance(a, dict) and a.get("avatar_id")]
+
+    async def create_avatar_session(self, body: dict) -> dict:
+        """POST /v1/avatar/sessions. Not idempotent and holds a scarce slot, so it is never retried here: a 429
+        capacity_exhausted goes back to the caller, which keeps the per-sentence clips instead."""
+        async with self._client() as c:
+            resp = await c.post("/v1/avatar/sessions", json=body)
+        if not resp.is_success:
+            raise _to_error(resp)
+        usage.record("boson_avatar_live", "higgs-avatar", sessions=1)
+        return resp.json()
+
+    async def release_avatar_session(self, session_id: str) -> None:
+        """DELETE /v1/avatar/sessions/{id}; a 404 means it already ended."""
+        try:
+            await self.request("DELETE", f"/v1/avatar/sessions/{quote(session_id, safe='')}")
+        except BosonError as e:
+            if e.status != 404:
+                raise
+
     # ---- Higgs Avatar (stretch). Request/response shapes follow the docs; verify with scripts/probe_avatar.py. ----
 
     async def create_video(self, ref_image_b64: str, audio_b64: str, *, size: str | None = None,

@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from pydantic import BaseModel, Field, field_validator
 
-from . import books, cast, emotion, face_detect, faces, ingest_upload, multilingual, public_client, recap, retrieval, translate, tts_cache, tts_lang, users, voices
+from . import books, cast, emotion, face_detect, faces, ingest_upload, live_avatar, multilingual, public_client, recap, retrieval, translate, tts_cache, tts_lang, users, voices
 from .delivery import apply_speed
 from .retrieval import DEFAULT_K, REALTIME_K, REALTIME_MAX_PASSAGE_CHARS
 from .boson import BosonClient, BosonError
@@ -2167,6 +2167,77 @@ def list_voice_faces():
 
 
 # ---------- face library ----------
+
+live_avatar_bucket = TokenBucket(capacity=6, per_seconds=60)  # session starts per IP / account (each holds a paid slot)
+
+
+def _live_owner(request: Request) -> str:
+    ident = users.current()
+    return ident.ns if ident.ns else rate_key(request)
+
+
+@app.get("/api/live-avatar", dependencies=[Depends(require_access)])
+async def live_avatar_info():
+    """Whether live faces are available here, and which (Boson's presets: GET /v1/avatars)."""
+    if not settings.live_avatar_enabled:
+        return {"enabled": False, "avatars": []}
+    try:
+        found = await boson.list_avatars()
+    except (BosonError, RuntimeError):
+        return {"enabled": False, "avatars": []}
+    return {"enabled": True, "avatars": [{"id": a["avatar_id"], "name": str(a.get("name") or a["avatar_id"])} for a in found]}
+
+
+class LiveAvatarStart(BaseModel):
+    avatar_id: str = Field(..., min_length=1, max_length=256)
+
+
+@app.post("/api/live-avatar/sessions", dependencies=[Depends(require_access)])
+async def start_live_avatar(req: LiveAvatarStart, request: Request):
+    """Start a live face: Boson's avatar joins a fresh LiveKit room; the reply's browser joins with the token returned.
+    One session per account (an older one is released first). 503 `live_unavailable` means: keep the clips."""
+    if not settings.live_avatar_enabled:
+        raise HTTPException(404, "Live faces are not set up here.")
+    if not live_avatar_bucket.allow(rate_key(request)):
+        raise HTTPException(429, "Too many live face starts; wait a moment.")
+    owner = _live_owner(request)
+    for old in live_avatar.held_by(owner):
+        live_avatar.pop(old.id, owner)
+        try:
+            await boson.release_avatar_session(old.id)
+        except (BosonError, RuntimeError):
+            logging.getLogger(__name__).warning("live avatar: could not release an older session")
+    if live_avatar.count() >= settings.live_avatar_max_sessions:
+        raise HTTPException(503, detail={"code": "live_unavailable", "message": "Live faces are busy; using clips."})
+    plan = live_avatar.plan(owner, req.avatar_id)
+    try:
+        made = await boson.create_avatar_session(plan["body"])
+    except BosonError as e:
+        if e.status in (429, 503) and e.type != "insufficient_quota":
+            raise HTTPException(503, detail={"code": "live_unavailable", "message": "Live faces are busy; using clips."})
+        if e.status == 404:
+            raise HTTPException(404, "That face is not available for live sessions.")
+        raise boson_http_error(e)
+    except RuntimeError as e:
+        raise boson_http_error(e)
+    live_avatar.add(live_avatar.Session(made["id"], owner, plan["room"], req.avatar_id))
+    return {"session": made["id"], "url": settings.livekit_url, "token": plan["token"], "identity": plan["identity"],
+            "avatar_identity": made.get("avatar_identity") or live_avatar.AVATAR_IDENTITY,
+            "expires_at": made.get("expires_at"), "max_seconds": settings.live_avatar_max_seconds}
+
+
+@app.delete("/api/live-avatar/sessions/{session_id}", dependencies=[Depends(require_access)])
+async def stop_live_avatar(session_id: str, request: Request):
+    """Release a live face (only the account that started it). Boson also ends it when everyone leaves the room."""
+    s = live_avatar.pop(session_id, _live_owner(request))
+    if s is None:
+        raise HTTPException(404, "No such live session.")
+    try:
+        await boson.release_avatar_session(session_id)
+    except (BosonError, RuntimeError) as e:
+        raise boson_http_error(e)
+    return {"released": session_id}
+
 
 face_bucket = TokenBucket(capacity=10, per_seconds=60)  # uploads write to disk
 _face_locks: dict[str, asyncio.Lock] = {}

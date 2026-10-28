@@ -81,6 +81,15 @@ class Settings(BaseSettings):
     # Lip-sync output size (docs.boson.ai input-options): 640x640 $0.09/min; 480x640 (3:4 portrait) and 640x480 $0.07/min.
     avatar_size: Literal["640x640", "480x640", "640x480"] = "640x640"
 
+    # Live avatar sessions (#140): Boson renders a preset face (GET /v1/avatars) live into a LiveKit Cloud room, driven
+    # by the reply audio the browser streams to it. Off unless all three LiveKit values are set. Faces of our own keep
+    # the per-sentence clips (Boson has no way yet to make an avatar from our photos).
+    livekit_url: str = ""                                    # wss://<project>.livekit.cloud
+    livekit_api_key: str = Field(default="", repr=False)
+    livekit_api_secret: str = Field(default="", repr=False)
+    live_avatar_max_seconds: int = 900       # a session's hard cap (Boson bills the slot while it is held)
+    live_avatar_max_sessions: int = 2        # live sessions this server holds at once (Boson slots are scarce)
+
     # Per-account separation for the live Cloud Run deploy (Google sign-in via IAP). Off everywhere else.
     per_user: bool = False
     iap_audience: str = ""        # /projects/PROJECT_NUMBER/locations/REGION/services/SERVICE
@@ -109,6 +118,10 @@ class Settings(BaseSettings):
     @property
     def vs_collection_path(self) -> str:
         return f"projects/{self.gcp_project}/locations/{self.gcp_region}/collections/{self.vs_collection}"
+
+    @property
+    def live_avatar_enabled(self) -> bool:
+        return bool(self.livekit_url and self.livekit_api_key and self.livekit_api_secret and self.boson_api_key)
 
     def require_boson_key(self) -> str:
         if not self.boson_api_key:
