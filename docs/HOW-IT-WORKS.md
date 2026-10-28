@@ -351,6 +351,44 @@ sometimes glues to words ("emotioncontemplationprosodypitchlowTo") is stripped (
 unmatched word keeps the previous span so the highlight never jumps backwards. Result `[{start, end, char_start,
 char_end}]` relative to the chunk.
 
+### 5.6 Books in other languages (#117)
+
+**What the user sees.** A Spanish, French, Chinese (or other) PDF or .txt is read aloud in its language, its chapters
+are found, its characters are cast and voiced, and questions are answered in the book's language unless the reader
+clearly writes in another one. The lit text is the whole chunk (no word timing).
+
+**Detection** (`booklang.detect`, at ingest in `ingest_upload.build_book`, stored as `Book.language`, ISO 639-3; old
+books and unknown codes are `"eng"`): offline and cheap, on ~30k characters from the start, middle and end. A script
+decides first (Han -> `zho`, kana -> `jpn`, Hangul -> `kor`, Cyrillic -> `rus`/`ukr`, Arabic -> `ara`/`fas`, Devanagari,
+Hebrew, Greek, Thai); Latin script is the language whose common words cover ≥ 10 % of the words and 1.5x the English
+share, else English. English books keep every rule, prompt, request and cache key byte for byte.
+
+**What changes for such a book:**
+- **Parsing.** Headings in Spanish, French, German, Italian, Portuguese, Dutch, Polish and Russian ("Capítulo 3",
+  "Chapitre deux", "Глава 5") and `第三章` / `第二回` / `제3장`; their contents-page titles ("Índice", "Table des
+  matières", "目录"). PDF lines and .txt line breaks between Chinese / Japanese characters join without a space; `。！？`
+  end a line's sentence. These patterns are global but match no English text.
+- **Sentences** (`ttschunks.sentence_spans(text, language)`): `。！？` end a sentence with no space after it; French
+  `« Bonjour ! »` keeps its closing guillemet; a dash before a lowercase word continues the line (Spanish
+  `—¿Vienes? —preguntó él.`); each language's own abbreviations (Sr., Mme., z.B.). Chinese / Japanese chunks are at most
+  120 characters (`CJK_MAX_CHARS`), since they say about four times as much per character.
+- **TTS.** No English number spelling; `/api/tts` sends Boson the book's `language` with `normalize: true` and no
+  timestamps (the reader lights the chunk). Code / equation notes are said in the book's language where known.
+- **Delivery.** Rule-based whisper/shout, speech-tag sfx and expressiveness, singing and the free attribution pass
+  (`pipeline.attribute_speakers`) read English cues, so they are off. Pauses and the segmenter's speakers, emotions
+  and styles stay.
+- **Dialogue.** `booklang.has_dialogue` also counts « », „ “, 「」, 『』 and a paragraph opened by a dash, for which
+  paragraphs go to the segmenter (and its estimate). The segment prompt gets `booklang.segment_note` (dash dialogue and
+  incised narrator clauses), and `validate_segments` may put those marks back too (`segment.quote_marks`).
+- **Prompts.** Cast, persona, segment, summary and textbook-note prompts get `booklang.prompt_note` ("The book is
+  written in Spanish. Copy its text, names and quotes exactly…"; notes and summaries: "Write your answer in Spanish.").
+  The public service gets `language` in the enrich and answer requests (sent only when not English).
+- **Kind detection** (`detect.heuristic`): also counts the book's own quotation marks and dash-led dialogue lines, and
+  Spanish / French / German / Italian / Portuguese / Chinese textbook words and captions ("Figura 2.1", "Ejercicios", "定理").
+- **Search** (section 11): BM25 indexes Chinese / Japanese runs as overlapping character pairs; the e5 embeddings are
+  multilingual already. A question is searched as is unless it is clearly in another language, which is translated
+  into the book's language (section 12.4).
+
 ---
 
 ## 6. Two-voice / one-voice narration and gender
@@ -735,7 +773,8 @@ never trusted to the client or the model.
 1. `_resolve_talk`: 404 for unknown/hidden books and speakers; `reader_para` clamped to the book; a minor character
   (`main=False`) is refused (403); a novel character whose `first_para > reader_para` is refused (403, "has not
    appeared yet") unless spoilers are on.
-2. `multilingual.search_query` translates a non-English question to English for search (section 12.4).
+2. `multilingual.search_query` translates a non-English question to English for search (section 12.4); a book in
+   another language is searched in its own language (section 5.6).
 3. `_clamp`: `spoiler_safe = kind == "novel" and not spoilers`. Textbooks and spoilers-on novels search the whole book.
 4. Index (`main._index_for`, LRU 8):
    - **Local** (`RETRIEVAL_BACKEND=local`): `retrieval.Index` = BM25 (`rank_bm25.BM25Okapi` over `context_blurb + text`)
@@ -860,6 +899,15 @@ a badge ("Español"); a clear language in the two newest of the last three quest
 hint (ISO 639-1); the newest clear question sets the TTS answer language (ISO 639-3, `/api/speak language`), which
 Boson voices **without word timestamps** (only English has them in this code) and with normalization on; that sentence
 gets its own cache key.
+
+**A book in another language** (`Book.language`, section 5.6): `personas.answer_language` is the question's language
+when `multilingual.clear_language` is sure of it (a script, or ≥ 2 stopwords that outnumber any other language,
+English included), else the book's. The prompt always starts with `BOOK_LANGUAGE_RULE` ("The book, the notes and the
+passages below are in Spanish. Answer in Spanish, unless…") or, for a question clearly in another language,
+`OTHER_LANGUAGE_RULE` (answer in that language, translate the Spanish passages). `search_query(query, book.language)`
+searches such a question translated into the book's language (Gemini only; the public service translates into English
+only, so a clone searches the original), and any other question as is. The browser (`answerLanguage(recent,
+bookLanguage)`) voices an answer with no clear question language, and read-aloud recaps, in the book's language.
 
 ### 12.5 Emotion markers -> TTS emotion tags
 
@@ -1334,9 +1382,13 @@ These are the real limitations of the current code. The full list of gaps, with 
    hybrid. With `RETRIEVAL_BACKEND=vertex`, search is hybrid (vector + full text).
 2. **Reading position is per browser.** It is kept in localStorage (`talkback:pos:<bookId>`, section 7), so it does not
    follow you to another browser or device.
-3. **Uploads must be in English**. Sentence splitting, number normalization, delivery rules, heading detection
-   and prompts all assume English. Talking to a character in another language works (section 12.4); a non-English book
-   does not.
+3. **Uploads in other languages have fewer extras** (section 5.6). The language is detected and the book is split,
+   chaptered, read aloud, cast, searched and answered in it, but Boson gives word timestamps only for English here, so
+   the reader lights a whole chunk (a sentence or two) instead of each word. Sound effects, singing, rule-based
+   whisper/shout and the free attribution pass read English cues, so they are off for such a book (the LLM's own
+   speakers, emotions and styles stay). Equation readings are English, so a non-English textbook reads the extracted
+   formula text instead. Detection covers scripts plus the common words of Spanish, French, German, Italian,
+   Portuguese, Dutch and Polish; any other Latin-script language is treated as English.
 4. **Moving a paper to Textbooks does not bring back its figures**. Equations, code listings and nested
    sections are restored (section 3), figures are not. Uploading it as a textbook in the first place keeps them.
 5. **Hands-free with speakers can interrupt itself.** The barge-in thresholds were lowered (0.04 RMS,

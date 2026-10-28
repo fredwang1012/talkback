@@ -112,7 +112,7 @@ No test calls a paid API; every provider is faked.
 
 - Without Google Cloud, search is keyword-based unless the `embed` extra is installed (a large PyTorch download).
 - Reading position is kept per browser, not per account.
-- Uploads must be in English. Talking in other languages works.
+- Uploads in other languages (Spanish, French, Chinese and others) are detected and read in their language, but highlighting lights a sentence or two at a time instead of each word, and sound effects, singing and rule-based whisper/shout are English-only.
 - Hands-free works best with headphones; laptop speakers can trigger barge-in.
 - Streaming lip-sync needs MediaSource, which iOS Safari lacks (clips render first there).
 - Textbook tables are dropped.
