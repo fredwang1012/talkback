@@ -110,6 +110,8 @@ export interface PlayerLike {
   /** Hold playback where it is (queued audio is kept) and continue it. Optional. */
   pausePlayback?(): Promise<void>;
   resumePlayback?(): Promise<void>;
+  /** The reply's audio is all in (response.done). Optional: a live face (#140) ends its audio segment here. */
+  endTurn?(): void;
   reset(): void;
   close(): Promise<void>;
 }
@@ -1040,6 +1042,7 @@ export class TalkClient implements TalkSession {
           break;
         }
         this.responseDone = true;
+        if (!this.textMode && this.audioStarted) this.player.endTurn?.();
         this.emit({ type: "response-done", status: status === "cancelled" ? "cancelled" : status === "failed" ? "failed" : "completed" });
         if (this.textMode) this.finishTextIfDone(); // drained once the last sentence has been spoken (or at once, nothing to say)
         else if (!this.audioStarted) { this.emit({ type: "playback-drained" }); this.applyModeChange(); } // nothing was spoken, nothing to wait for

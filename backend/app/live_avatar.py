@@ -77,6 +77,16 @@ def plan(owner: str, avatar_id: str) -> dict:
     return {"room": room, "identity": reader, "token": reader_token, "body": body}
 
 
+PENDING = "pending-"
+
+
+def reserve(owner: str) -> str:
+    """Hold a slot while Boson starts the session (counted like a session; replaced or dropped right after)."""
+    sid = PENDING + secrets.token_hex(6)
+    _sessions[sid] = Session(sid, owner, "", "")
+    return sid
+
+
 def held_by(owner: str) -> list[Session]:
     expire()
     return [s for s in _sessions.values() if s.owner == owner]

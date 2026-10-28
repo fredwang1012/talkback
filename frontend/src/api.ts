@@ -795,3 +795,26 @@ export async function changeKind(id: string, kind: BookKind): Promise<BookStatus
   }
   return res.json() as Promise<BookStatus>;
 }
+
+/** Live faces (#140): Boson's preset avatars rendered live into a LiveKit room. `enabled` false = clips only here. */
+export type LiveAvatarInfo = { enabled: boolean; avatars: { id: string; name: string }[] };
+export const fetchLiveAvatars = () => getJson<LiveAvatarInfo>("/api/live-avatar");
+
+export type LiveAvatarSession = { session: string; url: string; token: string; identity: string; avatar_identity: string; expires_at?: string | null; max_seconds: number };
+
+/** No live slot free (Boson busy, or this server's cap): the caller keeps the per-sentence clips. */
+export class LiveUnavailable extends Error {}
+
+export async function startLiveAvatar(avatarId: string): Promise<LiveAvatarSession> {
+  const res = await timedFetch("/api/live-avatar/sessions", {
+    method: "POST", headers: { ...authHeaders(), "Content-Type": "application/json" }, body: JSON.stringify({ avatar_id: avatarId }),
+  }, 30000);
+  if (res.status === 503) throw new LiveUnavailable("Live faces are busy right now; using the usual face clips.");
+  if (!res.ok) throw await readError(res, "Could not start the live face");
+  return res.json() as Promise<LiveAvatarSession>;
+}
+
+export async function stopLiveAvatar(sessionId: string): Promise<void> {
+  const res = await timedFetch(`/api/live-avatar/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE", headers: authHeaders() }, 15000);
+  if (!res.ok && res.status !== 404) throw await readError(res, "Could not stop the live face");
+}
