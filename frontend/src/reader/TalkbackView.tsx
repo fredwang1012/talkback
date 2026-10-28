@@ -3,6 +3,8 @@ import type { Book, Face as FaceT } from "../api";
 import type { TalkUi } from "../talk/useTalk";
 import { PRESETS, type TalkChoice } from "./castLogic";
 import { FaceView } from "./FaceView";
+import { LiveFaceView } from "./LiveFaceView";
+import type { LiveFaceUi } from "../talk/useLiveFace";
 import { SourceLinks } from "./SourceLinks";
 import RecapMenu, { type RecapChoice } from "./RecapMenu";
 import { priorTurns } from "../talk/chatLog";
@@ -27,6 +29,7 @@ type Props = {
   onBack: () => void;
   onRecap: (c: RecapChoice) => void; // a recap is posted into this chat by the narrator
   onVoices: () => void;
+  live?: LiveFaceUi; // #140: a live preset face (picker + video); absent or off keeps the usual faces
 };
 
 /** The status line, held still between the sentences of an answer (createStatusGate, #81). */
@@ -61,7 +64,7 @@ export function ModeToggle({ mode, onMode, talkAvailable }: { mode: "read" | "ta
 
 export default function TalkbackView({
   book, para, speakerId, onSpeaker, pinned, talk, faces, faceFor, autoVoiceFor, choice, onChoice, voices,
-  spoilers, onSpoilers, portrait, onBack, onRecap, onVoices,
+  spoilers, onSpoilers, portrait, onBack, onRecap, onVoices, live,
 }: Props) {
   const novel = showSpoilerToggle(book);
   const fullBook = novel && spoilers;
@@ -74,6 +77,7 @@ export default function TalkbackView({
   const status = talkbackStatus(talk.state, talk.speaking); // follows the audio: the face uses it
   const line = useStableStatus(status, talk.state === "answering"); // the status text and the busy state
   const face = faceFor(shownId);
+  const liveName = live?.info.avatars.find((a) => a.id === live.pick)?.name;
   const chapter = chapterAt(book, para);
   const voiceLabel = (v: string) => (PRESETS.includes(v) ? v : "your cloned voice");
   const [draft, setDraft] = useState("");
@@ -113,7 +117,8 @@ export default function TalkbackView({
       <div className="tb-main">
         <div className="tb-face-col">
           <div className={`tb-face${status === "listening" ? " live" : ""}${status === "thinking" ? " thinking" : ""}${status === "speaking" ? " speaking" : ""}`} aria-hidden="true">
-            {face ? <FaceView face={face} speaking={talk.speaking} sync={talk.faceSync} clipShown={talk.clipShown} />
+            {live?.face && !talk.narrating ? <LiveFaceView media={live.media} name={liveName ?? shownName} />
+              : face ? <FaceView face={face} speaking={talk.speaking} sync={talk.faceSync} clipShown={talk.clipShown} />
               : shownPortrait ? <img src={shownPortrait} alt="" />
               : <span className="mono">{shownName.charAt(0)}</span>}
           </div>
@@ -141,7 +146,19 @@ export default function TalkbackView({
               {choice.face && choice.face !== "none" && !faces.some((f) => f.id === choice.face) && <option value={choice.face}>(removed face)</option>}
               {faces.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
             </select>
+            {live?.info.enabled && (
+              <>
+                <label htmlFor="tb-live">Live face</label>
+                <select id="tb-live" value={live.pick} title="A Boson face that moves live with every word (instead of this character's face). Only Boson's own faces can be live."
+                        onChange={(e) => live.setPick(e.target.value)}>
+                  <option value="">Off</option>
+                  {live.info.avatars.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+              </>
+            )}
           </div>
+          {live?.status === "starting" && <p className="empty-note">Starting the live face…</p>}
+          {live?.note && <p className="empty-note" role="status">{live.note}</p>}
           {novel && (
             <button className="spoiler-toggle" aria-pressed={spoilers} onClick={() => onSpoilers(!spoilers)}
                     title="Let answers use the whole book, including what comes later">

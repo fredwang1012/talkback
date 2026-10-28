@@ -123,3 +123,19 @@ def test_parallel_starts_cannot_pass_the_cap(env, lk, monkeypatch):  # noqa: F81
     out = asyncio.run(both())
     assert sum(isinstance(o, dict) for o in out) == 1
     assert len(lk["created"]) == 1
+
+
+def test_one_account_starting_twice_at_once_gets_one_session(env, lk, monkeypatch):  # noqa: F811
+    import asyncio
+
+    monkeypatch.setattr(main, "_live_owner", lambda request: "acct-a")
+    monkeypatch.setattr(main, "rate_key", lambda request: "ip")
+
+    async def both():
+        reqs = [main.LiveAvatarStart(avatar_id="builtin_claire_v1") for _ in range(2)]
+        return await asyncio.gather(*(main.start_live_avatar(r, None) for r in reqs), return_exceptions=True)
+
+    asyncio.run(both())
+    from app import live_avatar
+    assert len(live_avatar.held_by("acct-a")) == 1             # never two held at once for one account
+    assert len(lk["created"]) - len(lk["deleted"]) == 1       # any extra one was released at Boson

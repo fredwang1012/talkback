@@ -1,3 +1,5 @@
+import type { LiveFace } from "./liveFace";
+import { LivePlayer, createLiveSpeaker } from "./livePlayers";
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { fetchRealtimeKey, fetchRetrieve, speak, streamAnswer, type Health } from "../api";
 import { MicCapture } from "../audio/capture";
@@ -76,10 +78,13 @@ type Args = {
   /** Picks the tools declared to the Realtime session: a textbook gets section / topic tools and no cast (tools.ts). */
   bookKind?: BookKind;
   tools?: ToolRunner; // the reader tools the character may call (#72): jump, read chapter, pause/resume, voices, speed, recap, bookmark, cast
+  /** #140: a live preset face in a LiveKit room. While set, answers are spoken through it (its own audio and video, in
+   * sync) instead of local playback and per-sentence lip-sync clips. Null = today's clips. */
+  liveFace?: LiveFace | null;
 };
 
 /** Owns the Talk session for the reader screen. The real mic, speaker and socket are created once per book. */
-export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, faceIdFor = () => null, narratorFaceId = () => null, spoilers = false, talkback = false, narratorVoice = null, tools, bookKind }: Args): TalkUi {
+export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, faceIdFor = () => null, narratorFaceId = () => null, spoilers = false, talkback = false, narratorVoice = null, tools, bookKind, liveFace = null }: Args): TalkUi {
   const [state, setState] = useState<TalkState>("reading");
   const [caption, setCaption] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -193,12 +198,17 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       tokenProvider: fetchRealtimeKey,
       tools: toolsNow(),
       answerMode,
-      createPlayer: (onSpeaking) => new RingPlayer(onSpeaking) as unknown as PlayerLike,
+      createPlayer: (onSpeaking) => (liveFace ? new LivePlayer(liveFace, onSpeaking) : new RingPlayer(onSpeaking) as unknown as PlayerLike),
       createMic: (onChunk, onLevel) => new MicCapture(onChunk, onLevel) as unknown as MicLike,
       ...(viaGemini ? {} : {
         // text mode (B1): each sentence through /api/speak (emotion tag, the speaker's voice, the answer's language) and
         // its lip-sync clip on the face shown; the same sentence player, start gate and face sync as the Gemini path
-        createSpeaker: (onPlaying: (on: boolean) => void) => createSentenceSpeaker(async (text) => {
+        createSpeaker: (onPlaying: (on: boolean) => void) => liveFace ? createLiveSpeaker(async (text) => {
+          const r = await speak(text, answerVoice, answerEmotion.get(text), answerLang);
+          if (!r.cached) spend.addTts(text.length);
+          if (answerMsgId !== undefined) replayStore.current.addSentence(answerMsgId, text, { audio_url: r.audio_url });
+          return r.audio_url;
+        }, liveFace, { onPlaying: (on: boolean) => { gate.playing(on); onPlaying(on); } }) : createSentenceSpeaker(async (text) => {
           const voice = answerVoice;
           const r = await speak(text, voice, answerEmotion.get(text), answerLang);
           if (!r.cached) spend.addTts(text.length);
@@ -243,7 +253,11 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
           startAnswer(speaker);
           return streamAnswer(bookId, query, para, speaker, (t, emotion) => { answerEmotion.note(t, emotion); const id = answerMsgId; setMessages((m) => appendSentenceTo(m, id, t)); onSentence(t); }, signal, latest.current.spoilers, priorTurns(msgs.current, speaker), (s) => setMessages((m) => setSources(m, s)));
         },
-        speaker: createSentenceSpeaker(async (text) => {
+        speaker: liveFace ? createLiveSpeaker(async (text) => {
+          const r = await speak(text, answerVoice, answerEmotion.get(text), answerLang);
+          if (answerMsgId !== undefined) replayStore.current.addSentence(answerMsgId, text, { audio_url: r.audio_url });
+          return r.audio_url;
+        }, liveFace, { onPlaying: gate.playing }) : createSentenceSpeaker(async (text) => {
           const voice = answerVoice;
           // always lip-synced when a face is shown (#92, any face since #113): the first word waits (bounded) until
           // this clip can start with it from 0 (start gate: sentencePlayer, faceSync). A non-English answer is voiced
@@ -294,7 +308,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     }, setReplayingId, (e) => setToast(e instanceof Error ? e.message : String(e)));
     return () => {
       replayer.current?.stop(); replayer.current = null; narration.current?.reset(); gate.reset(); sync?.leave(); talk?.dispose(); client.close(); controller.current = null; clientRef.current = null; setState("reading"); setSpeaking(false); setHandsFreeState(false); setSearching(false); };
-  }, [bookId, enabled, viaGemini, bookKind]);
+  }, [bookId, enabled, viaGemini, bookKind, liveFace]);
 
   useEffect(() => { controller.current?.setAutoResume(autoResume); }, [autoResume, enabled]);
   useEffect(() => { controller.current?.setTalkback(talkback); }, [talkback, enabled]);

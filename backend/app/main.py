@@ -2213,7 +2213,9 @@ async def start_live_avatar(req: LiveAvatarStart, request: Request):
             logging.getLogger(__name__).warning("live avatar: could not release an older session")
             continue   # still held: it keeps counting until it expires
         live_avatar.pop(old.id, owner)
-    async with _live_lock:  # only the in-memory check and a reservation: parallel starts cannot pass the cap together
+    async with _live_lock:  # only the in-memory checks and a reservation: parallel starts cannot pass either cap together
+        if live_avatar.held_by(owner):   # still starting, or an older one that would not release
+            raise HTTPException(409, "A live face is already running or starting for this account.")
         if live_avatar.count() >= settings.live_avatar_max_sessions:
             raise HTTPException(503, detail={"code": "live_unavailable", "message": "Live faces are busy; using clips."})
         slot = live_avatar.reserve(owner)
