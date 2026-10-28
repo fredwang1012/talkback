@@ -10,7 +10,8 @@
  * Only Boson's presets can be live (there is no API to make an avatar from a photo): faces of our own keep the
  * per-sentence lip-sync clips. When a session cannot start (no slot free, LiveKit unreachable) the caller keeps the clips.
  */
-import { Room, RoomEvent, Track, type ByteStreamWriter, type RemoteParticipant, type RemoteTrack, type RemoteTrackPublication, type RpcInvocationData } from "livekit-client";
+// types only: livekit-client is loaded when a live face starts, so the reader page does not carry it
+import type { ByteStreamWriter, RemoteParticipant, RemoteTrack, RemoteTrackPublication, RpcInvocationData } from "livekit-client";
 import { startLiveAvatar, stopLiveAvatar, type LiveAvatarSession } from "../api";
 
 export const AUDIO_STREAM_TOPIC = "lk.audio_stream";
@@ -18,6 +19,10 @@ export const RPC_CLEAR_BUFFER = "lk.clear_buffer";
 export const RPC_PLAYBACK_STARTED = "lk.playback_started";
 export const RPC_PLAYBACK_FINISHED = "lk.playback_finished";
 export const LIVE_RATE = 24000;
+// livekit-client's RoomEvent and Track.Kind values (string enums), spelled out to avoid loading the library here
+const EV_TRACK_SUBSCRIBED = "trackSubscribed";
+const EV_PARTICIPANT_DISCONNECTED = "participantDisconnected";
+const EV_DISCONNECTED = "disconnected";
 
 /** What the face needs from LiveKit; the real Room in the app, a fake in tests. */
 export interface RoomLike {
@@ -56,9 +61,9 @@ export class LiveFace {
   }
 
   /** Starts a session for a preset avatar and joins its room. Throws `LiveUnavailable` when the caller should keep clips. */
-  static async start(avatarId: string, makeRoom: () => RoomLike = () => new Room() as unknown as RoomLike): Promise<LiveFace> {
+  static async start(avatarId: string, makeRoom?: () => RoomLike): Promise<LiveFace> {
     const session = await startLiveAvatar(avatarId);
-    const room = makeRoom();
+    const room = makeRoom ? makeRoom() : new (await import("livekit-client")).Room() as unknown as RoomLike;
     const face = new LiveFace(room, session);
     try {
       await face.join();
@@ -86,14 +91,14 @@ export class LiveFace {
       this.finished.shift()?.();
       return "ok";
     });
-    this.room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub: RemoteTrackPublication, who: RemoteParticipant) => {
+    this.room.on(EV_TRACK_SUBSCRIBED, (track: RemoteTrack, _pub: RemoteTrackPublication, who: RemoteParticipant) => {
       if (who.identity !== avatar) return;
-      if (track.kind === Track.Kind.Video) this.media = { ...this.media, video: track.mediaStreamTrack };
-      else if (track.kind === Track.Kind.Audio) this.media = { ...this.media, audio: track.mediaStreamTrack };
+      if (track.kind === "video") this.media = { ...this.media, video: track.mediaStreamTrack };
+      else if (track.kind === "audio") this.media = { ...this.media, audio: track.mediaStreamTrack };
       this.onMedia(this.media);
     });
-    this.room.on(RoomEvent.ParticipantDisconnected, (who: RemoteParticipant) => { if (who.identity === avatar) this.end(); });
-    this.room.on(RoomEvent.Disconnected, () => this.end());
+    this.room.on(EV_PARTICIPANT_DISCONNECTED, (who: RemoteParticipant) => { if (who.identity === avatar) this.end(); });
+    this.room.on(EV_DISCONNECTED, () => this.end());
     await this.room.connect(this.session.url, this.session.token);
   }
 

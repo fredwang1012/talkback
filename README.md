@@ -21,6 +21,8 @@ Five fully processed public-domain books ship in the repo, so everything works w
 - **Faces.** Lip-synced with Higgs Avatar and streamed, so the video starts before the render ends. Any voice can
   drive any face.
 - **Your own voice.** Clone a voice from a recording and give it a face from a photo or your webcam.
+- **Live faces (optional).** With a LiveKit Cloud project set in `.env`, a Boson preset face (Claire, Emma or James)
+  can answer live in the Talkback view: its voice and lips come from one stream. Your own faces keep per-sentence clips.
 - **No spoilers.** The server only gives a character passages and summaries up to your position; characters you have
   not met yet are locked. Turn Spoilers on for full-book knowledge.
 - **Voice commands.** "Read chapter 3", "go back a bit", "slower", "recap the last chapter", "bookmark this".
