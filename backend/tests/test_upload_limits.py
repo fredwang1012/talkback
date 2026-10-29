@@ -92,7 +92,8 @@ def test_extraction_failure_is_not_visible(client, tmp_path):
 
 
 def test_page_and_char_caps(client, monkeypatch):
-    monkeypatch.setattr(ingest_upload, "MAX_PAGES", 2)
+    from app.ingest import common  # the extraction caps are read from here (the facade only re-exports them)
+    monkeypatch.setattr(common, "MAX_PAGES", 2)
     three = fitz.open()
     for _ in range(3):
         three.new_page().insert_text((72, 100), L1)
@@ -101,7 +102,7 @@ def test_page_and_char_caps(client, monkeypatch):
         raise AssertionError("expected UploadError")
     except ingest_upload.UploadError as e:
         assert "pages" in str(e)
-    monkeypatch.setattr(ingest_upload, "MAX_CHARS", 50)
+    monkeypatch.setattr(common, "MAX_CHARS", 50)
     for name, data in (("a.txt", ("word " * 30).encode()), ("a.pdf", make_pdf([[L1, L2]]))):
         book_id = post(client, name, data).json()["book_id"]
         st = client.get(f"/api/books/{book_id}/status").json()
