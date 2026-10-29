@@ -170,7 +170,7 @@ class Pacer:
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
-                    if is_rate_limited(e):
+                    if is_rate_limited(e) and not retrying.is_daily_quota(e):   # a spent day's quota is final, not load
                         s.throttled(e)
                     raise
                 s.ok()

@@ -3,6 +3,7 @@ chosen client, and that the key never shows up in health, logs or errors. The SD
 import asyncio
 import json
 import logging
+import threading
 from types import SimpleNamespace
 
 import google.genai as genai
@@ -10,7 +11,7 @@ import httpx
 import pytest
 from google.genai import errors as genai_errors
 
-from app import deps, face_detect, gemini, indexes, multilingual, public_client, retrying, translate
+from app import deps, face_detect, gemini, indexes, multilingual, pacer, public_client, retrying, translate
 from app.config import settings
 from app.enrich import equations
 from app.enrich.llm import GeminiProvider, make_llm
@@ -73,7 +74,7 @@ def use(monkeypatch, project="", key="", adc=False):
     return probes
 
 
-AI_STUDIO = {"api_key": KEY}
+AI_STUDIO = {"api_key": KEY, "vertexai": False}
 
 
 # ---------- which endpoint ----------
@@ -231,3 +232,80 @@ def test_rate_limited_answers_retry_and_never_show_the_key(env, monkeypatch, mad
     assert len(made.models.configs) > 1   # the per-minute 429 went through the retry path
     assert KEY not in caplog.text
     assert "rate limited" in caplog.text   # the shared pacer saw the 429
+
+
+# ---------- review fixes (PR #144) ----------
+
+def test_the_ai_studio_client_never_follows_the_vertex_env(monkeypatch, made):
+    """GOOGLE_GENAI_USE_VERTEXAI=true in the environment must not send the key to Vertex express mode."""
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+    use(monkeypatch, "", KEY)
+    gemini.client()
+    assert made.calls == [{"api_key": KEY, "vertexai": False}]
+
+
+def test_a_per_day_quota_does_not_throttle_the_shared_pacer():
+    async def go(err):
+        p = pacer.Pacer(start=4, ceiling=8)
+
+        async def fail():
+            raise err
+        with pytest.raises(genai_errors.ClientError):
+            await p.call(fail, priority="interactive", attempts=1)
+        return p
+    p = asyncio.run(go(ai_studio_429(per_day=True, delay="3600s")))
+    assert p.limit == 4 and p.hold_until == 0.0           # final: no cut, no hour-long hold for every queued call
+    p = asyncio.run(go(ai_studio_429(delay="0.01s")))
+    assert p.limit == 2 and p.hold_until > 0              # a per-minute 429 still throttles, as before
+
+
+def test_a_wrapped_per_minute_429_is_still_retried():
+    """A wrapper with no status that repeats the 429's text ("...billing details...") is not a final quota error."""
+    inner = ai_studio_429()
+    try:
+        try:
+            raise inner
+        except genai_errors.ClientError as e:
+            raise RuntimeError(str(e)) from e
+    except RuntimeError as wrapped:
+        assert retrying.is_transient(wrapped)
+    day = ai_studio_429(per_day=True)
+    try:
+        try:
+            raise day
+        except genai_errors.ClientError as e:
+            raise RuntimeError(str(e)) from e
+    except RuntimeError as wrapped:
+        assert not retrying.is_transient(wrapped) and retrying.is_daily_quota(wrapped)
+    assert not retrying.is_daily_quota(ai_studio_429())
+    assert retrying.is_quota_or_auth(RuntimeError("check your plan and billing details"))   # no 429 anywhere: final
+
+
+def test_public_client_uses_the_shared_adc_check(monkeypatch):
+    """public_client calls gemini.gcp_credentials_usable through the module: one probe, one place to fake it."""
+    monkeypatch.setattr(settings, "anthropic_api_key", "")
+    use(monkeypatch, "p", "", adc=True)
+    assert public_client.local_llm_configured()
+    use(monkeypatch, "p", "", adc=False)
+    assert not public_client.local_llm_configured()
+
+
+def test_the_adc_probe_runs_off_the_event_loop_and_never_on_cloud_run(monkeypatch):
+    threads = []
+
+    def probe():
+        threads.append(threading.current_thread())
+        return False
+    monkeypatch.setattr(gemini, "gcp_credentials_usable", probe)
+
+    async def go():
+        loop_thread = threading.current_thread()
+        await gemini.resolve()
+        return loop_thread
+    monkeypatch.setattr(settings, "gcp_project", "p")
+    monkeypatch.setattr(settings, "gemini_api_key", "")
+    asyncio.run(go())
+    assert threads == [] and gemini.mode() == "vertex"     # the Cloud Run deploy: GCP_PROJECT alone, no probe at all
+    monkeypatch.setattr(settings, "gemini_api_key", KEY)
+    loop_thread = asyncio.run(go())
+    assert len(threads) == 1 and threads[0] is not loop_thread

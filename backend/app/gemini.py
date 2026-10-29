@@ -8,6 +8,7 @@
 GCP_PROJECT without GEMINI_API_KEY stays "vertex" without probing ADC (today's behaviour). The key is never logged
 or returned (Settings.gemini_api_key has repr=False; health reports only the mode).
 """
+import asyncio
 import functools
 from typing import Literal
 
@@ -29,6 +30,14 @@ def gcp_credentials_usable() -> bool:
         return False
 
 
+async def resolve() -> None:
+    """Settle the ADC probe off the event loop at startup. Only GCP_PROJECT together with GEMINI_API_KEY probes: on a
+    host without Google credentials google.auth.default() can wait seconds on the metadata server, which must never
+    stall a request. GCP_PROJECT alone (the Cloud Run deploy) does not probe at all."""
+    if settings.gcp_project and settings.gemini_api_key:
+        await asyncio.to_thread(gcp_credentials_usable)
+
+
 def mode() -> Mode | None:
     if settings.gcp_project and (not settings.gemini_api_key or gcp_credentials_usable()):
         return "vertex"
@@ -45,5 +54,6 @@ def client():
     """A google-genai client for the chosen endpoint (Vertex in the Gemini region, else AI Studio with the key)."""
     from google import genai
     if mode() == "ai_studio":
-        return genai.Client(api_key=settings.gemini_api_key)
+        # vertexai=False: GOOGLE_GENAI_USE_VERTEXAI in the environment must not send the key to Vertex express mode
+        return genai.Client(api_key=settings.gemini_api_key, vertexai=False)
     return genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
