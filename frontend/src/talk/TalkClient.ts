@@ -208,6 +208,7 @@ export class TalkClient implements TalkSession {
   private textPumping = false;
   private textEpoch = 0; // bumped by stopText(): a pump loop from before exits
   private textCurrent: string | null = null; // the sentence being spoken
+  private doneHeld: "completed" | "cancelled" | "failed" | null = null; // text mode: response-done waiting for the first sound
   private spoken: string[] = []; // sentences whose sound has started (the caption, and "heard" on a cut)
   private sentenceCount = 0;
   // B2 server-side web_search: the server runs the call, adds its result and starts the answer itself
@@ -766,7 +767,11 @@ export class TalkClient implements TalkSession {
   /** The sentence player reports sound starting or stopping (text mode). */
   private onSentencePlaying(on: boolean): void {
     if (!on || !this.textCurrent) return;
-    if (!this.audioStarted) { this.audioStarted = true; this.emit({ type: "audio-start" }); }
+    if (!this.audioStarted) {
+      this.audioStarted = true;
+      this.emit({ type: "audio-start" });
+      if (this.doneHeld) { const s = this.doneHeld; this.doneHeld = null; this.emit({ type: "response-done", status: s }); }
+    }
     if (this.spoken.at(-1) !== this.textCurrent) {
       this.spoken.push(this.textCurrent);
       this.emit({ type: "caption", text: this.spoken.join(" "), done: false });
@@ -777,6 +782,7 @@ export class TalkClient implements TalkSession {
   private finishTextIfDone(): void {
     if (!this.speaker || !this.responseDone || this.textPumping || this.textQueue.length || this.serverToolPending || this.textBuf.trim()) return;
     this.responseDone = false;
+    if (this.doneHeld) { const s = this.doneHeld; this.doneHeld = null; this.emit({ type: "response-done", status: s }); } // nothing was heard
     const text = this.spoken.join(" ");
     if (text) this.emit({ type: "caption", text, done: true });
     this.emit({ type: "playback-drained" });
@@ -785,6 +791,7 @@ export class TalkClient implements TalkSession {
 
   /** Drop what is queued and stop the sentence being spoken (a cut, a new question, a closed socket). */
   private stopText(): void {
+    this.doneHeld = null;
     this.textEpoch++;
     this.textBuf = "";
     this.textTotal = "";
@@ -1043,7 +1050,14 @@ export class TalkClient implements TalkSession {
         }
         this.responseDone = true;
         if (!this.textMode && this.audioStarted) this.player.endTurn?.();
-        this.emit({ type: "response-done", status: status === "cancelled" ? "cancelled" : status === "failed" ? "failed" : "completed" });
+        const doneStatus = status === "cancelled" ? "cancelled" : status === "failed" ? "failed" : "completed";
+        // text mode: the model may finish writing before the first sentence is heard (TTS takes ~2.5 s). A response-done
+        // before audio-start reads as "an answer with no sound" to the controller, so it waits for that sound
+        if (this.textMode && !this.audioStarted && (this.textQueue.length > 0 || this.textPumping || this.textBuf.trim() !== "")) {
+          this.doneHeld = doneStatus;
+        } else {
+          this.emit({ type: "response-done", status: doneStatus });
+        }
         if (this.textMode) this.finishTextIfDone(); // drained once the last sentence has been spoken (or at once, nothing to say)
         else if (!this.audioStarted) { this.emit({ type: "playback-drained" }); this.applyModeChange(); } // nothing was spoken, nothing to wait for
         break;
