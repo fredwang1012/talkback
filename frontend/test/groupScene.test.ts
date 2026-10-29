@@ -4,11 +4,11 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Book } from "../src/api";
-import { resetChatMemory, type ChatMessage } from "../src/talk/chatLog";
+import { MAX_MESSAGES, resetChatMemory, type ChatMessage } from "../src/talk/chatLog";
 import {
   MAX_GROUP, TalkController, type ReaderControl, type SessionEvent, type TalkSession,
 } from "../src/talk/TalkController";
-import { addRoundAnswer, historyFor, roundLines, MAX_HISTORY_LINES } from "../src/talk/groupRound";
+import { addRoundAnswer, historyFor, roundLines, MAX_HISTORY_LINES, MAX_NAME_CHARS } from "../src/talk/groupRound";
 import { groupChoices, togglePick, validPicks } from "../src/reader/groupScene";
 
 // ---- the round in TalkController (fakes only) --------------------------------------------------------------
@@ -16,8 +16,14 @@ import { groupChoices, togglePick, validPicks } from "../src/reader/groupScene";
 class FakeSession implements TalkSession {
   calls: string[] = [];
   listeners = new Set<(e: SessionEvent) => void>();
-  async ensureOpen(voice: string) { this.calls.push(`open:${voice}`); }
-  async setVoice(voice: string) { this.calls.push(`voice:${voice}`); }
+  textMode = false;
+  hold: string | null = null; // the call `open:<voice>` or `voice:<voice>` waits for release()
+  private held: (() => void)[] = [];
+  release() { this.held.splice(0).forEach((r) => r()); }
+  private wait(call: string) { return call === this.hold ? new Promise<void>((r) => this.held.push(r)) : Promise.resolve(); }
+  async ensureOpen(voice: string) { this.calls.push(`open:${voice}`); await this.wait(`open:${voice}`); }
+  async setVoice(voice: string) { this.calls.push(`voice:${voice}`); await this.wait(`voice:${voice}`); }
+  returnTools(results: { callId: string; output: string }[]) { this.calls.push(...results.map((r) => `tools:${r.output}`)); }
   async startMic() { this.calls.push("mic-start"); }
   async stopMic(discard = false) { this.calls.push(discard ? "mic-discard" : "mic-stop"); }
   commit() { this.calls.push("commit"); }
@@ -39,7 +45,7 @@ class FakeSpeaker {
   stop = () => { this.log.push("stop"); Object.values(this.gates).forEach((g) => g()); };
 }
 
-const VOICES: Record<string, string> = { alice: "belinda", hatter: "marcus", cat: "oliver", queen: "zara" };
+const VOICES: Record<string, string> = { alice: "belinda", hatter: "marcus", cat: "oliver", queen: "zara", twin: "belinda" };
 const tick = (ms = 0) => vi.advanceTimersByTimeAsync(ms);
 
 function gemini() {
@@ -155,14 +161,17 @@ describe("group round (Realtime path)", () => {
     const session = new FakeSession();
     const retrieved: string[] = [];
     const turns: string[] = [];
+    const ran: string[] = [];
     const talk = new TalkController({
       session, reader: reader(),
       retrieve: async (_q, _p, speakerId) => { retrieved.push(speakerId); return { instructions: `PERSONA:${speakerId}` }; },
       voiceFor: (id) => VOICES[id] ?? "narr",
       onRoundTurn: (id) => turns.push(id),
+      tools: (name) => { ran.push(name); return { ok: true, output: "Turned the page.", chip: null }; },
     });
-    return { session, talk, retrieved, turns };
+    return { session, talk, retrieved, turns, ran };
   }
+  const responds = (h: ReturnType<typeof realtime>) => h.session.calls.filter((c) => c.startsWith("respond:"));
   async function done(h: ReturnType<typeof realtime>) {
     h.session.emit({ type: "audio-start" });
     await tick();
@@ -182,9 +191,9 @@ describe("group round (Realtime path)", () => {
     await done(h);
     await done(h);
     expect(h.retrieved).toEqual(["alice", "hatter", "cat"]);
-    const order = h.session.calls.filter((c) => c.startsWith("voice:") || c.startsWith("respond:"));
+    const order = h.session.calls.filter((c) => c.startsWith("open:") || c.startsWith("voice:") || c.startsWith("respond:"));
     expect(order).toEqual([
-      "respond:PERSONA:alice", "voice:marcus", "respond:PERSONA:hatter", "voice:oliver", "respond:PERSONA:cat", "voice:belinda",
+      "open:belinda", "respond:PERSONA:alice", "open:marcus", "respond:PERSONA:hatter", "open:oliver", "respond:PERSONA:cat", "voice:belinda",
     ]);
     expect(h.talk.state).toBe("talk-idle");
   });
@@ -202,6 +211,100 @@ describe("group round (Realtime path)", () => {
     await tick(20000);
     expect(h.retrieved).toEqual(["alice", "hatter"]);
     expect(h.session.calls).toContain("voice:belinda");
+  });
+
+  it("an answer with no audio advances the round once (its response-done and playback-drained both end it)", async () => {
+    const h = realtime();
+    await h.talk.setSpeaker("alice");
+    h.talk.setGroup(["hatter", "cat"]);
+    void h.talk.ask("Tea?");
+    await tick();
+    h.session.emit({ type: "response-done", status: "completed" }); // TalkClient: no audio, so playback-drained at once
+    h.session.emit({ type: "playback-drained" });
+    await tick();
+    expect(h.turns).toEqual(["hatter"]);
+    expect(h.retrieved).toEqual(["alice", "hatter"]);
+    expect(responds(h)).toEqual(["respond:PERSONA:alice", "respond:PERSONA:hatter"]);
+    await done(h);
+    await done(h);
+    expect(h.retrieved).toEqual(["alice", "hatter", "cat"]);
+    expect(h.talk.state).toBe("talk-idle");
+  });
+
+  it("a spoken command runs once: it ends the round, and a later character never runs a tool again", async () => {
+    const h = realtime();
+    await h.talk.setSpeaker("alice");
+    h.talk.setGroup(["hatter", "cat"]);
+    void h.talk.ask("Skip ahead a page");
+    await tick();
+    h.session.emit({ type: "tool-call", calls: [{ callId: "c1", name: "turn_page", args: {} }] });
+    await done(h);
+    await tick(20000);
+    expect(h.ran).toEqual(["turn_page"]);
+    expect(h.retrieved).toEqual(["alice"]);
+    expect(h.turns).toEqual([]);
+
+    const g = realtime(); // a question, but the second character's model calls a tool anyway: it is not run
+    await g.talk.setSpeaker("alice");
+    g.talk.setGroup(["hatter"]);
+    void g.talk.ask("What is tea?");
+    await tick();
+    await done(g);
+    expect(g.turns).toEqual(["hatter"]);
+    g.session.emit({ type: "tool-call", calls: [{ callId: "c2", name: "turn_page", args: {} }] });
+    expect(g.ran).toEqual([]);
+    expect(g.session.calls.filter((c) => c.startsWith("tools:"))).toEqual([expect.stringMatching(/^tools:Not run/)]);
+  });
+
+  it("the next question waits for the voice of the one talked to to be put back before it is sent", async () => {
+    const h = realtime();
+    await h.talk.setSpeaker("alice");
+    h.talk.setGroup(["hatter"]);
+    void h.talk.ask("Tea?");
+    await tick();
+    await done(h);
+    h.session.hold = "voice:belinda"; // the restore is slow (refused: a reconnect)
+    await done(h);
+    expect(h.session.calls.at(-1)).toBe("voice:belinda");
+    void h.talk.ask("And now?");
+    await tick();
+    expect(h.retrieved).toEqual(["alice", "hatter", "alice"]);
+    expect(responds(h)).toEqual(["respond:PERSONA:alice", "respond:PERSONA:hatter"]); // not on the socket being replaced
+    h.session.release();
+    await tick();
+    expect(responds(h)).toEqual(["respond:PERSONA:alice", "respond:PERSONA:hatter", "respond:PERSONA:alice"]);
+  });
+
+  it("switches the voice only when it changes, alongside the retrieval, and never in text mode", async () => {
+    const h = realtime();
+    await h.talk.setSpeaker("alice");
+    h.talk.setGroup(["hatter", "twin"]);
+    h.session.calls.length = 0;
+    h.session.hold = "open:marcus";
+    void h.talk.ask("Tea?");
+    await tick();
+    await done(h);
+    expect(h.retrieved).toEqual(["alice", "hatter"]); // fetched while the voice switches
+    expect(responds(h)).toEqual(["respond:PERSONA:alice"]);
+    h.session.release();
+    await tick();
+    expect(responds(h)).toEqual(["respond:PERSONA:alice", "respond:PERSONA:hatter"]);
+    await done(h);
+    await done(h);
+    // the twin has the voice of the one talked to: switched back for them, so nothing to restore after the round
+    expect(h.session.calls.filter((c) => !c.startsWith("respond:"))).toEqual(["open:belinda", "open:marcus", "open:belinda"]);
+
+    const t = realtime();
+    t.session.textMode = true; // Higgs TTS voices each answer: the session voice is never heard
+    await t.talk.setSpeaker("alice");
+    t.talk.setGroup(["hatter"]);
+    t.session.calls.length = 0;
+    void t.talk.ask("Tea?");
+    await tick();
+    await done(t);
+    await done(t);
+    expect(t.retrieved).toEqual(["alice", "hatter"]);
+    expect(t.session.calls.filter((c) => !c.startsWith("respond:"))).toEqual(["open:belinda"]); // only ask's own ensureOpen
   });
 });
 
@@ -224,6 +327,31 @@ describe("group round chat and history", () => {
     ]);
     const skipped = addRoundAnswer(m, "hatter"); // the cat said nothing
     expect(skipped.slice(-2).map((x) => [x.speakerId, x.pending])).toEqual([["alice", false], ["hatter", true]]);
+    expect(skipped.at(-1)!.id).toBe(6); // never the dropped answer's id (5 is already in the round's list)
+  });
+
+  it("a new answer's id is above every id (a tool chip sits before the pending answer) and the chat stays capped", () => {
+    const withChip: ChatMessage[] = [...base.slice(0, 3), { id: 5, role: "tool", speakerId: "tool", text: "Looked it up on the web" }, base[3]];
+    expect(addRoundAnswer(withChip, "cat").at(-1)!.id).toBe(6);
+    const full: ChatMessage[] = Array.from({ length: MAX_MESSAGES }, (_, i) => ({ id: i + 1, role: "character", speakerId: "alice", text: `t${i}` }));
+    expect(addRoundAnswer(full, "cat")).toHaveLength(MAX_MESSAGES);
+  });
+
+  it("a character's replies in earlier rounds keep the question they answered", () => {
+    const m: ChatMessage[] = [
+      { id: 1, role: "user", speakerId: "alice", text: "Who is the Queen?", via: "typed" },
+      { id: 2, role: "character", speakerId: "alice", text: "A fierce ruler." },
+      { id: 3, role: "character", speakerId: "cat", text: "Mad, like all of us." },
+      { id: 4, role: "user", speakerId: "alice", text: "And the King?", via: "typed" },
+      { id: 5, role: "character", speakerId: "alice", text: "Quiet.", pending: true },
+    ];
+    expect(historyFor(m, "cat")).toEqual([{ role: "user", text: "Who is the Queen?" }, { role: "character", text: "Mad, like all of us." }]);
+    expect(historyFor(m, "alice")).toEqual([{ role: "user", text: "Who is the Queen?" }, { role: "character", text: "A fierce ruler." }]);
+  });
+
+  it("a long character name is cut to what the server takes", () => {
+    const m = addRoundAnswer(base, "cat");
+    expect(roundLines(m, [4], "cat", () => "N".repeat(120))[0].name).toHaveLength(MAX_NAME_CHARS);
   });
 
   it("later answers see the earlier answers of the round, named, after their own chat", () => {
@@ -292,6 +420,7 @@ describe("group picker logic", () => {
 const spoken = vi.hoisted(() => [] as string[]);
 const clips = vi.hoisted(() => [] as [string, string, string | null][]);
 const answered = vi.hoisted(() => [] as { speaker: string; history: unknown[] }[]);
+const holdAnswer = vi.hoisted(() => ({ speaker: null as string | null })); // this speaker's answer never comes (until aborted)
 vi.mock("../src/audio/playback", () => ({ RingPlayer: class { async close() {} } }));
 vi.mock("../src/audio/capture", () => ({ MicCapture: class { async stop() {} } }));
 vi.mock("../src/talk/sentencePlayer", () => ({
@@ -306,8 +435,11 @@ vi.mock("../src/talk/clipVideo", async (orig) => ({
 vi.mock("../src/api", async (orig) => ({
   ...(await orig<typeof import("../src/api")>()),
   speak: vi.fn(async () => ({ audio_url: "/media/tts/x.wav", cached: true })),
-  streamAnswer: vi.fn(async (_b: string, _q: string, _p: number, speaker: string, onSentence: (t: string) => void, _sig: unknown, _sp: unknown, history: unknown[]) => {
+  streamAnswer: vi.fn(async (_b: string, _q: string, _p: number, speaker: string, onSentence: (t: string) => void, sig: AbortSignal | undefined, _sp: unknown, history: unknown[]) => {
     answered.push({ speaker, history });
+    if (speaker === holdAnswer.speaker) {
+      await new Promise((_r, reject) => sig?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    }
     onSentence(`I am ${speaker}.`);
   }),
 }));
@@ -364,5 +496,41 @@ describe("group scene in the Talkback view", () => {
     const who = [...host.querySelectorAll(".bubble .who-line")].map((w) => w.textContent);
     expect(who).toEqual(["You typed", "Alice", "Cheshire Cat", "Narrator"]);
     for (const m of latest!.messages.slice(1)) expect(latest!.replayable.has(m.id)).toBe(true); // each answer replays on its own
+  });
+
+  it("a question typed over a round is answered under the face and name of the one talked to", async () => {
+    answered.length = 0;
+    let latest: TalkUi | null = null;
+    function App() {
+      const talk = useTalk({
+        bookId: "alice-group-2", enabled: true, reader: reader(), speakerId: "alice", voiceFor: (id) => VOICES[id] ?? "narr", autoResume: false,
+        health: { ok: true, boson_key_set: true, access_required: false, answer_backend: "gemini" }, talkback: true,
+      });
+      latest = talk;
+      return createElement(TalkbackView, {
+        book: novel, para: 10, speakerId: "alice", onSpeaker: () => {}, pinned: null, talk, faces: [], faceFor: () => undefined,
+        autoVoiceFor: () => "belinda", choice: { voice: null, face: null }, onChoice: () => {}, voices: [], spoilers: false,
+        onSpoilers: () => {}, portrait: null, onBack: () => {}, onRecap: () => {}, onVoices: () => {},
+      });
+    }
+    const flush = async () => { for (let i = 0; i < 5; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await act(async () => { root.render(createElement(App)); });
+    await act(async () => { host.querySelectorAll<HTMLButtonElement>(".group-pick button")[1].click(); }); // + Cheshire Cat
+    try {
+      holdAnswer.speaker = "cat";
+      await act(async () => { latest!.ask("First?"); });
+      await flush();
+      expect(answered.map((a) => a.speaker)).toEqual(["alice", "cat"]);
+      expect(latest!.roundSpeaker).toBe("cat");
+      holdAnswer.speaker = "alice";
+      await act(async () => { latest!.ask("Second?"); });
+      await flush();
+      expect(answered.map((a) => a.speaker)).toEqual(["alice", "cat", "alice"]);
+      expect(latest!.roundSpeaker).toBeNull();
+      expect(host.querySelector(".tb-name")!.textContent).toBe("Alice");
+    } finally {
+      holdAnswer.speaker = null;
+      await act(async () => { await latest!.stop(); });
+    }
   });
 });

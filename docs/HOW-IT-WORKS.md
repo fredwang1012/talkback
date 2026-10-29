@@ -915,11 +915,15 @@ no sentence arrives within 15 s (`firstSentenceTimeoutMs`) and speaks sentences 
 - Group scene (#79): with others picked under "Also ask", `TalkController` runs a round for each question: the one
   talked to answers, then each other in order (at most `MAX_GROUP = 3`), each a normal answer for that speaker id
   (retrieval, persona, voice and face). `onRoundTurn` opens the next speaker's bubble; `groupRound.historyFor` gives
-  each later speaker their own turns plus the round's earlier answers as named lines (`ChatTurn.name`, rendered
-  "Name: text" by `personas.format_history`, ≤ 300 chars each, ≤ 8 lines in all). On the Realtime path the session
-  voice is switched with `setVoice` (TalkClient's `session.update`, reconnect if refused) before each later answer
-  and restored after. The round is tied to its turn: Stop, a barge-in or a new question bump the turn and nobody
-  else answers.
+  each later speaker their own turns (with the round questions they answered) plus the round's earlier answers as
+  named lines (`ChatTurn.name` ≤ 80 chars, rendered "Name: text" by `personas.format_history`, ≤ 300 chars each, ≤ 8
+  lines in all). On the Realtime path (audio mode) the session voice is switched with `ensureOpen` (nothing when it
+  is already that voice; `session.update`, reconnect if refused) while each later answer's passages are fetched, and
+  restored after; the next question waits for that restore. Text mode never switches it (Higgs TTS speaks each
+  answer in its speaker's voice). A tool call (a spoken command) ends the round: it runs once and nobody else
+  answers; a later character's tool call is never run. The round is tied to its turn: Stop, a barge-in or a new
+  question bump the turn and nobody else answers. Through `talkback-public`, the named lines need a public service
+  deployed from this version (`scripts/deploy_public_api.sh`): an older one ignores `name` and shows them as "You:".
 
 ### 12.3b Answer clips (#80)
 

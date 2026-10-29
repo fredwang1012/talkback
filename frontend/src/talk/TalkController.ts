@@ -108,6 +108,8 @@ export interface TalkSession {
    * clear, so a hands-free turn must end with this or the next question carries every earlier one. Optional.
    */
   clearInput?(): void;
+  /** B1: the answers are written and voiced by Higgs TTS in the browser, so the session voice is never heard. Optional. */
+  readonly textMode?: boolean;
   /** Server turns: hold the mic (nothing sent) while our own playback could be heard; release it with a pre-roll
    * (ms of the held audio sent first, a barge-in) or without (the held audio is dropped). Optional. */
   setMicHold?(hold: boolean, preRollMs?: number): void;
@@ -255,6 +257,7 @@ export class TalkController {
   // #79: the group round of the current question: who answers, who answers now (`at`), and whether the session voice
   // was switched for it. Tied to its turn: a barge-in, a new question or Stop bumps the turn and the rest never answer.
   private round: { turn: number; query: string; speakers: string[]; at: number; voiced: boolean } | null = null;
+  private restoring: Promise<void> | null = null; // #79: the voice of the one talked to being put back after a round
   private hint: string | null = null;
   private off: () => void;
 
@@ -839,11 +842,15 @@ export class TalkController {
     }
     if (!step) this.startRound(turn, query, !!quiz);
     const who = this.answerSpeaker;
-    if (step) { // the Realtime voice is per session: switch it for this character (TalkClient reconnects if refused)
+    // a later character of a round: the Realtime voice is per session, so it is switched for them (ensureOpen: nothing
+    // when it is already that voice; TalkClient reconnects if refused) while the passages are fetched. Text mode: Higgs
+    // TTS speaks the answer in their voice, the session voice is never heard
+    let voicing: Promise<void> = Promise.resolve();
+    if (step && !this.d.session.textMode) {
+      const voice = this.d.voiceFor(who);
       const r = this.liveRound();
-      if (r) r.voiced = true;
-      try { await this.d.session.setVoice(this.d.voiceFor(who)); } catch { /* answered in the old voice: still their words */ }
-      if (turn !== this.turn) return;
+      if (r) r.voiced = voice !== this.d.voiceFor(this.speakerId);
+      voicing = this.d.session.ensureOpen(voice).catch(() => { /* answered in the old voice: still their words */ });
     }
     let instructions: string;
     try {
@@ -857,6 +864,9 @@ export class TalkController {
     }
     if (turn !== this.turn) return;
     this.latency.retrieveMs = this.d.now() - r0;
+    await voicing;
+    if (this.restoring) await this.restoring; // a round's voice restore (refused: a reconnect) must not close this answer's socket
+    if (turn !== this.turn) return;
 
     this.set("answering");
     const a0 = this.d.now();
@@ -968,7 +978,8 @@ export class TalkController {
       this.latency.firstAudioMs ??= this.d.now() - a0;
       this.d.onLatency?.({ ...this.latency });
     } else if (first?.type === "response-done") {
-      this.afterAnswer(); // finished without any audio: nothing to wait for
+      // finished without any audio: nothing to wait for (unless its playback-drained, emitted with it, already ended it)
+      if (this._state === "answering") this.afterAnswer();
     } else if (!first) {
       this.d.onToast?.("The answer took too long. Continuing the story.");
       void this.d.session.interrupt().catch(() => {});
@@ -1019,7 +1030,13 @@ export class TalkController {
 
   /** The model stopped to act: run each call in the reader, hand the results back, and let it go on speaking. */
   private onToolCalls(calls: ToolCall[]): void {
+    // #79: a command is the reader's, not a question for the group: it runs once, in the first answer, and the others do
+    // not answer; a later character of a round never runs one again
+    const r = this.liveRound();
+    const again = r !== null && r.at > 0;
+    if (r && !again) this.endRound();
     const results: ToolResult[] = calls.map((c) => {
+      if (again) return { callId: c.callId, output: "Not run: the reader's request was already handled. Just answer the question in character." };
       const outcome = this.d.tools ? this.runTool(c.name, c.args) : { ok: false, output: "Tools are not available here.", chip: null };
       return { callId: c.callId, output: outcome.output };
     });
@@ -1093,7 +1110,12 @@ export class TalkController {
   private endRound(): void {
     const r = this.round;
     this.round = null;
-    if (r?.voiced) void this.d.session.setVoice(this.d.voiceFor(this.speakerId)).catch(() => {});
+    if (!r?.voiced) return;
+    // the next answer waits for it (answerQuery): TalkClient takes the voice at once, so a refused update would
+    // otherwise close the socket under that answer
+    const p: Promise<void> = this.d.session.setVoice(this.d.voiceFor(this.speakerId)).catch(() => {})
+      .finally(() => { if (this.restoring === p) this.restoring = null; });
+    this.restoring = p;
   }
 
   /** Back to where we were: resume reading only if the story was playing when the question started. */

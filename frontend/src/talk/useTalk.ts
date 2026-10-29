@@ -323,6 +323,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         setMessages((m) => addQuestion(m, text, latest.current.speakerId, via.current));
         liveAnswerId = pendingId(); // the new empty answer bubble of this question
         roundIds.current = liveAnswerId === undefined ? [] : [liveAnswerId];
+        setRoundSpeaker(null); // #79: a new question (typed over a round, too): the one talked to answers first
         via.current = "voice";
       },
       onLatency: (l) => { setLatency(l); console.info("[talk] latency", l); },
