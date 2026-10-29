@@ -11,7 +11,10 @@ so a download can never spend Boson credit.
 import asyncio
 import base64
 import binascii
+import contextvars
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -29,7 +32,10 @@ MAX_INPUT_BYTES = 80 * 1024 * 1024  # all clips (or MP3s) of one answer together
 MAX_SECONDS = 300  # a still clip's audio
 STILL_SIDE = 320  # the still picture is STILL_SIDE x STILL_SIDE
 STILL_BYTES = STILL_SIDE * STILL_SIDE * 3 // 2  # I420
-_joins = asyncio.Semaphore(2)  # at most two clips read and joined at once; more are a 429, never a queue
+JOINS = 2  # at most two clips read and joined at once; more are a 429, never a queue
+# a thread semaphore: the worker thread frees its slot itself, when its work is over (see _in_slot)
+_joins = threading.BoundedSemaphore(JOINS)
+_pool = ThreadPoolExecutor(max_workers=JOINS, thread_name_prefix="clip")  # one thread per slot: a job never queues
 
 
 class ClipSentence(BaseModel):
@@ -78,14 +84,23 @@ def _faced(sentences: list[ClipSentence]) -> bytes:
     return mp4join.join_clips(_read_all(clips))
 
 
+async def _in_slot(work):
+    """`work()` in a worker thread, holding a `_joins` slot the caller has taken. The slot is freed when the thread's
+    work is over (or when it never started), not when the request goes away: a client that disconnects or aborts (the
+    browser gives up after 60 s) cancels only its wait, and the thread, which cannot be stopped, keeps the slot until
+    it is done, so aborted requests cannot pile up joins beyond the limit."""
+    slots = _joins
+    job = _pool.submit(contextvars.copy_context().run, work)  # the caller's account (PER_USER) goes with it
+    job.add_done_callback(lambda _: slots.release())  # runs once the work returned or raised, or was cancelled unrun
+    return await asyncio.wrap_future(job)
+
+
 @router.post("/api/clip/answer", dependencies=[Depends(deps.require_access)])
 async def answer_clip(req: ClipRequest, request: Request):
     """One MP4 of a whole answer: its cached sentence clips joined in order, or (`still`) its audio over a still."""
     if not deps._SAFE_NAME.match(req.book_id):
         raise HTTPException(404, "Book not found")
     users.guard_book(req.book_id)
-    if not deps.clip_bucket.allow(deps.rate_key(request)):
-        raise HTTPException(429, "Too many clip downloads; wait a moment.")
 
     if req.still is not None:
         try:
@@ -105,14 +120,17 @@ async def answer_clip(req: ClipRequest, request: Request):
     else:
         work = lambda: _faced(req.sentences)  # noqa: E731
 
-    # every file read, decode and join happens in a worker thread under a slot; all slots busy: 429 at once
-    if _joins.locked():
+    # every file read, decode and join happens in a worker thread under a slot; all slots busy: 429 at once. A request
+    # turned away (bad input above, or busy) spends no rate-limit token: only one that gets to work does.
+    if not _joins.acquire(blocking=False):
         raise HTTPException(429, "Busy making other clips; try again in a moment.")
-    async with _joins:  # free (checked just above, no await in between): never waits
-        try:
-            mp4 = await asyncio.to_thread(work)
-        except mp4join.Mp4Error as e:
-            raise HTTPException(422, f"Could not join this answer's clips ({e}).")
+    if not deps.clip_bucket.allow(deps.rate_key(request)):
+        _joins.release()
+        raise HTTPException(429, "Too many clip downloads; wait a moment.")
+    try:
+        mp4 = await _in_slot(work)
+    except mp4join.Mp4Error as e:
+        raise HTTPException(422, f"Could not join this answer's clips ({e}).")
     return Response(mp4, media_type="video/mp4", headers={
         "Content-Disposition": f'attachment; filename="{_filename(req.book_id, req.speaker)}"',
         "Cache-Control": "no-store",

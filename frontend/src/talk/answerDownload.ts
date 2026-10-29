@@ -104,8 +104,19 @@ export class ClipError extends Error {
   constructor(message: string, status: number) { super(message); this.status = status; }
 }
 
-/** POST /api/clip/answer; the MP4 as a Blob. */
-export async function fetchAnswerClip(body: { book_id: string; speaker: string; sentences: ClipSentence[]; still?: string }): Promise<Blob> {
+/** Used only when the server's Content-Disposition carries no file name. */
+const FALLBACK_NAME = "talkback-answer.mp4";
+
+/** The file name in a Content-Disposition header (the server picks it), or null. */
+export function dispositionName(header: string | null): string | null {
+  const m = header?.match(/filename="([^"]+)"/) ?? header?.match(/filename=([^;\s]+)/);
+  return m ? m[1] : null;
+}
+
+export type AnswerClip = { blob: Blob; name: string };
+
+/** POST /api/clip/answer; the MP4 and the file name the server gave it. */
+export async function fetchAnswerClip(body: { book_id: string; speaker: string; sentences: ClipSentence[]; still?: string }): Promise<AnswerClip> {
   const res = await timedFetch("/api/clip/answer", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
@@ -115,28 +126,38 @@ export async function fetchAnswerClip(body: { book_id: string; speaker: string; 
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
     throw new ClipError(typeof detail === "string" ? detail : `Could not make the clip (${res.status})`, res.status);
   }
-  return res.blob();
+  return { blob: await res.blob(), name: dispositionName(res.headers.get("Content-Disposition")) ?? FALLBACK_NAME };
 }
 
+/** Why a faced answer could not be joined and gets the still version instead (by the server's status), or none:
+ * then the error is reported (busy, rate limited, too long: the still would fail the same way). */
+const STILL_INSTEAD: Record<number, string> = {
+  409: "Some of this answer's face videos were never made",
+  404: "This answer's face is no longer available",
+  422: "This answer's face videos could not be joined into one",
+};
+
 /**
- * The MP4 of one answer: its lip-synced video when every sentence's clip is cached, else (no face, or a clip missing:
- * `note` says so) its voice over the still. `still` draws the picture only when it is needed.
+ * The MP4 of one answer: its lip-synced video when every sentence's clip is cached and joinable, else (no face, or a
+ * clip missing, its face deleted, or clips that do not join: `note` says so) its voice over the still. `still` draws
+ * the picture only when it is needed.
  */
 export async function makeAnswerClip(
   bookId: string, speaker: string, plan: ClipPlan, still: () => Promise<Uint8Array>, fetchClip = fetchAnswerClip,
-): Promise<{ blob: Blob; note: string | null }> {
+): Promise<AnswerClip & { note: string | null }> {
   const base = { book_id: bookId, speaker, sentences: plan.sentences };
   let note: string | null = null;
   if (plan.faced) {
     try {
-      return { blob: await fetchClip(base), note };
+      return { ...await fetchClip(base), note };
     } catch (e) {
-      if (!(e instanceof ClipError && e.status === 409)) throw e;
-      note = "Some of this answer's face videos were never made, so the clip shows the still picture (nothing was rendered or charged).";
+      const why = e instanceof ClipError ? STILL_INSTEAD[e.status] : undefined;
+      if (!why) throw e;
+      note = `${why}, so the clip shows the still picture (nothing was rendered or charged).`;
     }
   }
   const sentences = plan.sentences.map((s) => ({ audio_url: s.audio_url, voice: s.voice }));
-  return { blob: await fetchClip({ ...base, sentences, still: toBase64(await still()) }), note };
+  return { ...await fetchClip({ ...base, sentences, still: toBase64(await still()) }), note };
 }
 
 /** Save a Blob as a file through a temporary link. */
@@ -149,10 +170,4 @@ export function saveBlob(blob: Blob, name: string): void {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
-}
-
-/** A safe file name for the download (the server sends the same in Content-Disposition). */
-export function clipFileName(bookId: string, speaker: string): string {
-  const slug = (s: string) => s.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
-  return `talkback-${slug(bookId) || "book"}-${slug(speaker) || "answer"}.mp4`;
 }
