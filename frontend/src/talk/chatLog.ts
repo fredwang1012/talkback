@@ -18,8 +18,9 @@ export type ChatMessage = {
 
 export const MAX_MESSAGES = 50;
 
-const cap = (m: ChatMessage[]): ChatMessage[] => (m.length > MAX_MESSAGES ? m.slice(m.length - MAX_MESSAGES) : m);
-const nextId = (m: ChatMessage[]) => (m.length ? m[m.length - 1].id + 1 : 1);
+export const cap = (m: ChatMessage[]): ChatMessage[] => (m.length > MAX_MESSAGES ? m.slice(m.length - MAX_MESSAGES) : m);
+/** A new id: above every id in the chat (a tool chip goes in before the pending answer, so the last is not always the highest). */
+export const nextId = (m: ChatMessage[]) => m.reduce((top, x) => Math.max(top, x.id), 0) + 1;
 
 /** A question, followed by an empty pending answer from `speakerId` that sentences are appended to. */
 export function addQuestion(m: ChatMessage[], text: string, speakerId: string, via: "voice" | "typed"): ChatMessage[] {

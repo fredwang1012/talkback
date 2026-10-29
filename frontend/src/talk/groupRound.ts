@@ -3,7 +3,7 @@
  * TalkController (who answers when, cancel); these are the chat pieces: a bubble per answer, and the history each
  * character is given (their own chat, plus what the others just said in this round, so they can react).
  */
-import { HISTORY_TURNS, priorTurns, type ChatMessage, type Turn } from "./chatLog";
+import { HISTORY_TURNS, cap, finishAnswer, nextId, priorTurns, type ChatMessage, type Turn } from "./chatLog";
 
 /** A line of the history: a reader question, this character's reply, or (with `name`) another character's reply. */
 export type HistoryTurn = Turn & { name?: string };
@@ -12,13 +12,14 @@ export type HistoryTurn = Turn & { name?: string };
 export const MAX_HISTORY_LINES = 8;
 /** An earlier answer of the round is given back this short: enough to react to, cheap in the prompt. */
 export const ROUND_LINE_CHARS = 300;
+/** The server takes a name this long at most (ChatTurn.name, max_length 80). */
+export const MAX_NAME_CHARS = 80;
 
 /** The next character of the round starts: the previous answer closes (dropped if it said nothing), a new one opens. */
 export function addRoundAnswer(m: ChatMessage[], speakerId: string): ChatMessage[] {
   const via = m.findLast((x) => x.role === "user")?.via;
-  const kept = m.filter((x) => !(x.pending && !x.text.trim())).map((x) => (x.pending ? { ...x, pending: false } : x));
-  const id = (kept.length ? kept[kept.length - 1].id : m.length ? m[m.length - 1].id : 0) + 1;
-  return [...kept, { id, role: "character", speakerId, text: "", ...(via ? { via } : {}), pending: true }];
+  // the id is new even when the previous answer is dropped (its id is already in the round's list)
+  return cap([...finishAnswer(m), { id: nextId(m), role: "character", speakerId, text: "", ...(via ? { via } : {}), pending: true }]);
 }
 
 /**
@@ -30,14 +31,29 @@ export function roundLines(m: ChatMessage[], roundIds: readonly number[], speake
   for (const id of roundIds) {
     const x = m.find((y) => y.id === id);
     if (!x || x.role !== "character" || x.pending || x.speakerId === speakerId || !x.text.trim()) continue;
-    out.push({ role: "character", name: nameOf(x.speakerId), text: x.text.trim().slice(0, ROUND_LINE_CHARS) });
+    out.push({ role: "character", name: nameOf(x.speakerId).slice(0, MAX_NAME_CHARS), text: x.text.trim().slice(0, ROUND_LINE_CHARS) });
   }
   return out;
+}
+
+/**
+ * The chat as `speakerId` saw it: a question of an earlier round is stored under the one talked to, but `speakerId`
+ * answered it too, so it counts as asked to them (their reply never stands without its question).
+ */
+function askedOf(m: ChatMessage[], speakerId: string): ChatMessage[] {
+  return m.map((x, i) => {
+    if (x.role !== "user" || x.speakerId === speakerId) return x;
+    for (let j = i + 1; j < m.length && m[j].role !== "user"; j++) {
+      const y = m[j];
+      if (y.role === "character" && y.speakerId === speakerId && !y.pending && y.text.trim()) return { ...x, speakerId };
+    }
+    return x;
+  });
 }
 
 /** What `speakerId` is given back: their own earlier chat, then this round's answers so far (the newest lines win). */
 export function historyFor(m: ChatMessage[], speakerId: string, roundIds: readonly number[] = [], nameOf: (id: string) => string = (id) => id): HistoryTurn[] {
   const others = roundLines(m, roundIds, speakerId, nameOf);
-  const own = priorTurns(m, speakerId, HISTORY_TURNS);
+  const own = priorTurns(askedOf(m, speakerId), speakerId, HISTORY_TURNS);
   return [...own, ...others].slice(-MAX_HISTORY_LINES);
 }
