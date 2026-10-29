@@ -14,6 +14,7 @@ import logging
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .. import gemini
 from ..config import settings
 from . import spend
 from .llm import LLM, SpendLimit, estimate_usd, make_llm
@@ -51,8 +52,8 @@ class Readings(BaseModel):
 
 
 def available() -> bool:
-    """Gemini on Vertex is configured and uploads may use an LLM."""
-    return settings.upload_enrich and bool(settings.gcp_project)
+    """Gemini (Vertex or AI Studio) is configured and uploads may use an LLM."""
+    return settings.upload_enrich and gemini.available()
 
 
 def estimate(n: int) -> float:

@@ -81,6 +81,7 @@ def _never_reach_real_google(monkeypatch):
     """A developer's .env (GCP_PROJECT, GEMINI_LOCATION) never makes a test call real Gemini or Vertex: there is no
     project by default, and building a real google-genai client fails loudly. Tests that need one set their own fake."""
     monkeypatch.setattr(settings, "gcp_project", "", raising=False)
+    monkeypatch.setattr(settings, "gemini_api_key", "", raising=False)   # nor an AI Studio key (app/gemini.py)
     monkeypatch.setattr(settings, "enrich_gemini_model", "", raising=False)   # tests assert the default model
     import google.genai as genai
 

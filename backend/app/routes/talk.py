@@ -80,7 +80,7 @@ async def retrieve(req: RetrieveRequest, request: Request):
 @lru_cache(maxsize=1)
 def get_answerer():
     """Lazy Gemini answerer; tests monkeypatch this to avoid Vertex."""
-    from .gcp.llm import GeminiAnswerer
+    from ..gcp.llm import GeminiAnswerer
     return GeminiAnswerer()
 
 

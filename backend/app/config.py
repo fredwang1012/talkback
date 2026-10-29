@@ -26,12 +26,15 @@ class Settings(BaseSettings):
     gcp_region: str = "us-central1"
     # Gemini 3 on a new project is served from "global", not us-central1. Empty uses gcp_region.
     gemini_location: str = ""
+    # Google AI Studio API key (#137): Gemini without a Google Cloud project, used when Vertex (GCP_PROJECT + ADC) is
+    # not usable (app/gemini.py). Never logged or returned.
+    gemini_api_key: str = Field(default="", repr=False)
     gcp_bucket: str = ""
     retrieval_backend: Literal["local", "vertex"] = "local"
     # local backend: give each published upload multilingual-e5 embeddings in the background (app/local_index.py), so
     # it is searched by meaning like the shipped books. Needs the optional "embed" extra; without it BM25 keeps serving.
     local_embed_uploads: bool = True
-    # Who writes talk-mode answers. None = follow retrieval_backend (vertex -> gemini, local -> realtime).
+    # Who writes talk-mode answers. None = gemini with RETRIEVAL_BACKEND=vertex or a GEMINI_API_KEY, else realtime.
     answer_backend: Literal["gemini", "realtime"] | None = None
     gemini_model: str = "gemini-2.5-flash"
     # book processing (cast, dialogue, recap notes, equations, series checks); empty = gemini_model. Flash-Lite runs on a
@@ -115,7 +118,9 @@ class Settings(BaseSettings):
 
     @property
     def effective_answer_backend(self) -> str:
-        return self.answer_backend or ("gemini" if self.retrieval_backend == "vertex" else "realtime")
+        if self.answer_backend:
+            return self.answer_backend
+        return "gemini" if self.retrieval_backend == "vertex" or self.gemini_api_key else "realtime"
 
     @property
     def vs_collection_path(self) -> str:

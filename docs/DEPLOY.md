@@ -92,6 +92,30 @@ Build from the Dockerfile with variables `BOSON_API_KEY` and `TALKBACK_ACCESS_TO
 has no embed extra). Add `--extra embed` to the Dockerfile's `uv sync` for local multilingual embeddings at the cost
 of a much larger image (torch).
 
+## Without Google Cloud
+
+Gemini works with a Google AI Studio API key instead of Vertex AI (#137), so the whole app runs on any Docker host
+(for example a free-tier VM) with no Google Cloud project:
+
+- `GEMINI_API_KEY`: the AI Studio key. Answers (with web search), upload processing, translation, face detection and
+  equation readings all use it. `/api/health` shows `"llm": "ai_studio"` (never the key). Leave `GCP_PROJECT`
+  unset: with a project whose credentials load, Vertex is used instead.
+- `RETRIEVAL_BACKEND=local` (the default): BM25, plus multilingual-e5 if the image is built with `--extra embed`.
+  Answers are still written by Gemini (`answer_backend: gemini`).
+- `TALKBACK_ACCESS_TOKEN`: the access code for voices and paid calls (there is no IAP in front of the app).
+- `BOSON_API_KEY` as everywhere.
+- Data on the host disk: mount a directory at `/app/data` (books, uploads, voices, faces, caches, usage).
+
+```bash
+docker build -t talkback .
+docker run -d -p 8000:8000 -v /srv/talkback-data:/app/data \
+  -e BOSON_API_KEY=... -e GEMINI_API_KEY=... -e TALKBACK_ACCESS_TOKEN=... talkback
+```
+
+The AI Studio free tier is rate-limited per minute and per day: per-minute 429s are paced and retried like Vertex's,
+a spent daily quota fails the call (uploads keep their narrator reading). The spend caps (`UPLOAD_TOTAL_CAP_USD`,
+`GROUNDED_DAILY_CAP`) apply unchanged. `scripts/deploy_cloudrun.sh` is not affected.
+
 ## Access control (Google sign-in via IAP)
 The `talkback` service is private: Cloud Run IAP with a custom OAuth client (personal Gmail projects have no organization, so the
 Google-managed client cannot be used). The old `TALKBACK_ACCESS_TOKEN` code is no longer deployed.

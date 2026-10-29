@@ -58,14 +58,16 @@ the debug drawer. Audio is generated on demand and cached in `data/cache/`, so a
 
 ### What needs more than a Boson key
 
-| Feature | Boson key only | With Google Cloud |
-| --- | --- | --- |
-| Sample books: reading, full cast, faces, voice cloning, voice questions | Yes | Yes |
-| Spoiler-safe search | BM25 (or BM25 + multilingual-e5 with `uv sync --extra embed`) | Vertex AI Vector Search |
-| Answers | Written and spoken by Higgs Realtime | Written by Gemini (with web search), spoken by Higgs TTS |
-| Uploads | Narrator reading, name-based cast | Full processing: cast, dialogue voices, recaps, equations |
+| Feature | Boson key only | With a Gemini API key (no Google Cloud) | With Google Cloud |
+| --- | --- | --- | --- |
+| Sample books: reading, full cast, faces, voice cloning, voice questions | Yes | Yes | Yes |
+| Spoiler-safe search | BM25 (or BM25 + multilingual-e5 with `uv sync --extra embed`) | Same as Boson key only | Vertex AI Vector Search |
+| Answers | Written and spoken by Higgs Realtime | Written by Gemini (with web search), spoken by Higgs TTS | Written by Gemini (with web search), spoken by Higgs TTS |
+| Uploads | Narrator reading, name-based cast | Full processing: cast, dialogue voices, recaps, equations | Full processing: cast, dialogue voices, recaps, equations |
 
-Google Cloud: set `RETRIEVAL_BACKEND=vertex` and `GCP_PROJECT`, then `gcloud auth application-default login`.
+Gemini API key: set `GEMINI_API_KEY` to a Google AI Studio key (free tier, rate-limited; same Flash / Flash-Lite
+models). Google Cloud: set `RETRIEVAL_BACKEND=vertex` and `GCP_PROJECT`, then `gcloud auth application-default login`.
+With both, Vertex is used; `/api/health` says which (`llm`: `vertex`, `ai_studio` or null).
 `PUBLIC_API_URL` points at an optional hosted processing service; when it is closed or unreachable, the local
 fallbacks are used and the page says why. Clear it to never contact it. Every setting is listed in `.env.example`
 and `backend/app/config.py`.
