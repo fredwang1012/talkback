@@ -29,7 +29,7 @@ MAX_INPUT_BYTES = 80 * 1024 * 1024  # all clips (or MP3s) of one answer together
 MAX_SECONDS = 300  # a still clip's audio
 STILL_SIDE = 320  # the still picture is STILL_SIDE x STILL_SIDE
 STILL_BYTES = STILL_SIDE * STILL_SIDE * 3 // 2  # I420
-_joins = asyncio.Semaphore(2)  # at most two joins in memory at once
+_joins = asyncio.Semaphore(2)  # at most two clips read and joined at once; more are a 429, never a queue
 
 
 class ClipSentence(BaseModel):
@@ -52,9 +52,30 @@ def _filename(book_id: str, speaker: str) -> str:
 
 
 def _read_all(paths) -> list[bytes]:
+    """Runs in the worker thread, only while a `_joins` slot is held."""
     if sum(p.stat().st_size for p in paths) > MAX_INPUT_BYTES:
         raise HTTPException(413, "That answer is too long to download as one clip.")
     return [p.read_bytes() for p in paths]
+
+
+def _still(pixels: bytes, paths) -> bytes:
+    mp3s = _read_all(paths)
+    if sum(mp3_seconds(b) for b in mp3s) > MAX_SECONDS:
+        raise HTTPException(413, "That answer is too long to download as one clip.")
+    return mp4join.still_mp4(pixels, STILL_SIDE, STILL_SIDE, mp3s)
+
+
+def _faced(sentences: list[ClipSentence]) -> bytes:
+    """The cached clips, joined. The caller's own cache only (lipsync_dir is per account with PER_USER; the face must be
+    theirs too): resolving a face reads its image, so this runs in the worker thread under a slot too."""
+    clips = []
+    for s in sentences:
+        _audio, _face, key = _lipsync_inputs(LipSyncRequest(audio_url=s.audio_url, voice=s.voice, face_id=s.face_id))
+        clips.append(deps._lipsync_dir() / f"{key}.mp4")
+    missing = sum(not c.is_file() for c in clips)
+    if missing:
+        raise HTTPException(409, f"{missing} of {len(clips)} sentence videos of this answer were never made.")
+    return mp4join.join_clips(_read_all(clips))
 
 
 @router.post("/api/clip/answer", dependencies=[Depends(deps.require_access)])
@@ -80,23 +101,14 @@ async def answer_clip(req: ClipRequest, request: Request):
             if path is None or not path.is_file():
                 raise HTTPException(404, "That audio is not cached.")
             audio.append(path)
-        mp3s = _read_all(audio)
-        if sum(mp3_seconds(b) for b in mp3s) > MAX_SECONDS:
-            raise HTTPException(413, "That answer is too long to download as one clip.")
-        work = lambda: mp4join.still_mp4(pixels, STILL_SIDE, STILL_SIDE, mp3s)  # noqa: E731
+        work = lambda: _still(pixels, audio)  # noqa: E731
     else:
-        # the caller's own cache only (lipsync_dir is per account with PER_USER; the face must be theirs too)
-        clips = []
-        for s in req.sentences:
-            _audio, _face, key = _lipsync_inputs(LipSyncRequest(audio_url=s.audio_url, voice=s.voice, face_id=s.face_id))
-            clips.append(deps._lipsync_dir() / f"{key}.mp4")
-        missing = sum(not c.is_file() for c in clips)
-        if missing:
-            raise HTTPException(409, f"{missing} of {len(clips)} sentence videos of this answer were never made.")
-        data = _read_all(clips)
-        work = lambda: mp4join.join_clips(data)  # noqa: E731
+        work = lambda: _faced(req.sentences)  # noqa: E731
 
-    async with _joins:
+    # every file read, decode and join happens in a worker thread under a slot; all slots busy: 429 at once
+    if _joins.locked():
+        raise HTTPException(429, "Busy making other clips; try again in a moment.")
+    async with _joins:  # free (checked just above, no await in between): never waits
         try:
             mp4 = await asyncio.to_thread(work)
         except mp4join.Mp4Error as e:

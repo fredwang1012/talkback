@@ -28,7 +28,7 @@ export async function openClipVideo(audioUrl: string, voice: string, faceId: str
  * by the speaker (sentencePlayer), so the voice never waits on it for long.
  */
 export function lipSyncClip(audioUrl: string, voice: string, faceId: string | null, open = openClipVideo): Clip {
-  return faceId && voice ? { audio_url: audioUrl, openVideo: () => open(audioUrl, voice, faceId) } : { audio_url: audioUrl };
+  return faceId && voice ? { audio_url: audioUrl, openVideo: () => open(audioUrl, voice, faceId), lipsync: { voice, faceId } } : { audio_url: audioUrl };
 }
 
 type SpeakFn = (text: string, voice: string, emotion?: string, language?: string | null) => Promise<{ audio_url: string; timestamps?: unknown }>;

@@ -128,6 +128,7 @@ Tests: the backend has about 1,080 test functions in 80 files (pytest, every pro
 | T22 | Non-English TTS | Answers in 102 documented languages are voiced with `language` + `normalize`. The caption highlights the whole sentence (no timestamps) | Higgs TTS 3 | works | [be/tts_lang.py, /api/speak] |
 | T23 | Web search in answers | Textbooks and spoilers-on novels can use Google Search grounding. Source links and Google Search suggestions show in a sandboxed iframe. Daily cap | **Gemini Grounding with Google Search** | works (Realtime path never searches; Gemini decides when to search) | [be/websearch.py, fe/reader/SourceLinks.tsx] |
 | T24 | Connection & quota handling | Plain messages for Boson connection limit (1013), key (3000) and billing (4429). 3-minute playback ring buffer, so long answers do not skip | Realtime | works | [TalkClient.ts, audio/playback.ts] |
+| T26 | Download an answer as an MP4 (#80) | "Download clip" on a finished reply: the server joins its cached per-sentence lip-sync clips into one progressive MP4 (pure Python, no ffmpeg, no re-encoding; each sentence's video fitted to its voice). No face, or a sentence video never made: the reply's cached voice over a still of the portrait or letter circle (H.264 I_PCM still + MP3). Never renders (a missing clip is a 409, then the free still version). Only the caller's own clips and faces (PER_USER), `guard_book`, ≤ 40 sentences / 80 MB / 300 s, 6 a minute, 2 at a time (else 429). Realtime voice replies (raw audio) have no button | pure Python MP4 | works (played in Chrome; other players not tried) | [be/mp4join.py, routes/clip.py, fe/talk/answerDownload.ts, tests/test_answer_clip.py] |
 
 ## 5. Voice agent & tools (Realtime function calling)
 
@@ -298,7 +299,6 @@ Same image with `PUBLIC_API=true` (entry `app.asgi:app`), Cloud Run service `tal
 | Podcast-style avatar mini-player (corner player, expand/collapse) | open, not built |
 | Unified talk-while-reading screen (no Read/Talkback switch) | open, not built. Read-mode mic (T19) covers part of it |
 | Group scene: ask 2-3 characters at once | open, not built |
-| Share a character answer as an MP4 clip | open, not built |
 | Non-English uploads: no word-level highlighting, and English-only sound effects, singing, rule-based whisper/shout and equation readings (L20) | partial |
 | Moving a paper to Textbooks restores equations but not figures (`rebuild_textbook_text` omits `figures_dir`) | open, bug |
 | Server-side reading-position sync. The code keeps the position only in the browser (localStorage), so it does not follow you to another browser or device | gap |

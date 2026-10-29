@@ -264,3 +264,39 @@ def test_route_uses_only_the_callers_own_clips(pu, monkeypatch):  # noqa: F811
     assert client.post("/api/clip/answer", json=body).status_code == 404   # anonymous
     # a book only its owner may see
     assert client.post("/api/clip/answer", headers=h(token(BOB)), json={**body, "book_id": "u-alice-1"}).status_code == 404
+
+
+def test_route_reads_nothing_without_a_free_slot_and_never_queues(tmp_path, monkeypatch):
+    import asyncio
+    import threading
+    from app.routes import clip
+    client, _, face, folder = route_env(tmp_path, monkeypatch)
+    clip_path(face, folder).write_bytes(fmp4([[b"v"]], [[b"a"]]))
+    reads = []
+    real_read, real_inputs = clip._read_all, clip._lipsync_inputs
+    monkeypatch.setattr(clip, "_read_all", lambda paths: (reads.append("clips"), real_read(paths))[1])
+    monkeypatch.setattr(clip, "_lipsync_inputs", lambda r: (reads.append("face"), real_inputs(r))[1])
+    body = {"book_id": "alice", "sentences": [SENT]}
+    # all slots taken: 429 at once, and no clip or face image was read
+    monkeypatch.setattr(clip, "_joins", asyncio.Semaphore(0))
+    assert client.post("/api/clip/answer", json=body).status_code == 429 and reads == []
+    # one slot, held by a join in progress: a second request is a 429, not a wait, and reads nothing
+    monkeypatch.setattr(clip, "_joins", asyncio.Semaphore(1))
+    entered, release = threading.Event(), threading.Event()
+    real_join = mp4join.join_clips
+
+    def slow_join(data):
+        entered.set()
+        release.wait(10)
+        return real_join(data)
+    monkeypatch.setattr(mp4join, "join_clips", slow_join)
+    first = {}
+    t = threading.Thread(target=lambda: first.setdefault("r", client.post("/api/clip/answer", json=body)))
+    t.start()
+    assert entered.wait(10)
+    assert client.post("/api/clip/answer", json=body).status_code == 429
+    assert reads == ["face", "clips"]  # only the running join's
+    release.set()
+    t.join(10)
+    assert first["r"].status_code == 200
+    assert client.post("/api/clip/answer", json=body).status_code == 200  # the slot is free again
