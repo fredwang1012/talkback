@@ -59,6 +59,8 @@ export type SessionEvent =
   | { type: "heard"; text: string } // #135: on a cut, the words of the answer the reader actually heard
   | { type: "turn-mode"; server: boolean } // #135: the server's turn detection was refused: back to the local gate
   | { type: "tool-call"; calls: ToolCall[] }
+  | { type: "searching"; active: boolean; completed?: boolean } // B2: Boson's server-side web_search runs (active), then the answer it started arrives (completed) or the turn was cut
+  | { type: "sources"; sources: { uri: string; title: string }[] } // B2: links out of the web_search result
   | { type: "audio-start" }
   | { type: "caption"; text: string; done: boolean }
   | { type: "response-done"; status: "completed" | "cancelled" | "failed" }
@@ -80,7 +82,7 @@ export interface TalkSession {
   /** Stop the mic. With `discard`, drop what was captured instead of keeping it for a commit. */
   stopMic(discard?: boolean): Promise<void>;
   commit(): void;
-  /** Ask for a spoken answer using per-response instructions. A typed question is given as `question` (#97). */
+  /** Ask for an answer under per-response instructions; `question` (typed, or the transcript) goes with it as response.input (#97). */
   respond(instructions: string, question?: string): void;
   /** Flush local playback, truncate the interrupted item at the played position and cancel the response. Rejects when the cancel is never acknowledged. */
   interrupt(): Promise<void>;
@@ -90,6 +92,8 @@ export interface TalkSession {
   setMonitor?(on: boolean): Promise<void>;
   /** Hold local playback where it is (the reply keeps arriving and waits), and continue it. Optional. */
   pausePlayback?(): Promise<void>;
+  /** False while the reply cannot be held (a live face, #140: the avatar protocol has no pause). Absent = it can. */
+  canPause?(): boolean;
   resumePlayback?(): Promise<void>;
   /** #135: use Boson's turn detection for hands-free (the session reconnects when the mode changes). Optional. */
   setServerTurns?(on: boolean): void;
@@ -153,6 +157,10 @@ export interface TalkDeps {
   onToolRun?: (chip: string) => void;
   /** The reader cut the answer being spoken off (barge-in, #10): mark its bubble; the next answer is told. */
   onInterrupted?: () => void;
+  /** B2: Boson's server-side web_search is running (true), or finished (false; `completed` when its answer followed). */
+  onSearching?: (active: boolean, completed: boolean) => void;
+  /** B2: the links a web_search result carried, for the reply bubble. */
+  onSources?: (sources: { uri: string; title: string }[]) => void;
   /** #135: hands-free uses Boson's turn detection when the session supports it (else, or when false, the local gate). */
   serverTurns?: boolean;
   /** #135: the cut-off answer's words that were actually heard (cut the stored reply to them). */
@@ -249,8 +257,8 @@ export class TalkController {
    */
   pauseAnswer(): boolean {
     if (this._state !== "answering" || this.held) return false;
-    if (this.run && this.d.speaker?.pause) this.d.speaker.pause();
-    else if (!this.run && this.d.session.pausePlayback) void this.d.session.pausePlayback().catch(() => {});
+    if (this.run && this.d.speaker?.pause && this.d.speaker.canPause !== false) this.d.speaker.pause();
+    else if (!this.run && this.d.session.pausePlayback && this.d.session.canPause?.() !== false) void this.d.session.pausePlayback().catch(() => {});
     else return false;
     this.held = true;
     this.setSpeaking(false);
@@ -698,7 +706,7 @@ export class TalkController {
       try { await this.d.session.ensureOpen(this.d.voiceFor(this.speakerId)); } catch (e) { this.fail(turn, e); return; }
       if (turn !== this.turn) return;
     }
-    await this.answerQuery(turn, query, true);
+    await this.answerQuery(turn, query);
   }
 
   /** Stop speaking and drop the current answer (Stop button). */
@@ -713,7 +721,6 @@ export class TalkController {
     this.backToReading();
   }
 
-  /** `typed`: the question is text, so the Realtime model must be given it as an item (#97); spoken audio is already the user item. */
   /** The quiz part of this turn (and the answer it grades), or null when no quiz runs. Ends the quiz on its last answer or on a stop / command. */
   private quizTurn(query: string): { quiz: Quiz; n: number } | null {
     const q = this.quiz;
@@ -725,7 +732,7 @@ export class TalkController {
     return { quiz: q, n };
   }
 
-  private async answerQuery(turn: number, query: string, typed = false): Promise<void> {
+  private async answerQuery(turn: number, query: string): Promise<void> {
     this.set("retrieving");
     const r0 = this.d.now();
     const quiz = this.quizTurn(query);
@@ -760,7 +767,9 @@ export class TalkController {
     this.set("answering");
     const a0 = this.d.now();
     if (quiz) instructions = `${instructions}\n\n${quizTurnInstructions(quiz.quiz, quiz.n)}`;
-    this.d.session.respond(instructions, typed ? query : undefined);
+    // the question always goes with the request (spoken or typed): live, the model does not see the committed audio
+    // turn (or any conversation item) when the response carries instructions (TalkClient.respond)
+    this.d.session.respond(instructions, query);
     void this.awaitAnswer(turn, a0); // key release returns now; the answer is handled in the background
   }
 
@@ -882,6 +891,12 @@ export class TalkController {
     }
     if (e.type === "caption") this.d.onCaption?.(e.text, e.done);
     if (e.type === "heard") this.d.onHeard?.(e.text);
+    if (e.type === "searching") {
+      this.d.onSearching?.(e.active, e.completed ?? false);
+      // the search and the answer the server then writes take their own time: a fresh watchdog for them
+      if (e.active && this._state === "answering") void this.awaitAnswer(this.turn, this.d.now());
+    }
+    if (e.type === "sources" && ["retrieving", "answering"].includes(this._state)) this.d.onSources?.(e.sources);
     if (e.type === "turn-mode" && !e.server && this.serverMode) { // refused: the local gate takes over hands-free
       this.serverMode = false;
       this.applyHold(false);

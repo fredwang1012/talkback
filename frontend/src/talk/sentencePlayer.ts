@@ -27,6 +27,8 @@ export interface SentenceSpeaker {
   /** Continue from the moment it was paused. False when there is nothing to continue (not paused, or stopped since). */
   resume?(): boolean;
   readonly paused?: boolean;
+  /** False while `pause` would not hold the voice (a live face, #140). Absent = it can. */
+  readonly canPause?: boolean;
 }
 
 export interface AudioLike {

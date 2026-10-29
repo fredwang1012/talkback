@@ -7,7 +7,7 @@ import threading
 import numpy as np
 import pytest
 
-from app import ingest_upload, local_index, main, retrieval
+from app import indexes, ingest_upload, local_index, processing, retrieval
 from app.config import settings
 from tests.test_upload import client, post  # noqa: F401  (client is a fixture)
 
@@ -37,8 +37,8 @@ class FakeEmbedder:
 def on(monkeypatch):
     fake = FakeEmbedder()
     monkeypatch.setattr(settings, "local_embed_uploads", True)
-    monkeypatch.setattr(main, "_local_embed_available", lambda: True)
-    monkeypatch.setattr(main, "_embedder", lambda: fake)
+    monkeypatch.setattr(processing, "_local_embed_available", lambda: True)
+    monkeypatch.setattr(indexes, "_embedder", lambda: fake)
     return fake
 
 
@@ -91,17 +91,17 @@ def test_index_load_ignores_embeddings_of_the_wrong_length(tmp_path):
 
 def test_upload_is_embedded_and_served_hybrid(client, on, monkeypatch):
     started = []
-    monkeypatch.setattr(main, "_start_local_embed", lambda book, chunks: started.append((book, chunks)))
+    monkeypatch.setattr(processing, "_start_local_embed", lambda book, chunks: started.append((book, chunks)))
     bid = post(client, "a.txt", TEXT, kind="textbook", title="Emb").json()["book_id"]
     assert [b.id for b, _ in started] == [bid]   # started once the book was published
-    assert main._index_for(bid).mode == "bm25"   # BM25 serves meanwhile
-    asyncio.run(main._embed_locally(*started[0]))
+    assert indexes._index_for(bid).mode == "bm25"   # BM25 serves meanwhile
+    asyncio.run(processing._embed_locally(*started[0]))
     st = client.get(f"/api/books/{bid}/status").json()
     assert st["index"]["state"] == "done"
     idx_dir = settings.data_dir / "books" / bid / "index"
     n = len(retrieval.Index.load(idx_dir).chunks)
     assert np.load(idx_dir / "embeddings.npy").shape == (n, 8) and on.calls == n
-    assert main._index_for(bid).mode == "hybrid"   # the cache was cleared, the new vectors are used
+    assert indexes._index_for(bid).mode == "hybrid"   # the cache was cleared, the new vectors are used
 
 
 def test_job_is_one_book_at_a_time(client, on, monkeypatch):
@@ -122,33 +122,33 @@ def test_job_is_one_book_at_a_time(client, on, monkeypatch):
     pairs = [(b, _publish(b)) for b in bks]
 
     async def run():
-        await asyncio.gather(*(main._embed_locally(b, c) for b, c in pairs))
+        await asyncio.gather(*(processing._embed_locally(b, c) for b, c in pairs))
 
     asyncio.run(run())
     assert state["max"] == 1
     assert all((settings.data_dir / "books" / b.id / "index" / "embeddings.npy").is_file() for b in bks)
-    assert main._local_embed_jobs == set()
+    assert processing._local_embed_jobs == set()
 
 
 def test_skips_gracefully_without_sentence_transformers(client, monkeypatch):
     monkeypatch.setattr(settings, "local_embed_uploads", True)
-    monkeypatch.setattr(main, "_local_embed_available", lambda: False)
+    monkeypatch.setattr(processing, "_local_embed_available", lambda: False)
     b = _book()
-    asyncio.run(main._embed_locally(b, _publish(b)))
-    assert "index" not in (main._upload_status.get(b.id) or {})   # no "indexing" line at all
+    asyncio.run(processing._embed_locally(b, _publish(b)))
+    assert "index" not in (processing._upload_status.get(b.id) or {})   # no "indexing" line at all
     assert not (settings.data_dir / "books" / b.id / "index" / "embeddings.npy").exists()
-    assert main._index_for(b.id).mode == "bm25"
+    assert indexes._index_for(b.id).mode == "bm25"
 
 
 def test_model_load_failure_keeps_bm25(client, monkeypatch):
     monkeypatch.setattr(settings, "local_embed_uploads", True)
-    monkeypatch.setattr(main, "_local_embed_available", lambda: True)
-    monkeypatch.setattr(main, "_embedder", lambda: None)   # model download failed
+    monkeypatch.setattr(processing, "_local_embed_available", lambda: True)
+    monkeypatch.setattr(indexes, "_embedder", lambda: None)   # model download failed
     b = _book()
-    asyncio.run(main._embed_locally(b, _publish(b)))
-    st = main._upload_status[b.id]["index"]
-    assert st["state"] == "error" and st["message"] == main.INDEX_FAILED_MESSAGE
-    assert main._index_for(b.id).mode == "bm25"
+    asyncio.run(processing._embed_locally(b, _publish(b)))
+    st = processing._upload_status[b.id]["index"]
+    assert st["state"] == "error" and st["message"] == processing.INDEX_FAILED_MESSAGE
+    assert indexes._index_for(b.id).mode == "bm25"
 
 
 def test_delete_stops_the_job(client, on, monkeypatch):
@@ -157,27 +157,27 @@ def test_delete_stops_the_job(client, on, monkeypatch):
     real = on.embed_passages
 
     def deleting(texts, batch_size=32):   # the reader deletes the book while the first batch is being embedded
-        main._deleted.add(b.id)
+        processing._deleted.add(b.id)
         return real(texts, batch_size)
 
     monkeypatch.setattr(on, "embed_passages", deleting)
     try:
-        asyncio.run(main._embed_locally(b, chunks))
+        asyncio.run(processing._embed_locally(b, chunks))
         assert on.calls <= 32   # stopped after the batch in flight
         assert not (settings.data_dir / "books" / b.id / "index" / "embeddings.npy").exists()
     finally:
-        main._deleted.discard(b.id)
+        processing._deleted.discard(b.id)
 
 
 def test_local_embedding_does_not_block_delete(client, on):
     b = _book()
     _publish(b)
-    main._local_embed_jobs.add(b.id)
-    main._set_index(b.id, state="running", done=1, total=10)
+    processing._local_embed_jobs.add(b.id)
+    processing._set_index(b.id, state="running", done=1, total=10)
     try:
-        assert not main._book_busy(b.id)
+        assert not processing._book_busy(b.id)
     finally:
-        main._local_embed_jobs.discard(b.id)
+        processing._local_embed_jobs.discard(b.id)
 
 
 def test_rechunked_meanwhile_reruns_on_the_new_chunks(client, on, monkeypatch):
@@ -193,11 +193,11 @@ def test_rechunked_meanwhile_reruns_on_the_new_chunks(client, on, monkeypatch):
         started.append(len(chunks))
         if len(started) == 1:
             retrieval.save_index(idx_dir, new, None)
-            await main._embed_locally(b, new)   # second request while the first runs: queued as a rerun
+            await processing._embed_locally(b, new)   # second request while the first runs: queued as a rerun
         return await real(chunks, embedder, **kw)
 
     monkeypatch.setattr(local_index, "embed_chunks", slow)
-    asyncio.run(main._embed_locally(b, old))
+    asyncio.run(processing._embed_locally(b, old))
     assert started == [len(old), len(new)]
     assert np.load(idx_dir / "embeddings.npy").shape[0] == len(new)
 
@@ -205,7 +205,7 @@ def test_rechunked_meanwhile_reruns_on_the_new_chunks(client, on, monkeypatch):
 def test_vertex_mode_does_not_embed_locally(client, on, monkeypatch):
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
     b = _book()
-    asyncio.run(main._embed_locally(b, _publish(b)))
+    asyncio.run(processing._embed_locally(b, _publish(b)))
     assert on.calls == 0
 
 
@@ -229,37 +229,37 @@ def test_startup_embeds_older_uploads_first_then_builtin_books(client, on, monke
 
     seen = []
     monkeypatch.setattr(local_index, "embed_chunks", tracked)
-    real_job = main._embed_book_locally
+    real_job = processing._embed_book_locally
 
     async def job(book_id, chunks):
         seen.append(book_id)
         await real_job(book_id, chunks)
 
-    monkeypatch.setattr(main, "_embed_book_locally", job)
-    asyncio.run(main._backfill_local_embeddings())
+    monkeypatch.setattr(processing, "_embed_book_locally", job)
+    asyncio.run(processing._backfill_local_embeddings())
     assert seen == [upload.id, builtin.id]   # uploads waiting go first
     for b in (builtin, upload):
-        assert main._index_for(b.id).mode == "hybrid"
+        assert indexes._index_for(b.id).mode == "hybrid"
     # a built-in book gets no status.json (it would dirty a clone's tree); the upload card shows its indexing line
     assert not (settings.data_dir / "books" / builtin.id / "status.json").exists()
-    assert main._upload_status[upload.id]["index"]["state"] == "done"
+    assert processing._upload_status[upload.id]["index"]["state"] == "done"
 
 
 def test_startup_skips_books_that_already_have_embeddings(client, on):
     b = _builtin()
-    asyncio.run(main._backfill_local_embeddings())
+    asyncio.run(processing._backfill_local_embeddings())
     calls = on.calls
-    asyncio.run(main._backfill_local_embeddings())
+    asyncio.run(processing._backfill_local_embeddings())
     assert on.calls == calls   # nothing left to embed
 
 
 def test_startup_backfill_off_in_vertex_mode_or_without_the_package(client, on, monkeypatch):
     _builtin()
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
-    asyncio.run(main._backfill_local_embeddings())
+    asyncio.run(processing._backfill_local_embeddings())
     monkeypatch.setattr(settings, "retrieval_backend", "local")
-    monkeypatch.setattr(main, "_local_embed_available", lambda: False)
-    asyncio.run(main._backfill_local_embeddings())
+    monkeypatch.setattr(processing, "_local_embed_available", lambda: False)
+    asyncio.run(processing._backfill_local_embeddings())
     assert on.calls == 0
 
 

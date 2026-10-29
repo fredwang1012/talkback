@@ -50,6 +50,13 @@ describe("ISO 639-3 for /api/speak (#135)", () => {
     expect(answerLanguage(["¿Quién escribió esta carta y por qué?"])).toBe("spa");
     expect(answerLanguage(["Who wrote this and why?"])).toBeNull();
   });
+  it("a book in another language (#117) is answered in it unless the reader clearly writes in another", () => {
+    expect(answerLanguage(["Sancho Panza?"], "spa")).toBe("spa"); // unclear question: the book's language
+    expect(answerLanguage(["Who wrote this and why?"], "spa")).toBeNull(); // clearly English
+    expect(answerLanguage(["Pourquoi est-ce qu'il est parti dans la forêt ?"], "spa")).toBe("fra");
+    expect(answerLanguage(["Alice?"], "eng")).toBeNull(); // an English book keeps the old rule
+    expect(answerLanguage(["Alice?"])).toBeNull();
+  });
 });
 
 describe("speak sends the language only when there is one (#135)", () => {
@@ -62,5 +69,14 @@ describe("speak sends the language only when there is one (#135)", () => {
     const body = (i: number) => JSON.parse(((fetchMock.mock.calls[i] as unknown as [string, RequestInit])[1]).body as string);
     expect(body(0)).toEqual({ text: "Hola.", voice: "marcus", language: "spa" });
     expect(body(1)).toEqual({ text: "Hi.", voice: "marcus", emotion: "joy" });
+  });
+});
+
+describe("answerLanguage: a question in the book's own script (code review)", () => {
+  it("Ukrainian and Persian books keep their language for questions in their script", () => {
+    expect(answerLanguage(["Хто такий головний герой?"], "ukr")).toBe("ukr");
+    expect(answerLanguage(["قهرمان داستان کیست؟"], "fas")).toBe("fas");
+    expect(answerLanguage(["Who is the main character in this story?"], "ukr")).toBeNull(); // English: no language tag
+    expect(answerLanguage(["¿Quién es el personaje principal de la historia?"], "ukr")).toBe("spa");
   });
 });

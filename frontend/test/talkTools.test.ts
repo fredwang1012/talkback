@@ -61,7 +61,7 @@ const functionCallDone = (ws: FakeSocket, call: { call_id: string; name: string;
 };
 
 describe("TalkClient tools (fake socket)", () => {
-  it("declares the client function tools in session.update, never web_search", async () => {
+  it("declares the client function tools in session.update; the default (novel) set has no web_search", async () => {
     const { ws } = await openClient();
     const cfg = ws.sent[0];
     expect(cfg.type).toBe("session.update");
@@ -69,7 +69,7 @@ describe("TalkClient tools (fake socket)", () => {
     const names = cfg.session.tools.map((t: { name: string; type: string }) => `${t.type}:${t.name}`);
     expect(names).toContain("function:jump_to");
     expect(names).toContain("function:read_chapter");
-    expect(JSON.stringify(cfg.session.tools)).not.toContain("web_search");
+    expect(JSON.stringify(cfg.session.tools)).not.toContain("web_search"); // webSearch.sessionTools adds it for textbooks / spoilers on
   });
 
   it("a response ending in a client function call becomes a tool-call event, not a finished answer", async () => {
@@ -80,26 +80,32 @@ describe("TalkClient tools (fake socket)", () => {
     expect(events.some((e) => e.type === "response-done" || e.type === "playback-drained")).toBe(false);
   });
 
-  it("returnTools sends function_call_output then response.create with the same instructions", async () => {
+  it("returnTools sends function_call_output then response.create with the same instructions and the results as its input (live: the item is not seen)", async () => {
     const { client, ws } = await openClient();
-    client.respond("Be Alice.");
+    client.respond("Be Alice.", "faster please");
     functionCallDone(ws, { call_id: "c1", name: "set_speed", arguments: JSON.stringify({ speed: "faster" }), executor: "client" });
     client.returnTools([{ callId: "c1", output: "Reading speed set to 1.25x." }]);
     const tail = ws.sent.slice(-2);
     expect(tail[0]).toEqual({ type: "conversation.item.create", item: { type: "function_call_output", call_id: "c1", output: "Reading speed set to 1.25x." } });
     expect(tail[1].type).toBe("response.create");
     expect(tail[1].response.instructions).toBe("Be Alice.");
+    expect(tail[1].response.input).toHaveLength(1);
+    expect(tail[1].response.input[0].role).toBe("user"); // live: a `system` input role is refused
+    expect(tail[1].response.input[0].content[0].text).toContain("- set_speed: Reading speed set to 1.25x.");
+    expect(tail[1].response.input[0].content[0].text).toContain('"faster please"');
     // the continuation is an ordinary answer again
     ws.recv({ type: "response.created", response: { id: "r2" } });
     ws.recv({ type: "response.done", response: { id: "r2", status: "completed", output: [{ type: "message", role: "assistant" }] } });
     expect(ws.sent.filter((e) => e.type === "response.create")).toHaveLength(2);
   });
 
-  it("a tool the server runs itself (executor != client) is not ours; malformed arguments become {}", async () => {
+  it("a tool the server runs itself (executor != client) is not ours and does not end the turn (#4); malformed arguments become {}", async () => {
     const { client, ws, events } = await openClient();
     client.respond("x");
     functionCallDone(ws, { call_id: "s1", name: "web_search", arguments: "{}", executor: "server" });
     expect(events.filter((e) => e.type === "tool-call")).toHaveLength(0);
+    expect(events.some((e) => e.type === "response-done" || e.type === "playback-drained")).toBe(false); // the server's answer is still to come
+    expect(events).toContainEqual({ type: "searching", active: true });
     client.respond("x");
     functionCallDone(ws, { call_id: "c2", name: "bookmark", arguments: "not json", executor: "client" });
     expect(events.at(-1)).toEqual({ type: "tool-call", calls: [{ callId: "c2", name: "bookmark", args: {} }] });

@@ -1,11 +1,12 @@
 """Full-book ("spoilers on") mode: opt-in, novels only; the default stays spoiler-safe."""
 import asyncio
 
-from app import main, retrieval
+from app import retrieval
 from app.gcp.vectorstore import spoiler_filter
 from app.gcp.vertex_index import VertexIndex
-from app.main import RetrieveRequest
 from app.personas import build_instructions
+from app.routes import talk as talk_routes
+from app.routes.talk import RetrieveRequest
 from app.schema import Character
 from tests.test_retrieval import make_book
 from tests.test_series import series_book
@@ -97,14 +98,14 @@ def test_endpoints_thread_spoilers(env, monkeypatch):
     j = r.json()
     assert "chosen to allow spoilers" in j["instructions"] and any("King" in p["text"] for p in j["passages"])
     fake = FakeAnswerer(["Ok."])
-    monkeypatch.setattr(main, "get_answerer", lambda: fake)
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: fake)
     post(client, speaker_id="narrator", reader_para=0, query="King", spoilers=True)
     assert "chosen to allow spoilers" in fake.prompts[0][0]
 
 
 def test_full_book_mode_unlocks_unmet_characters(env, monkeypatch):
     client, _ = env
-    monkeypatch.setattr(main, "get_answerer", lambda: FakeAnswerer(["Ok."]))
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: FakeAnswerer(["Ok."]))
     assert post(client, speaker_id="king", reader_para=1).status_code == 403
     assert post(client, speaker_id="king", reader_para=1, spoilers=True).status_code == 200
     body = {"book_id": "demo", "query": "x", "reader_para": 1, "speaker_id": "king"}

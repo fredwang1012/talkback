@@ -15,7 +15,7 @@ from typing import Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict
 
-from .. import retrying
+from .. import booklang, retrying
 from ..schema import Book, Summary
 from .llm import LLMRefusal, SpendLimit
 from .tasks import gather_or_cancel
@@ -99,16 +99,16 @@ def fallback_condense(notes: list[str], limit: int = STORY_WORDS) -> str:
     """No LLM: the most recent notes in full while the budget allows, older ones cut to their first sentence."""
     budget, kept = limit, []
     for note in reversed(notes):
-        words = note.split()
-        if len(words) <= budget:
+        n = booklang.word_count(note)
+        if n <= budget:
             kept.append(note.strip())
-            budget -= len(words)
+            budget -= n
             continue
         first = note.split(". ")[0].strip()
         short = trim_words(first, max(0, min(budget, 25)))
         if short and budget > 0:
             kept.append(short)
-            budget -= len(short.split())
+            budget -= booklang.word_count(short)
     return " ".join(reversed(kept))
 
 
@@ -131,6 +131,7 @@ async def build_summaries(book: Book, call: CallFn, on_progress: Callable[[float
     own retries are spent; a note still missing is skipped (its checkpoint has no summary) and counted in
     `stats["skipped"]`, so the book still finishes with the notes that landed."""
     us = units(book)
+    lang_note = booklang.prompt_note(book.language, write_in_language=True)   # "" for English (#117)
     total = sum(len(u.checkpoints) for u in us) + max(0, len(us) - 1)
     done = 0
 
@@ -145,7 +146,8 @@ async def build_summaries(book: Book, call: CallFn, on_progress: Callable[[float
 
     async def note(ui: int, u: Unit, c: int, last: bool) -> None:
         try:
-            r = await call(TIER, NOTE_SYSTEM, note_user(book, u, c), NoteResult, max_tokens=1000, effort="low")
+            r = await call(TIER, NOTE_SYSTEM + lang_note, note_user(book, u, c), NoteResult, max_tokens=1000,
+                           effort="low")
             text = trim_words(r.summary, NOTE_WORDS + 30)
             if text:
                 notes[(ui, c)] = text
@@ -183,11 +185,12 @@ async def build_summaries(book: Book, call: CallFn, on_progress: Callable[[float
         ns = prior[ui]
         if not ns:
             condensed[ui] = ""
-        elif sum(len(n.split()) for n in ns) <= STORY_WORDS:
+        elif sum(booklang.word_count(n) for n in ns) <= STORY_WORDS:  # Chinese has no spaces to count
             condensed[ui] = " ".join(ns)
         else:
             try:
-                r = await call(TIER, CONDENSE_SYSTEM, "\n\n".join(f"Chapter {i + 1}: {n}" for i, n in enumerate(ns)),
+                r = await call(TIER, CONDENSE_SYSTEM + lang_note,
+                               "\n\n".join(f"Chapter {i + 1}: {n}" for i, n in enumerate(ns)),
                                NoteResult, max_tokens=800, effort="low")
                 condensed[ui] = trim_words(r.summary, STORY_WORDS + 30) or fallback_condense(ns)
             except SpendLimit:

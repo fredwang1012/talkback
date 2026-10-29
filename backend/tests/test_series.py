@@ -136,13 +136,14 @@ def test_plan_books_from_toc():
 
 
 class FakePage:
+    """A pdfdoc.Page with one block per line."""
     def __init__(self, lines):
         self._lines = lines
 
-    def get_text(self, kind):
-        return {"blocks": [{"type": 0, "lines": [{"spans": [{"text": t, "size": size, "font": font}],
-                                                   "bbox": (72, 100 + 20 * i, 500, 114 + 20 * i)}]}
-                           for i, (t, size, font) in enumerate(self._lines)]}
+    def text_blocks(self):
+        return [{"type": 0, "lines": [{"spans": [{"text": t, "size": size, "font": font}],
+                                       "bbox": (72, 100 + 20 * i, 500, 114 + 20 * i)}]}
+                for i, (t, size, font) in enumerate(self._lines)]
 
 
 def test_page_lines_drops_headings_and_rejoins_drop_cap():

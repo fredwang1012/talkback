@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from .. import books
+from .. import booklang
 from ..config import settings
 from ..schema import Book
 from ..ttschunks import rechunk_book
@@ -79,7 +80,9 @@ def estimate(book: Book, provider: str | None = None) -> float:
     # cast: one call (a long book is sampled), Sonnet-tier
     usd = estimate_usd(provider, "smart", min(total, cast_mod.CAST_MAX_CHARS) + len(cast_mod.UPLOAD_SYSTEM), CAST_OUT_TOKENS)
     # segmentation: batches of paragraphs that contain quotes; the model re-emits the text
-    quoted = [len(p.text) for p in book.paragraphs if '"' in p.text or "“" in p.text]
+    english = booklang.is_english(book.language)  # another language has its own dialogue marks (#117)
+    quoted = [len(p.text) for p in book.paragraphs
+              if (('"' in p.text or "“" in p.text) if english else booklang.has_dialogue(p.text, book.language))]
     calls = math.ceil(len(quoted) / seg_mod.BATCH)
     in_chars = sum(quoted) + calls * (len(seg_mod.BATCH_SYSTEM) + 8 * 120 + 1500 + 400)
     out_tokens = sum(quoted) / 3.5 * 1.15 + 45 * len(quoted)
@@ -319,7 +322,11 @@ def where(e: BaseException, depth: int = 6) -> str:
 
 def attribute_speakers(book: Book) -> dict[str, int]:
     """Segments only (the caller rebuilds the TTS chunks). Free, offline: untagged dialogue to the right cast member (#17 rules), and with MINOR_VOICES the uncast speakers'
-    lines to the two stand-in voices. Same rules as preprocess/attribute.py and minor_voices.py for built-in books."""
+    lines to the two stand-in voices. Same rules as preprocess/attribute.py and minor_voices.py for built-in books.
+    The rules read English speech tags ("said Ron"), so a book in another language (#117) keeps the segmenter's
+    speakers as they are."""
+    if not booklang.is_english(book.language):
+        return {}
     if settings.minor_voices:  # one attribution pass that also handles uncast speakers
         decisions = minor_mod.assign_minor_voices(book, rechunk=False)  # the caller rechunks the whole book once
         return {"minor": len(decisions)}

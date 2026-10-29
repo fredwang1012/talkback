@@ -62,6 +62,7 @@ export type Book = {
   author: string;
   kind: "novel" | "textbook";
   kind_detected?: KindDetected | null;
+  language?: string; // ISO 639-3 (#117); older books and English ones: "eng"
   license: string;
   attribution: string | null;
   sections: { id: string; title: string; start_para: number; level?: number }[];
@@ -86,7 +87,7 @@ export type BookSummary = {
   series?: string | null;
   series_index?: number | null;
 };
-export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean; answer_backend: "gemini" | "realtime"; avatar_size?: string };
+export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean; answer_backend: "gemini" | "realtime"; avatar_size?: string; web_search?: boolean };
 
 /** Sent when the server requires an access code (TALKBACK_ACCESS_TOKEN). Typed in by the visitor, never built in. */
 export function authHeaders(): Record<string, string> {
@@ -213,11 +214,23 @@ export type RetrieveResponse = {
   reader_para: number;
 };
 
-export async function fetchRetrieve(bookId: string, query: string, readerPara: number, speakerId: string, spoilers = false): Promise<RetrieveResponse> {
+/**
+ * Realtime answer options (B1, B2): `textAnswer` asks for instructions with the `[feeling]` marker rule (the answer is
+ * written as text and voiced by Higgs TTS); `webSearch` says the session declares Boson's web_search tool, so the
+ * instructions may say when to use it (the server still applies the textbook / spoilers rule); `history` is the chat so
+ * far with this speaker, which the model only sees inside the instructions.
+ */
+export type RetrieveOptions = { textAnswer?: boolean; webSearch?: boolean; history?: { role: "user" | "character"; text: string }[] };
+
+export async function fetchRetrieve(bookId: string, query: string, readerPara: number, speakerId: string, spoilers = false, opts: RetrieveOptions = {}): Promise<RetrieveResponse> {
   const res = await timedFetch("/api/retrieve", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId, ...(spoilers ? { spoilers: true } : {}) }),
+    body: JSON.stringify({
+      book_id: bookId, query: query.slice(0, 500), reader_para: readerPara, speaker_id: speakerId, ...(spoilers ? { spoilers: true } : {}),
+      ...(opts.textAnswer ? { text_answer: true } : {}), ...(opts.webSearch ? { web_search: true } : {}),
+      ...(opts.history?.length ? { history: opts.history.slice(-8) } : {}),
+    }),
   }, 10000);
   if (!res.ok) {
     const detail = await res.json().then((j: { detail?: string }) => j.detail).catch(() => undefined);
@@ -619,6 +632,36 @@ export async function deleteVoice(id: string): Promise<void> {
 
 export const fetchVoices = () => getJson<Record<string, string>>("/api/voices");
 
+/** One-off cloning: the server speaks a sample line in the recording's voice (nothing is saved). Returns the MP3. */
+export async function previewVoice(audio: Blob, filename: string, transcript: string): Promise<Blob> {
+  const form = new FormData();
+  form.append("audio", audio, filename);
+  form.append("transcript", transcript);
+  form.append("consent", "true"); // the dialog's permission line, as for cloning (the user asked for no checkbox)
+  const res = await timedFetch("/api/voices/preview", { method: "POST", headers: authHeaders(), body: form }, 60000);
+  if (!res.ok) throw await readError(res, "Could not preview the voice");
+  return res.blob();
+}
+
+export type AccountVoice = { id: string; title: string };
+/** Voices on the Boson account not saved here yet; null when this visitor may not see the account (not the owner). */
+export async function fetchAccountVoices(): Promise<AccountVoice[] | null> {
+  const res = await timedFetch("/api/voices/account", { headers: authHeaders() }, 30000);
+  if (res.status === 404) return null;
+  if (!res.ok) throw await readError(res, "Could not list the account's voices");
+  return res.json() as Promise<AccountVoice[]>;
+}
+
+/** Saves a voice that already exists on the Boson account under a name. */
+export async function importVoice(voiceId: string, name: string): Promise<CloneResult> {
+  const res = await timedFetch("/api/voices/import", {
+    method: "POST", headers: { ...authHeaders(), "Content-Type": "application/json" }, body: JSON.stringify({ voice_id: voiceId, name }),
+  }, 30000);
+  if (!res.ok) throw await readError(res, "Could not import the voice");
+  const out = (await res.json()) as { voice: string; name: string };
+  return { ...out, face: null };
+}
+
 /** A cloned voice's face: portrait plus optional muted loops (speaking, idle). Shown for any speaker using the voice. */
 export type VoiceFace = { image: string; talk: string | null; idle: string | null };
 export const fetchVoiceFaces = () => getJson<Record<string, VoiceFace>>("/api/voices/faces");
@@ -753,4 +796,28 @@ export async function changeKind(id: string, kind: BookKind): Promise<BookStatus
     throw new Error(detail ?? `Could not move the book (${res.status})`);
   }
   return res.json() as Promise<BookStatus>;
+}
+
+/** Live faces (#140): Boson's preset avatars rendered live into a LiveKit room. `enabled` false = clips only here. */
+export type LiveAvatarInfo = { enabled: boolean; avatars: { id: string; name: string }[] };
+export const fetchLiveAvatars = () => getJson<LiveAvatarInfo>("/api/live-avatar");
+
+export type LiveAvatarSession = { session: string; url: string; token: string; identity: string; avatar_identity: string; expires_at?: string | null; max_seconds: number };
+
+/** No live slot free (Boson busy, or this server's cap): the caller keeps the per-sentence clips. */
+export class LiveUnavailable extends Error {}
+
+export async function startLiveAvatar(avatarId: string): Promise<LiveAvatarSession> {
+  const res = await timedFetch("/api/live-avatar/sessions", {
+    method: "POST", headers: { ...authHeaders(), "Content-Type": "application/json" }, body: JSON.stringify({ avatar_id: avatarId }),
+  }, 30000);
+  if (res.status === 503) throw new LiveUnavailable("Live faces are busy right now; using the usual face clips.");
+  if (!res.ok) throw await readError(res, "Could not start the live face");
+  return res.json() as Promise<LiveAvatarSession>;
+}
+
+/** `keepalive`: the request outlives the page (pagehide), so a closed tab still frees its slot. */
+export async function stopLiveAvatar(sessionId: string, opts: { keepalive?: boolean } = {}): Promise<void> {
+  const res = await timedFetch(`/api/live-avatar/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE", headers: authHeaders(), keepalive: !!opts.keepalive }, 15000);
+  if (!res.ok && res.status !== 404) throw await readError(res, "Could not stop the live face");
 }

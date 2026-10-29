@@ -6,7 +6,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main
+from app import deps, indexes, main
 from app.boson import BosonClient
 from app.config import settings
 from app.ratelimit import TokenBucket
@@ -41,11 +41,11 @@ def env(tmp_path, monkeypatch):
     d = tmp_path / "books" / "demo"
     d.mkdir(parents=True)
     (d / "book.json").write_text(book_with_chunk().model_dump_json(), encoding="utf-8")
-    main._index_for.cache_clear()
-    monkeypatch.setattr(main, "token_bucket", TokenBucket(3, 60))
-    monkeypatch.setattr(main, "tts_bucket", TokenBucket(1000, 60))   # fresh limiter state per test
-    monkeypatch.setattr(main, "clone_bucket", TokenBucket(1000, 60))
-    monkeypatch.setattr(main, "retrieve_bucket", TokenBucket(1000, 60))
+    indexes._index_for.cache_clear()
+    monkeypatch.setattr(deps, "token_bucket", TokenBucket(3, 60))
+    monkeypatch.setattr(deps, "tts_bucket", TokenBucket(1000, 60))   # fresh limiter state per test
+    monkeypatch.setattr(deps, "clone_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(deps, "retrieve_bucket", TokenBucket(1000, 60))
     monkeypatch.setattr(settings, "access_token", "")
     calls = {"n": 0}
 
@@ -61,7 +61,7 @@ def env(tmp_path, monkeypatch):
             return httpx.Response(200, json={"voice": "voice_abc", "ref_text": "t"})
         return httpx.Response(404, json={"error": {"type": "invalid_request_error", "message": "no"}})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     return TestClient(main.app), calls
 
 
@@ -129,6 +129,16 @@ def test_retrieve_never_returns_future_paragraphs(env):
     assert all(p["para_end"] <= 1 for p in body["passages"])
     assert "Later the King arrived" not in body["instructions"]
     assert "Harry" in body["instructions"] and body["persona"] == "Precise."
+
+
+def test_retrieve_repeats_the_tool_rule(env):
+    """Per-response instructions replace the session's, so the Realtime tool rule rides along (Boson feedback #19)."""
+    from app.personas import TOOL_RULE
+    client, _ = env
+    r = client.post("/api/retrieve", json={"book_id": "demo", "query": "Read chapter two", "reader_para": 1, "speaker_id": "harry"})
+    assert r.status_code == 200
+    assert TOOL_RULE in r.json()["instructions"]
+    assert "first, in this same turn" in TOOL_RULE and '"' not in TOOL_RULE  # no example line to parrot
 
 
 def test_retrieve_refuses_a_character_not_yet_met(env):
@@ -205,7 +215,7 @@ def test_tts_accepts_a_registered_cloned_voice(env):
 
 def test_new_audio_is_rate_limited_but_cache_hits_are_free(env, monkeypatch):
     client, calls = env
-    monkeypatch.setattr(main, "tts_bucket", TokenBucket(2, 60))
+    monkeypatch.setattr(deps, "tts_bucket", TokenBucket(2, 60))
     voices = ["marcus", "nora", "jake"]
     codes = [client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "voice_override": v}).status_code for v in voices]
     assert codes == [200, 200, 429]
@@ -239,7 +249,7 @@ def test_clone_upload_is_read_with_a_bound_and_rejected_when_too_big(env, monkey
 
 def test_clone_is_rate_limited(env, monkeypatch):
     client, _ = env
-    monkeypatch.setattr(main, "clone_bucket", TokenBucket(1, 60))
+    monkeypatch.setattr(deps, "clone_bucket", TokenBucket(1, 60))
     assert clone(client).status_code == 200
     assert clone(client).status_code == 429
 
@@ -266,6 +276,8 @@ def test_cached_only_never_calls_boson_and_serves_prerendered(env):
 def test_health_tells_the_ui_when_an_access_code_is_needed_without_leaking_it(env, monkeypatch):
     client, _ = env
     assert client.get("/api/health").json()["access_required"] is False
+    h = client.get("/api/health").json()
+    assert h["web_search"] is bool(settings.web_search) and h["avatar_size"] == settings.avatar_size
     monkeypatch.setattr(settings, "access_token", "letmein")
     body = client.get("/api/health").json()
     assert body["access_required"] is True
@@ -287,7 +299,7 @@ def test_retrieve_is_gated_and_rate_limited(env, monkeypatch):
     monkeypatch.setattr(settings, "access_token", "letmein")
     assert client.post("/api/retrieve", json=body).status_code == 401
     h = {"X-Talkback-Token": "letmein"}
-    monkeypatch.setattr(main, "retrieve_bucket", TokenBucket(1, 60))
+    monkeypatch.setattr(deps, "retrieve_bucket", TokenBucket(1, 60))
     assert client.post("/api/retrieve", json=body, headers=h).status_code == 200
     assert client.post("/api/retrieve", json=body, headers=h).status_code == 429
 
@@ -320,3 +332,56 @@ def test_tts_speed_is_validated_and_default_request_has_no_tag(env):
     assert client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "speed": "warp"}).status_code == 422
     from app import tts_cache
     assert tts_cache.is_cached("<|prosody:speed_fast|>It was in March, eighteen eighty-eight, that Harry spoke.", "marcus") is False
+
+
+# ---------- Realtime answer path: text mode (B1) and web_search (B2) ----------
+
+def _textbook(tmp_path):
+    from app.schema import Narrator
+    book = Book(id="tb", title="IR Book", author="A", kind="textbook", license="PD",
+                sections=[Section(id="s1", title="1 Boolean retrieval", start_para=0)],
+                paragraphs=[Paragraph(idx=0, section_id="s1", text="An inverted index maps terms to documents."),
+                            Paragraph(idx=1, section_id="s1", text="Tf-idf weights terms by rarity.")],
+                characters=[], narrator=Narrator(voice="marcus", persona="A warm tutor."))
+    d = tmp_path / "books" / "tb"
+    d.mkdir(parents=True)
+    (d / "book.json").write_text(book.model_dump_json(), encoding="utf-8")
+
+
+def test_retrieve_text_answer_asks_for_feeling_markers_instead_of_the_voice_rule(env):
+    client, _ = env
+    from app.personas import ANSWER_EMOTION_RULE, REALTIME_EMOTION_RULE
+    plain = client.post("/api/retrieve", json={"book_id": "demo", "query": "who is Harry?", "reader_para": 1, "speaker_id": "harry"}).json()
+    assert REALTIME_EMOTION_RULE in plain["instructions"] and ANSWER_EMOTION_RULE not in plain["instructions"]
+    text = client.post("/api/retrieve", json={"book_id": "demo", "query": "who is Harry?", "reader_para": 1, "speaker_id": "harry",
+                                              "text_answer": True}).json()
+    assert ANSWER_EMOTION_RULE in text["instructions"]
+    assert REALTIME_EMOTION_RULE not in text["instructions"]
+    assert "spoken aloud word for word" in text["instructions"]
+    assert "Later the King arrived" not in text["instructions"]  # the spoiler rule is untouched
+
+
+def test_retrieve_web_search_rule_only_where_a_search_cannot_spoil(env, tmp_path):
+    client, _ = env
+    from app.personas import WEB_SEARCH_RULE
+    _textbook(tmp_path)
+    novel = client.post("/api/retrieve", json={"book_id": "demo", "query": "q", "reader_para": 1, "speaker_id": "harry",
+                                               "text_answer": True, "web_search": True}).json()
+    assert WEB_SEARCH_RULE.strip() not in novel["instructions"]  # a spoiler-safe novel: never, whatever the page asks
+    full = client.post("/api/retrieve", json={"book_id": "demo", "query": "q", "reader_para": 1, "speaker_id": "harry",
+                                              "text_answer": True, "web_search": True, "spoilers": True}).json()
+    assert WEB_SEARCH_RULE.strip() in full["instructions"]
+    tb = client.post("/api/retrieve", json={"book_id": "tb", "query": "q", "reader_para": 1, "speaker_id": "narrator",
+                                            "web_search": True}).json()
+    assert WEB_SEARCH_RULE.strip() in tb["instructions"]
+    quiet = client.post("/api/retrieve", json={"book_id": "tb", "query": "q", "reader_para": 1, "speaker_id": "narrator"}).json()
+    assert WEB_SEARCH_RULE.strip() not in quiet["instructions"]  # the session did not declare the tool
+
+
+def test_retrieve_puts_the_chat_history_into_the_instructions(env):
+    client, _ = env
+    r = client.post("/api/retrieve", json={"book_id": "demo", "query": "and then?", "reader_para": 1, "speaker_id": "harry",
+                                           "history": [{"role": "user", "text": "Who knocked?"}, {"role": "character", "text": "A stranger."}]}).json()
+    assert "The conversation so far" in r["instructions"]
+    assert "Who knocked?" in r["instructions"] and "A stranger." in r["instructions"]
+    assert r["instructions"].index("Who knocked?") > r["instructions"].index("Harry")  # after the persona and passages

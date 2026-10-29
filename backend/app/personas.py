@@ -1,5 +1,5 @@
 """Talk prompts (brief section 7.4). All prompt logic lives here so it is testable; keep them short and behavioural."""
-from . import multilingual
+from . import booklang, multilingual
 from .schema import EMOTIONS, Book
 
 MAX_INSTRUCTIONS_CHARS = 8000   # Boson Realtime instructions
@@ -97,6 +97,42 @@ REALTIME_EMOTION_RULE = "Let the feeling of what you say show in your voice, as 
 
 LANGUAGE_RULE = ("The reader wrote in {lang}. Answer only in {lang}, even though the book, the notes and the passages "
                  "below are in English: translate what they say, but keep the names as the book has them.\n\n")
+# a book in another language (#117): answers are in the book's language unless the reader clearly wrote in another one
+BOOK_LANGUAGE_RULE = ("The book, the notes and the passages below are in {book}. Answer in {book}, unless the reader "
+                      "clearly writes in another language; keep the names as the book has them.\n\n")
+OTHER_LANGUAGE_RULE = ("The reader wrote in {lang}. Answer only in {lang}, even though the book, the notes and the "
+                       "passages below are in {book}: translate what they say, but keep the names as the book has "
+                       "them.\n\n")
+
+
+# A book's language (ISO 639-3) -> the script the question detector reports for it (multilingual.clear_language reads
+# any Cyrillic as Russian, any Arabic script as Arabic, any Han as Chinese): a question in that script is in the book's language.
+SCRIPT_FAMILY = {"rus": "ru", "ukr": "ru", "bel": "ru", "bul": "ru", "srp": "ru", "mkd": "ru", "kaz": "ru",
+                 "ara": "ar", "fas": "ar", "urd": "ar", "zho": "zh", "cmn": "zh", "yue": "zh", "jpn": "ja", "kor": "ko",
+                 "hin": "hi", "mar": "hi", "nep": "hi", "heb": "he", "yid": "he", "ell": "el", "tha": "th"}
+
+
+def answer_language(book: Book, query: str) -> str | None:
+    """The language (English name) the answer must be in, when the prompt has to say so.
+
+    An English book: the question's language when it is not English (#12), else None. A book in another language
+    (#117): the question's language when it clearly is one (English included), else the book's own."""
+    if booklang.is_english(book.language):
+        return multilingual.foreign_language(query)
+    clear = multilingual.clear_language(query)
+    if clear and clear[0] == SCRIPT_FAMILY.get(book.language or ""):
+        return booklang.name(book.language)  # the book's own script: Ukrainian is not Russian, Persian is not Arabic
+    return clear[1] if clear else booklang.name(book.language)
+
+
+def language_rule(book: Book, reply: str | None) -> str:
+    """The rule that leads the prompt for `reply` (see answer_language); "" for an English answer to an English book."""
+    if booklang.is_english(book.language):
+        return LANGUAGE_RULE.format(lang=reply) if reply else ""
+    own = booklang.name(book.language)
+    if not reply or reply == own:
+        return BOOK_LANGUAGE_RULE.format(book=own)
+    return OTHER_LANGUAGE_RULE.format(lang=reply, book=own)
 
 
 def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages: list[dict],
@@ -105,7 +141,8 @@ def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages:
     """Render the Talk prompt for `speaker_id` ("narrator" or a character id). Raises KeyError for unknown ids.
 
     `reply_language` (#12): the question's language when it is not English. The rule goes first, so it survives the
-    length cap and is not lost under a long English prompt."""
+    length cap and is not lost under a long English prompt. A book in another language (#117) always gets a rule:
+    see answer_language and language_rule."""
     text_passages = format_passages(passages)
     story = story_so_far.strip() or "(the story has only just begun)"
     if book.kind == "textbook":
@@ -120,8 +157,7 @@ def build_instructions(book: Book, speaker_id: str, story_so_far: str, passages:
                                         tone=READER_TONE_RULE, story_so_far=story, passages=text_passages)
     if voice_emotion:  # Realtime answers are audio only: no tags, so the feeling has to come from the voice (#14)
         out = REALTIME_EMOTION_RULE + "\n\n" + out
-    if reply_language:
-        out = LANGUAGE_RULE.format(lang=reply_language) + out
+    out = language_rule(book, reply_language) + out   # a book in another language always gets one (#117)
     return out[:limit]
 
 
@@ -156,6 +192,40 @@ def format_history(history: list | None) -> str:
     return "\n".join(lines)
 
 
+HISTORY_NOTE = "\n\nThe conversation so far (it may help you follow the question; it is not a source of story facts):\n"
+
+
+# Realtime tools under per-response instructions (which replace the session's): on the 1.5 preview the model often
+# claimed an action without calling its tool (Boson feedback #19; an example acknowledgement in the prompt made it worse,
+# "call the tool first, in the same turn" fixed most of it). No example phrases here on purpose.
+TOOL_RULE = ("\n\nWhen the reader asks you to do something to the book or the player (go to a chapter or a passage, read, "
+             "repeat, go back, pause, change speed or voices, recap, bookmark, find a topic, quiz), call the matching "
+             "tool first, in this same turn. Only after the call, say one short sentence. Never say you did something "
+             "you have not called a tool for.")
+
+
+def realtime_instructions(book: Book, speaker_id: str, story_so_far: str, passages: list[dict], query: str, *,
+                          spoilers: bool = False, text_answer: bool = False, web_search: bool = False,
+                          history: list | None = None) -> str:
+    """The per-response instructions of the Realtime answer path (`/api/retrieve`).
+
+    `text_answer` (B1): the model writes the answer (output_modalities ["text"]) and Higgs TTS speaks it, so it gets the
+    same spoken-output and `[feeling]` marker rule as Gemini (ANSWER_SUFFIX) instead of the "show it in your voice" rule.
+    `web_search` (B2): the session declared Boson's web_search tool; the rule says when to use it. The caller enforces
+    when it may (websearch.allowed: textbooks, or a novel with spoilers on).
+    `history`: the chat so far with this speaker. Live (probe 2026-10-24) the model does not see the conversation's items
+    when a response carries instructions, so the history is written here, after the passages and before the rules.
+    TOOL_RULE: these instructions replace the session's, so the tool rule is repeated here.
+    The suffixes go after the length cap, so none of them is ever cut off."""
+    suffix = TOOL_RULE + (WEB_SEARCH_RULE if web_search else "") + (ANSWER_SUFFIX if text_answer else "")
+    earlier = format_history(history)
+    note = (HISTORY_NOTE + earlier) if earlier else ""
+    body = build_instructions(book, speaker_id, story_so_far, passages, MAX_INSTRUCTIONS_CHARS - len(suffix) - len(note),
+                              spoilers=spoilers, reply_language=answer_language(book, query),
+                              voice_emotion=not text_answer)
+    return body + note + suffix
+
+
 def build_answer_prompt(book: Book, speaker_id: str, story_so_far: str, passages: list[dict], query: str,
                         *, spoilers: bool = False, history: list | None = None,
                         web_search: bool = False) -> tuple[str, str]:
@@ -168,7 +238,7 @@ def build_answer_prompt(book: Book, speaker_id: str, story_so_far: str, passages
     length cap, before the spoken-output rule, so neither is cut off."""
     suffix = (WEB_SEARCH_RULE if web_search else "") + ANSWER_SUFFIX
     system = build_instructions(book, speaker_id, story_so_far, passages, MAX_ANSWER_PROMPT_CHARS - len(suffix),
-                                spoilers=spoilers, reply_language=multilingual.foreign_language(query))
+                                spoilers=spoilers, reply_language=answer_language(book, query))
     earlier = format_history(history)
     if earlier:
         return system + suffix, (

@@ -5,7 +5,7 @@ import asyncio
 import pymupdf as fitz
 import pytest
 
-from app import main
+from app import deps
 from app.config import settings
 from app.enrich import describe
 from app.ratelimit import TokenBucket
@@ -184,7 +184,7 @@ def test_endpoint(client, monkeypatch):
 def test_endpoint_validation_gating_and_rate_limit(client, monkeypatch):
     assert client.post("/api/books/describe", files={"file": ("a.docx", b"x")}).status_code == 400
     assert client.post("/api/books/describe", files={"file": ("a.pdf", b"not a pdf")}).status_code == 400
-    monkeypatch.setattr(main, "describe_bucket", TokenBucket(1, 60))
+    monkeypatch.setattr(deps, "describe_bucket", TokenBucket(1, 60))
     assert client.post("/api/books/describe", files={"file": ("a.txt", b"Hello")}).status_code == 200
     assert client.post("/api/books/describe", files={"file": ("a.txt", b"Hello")}).status_code == 429
     monkeypatch.setattr(settings, "access_token", "sesame")

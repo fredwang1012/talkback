@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from app import books, ingest_upload, main, retrying
+from app import books, indexes, ingest_upload, processing, retrying
 from app.config import settings
 from app.enrich import pipeline
 from app.enrich import summaries as sum_mod
@@ -290,42 +290,42 @@ def test_index_failure_finishes_the_enrichment_with_basic_search(data_dir):
 def test_enrich_indexer_records_an_index_error_for_the_startup_retry(client, monkeypatch):  # noqa: F811
     book = make_book_on_disk(settings.data_dir)
     ingest_upload.write_status(BID, "ready", index={"state": "error", "done": 0, "total": 3})
-    main._upload_status.clear()
+    processing._upload_status.clear()
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (None, None))
 
     async def dead_index(book, chunks, embedder, store, on_progress=None):
         raise httpx.ReadError("r")
     monkeypatch.setattr("app.gcp.indexing.index_book", dead_index)
     with pytest.raises(httpx.ReadError):
-        asyncio.run(main._enrich_indexer(book))
+        asyncio.run(processing._enrich_indexer(book))
     idx = ingest_upload.read_status(BID)["index"]
     assert idx["state"] == "error" and "basic search" in idx["message"]
-    assert not main._vertex_index_ready(BID)
-    assert BID not in main._index_jobs
+    assert not indexes._vertex_index_ready(BID)
+    assert BID not in processing._index_jobs
 
 
 def test_enrich_indexer_keeps_a_complete_index(client, monkeypatch):  # noqa: F811
     """The upload indexed every chunk: no re-embed and rewrite just for the unused speaker field."""
     book = make_book_on_disk(settings.data_dir)
     ingest_upload.write_status(BID, "ready", index={"state": "done", "done": 3, "total": 3})
-    main._upload_status.clear()
+    processing._upload_status.clear()
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (None, None))
 
     async def must_not_run(*a, **k):
         raise AssertionError("re-indexed a complete index")
     monkeypatch.setattr("app.gcp.indexing.index_book", must_not_run)
-    asyncio.run(main._enrich_indexer(book))
+    asyncio.run(processing._enrich_indexer(book))
     assert ingest_upload.read_status(BID)["index"]["state"] == "done"
 
 
 def test_enrich_indexer_retries_a_failed_reindex(client, monkeypatch):  # noqa: F811
     book = make_book_on_disk(settings.data_dir)
     ingest_upload.write_status(BID, "ready", index={"state": "error", "done": 0, "total": 3})
-    main._upload_status.clear()
+    processing._upload_status.clear()
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (None, None))
     calls = []
 
     async def flaky_index(book, chunks, embedder, store, on_progress=None):
@@ -333,7 +333,7 @@ def test_enrich_indexer_retries_a_failed_reindex(client, monkeypatch):  # noqa: 
         if len(calls) < 2:
             raise httpx.ReadError("429")
     monkeypatch.setattr("app.gcp.indexing.index_book", flaky_index)
-    asyncio.run(main._enrich_indexer(book))
+    asyncio.run(processing._enrich_indexer(book))
     assert len(calls) == 2 and ingest_upload.read_status(BID)["index"]["state"] == "done"
 
 
@@ -344,24 +344,24 @@ def test_startup_retries_failed_indexes_once_and_bounded(client, monkeypatch):  
         ingest_upload.write_status(bid, "ready", index={"state": "error", "done": 0, "total": 3, "message": "x"})
     make_book_on_disk(settings.data_dir, book_id="u-test-ffffffff")
     ingest_upload.write_status("u-test-ffffffff", "ready", index={"state": "done", "done": 3, "total": 3})
-    main._upload_status.clear()
+    processing._upload_status.clear()
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
-    monkeypatch.setattr(main, "MAX_STARTUP_REINDEX", 2)
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(processing, "MAX_STARTUP_REINDEX", 2)
     indexed = []
 
     async def fake_index(book, chunks, embedder, store, on_progress=None):
         indexed.append(book.id)
         return len(chunks)
     monkeypatch.setattr("app.gcp.indexing.index_book", fake_index)
-    asyncio.run(main._retry_failed_indexes())
+    asyncio.run(processing._retry_failed_indexes())
     assert indexed == ids[:2]   # bounded; the done book is left alone
     assert ingest_upload.read_status(ids[0])["index"]["state"] == "done"
     assert ingest_upload.read_status(ids[2])["index"]["state"] == "error"
 
     monkeypatch.setattr(settings, "retrieval_backend", "local")
     indexed.clear()
-    asyncio.run(main._retry_failed_indexes())
+    asyncio.run(processing._retry_failed_indexes())
     assert indexed == []
 
 
@@ -462,19 +462,19 @@ def test_parallel_uploads_are_not_limited_but_each_book_is():
 
 
 def test_startup_settles_an_old_index_only_failure_as_done(monkeypatch, tmp_path):
-    from app import main, ingest_upload
+    from app import ingest_upload, main, processing
     from app.enrich import pipeline
     from types import SimpleNamespace
     calls = []
-    monkeypatch.setattr(main, "_set_enrich", lambda bid, **f: calls.append((bid, f)))
+    monkeypatch.setattr(processing, "_set_enrich", lambda bid, **f: calls.append((bid, f)))
     monkeypatch.setattr(main.settings, "retrieval_backend", "vertex")
-    monkeypatch.setattr(main, "_upload_status", {"u-x-00000000": {"enrich": {"status": "error", "stage": "index"}}})
+    monkeypatch.setattr(processing, "_upload_status", {"u-x-00000000": {"enrich": {"status": "error", "stage": "index"}}})
     book = SimpleNamespace(characters=[1], summaries=[1])
-    main._settle_index_only_failure("u-x-00000000", book)
+    processing._settle_index_only_failure("u-x-00000000", book)
     assert calls == [("u-x-00000000", {"status": "done", "stage": "done", "progress": 1.0,
                                        "message": pipeline.INDEX_PENDING})]
     calls.clear()
-    main._settle_index_only_failure("u-x-00000000", SimpleNamespace(characters=[], summaries=[]))
+    processing._settle_index_only_failure("u-x-00000000", SimpleNamespace(characters=[], summaries=[]))
     assert calls == []   # a real failure (nothing saved) stays retryable
 
 
@@ -486,15 +486,15 @@ def test_settings_repr_never_shows_secrets():
 
 
 def test_settle_says_ready_when_the_index_is_already_rebuilt(monkeypatch):
-    from app import main
+    from app import main, processing
     from app.enrich import pipeline
     from types import SimpleNamespace
     calls = []
     monkeypatch.setattr(main.settings, "retrieval_backend", "vertex")
-    monkeypatch.setattr(main, "_set_enrich", lambda bid, **f: calls.append(f["message"]))
-    monkeypatch.setattr(main, "_upload_status", {"u-x-00000000": {"enrich": {"status": "error", "stage": "index"},
+    monkeypatch.setattr(processing, "_set_enrich", lambda bid, **f: calls.append(f["message"]))
+    monkeypatch.setattr(processing, "_upload_status", {"u-x-00000000": {"enrich": {"status": "error", "stage": "index"},
                                                                   "index": {"state": "done"}}})
-    main._settle_index_only_failure("u-x-00000000", SimpleNamespace(characters=[1], summaries=[1]))
+    processing._settle_index_only_failure("u-x-00000000", SimpleNamespace(characters=[1], summaries=[1]))
     assert calls == [pipeline.READY]
 
 

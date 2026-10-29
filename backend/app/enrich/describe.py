@@ -130,16 +130,16 @@ def run_together(raw: str) -> bool:
 
 def _pdf_parts(data: bytes) -> tuple[str, str, str]:
     """(metadata title, metadata author, first pages' text) of a PDF; empty strings when it cannot be read."""
-    import pymupdf as fitz
+    from ..pdfdoc import open_pdf
     try:
-        with fitz.open(stream=data, filetype="pdf") as doc:
-            meta = doc.metadata or {}
+        with open_pdf(data) as doc:
+            meta = doc.metadata
             parts: list[str] = []
             for i in range(min(PAGES, doc.page_count)):
-                parts.append(doc[i].get_text())
+                parts.append(doc.page(i).plain_text())
                 if sum(map(len, parts)) >= MAX_CHARS:
                     break
-            return meta.get("title") or "", meta.get("author") or "", "\n".join(parts)
+            return meta["title"], meta["author"], "\n".join(parts)
     except Exception as e:   # a broken or encrypted PDF: the reader types the title
         log.info("describe: could not read the PDF (%s)", type(e).__name__)
         return "", "", ""

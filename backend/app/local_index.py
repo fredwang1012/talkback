@@ -1,6 +1,6 @@
 """Local meaning-based search (RETRIEVAL_BACKEND=local) for uploads and, at startup, the built-in books.
 
-No embeddings ship in the repo (index/embeddings.npy is gitignored). An upload is published with BM25-only chunks; main._embed_locally then computes multilingual-e5 passage embeddings
+No embeddings ship in the repo (index/embeddings.npy is gitignored). An upload is published with BM25-only chunks; processing._embed_locally then computes multilingual-e5 passage embeddings
 here and saves them as index/embeddings.npy, the same format preprocess/index.py writes for the shipped books, so
 retrieval.Index.load scores the upload hybrid (cosine + BM25) like a shipped book.
 """

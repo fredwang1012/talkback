@@ -6,7 +6,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main, public_api, public_client
+from app import deps, indexes, processing, public_api, public_client
+from app.routes import talk as talk_routes
 from app.config import settings
 from app.enrich import pipeline, spend
 from app.enrich.llm import LLM
@@ -198,11 +199,11 @@ def test_run_enrichment_uses_the_public_api_only_when_active(data_dir, monkeypat
     monkeypatch.setattr(pipeline, "enrich_book", fake_local)
     monkeypatch.setattr(settings, "gcp_project", "")
     monkeypatch.setattr(settings, "anthropic_api_key", "")
-    asyncio.run(main._run_enrichment(BOOK))
+    asyncio.run(processing._run_enrichment(BOOK))
     monkeypatch.setattr(settings, "public_api_url", "https://pub.example")
-    asyncio.run(main._run_enrichment(BOOK))
+    asyncio.run(processing._run_enrichment(BOOK))
     monkeypatch.setattr(settings, "anthropic_api_key", "sk-local")
-    asyncio.run(main._run_enrichment(BOOK))
+    asyncio.run(processing._run_enrichment(BOOK))
     assert called == ["local", "public", "local"]
 
 
@@ -219,8 +220,8 @@ def via_public(env, monkeypatch):  # noqa: F811
     monkeypatch.setattr(settings, "gcp_project", "")
     monkeypatch.setattr(settings, "anthropic_api_key", "")
     monkeypatch.setattr(settings, "public_api_url", "https://pub.example")
-    monkeypatch.setattr(main, "answer_bucket", TokenBucket(1000, 60))
-    monkeypatch.setattr(main, "get_answerer", lambda: pytest.fail("the local Gemini must not be used"))
+    monkeypatch.setattr(deps, "answer_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: pytest.fail("the local Gemini must not be used"))
     return env[0]
 
 
@@ -233,7 +234,7 @@ def test_answer_proxies_spoiler_filtered_passages(via_public, monkeypatch):
         yield {"type": "sentence", "text": "Then he left."}
 
     monkeypatch.setattr(public_client, "stream_answer", fake_stream)
-    monkeypatch.setattr(main, "_index_for", lambda book_id: LeakyIndex())  # offers a future paragraph as well
+    monkeypatch.setattr(indexes, "_index_for", lambda book_id: LeakyIndex())  # offers a future paragraph as well
     out = lines(ask(via_public, query="King arrived"))
     assert [o["type"] for o in out] == ["sentence", "sentence", "done"] and out[2]["passages"] >= 1
     p = seen[0]
@@ -297,7 +298,7 @@ def test_without_public_url_the_local_answer_path_is_unchanged(env, monkeypatch)
     from .test_answer import FakeAnswerer
     client, _ = env
     fake = FakeAnswerer(["Local."])
-    monkeypatch.setattr(main, "get_answerer", lambda: fake)
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: fake)
     monkeypatch.setattr(public_client, "stream_answer", lambda *a, **k: pytest.fail("public API must not be called"))
     assert [o["type"] for o in lines(ask(client))] == ["sentence", "done"]
     assert client.get("/api/health").json()["answer_backend"] == "realtime"

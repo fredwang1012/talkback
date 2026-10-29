@@ -7,7 +7,8 @@ import time
 import httpx
 from fastapi import BackgroundTasks
 
-from app import ingest_upload, main, users
+from app import ingest_upload, main, processing, users
+from app.routes import uploads as uploads_routes
 from app.config import settings
 from tests.test_api import env  # noqa: F401
 from tests.test_per_user import ALICE, BOB, h, pu, token  # noqa: F401  (pu is a fixture)
@@ -50,7 +51,7 @@ def test_refused_while_the_same_book_is_being_deleted(client, tmp_path):
 
     async def start_delete():
         bg = BackgroundTasks()
-        await main.delete_book(bid, bg)
+        await uploads_routes.delete_book(bid, bg)
         return bg
 
     bg = asyncio.run(start_delete())   # the card is gone; the slow part has not run yet
@@ -82,13 +83,13 @@ def test_a_failed_upload_can_be_retried(client):
 
 def test_an_upload_still_in_flight_is_a_duplicate(client):
     digest = ingest_upload.content_hash(TXT)
-    main._hash_claims[("", digest)] = "u-inflight-0000abcd"
+    processing._hash_claims[("", digest)] = "u-inflight-0000abcd"
     try:
         r = post(client, "a.txt", TXT, kind="textbook")
         assert r.status_code == 409 and r.json()["reason"] == "processing"
         assert r.json()["book_id"] == "u-inflight-0000abcd"
     finally:
-        main._hash_claims.clear()
+        processing._hash_claims.clear()
 
 
 def test_two_simultaneous_uploads_of_one_file_make_one_book(client, monkeypatch):
@@ -109,7 +110,7 @@ def test_two_simultaneous_uploads_of_one_file_make_one_book(client, monkeypatch)
 
     codes = sorted(r.status_code for r in asyncio.run(run()))
     assert codes == [202, 409]
-    assert main._hash_claims == {}   # released once the ingest ended
+    assert processing._hash_claims == {}   # released once the ingest ended
     assert len([b for b in main.books.list_books() if b["id"].startswith("u-")]) == 1
 
 

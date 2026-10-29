@@ -14,7 +14,7 @@ Talkback has three parts:
 
 1. **Backend** (`backend/app`, FastAPI, Python 3.12). It holds the books (`data/books/<id>/book.json`), parses
    uploads, calls Boson (TTS, Realtime keys, Avatar, voice cloning) and Google Vertex (Gemini, embeddings, Vector
-   Search), and enforces the spoiler rule, caps and accounts. `app/main.py` is the API; `app/asgi.py` picks either the
+   Search), and enforces the spoiler rule, caps and accounts. `app/main.py` builds the API from the routers in `app/routes/` (shared state in `app/deps.py`, upload jobs in `app/processing.py`, PDF parsing in `app/ingest/`, re-exported by `app/ingest_upload.py`); `app/asgi.py` picks either the
    main app or the public processing API (`PUBLIC_API=true`).
 2. **Frontend** (`frontend/src`, React + TypeScript, Vite). The Library page, the Reader page (read mode + Stage),
    and Talkback (the chat view). Audio playback, mic capture, the Realtime WebSocket, lip-sync video and tool calls
@@ -39,7 +39,7 @@ External services and models:
 
 ```mermaid
 flowchart LR
-  B["Browser: Library / Reader / Talkback"] -->|"REST + NDJSON"| S["FastAPI main.py"]
+  B["Browser: Library / Reader / Talkback"] -->|"REST + NDJSON"| S["FastAPI app (main.py + routes/)"]
   B -->|"WebSocket (ephemeral key)"| RT["Boson Realtime"]
   S --> TTS["Boson TTS / Avatar / Voices"]
   S --> G["Vertex Gemini + embeddings"]
@@ -78,11 +78,11 @@ the library shows "This file is already in your library as “X”" with "Open t
      or a failed ingest does not block.
    - `make_book_dir(title)` creates `u-<slug>-<8 hex>` (ids never reused); `users.claim_book` writes `owner.txt`
     (PER_USER); the original file is saved to `data/uploads/<id>.<ext>`; the hash is recorded; status "Queued".
-   - The background task `main._ingest` runs; the request returns 202 `{book_id}`.
+   - The background task `processing._ingest` runs; the request returns 202 `{book_id}`.
 4. The client polls `GET /api/books/{id}/status` (`api.pollUpload`, every 2 s, tolerates 3 failures and up to 60 s of
    a restarting backend) until `uploads.uploadSettled`: error, or ready with indexing and enrichment no longer running.
    A 429 ("already being processed" / "Too many uploads") makes the card wait 15 s and retry (up to 40 times).
-5. `main._ingest` -> `_ingest_work` under `_ingest_slot` (`INGEST_CONCURRENCY = 2` parses at once): extract text,
+5. `processing._ingest` -> `_ingest_work` under `_ingest_slot` (`INGEST_CONCURRENCY = 2` parses at once): extract text,
    detect kind (section 3), `ingest_upload.process_upload` (parse + TTS chunks + retrieval chunks, sections 4, 5 and 11), then
    `publish_book` writes `book.json` (only now is the book listed: a half-processed upload is never visible).
 6. Then, in order: equations job (textbook PDFs with math), early series detection (novels), Vertex indexing (vertex
@@ -96,7 +96,7 @@ could not be processed." otherwise (no details leak). After a restart, a status 
 **Constants.** `MAX_UPLOAD_BYTES` 20 MB, `MAX_PAGES` 2000, `MAX_CHARS` 5,000,000, `MAX_PARAGRAPH_CHARS` 5000
 (longer paragraphs are split at sentences, never inside an inline formula: `ingest_upload.split_spans`).
 
-**Main files.** `pages/Library.tsx`, `uploads.ts`, `api.ts:uploadBook/pollUpload`, `main.py:upload_book/_ingest/_ingest_work`,
+**Main files.** `pages/Library.tsx`, `uploads.ts`, `api.ts:uploadBook/pollUpload`, `routes/uploads.py:upload_book, processing.py:_ingest/_ingest_work`,
 `ingest_upload.py:content_hash/find_upload/record_upload_hash/make_book_dir`, `uploadlimit.py`.
 
 ---
@@ -133,7 +133,7 @@ unless the user already typed in them.
 **What the user sees.** With Kind = Auto-detect, the card ends with "Detected: Novel" or "Detected: Textbook"; any
 upload can be moved later with "Move to Textbooks / Novels".
 
-**Flow.** `main._ingest_work`: when `kind == "auto"`, `ingest_upload.extract_text` runs first, then
+**Flow.** `processing._ingest_work`: when `kind == "auto"`, `ingest_upload.extract_text` runs first, then
 `enrich/detect.py:detect_kind(plain_text(raw))`:
 1. **LLM** (when `UPLOAD_ENRICH` and spend allows, or the public service on a clone): `sample()` takes ~3000 chars
    from start/middle/end; one fast call returns `KindGuess{kind, confidence}`; cost is added to the upload spend.
@@ -158,9 +158,12 @@ writes textbook notes if needed. A kind change is refused (409) while any job ru
 
 ### 4.1 Paragraphs, headers, chapters and sections
 
-**Flow** (`ingest_upload.pdf_to_text`, then `parsing.parse`, then `ingest_upload.build_book`):
-1. pymupdf `page.get_text("dict")` per page. Lines are regrouped into visual rows (`_assemble_rows`,
-   `_attach_deco_rows`: a root/sum/hat glyph that pymupdf split into its own line is re-attached to its prose row).
+**Flow** (`ingest_upload.pdf_to_text`, then `parsing.parse`, then `ingest_upload.build_book`; `app/ingest_upload.py`
+is a facade over the `app/ingest/` package, one module per stage):
+1. The PDF engine (`app/pdfdoc.py`: pymupdf by default, `PDF_ENGINE=pdfium` for pypdfium2, which rebuilds pymupdf's
+   blocks / lines / spans from pdfium's characters) gives each page's text as blocks of lines of spans. Lines are
+   regrouped into visual rows (`_assemble_rows`, `_attach_deco_rows`: a root/sum/hat glyph that pymupdf split into
+   its own line is re-attached to its prose row).
 2. Per line: cleaned text (ligatures, control codes), bbox, largest font size, bold, monospace.
 3. Page furniture is dropped: first/last blocks repeated on ≥ 3 pages and ≥ 20 % of pages (digits normalized), bare
    page numbers, running headers "2.4 Title 39" (`_drop_running_headers`), table-of-contents pages and dot-leader lines.
@@ -206,7 +209,7 @@ text width, or taller than 1.5 lines, or with more than normal leading above and
 excluded. The cluster becomes one `\x03` line carrying page, bbox (clipped at neighbouring prose), a `garbled` flag
 (lost glyphs, several rows, accents) and the equation number "(3.4)" moved to the end.
 
-**Pipeline after publish** (`main._start_equations` -> `_equations_job`, only textbook PDFs with math):
+**Pipeline after publish** (`processing._start_equations` -> `_equations_job`, only textbook PDFs with math):
 1. `ingest_upload.render_equations`: pymupdf crop at 200 dpi, grayscale, pad 2 pt, max 4 MP, at most 1500 per book;
    text of other lines painted white inside the box (`_crop`). Saved to `data/books/<id>/equations/e<n>.png`; the
    picture URL (with `?v=<hash>` cache-buster) is written to book.json at once (the reader shows pictures immediately).
@@ -350,6 +353,44 @@ matched against the next 4 tokens, joining up to 3 tokens (prefix match for word
 sometimes glues to words ("emotioncontemplationprosodypitchlowTo") is stripped (`delivery.strip_tag_residue`); an
 unmatched word keeps the previous span so the highlight never jumps backwards. Result `[{start, end, char_start,
 char_end}]` relative to the chunk.
+
+### 5.6 Books in other languages (#117)
+
+**What the user sees.** A Spanish, French, Chinese (or other) PDF or .txt is read aloud in its language, its chapters
+are found, its characters are cast and voiced, and questions are answered in the book's language unless the reader
+clearly writes in another one. The lit text is the whole chunk (no word timing).
+
+**Detection** (`booklang.detect`, at ingest in `ingest_upload.build_book`, stored as `Book.language`, ISO 639-3; old
+books and unknown codes are `"eng"`): offline and cheap, on ~30k characters from the start, middle and end. A script
+decides first (Han -> `zho`, kana -> `jpn`, Hangul -> `kor`, Cyrillic -> `rus`/`ukr`, Arabic -> `ara`/`fas`, Devanagari,
+Hebrew, Greek, Thai); Latin script is the language whose common words cover ≥ 10 % of the words and 1.5x the English
+share, else English. English books keep every rule, prompt, request and cache key byte for byte.
+
+**What changes for such a book:**
+- **Parsing.** Headings in Spanish, French, German, Italian, Portuguese, Dutch, Polish and Russian ("Capítulo 3",
+  "Chapitre deux", "Глава 5") and `第三章` / `第二回` / `제3장`; their contents-page titles ("Índice", "Table des
+  matières", "目录"). PDF lines and .txt line breaks between Chinese / Japanese characters join without a space; `。！？`
+  end a line's sentence. These patterns are global but match no English text.
+- **Sentences** (`ttschunks.sentence_spans(text, language)`): `。！？` end a sentence with no space after it; French
+  `« Bonjour ! »` keeps its closing guillemet; a dash before a lowercase word continues the line (Spanish
+  `—¿Vienes? —preguntó él.`); each language's own abbreviations (Sr., Mme., z.B.). Chinese / Japanese chunks are at most
+  120 characters (`CJK_MAX_CHARS`), since they say about four times as much per character.
+- **TTS.** No English number spelling; `/api/tts` sends Boson the book's `language` with `normalize: true` and no
+  timestamps (the reader lights the chunk). Code / equation notes are said in the book's language where known.
+- **Delivery.** Rule-based whisper/shout, speech-tag sfx and expressiveness, singing and the free attribution pass
+  (`pipeline.attribute_speakers`) read English cues, so they are off. Pauses and the segmenter's speakers, emotions
+  and styles stay.
+- **Dialogue.** `booklang.has_dialogue` also counts « », „ “, 「」, 『』 and a paragraph opened by a dash, for which
+  paragraphs go to the segmenter (and its estimate). The segment prompt gets `booklang.segment_note` (dash dialogue and
+  incised narrator clauses), and `validate_segments` may put those marks back too (`segment.quote_marks`).
+- **Prompts.** Cast, persona, segment, summary and textbook-note prompts get `booklang.prompt_note` ("The book is
+  written in Spanish. Copy its text, names and quotes exactly…"; notes and summaries: "Write your answer in Spanish.").
+  The public service gets `language` in the enrich and answer requests (sent only when not English).
+- **Kind detection** (`detect.heuristic`): also counts the book's own quotation marks and dash-led dialogue lines, and
+  Spanish / French / German / Italian / Portuguese / Chinese textbook words and captions ("Figura 2.1", "Ejercicios", "定理").
+- **Search** (section 11): BM25 indexes Chinese / Japanese runs as overlapping character pairs; the e5 embeddings are
+  multilingual already. A question is searched as is unless it is clearly in another language, which is translated
+  into the book's language (section 12.4).
 
 ---
 
@@ -735,9 +776,10 @@ never trusted to the client or the model.
 1. `_resolve_talk`: 404 for unknown/hidden books and speakers; `reader_para` clamped to the book; a minor character
   (`main=False`) is refused (403); a novel character whose `first_para > reader_para` is refused (403, "has not
    appeared yet") unless spoilers are on.
-2. `multilingual.search_query` translates a non-English question to English for search (section 12.4).
+2. `multilingual.search_query` translates a non-English question to English for search (section 12.4); a book in
+   another language is searched in its own language (section 5.6).
 3. `_clamp`: `spoiler_safe = kind == "novel" and not spoilers`. Textbooks and spoilers-on novels search the whole book.
-4. Index (`main._index_for`, LRU 8):
+4. Index (`indexes._index_for`, LRU 8):
    - **Local** (`RETRIEVAL_BACKEND=local`): `retrieval.Index` = BM25 (`rank_bm25.BM25Okapi` over `context_blurb + text`)
      plus, when `index/embeddings.npy` exists, multilingual-e5-small cosine: `score = 0.6 × cosine + 0.4 × min-max BM25`.
      Eligible chunks get +0.05 when within 15 paragraphs of the reader (`RECENCY_BOOST`). Top k returned in book order.
@@ -774,11 +816,32 @@ must stay short; capped at 8,000 chars).
 `main.answer_backend()` -> `/api/health.answer_backend`, read by `useTalk.answersViaGemini`:
 - `ANSWER_BACKEND` explicit; else `vertex` retrieval -> **gemini**; local retrieval -> **realtime**; a clone with the
   public service reachable -> **gemini** (answers written by the service).
-- **Realtime path**: `/api/retrieve` returns `instructions` (persona + rules + story so far + passages, with a
-  "let the feeling show in your voice" rule) -> `TalkClient.respond` sends `response.create {instructions,
-  max_output_tokens: 600}` -> Boson speaks directly (PCM 24 kHz into `RingPlayer`). Tool calls possible. No lip-sync.
+- **Realtime path, text mode (opt-in, B1: `?answers=text` or localStorage `talkback:answers=text`)**: `/api/retrieve` (`text_answer: true`) returns `instructions`
+  (persona + rules + story so far + passages + the chat so far + the spoken-output and `[feeling]` marker rule, the
+  same `ANSWER_SUFFIX` Gemini gets) -> `TalkClient.respond` sends `response.create {instructions, input: [the
+  question], max_output_tokens: 600}` to a session opened with `output_modalities: ["text"]` -> the answer arrives as
+  `response.output_text.delta`; `talk/sentences.ts` splits it into sentences as it streams, `talk/emotionMarker.ts`
+  strips the marker (the port of `emotion.split_marker`), and each sentence goes through the same `sentencePlayer`
+  as a Gemini answer: `/api/speak` with the emotion tag in the speaker's voice, a lip-sync clip on the face shown,
+  the start gate and face sync. Captions, memory (the bubble text), barge-in (`heard` = the sentences whose sound had
+  started), pause/resume, quiz mode, function tools and hands-free all work as before. Live (2026-10-24 probe) the
+  text comes almost at once (0.12 s to the first delta, 0.30 s to the whole answer); the first sentence's TTS takes
+  about 2.5 s, so time to first audio is about 2.8 s against 0.6 s for direct audio (the lip-sync start gate adds its
+  own wait, as on the Gemini path).
+- **Realtime path, direct audio (the default)**: `output_modalities: ["audio"]`, Boson speaks the answer itself (PCM 24 kHz into `RingPlayer`), no
+  emotion tags and no lip-sync (the face uses its talk loop). `talk/answerMode.ts`.
 - **Gemini path**: `/api/answer` streams NDJSON sentences; the browser speaks each with Boson TTS (`/api/speak`) and
   lip-syncs it. No Realtime function calls: commands go through `parseIntent` (section 13).
+
+Live finding behind both Realtime modes (live probes, 2026-10-24, `higgs-realtime`): when
+`response.create` carries per-response `instructions`, the model does not see the conversation's items: not a user
+text item, not the committed audio turn, not seeded history, not a `function_call_output`. Only `response.input` reaches
+it (a bare `response.create` without instructions does see the items), and a note appended to the instructions is not
+acted on either. So the question (typed, or the transcript of what was said) always travels as `response.input`, the
+chat history is written into the instructions by `/api/retrieve`, and a tool continuation carries the tool results as a
+`user` input message (`TalkClient.returnTools`; a `system` role is refused with "Invalid role"). Until this change the
+Realtime path answered from the retrieved passages without seeing the question itself, and a tool continuation never
+saw the tool's result.
 
 ```mermaid
 sequenceDiagram
@@ -840,6 +903,15 @@ hint (ISO 639-1); the newest clear question sets the TTS answer language (ISO 63
 Boson voices **without word timestamps** (only English has them in this code) and with normalization on; that sentence
 gets its own cache key.
 
+**A book in another language** (`Book.language`, section 5.6): `personas.answer_language` is the question's language
+when `multilingual.clear_language` is sure of it (a script, or ≥ 2 stopwords that outnumber any other language,
+English included), else the book's. The prompt always starts with `BOOK_LANGUAGE_RULE` ("The book, the notes and the
+passages below are in Spanish. Answer in Spanish, unless…") or, for a question clearly in another language,
+`OTHER_LANGUAGE_RULE` (answer in that language, translate the Spanish passages). `search_query(query, book.language)`
+searches such a question translated into the book's language (Gemini only; the public service translates into English
+only, so a clone searches the original), and any other question as is. The browser (`answerLanguage(recent,
+bookLanguage)`) voices an answer with no clear question language, and read-aloud recaps, in the book's language.
+
 ### 12.5 Emotion markers -> TTS emotion tags
 
 Gemini is told to start every sentence with `[feeling]` from the 20 Boson emotions (or `[neutral]`).
@@ -853,8 +925,18 @@ sends `<|emotion:X|>text` to Boson (`emotion.tts_input`), stripping any other Bo
 ### 12.6 Google Search grounding
 
 - **When**: `websearch.allowed(kind, spoilers)`: textbooks always; novels **only with spoilers on**; never with
-  `WEB_SEARCH=false`. A spoiler-safe novel never gets the tool (the web would reveal later events). Boson's own
-  `web_search` tool is never declared on Realtime.
+  `WEB_SEARCH=false`. A spoiler-safe novel never gets the tool (the web would reveal later events).
+- **Realtime path (B2)**: the same rule picks Boson's server-side `{"type": "web_search"}` tool
+  (`talk/webSearch.ts sessionTools`, rebuilt before every turn so the spoilers switch is honoured at once; the open
+  web, no `allowed_domains`). The server runs the search itself: the response ends with a `function_call` item
+  (`name: "web_search"`, `executor: "server"`) right after the model's own preamble ("Let me dig that up"), the
+  result arrives as a `function_call_output` item (`conversation.item.added`), and the server starts the answer
+  response on its own. `TalkClient` therefore does **not** treat such a response as a finished turn (no
+  `response-done`, no auto-resume: the latent bug #4 of the research notes), never sends `response.create` or a
+  `function_call_output` for it, expects the server-started `response.created`, shows "Searching the web…" in the
+  chat meanwhile, and reads the links out of the result item ("[n] Title / URL / excerpt" blocks, a format the docs
+  call unstable) into the reply's source links. A barge-in during the search cancels the answer the server then starts.
+  Live (2026-10-24): preamble at 0.8 s, result at 1.3 s, the server's answer at 1.8 s, with three sources.
 - **Cap**: `take_local()` spends one of `GROUNDED_DAILY_CAP` (default 100 per UTC day, persisted in
   `data/usage/grounded_answers.json`); past it, a normal answer. Deploy sets 100,000.
 - **Call**: `tools=[GoogleSearch()]`; if the grounded request is refused before streaming, it retries once without the
@@ -965,13 +1047,13 @@ flowchart TD
   I --> SL["series_link.reconcile: same-author checks"]
 ```
 
-**Planning** (`main._plan_enrichment` -> `_decide_enrichment`): `enrich_pipeline.estimate_for(book)` (from text length,
+**Planning** (`processing._plan_enrichment` -> `_decide_enrichment`): `enrich_pipeline.estimate_for(book)` (from text length,
 ×1.15 margin, includes 5 series checks) and `check_caps(estimate, book_id)`: refuse when estimate + **what this book
 already cost** > `UPLOAD_BOOK_CAP_USD` (default $4) or total spend + estimate > `UPLOAD_TOTAL_CAP_USD` (default $15)
 -> status `refused` with a plain message. `UPLOAD_CONFIRM=true` (testing mode) waits with `awaiting_confirmation` and
 the estimate ("Process with characters (~$0.12)"). Otherwise `running/queued`.
 
-**Run** (`main._run_enrichment` under `_enrich_lock` = `ENRICH_PARALLEL` (1000) jobs at once; never two jobs per book):
+**Run** (`processing._run_enrichment` under `_enrich_lock` = `ENRICH_PARALLEL` (1000) jobs at once; never two jobs per book):
 textbooks -> recap notes only (section 15.6); a novel with characters and summaries is "done" without paying.
 `enrich_pipeline.enrich_book` -> `run_stages` with a save (checkpoint) after every stage:
 
@@ -1031,7 +1113,7 @@ meanwhile).
 ### 15.7 Equations: section 4.3 (separate background job, same spend ledger).
 
 ### 15.8 Index stage
-`main._enrich_indexer`: re-embeds the book's chunks into Vertex (waits for the upload's own indexing job to finish;
+`processing._enrich_indexer`: re-embeds the book's chunks into Vertex (waits for the upload's own indexing job to finish;
 `INDEX_CONCURRENCY = 2` jobs at once). It **never fails the run**: on error the index state becomes "error" (BM25 serves
 meanwhile), the enrich status is "done" with `index_failed` and "Characters and recap are ready; search uses basic mode
 until the index is rebuilt."
@@ -1105,7 +1187,7 @@ answers"). Answers, translation and face detection stay on `GEMINI_MODEL` (2.5 F
 
 ## 18. Resilience: resume, Try again, retry limits, refused status, spend per book
 
-- **Resume on restart** (`main._resume_enrichments`, at startup): uploads whose status.json says enrichment is
+- **Resume on restart** (`processing._resume_enrichments`, at startup): uploads whose status.json says enrichment is
   running/queued are restarted with `resume=True` (stages already saved are not paid again: a book with characters skips
   the cast; with summaries, it skips cast and segmentation). PER_USER: run as the owner from `owner.txt`; unknown owner ->
   left retryable. `UPLOAD_ENRICH=false` -> error "turned off". Caps re-checked (-> `refused`).
@@ -1180,7 +1262,7 @@ answers"). Answers, translation and face detection stay on `GEMINI_MODEL` (2.5 F
 | Public per-book / total / per-IP / answers | `PUBLIC_*_CAP_USD` | $1.5 / $10 / $2 per day / $2 per day | $1000 each |
 | Public grounded per day | `PUBLIC_GROUNDED_DAILY_CAP` | 50 | 50 |
 | Public face boxes per day | `FACE_DAILY_CALLS` | 100 | 100 |
-| Rate limits (per account/IP, per minute) | `main.py` TokenBuckets | token 10, TTS misses 120, clone 5, answer 20, retrieve 30, uploads 6, describe 12, avatar renders 12, faces 10, face detect 12 | same |
+| Rate limits (per account/IP, per minute) | `deps.py` TokenBuckets | token 10, TTS misses 120, clone 5, answer 20, retrieve 30, uploads 6, describe 12, avatar renders 12, faces 10, face detect 12 | same |
 
 - **Spend ledger**: `enrich/spend.py` keeps cumulative enrichment dollars in `data/usage/upload_spend.json`
  (`total_usd`, `by_provider`, `books`), totals in memory (caps act at once), flushed atomically off the event loop
@@ -1303,9 +1385,13 @@ These are the real limitations of the current code. The full list of gaps, with 
    hybrid. With `RETRIEVAL_BACKEND=vertex`, search is hybrid (vector + full text).
 2. **Reading position is per browser.** It is kept in localStorage (`talkback:pos:<bookId>`, section 7), so it does not
    follow you to another browser or device.
-3. **Uploads must be in English**. Sentence splitting, number normalization, delivery rules, heading detection
-   and prompts all assume English. Talking to a character in another language works (section 12.4); a non-English book
-   does not.
+3. **Uploads in other languages have fewer extras** (section 5.6). The language is detected and the book is split,
+   chaptered, read aloud, cast, searched and answered in it, but Boson gives word timestamps only for English here, so
+   the reader lights a whole chunk (a sentence or two) instead of each word. Sound effects, singing, rule-based
+   whisper/shout and the free attribution pass read English cues, so they are off for such a book (the LLM's own
+   speakers, emotions and styles stay). Equation readings are English, so a non-English textbook reads the extracted
+   formula text instead. Detection covers scripts plus the common words of Spanish, French, German, Italian,
+   Portuguese, Dutch and Polish; any other Latin-script language is treated as English.
 4. **Moving a paper to Textbooks does not bring back its figures**. Equations, code listings and nested
    sections are restored (section 3), figures are not. Uploading it as a textbook in the first place keeps them.
 5. **Hands-free with speakers can interrupt itself.** The barge-in thresholds were lowered (0.04 RMS,

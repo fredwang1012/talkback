@@ -6,13 +6,15 @@ of a language. It is deliberately cautious: a question only counts as non-Englis
 two of its common words belong to that language and outnumber the English ones, so an English question is never told
 to be answered in Spanish. Translation uses Gemini on Vertex when GCP_PROJECT is set, else the public processing service
 when the clone uses it (PUBLIC_API_URL); without either (or on any failure) the original question is searched, which the multilingual embeddings still partly match.
+
+A book in another language (#117, Book.language) is searched in its own language instead: see search_query.
 """
 import asyncio
 import logging
 import re
 from collections import OrderedDict
 
-from . import pacer
+from . import booklang, pacer
 from .config import settings
 
 RETRY_ATTEMPTS = 2     # translation is on the question's critical path: one retry, a short wait
@@ -72,6 +74,27 @@ def foreign_language(text: str) -> str | None:
     return lang[1] if lang and lang[0] != "en" else None
 
 
+def clear_language(text: str) -> tuple[str, str] | None:
+    """(code, English name) only when the question clearly is in that language, English included: its script, or at
+    least two common words of one language and more than of any other (the reader's clearLanguage). Used for a book in
+    another language (#117), whose answers otherwise default to the book's language."""
+    t = text.strip()
+    if len(t) < 2:
+        return None
+    for code, name, script in _SCRIPTS:
+        if script.search(t):
+            return code, name
+    words = [w.lower() for w in _WORDS.findall(t)]
+    scores = sorted(((sum(w in common for w in words), code, name) for code, name, common in _STOPWORDS),
+                    key=lambda s: -s[0])
+    best, second = scores[0], scores[1]
+    return (best[1], best[2]) if best[0] >= MIN_WORDS and best[0] > second[0] else None
+
+
+ISO_639_3 = {"en": "eng", "es": "spa", "fr": "fra", "de": "deu", "pt": "por", "it": "ita", "ja": "jpn", "ko": "kor",
+             "zh": "zho", "ru": "rus", "ar": "ara", "hi": "hin", "he": "heb", "el": "ell", "th": "tha"}
+
+
 # ---- translation for searching ----
 
 TRANSLATE_SYSTEM = ("Translate the reader's question about a book into English, for searching the book's English text. "
@@ -88,12 +111,20 @@ class Unavailable(Exception):
     """No translation backend is configured (no GCP_PROJECT)."""
 
 
-async def translate(text: str) -> str:
+def translate_system(language: str) -> str:
+    """TRANSLATE_SYSTEM for a book written in `language` (#117): the question is searched in the book's language."""
+    return (f"Translate the reader's question about a book into {language}, for searching the book's {language} text. "
+            "Keep the names of people, places and things as the book spells them. "
+            f"Reply with the {language} question only, nothing else.")
+
+
+async def translate(text: str, language: str | None = None) -> str:
     """English translation of `text` with Gemini on Vertex, or through the public processing service on a clone with
-    no LLM of its own (public_client.active()). Raises on any failure (the caller falls back)."""
+    no LLM of its own (public_client.active()). Raises on any failure (the caller falls back). `language` (an English
+    language name): translate into that language instead (Gemini only; the service translates into English)."""
     if not settings.gcp_project:
         from . import public_client
-        if public_client.active():
+        if public_client.active() and language is None:
             return await public_client.translate(text)
         raise Unavailable("no GCP_PROJECT")
     from google import genai
@@ -103,7 +134,8 @@ async def translate(text: str) -> str:
     global _client
     if _client is None:
         _client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
-    config = types.GenerateContentConfig(system_instruction=TRANSLATE_SYSTEM, temperature=0, max_output_tokens=200,
+    system = TRANSLATE_SYSTEM if language is None else translate_system(language)
+    config = types.GenerateContentConfig(system_instruction=system, temperature=0, max_output_tokens=200,
                                          thinking_config=types.ThinkingConfig(thinking_budget=0))
 
     async def once():
@@ -114,7 +146,7 @@ async def translate(text: str) -> str:
             if "thinking" not in str(e).lower():
                 raise
             # models that always think reject a zero budget: let it think, with room for the hidden thoughts
-            config = types.GenerateContentConfig(system_instruction=TRANSLATE_SYSTEM, temperature=0, max_output_tokens=2048)
+            config = types.GenerateContentConfig(system_instruction=system, temperature=0, max_output_tokens=2048)
         return await _client.aio.models.generate_content(model=settings.gemini_model, contents=text, config=config)
 
     # one quick retry of a network blip, short enough to fit the caller's TRANSLATE_TIMEOUT_S
@@ -127,17 +159,28 @@ async def translate(text: str) -> str:
     return resp.text or ""
 
 
-async def search_query(query: str) -> str:
+async def search_query(query: str, book_language: str | None = None) -> str:
     """The query to search the English book with: the question itself, or its English translation when it is written in
-    another language. Translations are cached; a failure or timeout searches the original question."""
+    another language. Translations are cached; a failure or timeout searches the original question.
+
+    A book in another language (`book_language`, ISO 639-3, #117) is searched in its own language: a question clearly
+    written in a different language (English included) is translated into the book's; any other is searched as is."""
     q = query.strip()
-    if not q or foreign_language(q) is None:
+    target = None
+    if not booklang.is_english(book_language):
+        lang = clear_language(q) if q else None
+        if lang is None or ISO_639_3.get(lang[0]) == ("zho" if book_language == "cmn" else book_language):
+            return query
+        target = booklang.name(book_language)
+    elif not q or foreign_language(q) is None:
         return query
-    if q in _cache:
-        _cache.move_to_end(q)
-        return _cache[q]
+    key = q if target is None else f"{book_language}\x00{q}"
+    if key in _cache:
+        _cache.move_to_end(key)
+        return _cache[key]
     try:
-        english = await asyncio.wait_for(translate(q[:MAX_QUERY_CHARS]), TRANSLATE_TIMEOUT_S)
+        english = await asyncio.wait_for(translate(q[:MAX_QUERY_CHARS]) if target is None
+                                         else translate(q[:MAX_QUERY_CHARS], target), TRANSLATE_TIMEOUT_S)
     except Unavailable:
         return query
     except Exception as e:  # never fail the question over its translation
@@ -146,7 +189,7 @@ async def search_query(query: str) -> str:
     english = " ".join(english.split()).strip("\"'“”")
     if not english:
         return query
-    _cache[q] = english
+    _cache[key] = english
     while len(_cache) > MAX_CACHE:
         _cache.popitem(last=False)
     return english

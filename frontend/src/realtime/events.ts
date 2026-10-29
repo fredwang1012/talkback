@@ -147,6 +147,16 @@ export function userTextItem(text: string): ClientEvent {
 }
 
 /**
+ * The reader's question as a `response.create` input message. Live (probe 2026-10-24):
+ * when `response.create` carries per-response `instructions`, the model does not see the conversation's items (a text
+ * item, the committed audio turn, seeded history or a function_call_output); only `response.input` reaches it. So the
+ * question (typed, or the transcript of what was said) always travels here. The server appends it to the conversation.
+ */
+export function userInput(text: string): Record<string, unknown> {
+  return { type: "message", role: "user", content: [{ type: "input_text", text }] };
+}
+
+/**
  * An earlier turn of the chat put back into a fresh session (text only, never audio). `eventId` lets us recognise an
  * error about it. Content types per Boson's item schema: user and system items take `input_text` (or `input_audio`),
  * an assistant item takes `text` (or `audio`); `output_text` is not accepted and the server answers with a pile of

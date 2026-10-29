@@ -81,6 +81,28 @@ class BosonClient:
         usage.record("boson_voice_clone", "boson-voice-clone", clones=1)  # count only, unpriced
         return data.get("voice") or data["voice_id"]  # schema says `voice`, guide says `voice_id`
 
+    async def list_voices(self) -> list[dict[str, str]]:
+        """GET /v1/audio/voices: the custom voices on this API key, as [{"id", "title"}] (presets are not listed)."""
+        data = (await self.request("GET", "/v1/audio/voices")).json()
+        items = data.get("data", data) if isinstance(data, dict) else data
+        out = []
+        for v in items if isinstance(items, list) else []:
+            if not isinstance(v, dict):
+                continue
+            vid = v.get("voice_id") or v.get("voice") or v.get("id")
+            if isinstance(vid, str) and vid:
+                out.append({"id": vid, "title": str(v.get("title") or v.get("description") or vid)})
+        return out
+
+    async def preview_voice(self, ref_audio_b64: str, ref_text: str, text: str) -> bytes:
+        """One-off cloning: speak `text` in the voice of a reference clip without saving a voice (ref_audio/ref_text)."""
+        body = {"model": "higgs-tts-3", "input": text, "ref_audio": ref_audio_b64, "ref_text": ref_text,
+                "response_format": "mp3", "stream": False}
+        async with TTS_SEMAPHORE:
+            resp = await self.request("POST", "/v1/audio/speech", json=body)
+        usage.record("boson_tts", "higgs-tts-3", chars=len(text))
+        return resp.content
+
     async def delete_voice(self, voice_id: str) -> bool:
         """DELETE /v1/audio/voices/{id}. True when removed, False when Boson no longer has it (404 = already gone)."""
         try:
@@ -90,6 +112,40 @@ class BosonClient:
                 return False
             raise
         return True
+
+    # ---- Live avatar sessions (#140): a preset face rendered into a LiveKit room. ----
+
+    async def list_avatars(self) -> list[dict]:
+        """GET /v1/avatars: the faces this key can start a live session with (today Boson's presets only)."""
+        data = (await self.request("GET", "/v1/avatars")).json()
+        return [a for a in data.get("data", []) if isinstance(a, dict) and a.get("avatar_id")]
+
+    async def create_avatar_session(self, body: dict) -> dict:
+        """POST /v1/avatar/sessions. Not idempotent and holds a scarce slot, so it is never retried here: a 429
+        capacity_exhausted goes back to the caller, which keeps the per-sentence clips instead."""
+        async with self._client() as c:
+            resp = await c.post("/v1/avatar/sessions", json=body)
+        if not resp.is_success:
+            raise _to_error(resp)
+        usage.record("boson_avatar_live", "higgs-avatar", sessions=1)
+        return resp.json()
+
+    async def get_avatar_session(self, session_id: str) -> str:
+        """GET /v1/avatar/sessions/{id}: its status (active, releasing, terminated); "gone" once Boson no longer has it."""
+        try:
+            return str((await self.request("GET", f"/v1/avatar/sessions/{quote(session_id, safe='')}")).json().get("status", ""))
+        except BosonError as e:
+            if e.status == 404:
+                return "gone"
+            raise
+
+    async def release_avatar_session(self, session_id: str) -> None:
+        """DELETE /v1/avatar/sessions/{id}; a 404 means it already ended."""
+        try:
+            await self.request("DELETE", f"/v1/avatar/sessions/{quote(session_id, safe='')}")
+        except BosonError as e:
+            if e.status != 404:
+                raise
 
     # ---- Higgs Avatar (stretch). Request/response shapes follow the docs; verify with scripts/probe_avatar.py. ----
 

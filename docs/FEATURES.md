@@ -8,7 +8,7 @@ Every feature below was checked against the code (main files in brackets). Paths
 
 | Area | Features |
 |---|---|
-| 1. Library & uploads | 19 |
+| 1. Library & uploads | 20 |
 | 2. Reading / read mode | 15 |
 | 3. Voices, faces & lip-sync | 21 |
 | 4. Talkback: talk to characters | 24 |
@@ -21,9 +21,9 @@ Every feature below was checked against the code (main files in brackets). Paths
 | 11. Public processing service (for clones) | 8 |
 | 12. Deployment & ops | 9 |
 | 13. Developer experience | 13 |
-| **Total** | **191** |
+| **Total** | **192** |
 
-By status: **177 works** and **14 partial or gap**. The partial ones are L14, R15, V18, V20, T6, T12, T20, X6, E6, E10, E11 and C9. The real gaps are R7 (the #44 server position sync is missing from the code) and X12 (tables). Open issues and other known gaps are listed in the last section.
+By status: **178 works** and **14 partial or gap**. The partial ones are L14, R15, V18, V20, T6, T12, T20, X6, E6, E10, E11 and C9. The real gaps are R7 (the #44 server position sync is missing from the code) and X12 (tables). Open issues and other known gaps are listed in the last section.
 Tests: the backend has about 1,080 test functions in 80 files (pytest, every provider faked). The frontend has about 675 `it`/`test` cases in 80 files (vitest).
 
 ---
@@ -38,19 +38,20 @@ Tests: the backend has about 1,080 test functions in 80 files (pytest, every pro
 | L4 | Series stacks | Volumes of a series stack into one card in volume order. Stack depth shows the book count (up to 4). The blurb reads "7 books by X, from A to B" | — | works | [fe/shelves.ts, Library.tsx] |
 | L5 | Add book dialog | Upload a PDF or .txt with Kind set to Auto-detect, Novel or Textbook. The form is centred | — | works | [Library.tsx, /api/books/upload] |
 | L6 | Auto title & author | Fills title and author from PDF metadata or a Gutenberg header, else asks Gemini Flash (title page). Several authors are split and joined with commas | Gemini Flash (Vertex) | works | [be/enrich/describe.py, /api/books/describe] |
-| L7 | Multi-file / parallel uploads | Drop several files at once. Each gets its own card and progress bar. Up to 6 queued per account | — | works | [fe/uploads.ts, be/main.py UPLOAD_QUEUE_MAX] |
-| L8 | Duplicate-upload block | Re-uploading the same file gives a 409 with "Open the existing copy". Uploading a book that is being deleted is also blocked | per-account file hash | works | [main.py _duplicate, users.upload_hashes_json] |
-| L9 | Narrator-first availability | An upload can be read with the narrator in seconds. Voices, recap and characters switch on as each background stage lands | — | works | [main.py upload, enrich/pipeline.py] |
+| L7 | Multi-file / parallel uploads | Drop several files at once. Each gets its own card and progress bar. Up to 6 queued per account | — | works | [fe/uploads.ts, be/processing.py UPLOAD_QUEUE_MAX] |
+| L8 | Duplicate-upload block | Re-uploading the same file gives a 409 with "Open the existing copy". Uploading a book that is being deleted is also blocked | per-account file hash | works | [processing.py _duplicate, users.upload_hashes_json] |
+| L9 | Narrator-first availability | An upload can be read with the narrator in seconds. Voices, recap and characters switch on as each background stage lands | — | works | [routes/uploads.py upload, enrich/pipeline.py] |
 | L10 | Card progress & status notes | Each card shows stage, % progress, refused/error messages and degraded notes ("N recap notes could not be written") | — | works | [fe/pages/VolumeNote.tsx, /api/books/{id}/status] |
 | L11 | Live list refresh | The library refreshes every 10 s and skips re-rendering when nothing changed (keeps scroll and open stacks) | — | works | [fe/liveList.ts] |
 | L12 | Polling survives restart | Status polling waits out a backend restart (502/503/504, no response) for up to a minute | — | works | [fe/api.ts, test/pollRestart.test.ts] |
 | L13 | Try again | A failed, refused or interrupted job shows "Try again", which resumes from the saved stages. A stale Try again on a finished book reports it as ready | — | works | [VolumeNote.tsx, /api/books/{id}/enrich] |
 | L14 | Move to Textbooks / Novels | Moves an upload between shelves. To Textbooks re-reads the PDF to restore formulas. To Novels runs character enrichment | Gemini | partial (figures are not restored, **#148**) | [shelves.ts moveLabel, /api/books/{id}/kind, ingest_upload.rebuild_textbook_text] |
-| L15 | Delete an uploaded book | The card disappears at once. Vertex datapoint deletes and file removal run in the background and resume after a retry | Vertex Vector Search | works | [main.py DELETE /api/books/{id}, deleting.json] |
+| L15 | Delete an uploaded book | The card disappears at once. Vertex datapoint deletes and file removal run in the background and resume after a retry | Vertex Vector Search | works | [routes/uploads.py DELETE /api/books/{id}, deleting.json] |
 | L16 | Hide / restore built-in books | Built-in books cannot be deleted, but each account can hide them. "Hidden books (N)" restores them | — | works | [/api/books/{id}/hide, /restore, users.set_hidden] |
 | L17 | Card action menu | Move / Delete / Hide in a keyboard-navigable menu (arrow keys wrap) | — | works | [shelves.ts cardActions, wrapIndex] |
 | L18 | Robust listing | One unreadable book.json no longer takes the whole library down | — | works | [be/books.py, tests/test_books_listing_robust.py] |
 | L19 | Favicon | Talkback favicon on every version | — | works | [frontend/public] |
+| L20 | Uploads in other languages (#117) | A Spanish, French, Chinese (or other) PDF or .txt is detected, chaptered, read aloud in its language, cast, searchable and answered in its language. The reader lights a whole chunk (no word timing outside English); sound effects, singing and rule-based whisper/shout stay English-only | offline script + stopword detection; **Higgs TTS 3** `language` + `normalize`; CJK BM25 bigrams | works *(unverified live)* | [be/booklang.py, ttschunks.py, ingest_upload.py, personas.py, multilingual.py] |
 
 ## 2. Reading / read mode
 
@@ -65,12 +66,12 @@ Tests: the backend has about 1,080 test functions in 80 files (pytest, every pro
 | R7 | Reading position | Remembers where you are in each book and follows the text with auto-scroll | localStorage | **partial / gap**: the position is kept per browser (localStorage). #44 is closed, but there is no server-side sync route yet | [fe/reader/position.ts] |
 | R8 | Chapter list | Click to jump. Titles lose stray symbols and page numbers but keep chapter numbers. Figure text, equation numbers and running headers never become chapters | — | works | [fe/reader/ChapterList.tsx, cleanTitle.ts] |
 | R9 | Nested chapter tree (textbooks) | A collapsible tree by section level instead of a flat list of 368 rows. Novels stay flat | — | works | [fe/reader/chapterTree.ts] |
-| R10 | Spoilers toggle | Per book, off by default. Off: characters know only what you have read. On: whole-book knowledge, every character unlocked, web search allowed | server-enforced | works | [fe/reader/spoilers.ts, main.py spoilers flag] |
+| R10 | Spoilers toggle | Per book, off by default. Off: characters know only what you have read. On: whole-book knowledge, every character unlocked, web search allowed | server-enforced | works | [fe/reader/spoilers.ts, routes/talk.py spoilers flag] |
 | R11 | Auto-resume | After an answer, reading continues from the same sentence (toggle) | — | works | [PlayerBar.tsx "Auto-resume"] |
 | R12 | Read / Talkback modes | Switch between the page and the full conversation view (T) | — | works | [Reader.tsx, reader/TalkbackView.tsx] |
 | R13 | Friendly media errors | Blocked autoplay ("Tap play to continue") and a denied mic give plain messages instead of raw DOMExceptions | — | works | [fe/audio/mediaErrors.ts] |
 | R14 | Silent mode | Without a Boson key the reader still runs at an estimated reading pace | — | works | [position.ts silentDurationMs] |
-| R15 | Demo mode `?demo=1` | Plays only pre-rendered audio and never calls Boson for speech. Opens a preset position with a pinned speaker | prerendered TTS/avatar | **partial**: hard-wired to `hp1-sorcerers-stone` + Hagrid, which a clone does not have | [fe/demo.ts, main.py cached_only 409] |
+| R15 | Demo mode `?demo=1` | Plays only pre-rendered audio and never calls Boson for speech. Opens a preset position with a pinned speaker | prerendered TTS/avatar | **partial**: hard-wired to `hp1-sorcerers-stone` + Hagrid, which a clone does not have | [fe/demo.ts, routes/tts.py cached_only 409] |
 | R16 | Bilingual / language-learning reading | Player bar "Second language" (Spanish, French, German, Italian, Portuguese, Chinese, Japanese, Korean) and a mode: each paragraph read in English and then in the chosen language, or the translation only. Same voice per speaker, cloned voices too; emotion/style tags carried over, English-only sfx dropped. The translation shows under the paragraph and its pieces light up as read (no word timing outside English). Remembered per book | Gemini Flash-Lite translation per paragraph (lazy, prefetch window only, cached per book + paragraph + language, per account with PER_USER); **Higgs TTS 3** `language` + `normalize` | works (live-checked on Alice in Spanish and Chinese, preset + cloned voice) | [be/translate.py, /api/translate, /api/tts/translated, fe/reader/bilingual.ts, BookText.tsx, PlayerBar.tsx] |
 
 ## 3. Voices, faces & lip-sync
@@ -94,7 +95,7 @@ Tests: the backend has about 1,080 test functions in 80 files (pytest, every pro
 | V14 | Streaming lip-sync, always on | Every line spoken by a face (read mode, answers, recaps) is lip-synced. Streamed as fMP4 over MediaSource, so it starts before the render ends. No toggle | **Higgs Avatar** `/v1/videos` streaming | works | [fe/talk/avatarStream.ts, clipVideo.ts, /api/avatar/stream, /api/avatar/talk] |
 | V15 | Voice/face sync engine | Start gate, drift control and rendezvous: the voice never rewinds, short back-to-back chunks stay in step, and the face hides when its line ends | — | works | [fe/talk/startGate.ts, driftController.ts, faceSync.ts, reader/readLipSync.ts] |
 | V16 | Lip-sync at 0.75x-1.5x | The clip plays at the voice's playbackRate, and the start gate grows with speed | — | works | [faceSync.ts, readLipSync.ts] |
-| V17 | Any voice × any face | Each request carries the `face_id` on screen, resolved only in the caller's own library | Higgs Avatar | works | [main.py _lipsync_face] |
+| V17 | Any voice × any face | Each request carries the `face_id` on screen, resolved only in the caller's own library | Higgs Avatar | works | [routes/avatar.py _lipsync_face] |
 | V18 | Fallbacks | No face, an unbound face, or a failed or stalled render falls back to the talk loop or the still. iOS Safari (no MSE) gets render-then-play | — | partial (iOS slower; Realtime voice answers are audio-only, no lip-sync) | [faceSync.ts, reader/speechLevel.ts] |
 | V19 | Lip-sync cache & metering | Clips are cached per account and line. Avatar seconds come from mp3 frame headers (fixes a 4x under-count) | — | works | [be/mp3dur.py, users.lipsync_dir] |
 | V20 | Voice baking (CLI) | Bakes a character's pitch/speed tags into a custom Boson voice, so read mode and Realtime sound the same | Boson TTS + voices | partial (script only, no UI) | [be/voice_bake.py, scripts/bake_voices.py] |
@@ -103,14 +104,14 @@ Tests: the backend has about 1,080 test functions in 80 files (pytest, every pro
 
 | ID | Feature | What it does | Key tech | Status | Code |
 |---|---|---|---|---|---|
-| T1 | "Talk to" picker | Choose who to talk to: the narrator or a main character. Characters not yet met are locked ("appear later in the story") unless spoilers are on. The server returns 403 too | — | works | [fe/reader/Stage.tsx, position.splitCharacters, main.py] |
+| T1 | "Talk to" picker | Choose who to talk to: the narrator or a main character. Characters not yet met are locked ("appear later in the story") unless spoilers are on. The server returns 403 too | — | works | [fe/reader/Stage.tsx, position.splitCharacters, routes/talk.py] |
 | T2 | Push-to-talk | Hold Space or the mic button and release to send. A fresh ephemeral key is minted per connection | **Higgs Realtime** (STT higgs-stt-3.1), manual turns | works | [fe/talk/TalkClient.ts, /api/realtime/token] |
 | T3 | Typed questions | Type a question box. On the Gemini path it streams NDJSON sentences; otherwise it is sent as a Realtime `input_text` item | Gemini 2.5 Flash / Realtime | works | [TalkbackView.tsx, /api/answer] |
 | T4 | Spoiler-safe grounding | Passages are eligible only if `para_end <= reader_para`, enforced 3 times (VS filter, post-filter, `_finish`). Adds the "story so far" and earlier books of the series | **Vertex Vector Search 2.0** hybrid (gemini-embedding-001 + full-text, RRF) or local BM25 (+ optional e5) | works | [be/retrieval.py, gcp/vertex_index.py, gcp/vectorstore.py] |
-| T5 | Full-book mode | With spoilers on, the whole book and the "Whole book:" summary are used, with full-book persona prompts | — | works | [personas.py, main.py] |
+| T5 | Full-book mode | With spoilers on, the whole book and the "Whole book:" summary are used, with full-book persona prompts | — | works | [personas.py, routes/talk.py] |
 | T6 | Personas in character | Personas with concrete speech habits. Spoiler-safe rules: never state or deny an outcome that is not yet established | Gemini / Claude offline | partial (eval: about 3 true leaks per 122 questions from model outside knowledge) | [be/personas.py, preprocess/repersona.py] |
 | T7 | Answers in the character's voice | Gemini streams sentences. Each sentence goes through `/api/speak` and plays while the next is synthesised. Fast start | Gemini + **Higgs TTS** | works | [fe/talk/sentencePlayer.ts, /api/speak] |
-| T8 | Answer backend selection | Gemini when GCP or the public service is available, otherwise Boson Realtime writes and speaks the answer. `/api/health` reports which | — | works | [main.py answer_backend] |
+| T8 | Answer backend selection | Gemini when GCP or the public service is available, otherwise Boson Realtime writes and speaks the answer. `/api/health` reports which | — | works | [deps.py answer_backend] |
 | T9 | Talkback conversation view | Full chat view with face, bubbles, status line (no flicker) and "Back to reading" | — | works | [fe/reader/TalkbackView.tsx] |
 | T10 | Barge-in | Press again, press Space or type while it talks: local flush in under 0.15 s, truncate at the ms heard, cancel, then listen. Late output from the old answer is dropped by response id | Realtime `conversation.item.truncate`, `response.cancel` | works | [TalkClient.interrupt, test/bargeIn.test.ts] |
 | T11 | Hands-free mode | Talk with no button. Uses Boson `semantic_vad` with `create_response:false`, falling back to server_vad, then a local RMS gate. 300 ms pre-roll keeps the first words | Realtime turn detection | works | [fe/talk/handsFree.ts, TalkController serverTurns] |
@@ -176,7 +177,7 @@ Tests: the backend has about 1,080 test functions in 80 files (pytest, every pro
 | X8 | Figures in the reader | Found from their "Figure N" captions, cropped, shown inline with click to enlarge (Esc closes). Figure text no longer leaks into the body | PyMuPDF | works (new uploads only) | [ingest_upload._take_figures, fe/reader/Figure.tsx, /api/books/{id}/figures] |
 | X9 | Read captions toggle | Skip or read figure captions while reading. Saved positions stay valid | — | works | [PlayerBar.tsx, position.nextChunk] |
 | X10 | Textbook voice agent | Section tools, find topic, quiz, explain (see A4-A7). No spoiler gate | Realtime tools | works | [tools.ts] |
-| X11 | Faster textbook ingest | Concurrent indexing. The book is published before indexing finishes | Vertex | works | [main.py] |
+| X11 | Faster textbook ingest | Concurrent indexing. The book is published before indexing finishes | Vertex | works | [processing.py] |
 | X12 | Tables | Tables ("Table N") are still dropped | — | **gap** (by design so far) | — |
 
 ## 8. Expressive delivery (Higgs TTS tags)
@@ -212,10 +213,10 @@ Tests: the backend has about 1,080 test functions in 80 files (pytest, every pro
 | P11 | Summaries stage | See S5 / S7 | Gemini | works | [pipeline.py] |
 | P12 | Index stage | Vertex re-index with speakers, or local chunks (BM25 / e5) | **gemini-embedding-001 + Vector Search** | works | [gcp/indexing.py, retrieval.py] |
 | P13 | Progressive saves | Every stage saves book.json atomically (per-file write lock, temp file + replace) | — | works | [books.write_lock, save_book] |
-| P14 | Parallel processing | Many books at once (ENRICH_PARALLEL=1000), each with up to UPLOAD_CONCURRENCY=24 calls | — | works | [config.py, main.py] |
-| P15 | Resume after restart | Interrupted jobs restart at startup as their owner. Each resume counts as an attempt, so a crashing book is not retried forever | — | works | [main._resume_enrichments, TOO_MANY_TRIES] |
+| P14 | Parallel processing | Many books at once (ENRICH_PARALLEL=1000), each with up to UPLOAD_CONCURRENCY=24 calls | — | works | [config.py, processing.py] |
+| P15 | Resume after restart | Interrupted jobs restart at startup as their owner. Each resume counts as an attempt, so a crashing book is not retried forever | — | works | [processing._resume_enrichments, TOO_MANY_TRIES] |
 | P16 | Resilience / retries | One transient-error policy (network, 429, 5xx; never 401/402/403 or quota) with jittered backoff. Windows PermissionError retry | — | works | [be/retrying.py, books.retry_permission] |
-| P17 | Index failures never fail a book | Reports done with "search uses basic mode" and falls back to BM25. Startup re-indexes up to 20 books. Old index-only failures are settled | — | works | [main._retry_failed_indexes] |
+| P17 | Index failures never fail a book | Reports done with "search uses basic mode" and falls back to BM25. Startup re-indexes up to 20 books. Old index-only failures are settled | — | works | [processing._retry_failed_indexes] |
 | P18 | Gemini pacer | One process-wide AIMD concurrency limit (8 → 32, halves on a 429, honours Retry-After). Interactive calls go first | — | works | [be/pacer.py] |
 | P19 | Flash-Lite for books | `ENRICH_GEMINI_MODEL` lets book processing use gemini-2.5-flash-lite. Deploy keeps it | Gemini 2.5 Flash-Lite | works | [enrich/llm.py, scripts/deploy_cloudrun.sh] |
 | P20 | Cost estimate & confirm mode | Estimate before the job. `UPLOAD_CONFIRM=true` shows "Process with characters (~$x)" | — | works | [pipeline.estimate, VolumeNote.tsx] |
@@ -233,11 +234,11 @@ Tests: the backend has about 1,080 test functions in 80 files (pytest, every pro
 | C5 | Delete requires account | Deleting needs a signed-in identity | — | works | [users.require_account] |
 | C6 | Access-code gate | `TALKBACK_ACCESS_TOKEN` gates paid endpoints. The page asks for the code and has "Forget access code on this device" | — | works (no longer deployed; IAP replaced it) | [main.require_access, fe/accessToken.ts] |
 | C7 | Keys stay on the server | The browser gets only ephemeral Realtime keys. Secrets are hidden from the settings repr | — | works | [config.py repr=False, /api/realtime/token] |
-| C8 | Rate limits | Per IP or account token buckets: token 10/min, TTS misses 120, clone 5, answer 20, retrieve 30, upload 6, describe 12, avatar 12, face 10, face-detect 12. Trusted proxy uses the right-most XFF | — | works | [be/ratelimit.py, main.py] |
+| C8 | Rate limits | Per IP or account token buckets: token 10/min, TTS misses 120, clone 5, answer 20, retrieve 30, upload 6, describe 12, avatar 12, face 10, face-detect 12. Trusted proxy uses the right-most XFF | — | works | [be/ratelimit.py, deps.py] |
 | C9 | Upload spend caps | Per-book estimate cap ($4) and cumulative cap ($15), persisted | — | partial (**live deploy lifts both to $1000** and grounded cap to 100,000 for the hackathon) | [enrich/spend.py, deploy_cloudrun.sh L91] |
 | C10 | Small-call caps | Describe and face-detect reserve cost in the upload budget, with global bucket and daily caps. Grounded answers 100/day | — | works | [describe.py, face_detect.py, daily_count.py] |
 | C11 | Kill switches | `UPLOAD_ENRICH`, `WEB_SEARCH`, `AUTO_RECHUNK`, `MINOR_VOICES`, remove `PUBLIC_API_URL`, close the public service (IAM), budget stop | — | works | [config.py] |
-| C12 | Lip-sync isolation | `face_id` is resolved only in the caller's library. Clips are served only to their owner | — | works | [main._lipsync_face, LipsyncFiles] |
+| C12 | Lip-sync isolation | `face_id` is resolved only in the caller's library. Clips are served only to their owner | — | works | [routes/avatar._lipsync_face, LipsyncFiles] |
 | C13 | Portrait isolation | `/portraits` serves only the caller's faces and hides the shared folders | — | works | [main.py PortraitFiles] |
 | C14 | Copyright guard | HP is gitignored and owner-only. The deploy never syncs portraits or uploads | — | works | [.gitignore, deploy_cloudrun.sh] |
 | C15 | Search-suggestion compliance | Google's markup is shown unmodified in a script-less sandboxed iframe (no referrer), as Google's display rules require | — | works | [websearch.clean_suggestions, SourceLinks.tsx] |
@@ -251,7 +252,7 @@ Same image with `PUBLIC_API=true` (entry `app.asgi:app`), Cloud Run service `tal
 | U1 | Hosted processing for key-less clones | A clone with only a Boson key gets full upload processing and Gemini typed answers | Gemini on Vertex | works | [be/public_api.py, be/public_client.py] |
 | U2 | Routes | `GET /api/health`; `POST /api/public/enrich` + `GET …/enrich/{job}`; `/answer`; `/translate`; `/detect`; `/describe`; `/series`; `/series-early`; `/faces/detect`; `/equations` (ticket) + `/equations/{ticket}`. Everything else is 404 | — | works (a duplicate `/series-early` route was removed in #165) | [be/public_api.py] |
 | U3 | Caps | Book ≤ $1.5 (job stops at 1.25x). Total ≤ $10. Per IP: 1 book/hour and $2/day. Answers $2/day, 4 streams, 20/min/IP. Small calls 30/min/IP. Face boxes 10/h/IP and 100/day. Grounded answers 50/day (+$0.035 reserve). Equation tickets 2/h/IP, one open per IP, 32 total, ≤ 24 PNGs per request | — | works | [config.py, public_api.py, DEPLOY.md] |
-| U4 | Privacy | No request bodies logged. Results kept in memory for 30 min. Spoiler filtering never leaves the clone (only eligible passages are sent) | — | works | [public_api.py, main.py /api/answer] |
+| U4 | Privacy | No request bodies logged. Results kept in memory for 30 min. Spoiler filtering never leaves the clone (only eligible passages are sent) | — | works | [public_api.py, routes/talk.py /api/answer] |
 | U5 | Client fallbacks | Closed, missing, unreachable or capped service: local heuristic cast with a message saying why. 401/403 marks the service unavailable for a minute, and answers then go through Realtime | — | works | [public_client.mark_unavailable] |
 | U6 | Re-validation | The clone re-checks that every returned segment tiles its own text, strips injected emotion markers and re-cleans sources | — | works | [public_client.py] |
 | U7 | Feature parity | Series, minor voices, textbook notes, equations, translation, face box, describe and detect all work on a clone | — | works (needs a redeploy of talkback-public to carry the latest code; unverified) | [tests/test_public_parity*.py] |
@@ -298,7 +299,7 @@ Same image with `PUBLIC_API=true` (entry `app.asgi:app`), Cloud Run service `tal
 | Unified talk-while-reading screen (no Read/Talkback switch) | open, not built. Read-mode mic (T19) covers part of it |
 | Group scene: ask 2-3 characters at once | open, not built |
 | Share a character answer as an MP4 clip | open, not built |
-| Non-English uploads (parse, read aloud, talk about non-English PDFs). Splitting, normalization, delivery rules, headings and prompts all assume English | open, not built |
+| Non-English uploads: no word-level highlighting, and English-only sound effects, singing, rule-based whisper/shout and equation readings (L20) | partial |
 | Moving a paper to Textbooks restores equations but not figures (`rebuild_textbook_text` omits `figures_dir`) | open, bug |
 | Server-side reading-position sync. The code keeps the position only in the browser (localStorage), so it does not follow you to another browser or device | gap |
 | Demo mode is hard-wired to HP1, which clones do not have | gap |

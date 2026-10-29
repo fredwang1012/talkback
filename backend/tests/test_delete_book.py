@@ -7,7 +7,8 @@ import asyncio
 import pytest
 from fastapi import BackgroundTasks
 
-from app import main, users
+from app import deps, indexes, main, processing, users
+from app.routes import uploads as uploads_routes
 from app.config import settings
 from tests.test_per_user import ALICE, BOB, h, pu, token  # noqa: F401  (pu is a fixture)
 from tests.test_api import env  # noqa: F401
@@ -49,7 +50,7 @@ def test_delete_removes_everything(client, tmp_path):
     assert bid not in {b["id"] for b in client.get("/api/books").json()}
     assert client.get(f"/api/books/{bid}").status_code == 404
     assert client.get(f"/api/books/{bid}/status").status_code == 404
-    assert bid not in main._book_bodies and bid not in main._upload_status
+    assert bid not in deps._book_bodies and bid not in processing._upload_status
     leftovers = [p for p in tmp_path.rglob("*") if bid in p.as_posix()]
     assert leftovers == []   # no folder, upload, avatar clips, portraits left
     assert client.delete(f"/api/books/{bid}").status_code == 404
@@ -68,27 +69,27 @@ def test_shipped_and_bad_ids_are_protected(client, tmp_path):
 def test_refused_while_busy(client, tmp_path, mark):
     bid = upload(client)
     if mark == "processing":
-        main._upload_status[bid] = {"status": "processing"}
+        processing._upload_status[bid] = {"status": "processing"}
     elif mark == "enrich":
-        main._upload_status[bid] = {"status": "ready", "enrich": {"status": "running"}}
+        processing._upload_status[bid] = {"status": "ready", "enrich": {"status": "running"}}
     elif mark == "job":
-        main._enrich_jobs.add(bid)
+        processing._enrich_jobs.add(bid)
     else:
-        main._kind_claims.add(bid)
+        processing._kind_claims.add(bid)
     try:
         assert client.delete(f"/api/books/{bid}").status_code == 409
         assert (tmp_path / "books" / bid / "book.json").exists()
     finally:
-        main._enrich_jobs.discard(bid)
-        main._kind_claims.discard(bid)
-        main._upload_status.pop(bid, None)
+        processing._enrich_jobs.discard(bid)
+        processing._kind_claims.discard(bid)
+        processing._upload_status.pop(bid, None)
 
 
 def test_vertex_datapoints_deleted_by_id(client, tmp_path, monkeypatch):
     bid = upload(client)
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
     store = FakeStore()
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (object(), store))
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (object(), store))
     from app.gcp.indexing import datapoint_ids
     expected = datapoint_ids(main.books.load_book(bid))
     assert expected and all(i.startswith(f"{bid}__") for i in expected)
@@ -109,14 +110,14 @@ def test_vertex_partial_failure_still_deletes_the_book_and_records_orphans(clien
     from app.gcp.indexing import datapoint_ids
     expected = datapoint_ids(main.books.load_book(bid))
     store = FakeStore(refuse=expected[:1])
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (object(), store))
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (object(), store))
     assert client.delete(f"/api/books/{bid}").status_code == 202
     assert store.deleted == [expected]
     assert not (tmp_path / "books" / bid).exists()
     assert client.get(f"/api/books/{bid}/status").status_code == 404
     assert bid not in {b["id"] for b in client.get("/api/books").json()}
     assert _orphans(tmp_path) == expected[:1]
-    assert main._kind_claims == set() and bid not in main._deleting
+    assert processing._kind_claims == set() and bid not in processing._deleting
 
 
 def test_vertex_exception_still_deletes_the_book_and_records_every_id(client, tmp_path, monkeypatch):
@@ -124,7 +125,7 @@ def test_vertex_exception_still_deletes_the_book_and_records_every_id(client, tm
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
     from app.gcp.indexing import datapoint_ids
     expected = datapoint_ids(main.books.load_book(bid))
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (object(), FakeStore(fail=True)))
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (object(), FakeStore(fail=True)))
     assert client.delete(f"/api/books/{bid}").status_code == 202
     assert not (tmp_path / "books" / bid).exists()
     assert client.get(f"/api/books/{bid}/status").status_code == 404
@@ -248,12 +249,12 @@ def test_an_upload_still_being_ingested_is_never_resume_deleted(client, tmp_path
     d = tmp_path / "books" / bid
     d.mkdir(parents=True)
     (d / "status.json").write_text('{"status": "processing"}')
-    main._upload_status[bid] = {"status": "processing"}
+    processing._upload_status[bid] = {"status": "processing"}
     try:
         assert client.delete(f"/api/books/{bid}").status_code == 409
         assert d.is_dir() and (d / "status.json").exists()
     finally:
-        main._upload_status.pop(bid, None)
+        processing._upload_status.pop(bid, None)
 
 
 def test_an_upload_interrupted_by_a_restart_can_be_deleted(client, tmp_path):
@@ -274,7 +275,7 @@ def test_a_failed_local_delete_leaves_a_tombstone_and_resumes(client, tmp_path, 
     monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
     assert client.delete(f"/api/books/{bid}").status_code == 202
     assert (tmp_path / "books" / bid / "deleting.json").exists()   # local backend too
-    main._delete_status.clear()   # as after a restart: only the tombstone on disk says "resume"
+    processing._delete_status.clear()   # as after a restart: only the tombstone on disk says "resume"
     monkeypatch.setattr(shutil, "rmtree", real)
     assert client.delete(f"/api/books/{bid}").status_code == 202
     assert not (tmp_path / "books" / bid).exists()
@@ -282,12 +283,12 @@ def test_a_failed_local_delete_leaves_a_tombstone_and_resumes(client, tmp_path, 
 
 def test_refused_while_vertex_indexing(client, tmp_path):
     bid = upload(client)
-    main._upload_status[bid] = {"status": "ready", "index": {"state": "running", "done": 400, "total": 3000}}
+    processing._upload_status[bid] = {"status": "ready", "index": {"state": "running", "done": 400, "total": 3000}}
     try:
         assert client.delete(f"/api/books/{bid}").status_code == 409
         assert (tmp_path / "books" / bid / "book.json").exists()
     finally:
-        main._upload_status.pop(bid, None)
+        processing._upload_status.pop(bid, None)
 
 
 def test_the_card_goes_before_the_slow_part_and_a_retry_joins_it(client, tmp_path, monkeypatch):
@@ -301,25 +302,25 @@ def test_the_card_goes_before_the_slow_part_and_a_retry_joins_it(client, tmp_pat
             calls.append(len(ids))
             await asyncio.sleep(0.05)
 
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (object(), SlowStore()))
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (object(), SlowStore()))
 
     async def run():
         first = BackgroundTasks()
-        r = await main.delete_book(bid, first)
+        r = await uploads_routes.delete_book(bid, first)
         assert r.status_code == 202 and calls == []   # answered before any Vertex call
         assert bid not in {b["id"] for b in main.books.list_books()}
-        assert main.book_status(bid)["status"] == "deleting"
+        assert uploads_routes.book_status(bid)["status"] == "deleting"
         job = asyncio.ensure_future(first())
         await asyncio.sleep(0.01)   # the job is now inside the slow Vertex delete
         second = BackgroundTasks()
-        r2 = await main.delete_book(bid, second)
+        r2 = await uploads_routes.delete_book(bid, second)
         assert r2.status_code == 202
         await second()
         await job
 
     asyncio.run(run())
     assert calls != [] and len(calls) == 1 and not (tmp_path / "books" / bid).exists()
-    assert main._deleting == {} and main._kind_claims == set()
+    assert processing._deleting == {} and processing._kind_claims == set()
 
 
 def test_a_reupload_during_a_delete_is_a_new_book(client, tmp_path, monkeypatch):
@@ -327,7 +328,7 @@ def test_a_reupload_during_a_delete_is_a_new_book(client, tmp_path, monkeypatch)
 
     async def run():
         bg = BackgroundTasks()
-        await main.delete_book(bid, bg)
+        await uploads_routes.delete_book(bid, bg)
         return bg
 
     bg = asyncio.run(run())
@@ -344,10 +345,10 @@ def test_a_reupload_during_a_delete_is_a_new_book(client, tmp_path, monkeypatch)
 
 def test_start_enrichment_refused_during_a_delete(client):
     bid = upload(client)
-    main._upload_status[bid] = {"status": "ready", "enrich": {"status": "awaiting_confirmation"}}
-    main._kind_claims.add(bid)
+    processing._upload_status[bid] = {"status": "ready", "enrich": {"status": "awaiting_confirmation"}}
+    processing._kind_claims.add(bid)
     try:
         assert client.post(f"/api/books/{bid}/enrich").status_code == 409
     finally:
-        main._kind_claims.discard(bid)
-        main._upload_status.pop(bid, None)
+        processing._kind_claims.discard(bid)
+        processing._upload_status.pop(bid, None)

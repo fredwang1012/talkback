@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from hypothesis import HealthCheck, given, settings as hsettings, strategies as st
 
-from app import books, ingest_upload, main
+from app import books, deps, indexes, ingest_upload, main, processing
 from app.config import settings
 from app.enrich import llm as llm_mod
 from app.enrich import pipeline, spend
@@ -588,11 +588,11 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "access_token", "")
     monkeypatch.setattr(settings, "upload_enrich", True)
-    main._upload_status.clear()
-    monkeypatch.setattr(main, "_ingest_guard", main.IngestGuard())
-    monkeypatch.setattr(main, "upload_bucket", TokenBucket(1000, 60))
-    monkeypatch.setattr(main, "_enrich_lock", asyncio.Lock())
-    main._index_for.cache_clear()
+    processing._upload_status.clear()
+    monkeypatch.setattr(processing, "_ingest_guard", processing.IngestGuard())
+    monkeypatch.setattr(deps, "upload_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(processing, "_enrich_lock", asyncio.Lock())
+    indexes._index_for.cache_clear()
     fake = FakeProvider()
     monkeypatch.setattr(pipeline, "make_llm", lambda *a, **k: make_llm(fake))
     c = TestClient(main.app)
@@ -688,7 +688,7 @@ def test_running_enrichment_after_restart_reports_interrupted(client, tmp_path):
     d = tmp_path / "books" / "u-x-12345678"
     d.mkdir(parents=True)
     ingest_upload.write_status("u-x-12345678", "ready", enrich={"status": "running", "stage": "segment", "progress": 0.4})
-    main._upload_status.clear()
+    processing._upload_status.clear()
     st = client.get("/api/books/u-x-12345678/status").json()
     assert st["status"] == "ready" and st["enrich"]["status"] == "error"
     assert "interrupted" in st["enrich"]["message"]
@@ -702,7 +702,7 @@ def test_vertex_indexing_runs_in_the_index_stage(client, monkeypatch):
         return len(chunks)
 
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (None, None))
     import app.gcp.indexing as indexing
     monkeypatch.setattr(indexing, "index_book", fake_index)
     book_id = upload(client).json()["book_id"]
@@ -822,14 +822,14 @@ def test_attribution_and_rechunk_run_off_the_event_loop_once(data_dir, cpu_calls
 
 def test_a_novel_upload_starts_the_early_series_check(client, monkeypatch):
     seen = []
-    monkeypatch.setattr(main, "_start_series_early", lambda book_id: seen.append(book_id))
+    monkeypatch.setattr(processing, "_start_series_early", lambda book_id: seen.append(book_id))
     book_id = upload(client).json()["book_id"]
     assert seen == [book_id]   # wired into the ingest, not only defined
 
 
 def test_a_textbook_upload_skips_the_early_series_check(client, monkeypatch):
     seen = []
-    monkeypatch.setattr(main, "_start_series_early", lambda book_id: seen.append(book_id))
+    monkeypatch.setattr(processing, "_start_series_early", lambda book_id: seen.append(book_id))
     upload(client, kind="textbook")
     assert seen == []
 

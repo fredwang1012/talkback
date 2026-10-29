@@ -8,7 +8,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main, public_api, public_client, websearch
+from app import deps, indexes, public_api, public_client, websearch
+from app.routes import talk as talk_routes
 from app.config import settings
 from app.personas import ANSWER_EMOTION_RULE, WEB_SEARCH_RULE, build_answer_prompt
 from app.ratelimit import TokenBucket
@@ -62,13 +63,13 @@ def app_env(env, monkeypatch):  # noqa: F811
     d = settings.data_dir / "books" / "tb"
     d.mkdir(parents=True)
     (d / "book.json").write_text(textbook().model_dump_json(), encoding="utf-8")
-    monkeypatch.setattr(main, "answer_bucket", TokenBucket(1000, 60))
-    monkeypatch.setattr(main, "_index_for", lambda book_id: LeakyIndex())
+    monkeypatch.setattr(deps, "answer_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(indexes, "_index_for", lambda book_id: LeakyIndex())
     monkeypatch.setattr(settings, "web_search", True)
     monkeypatch.setattr(settings, "grounded_daily_cap", 100)
-    monkeypatch.setattr(main, "_public_answers", lambda: False)
+    monkeypatch.setattr(deps, "_public_answers", lambda: False)
     fake = GroundedFake()
-    monkeypatch.setattr(main, "get_answerer", lambda: fake)
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: fake)
     return client, fake
 
 
@@ -130,7 +131,7 @@ def test_novel_with_spoilers_on_gets_web_search(app_env):
 def test_no_sources_event_when_nothing_came_back(app_env, monkeypatch):
     client, _ = app_env
     fake = GroundedFake(sources=[], suggestions=None)
-    monkeypatch.setattr(main, "get_answerer", lambda: fake)
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: fake)
     out = ask(client, book_id="tb", speaker_id="narrator")
     assert fake.calls[0]["web_search"] is True and [o["type"] for o in out] == ["sentence", "sentence", "done"]
 
@@ -339,9 +340,9 @@ def test_public_client_passes_sources_on_and_the_clone_cleans_them(env, monkeypa
     monkeypatch.setattr(settings, "gcp_project", "")
     monkeypatch.setattr(settings, "anthropic_api_key", "")
     monkeypatch.setattr(settings, "public_api_url", "https://pub.example")
-    monkeypatch.setattr(main, "answer_bucket", TokenBucket(1000, 60))
-    monkeypatch.setattr(main, "_public_answers", lambda: True)
-    monkeypatch.setattr(main, "get_answerer", lambda: pytest.fail("the local Gemini must not be used"))
+    monkeypatch.setattr(deps, "answer_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(deps, "_public_answers", lambda: True)
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: pytest.fail("the local Gemini must not be used"))
     seen = []
 
     async def fake_stream(payload, client=None):
@@ -385,7 +386,7 @@ def test_search_suggestions_ride_on_the_sources_event_unmodified(app_env):
 
 def test_search_suggestions_alone_still_send_the_event(app_env, monkeypatch):
     client, _ = app_env
-    monkeypatch.setattr(main, "get_answerer", lambda: GroundedFake(sources=[]))
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: GroundedFake(sources=[]))
     out = ask(client, book_id="tb", speaker_id="narrator")
     ev = next(o for o in out if o["type"] == "sources")
     assert ev["sources"] == [] and ev["search_suggestions"] == SUGGESTIONS
@@ -414,8 +415,8 @@ def test_public_route_sends_suggestions(pub):
 def test_clone_passes_the_services_suggestions_on(env, monkeypatch):  # noqa: F811
     client, _ = env
     monkeypatch.setattr(settings, "public_api_url", "https://pub.example")
-    monkeypatch.setattr(main, "answer_bucket", TokenBucket(1000, 60))
-    monkeypatch.setattr(main, "_public_answers", lambda: True)
+    monkeypatch.setattr(deps, "answer_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(deps, "_public_answers", lambda: True)
 
     async def fake_stream(payload, client=None):
         yield {"type": "sentence", "text": "He smiled."}

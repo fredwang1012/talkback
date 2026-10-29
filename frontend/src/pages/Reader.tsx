@@ -35,6 +35,7 @@ import { FaceSync } from "../talk/faceSync";
 import { runTool, type ToolActions, type ToolContext } from "../talk/tools";
 import { useTalk } from "../talk/useTalk";
 import { DebugDrawer } from "../ui/DebugDrawer";
+import { useLiveFace } from "../talk/useLiveFace";
 import { debugEnabled } from "../ui/debugFlag";
 import {
   clampIndex, flattenChunks, loadPosition, loadReadCaptions, nextChunk as nextToRead, readerPara, saveReadCaptions, savePosition,
@@ -262,6 +263,8 @@ export default function Reader({ bookId }: { bookId: string }) {
   }, []);
 
   // Talk mode: push-to-talk questions, answered from what has been read so far (needs the Boson key).
+  // #140: a live preset face while the Talkback view is open (released on leaving it); null keeps the face clips
+  const live = useLiveFace(mode === "talk");
   const talk = useTalk({
     bookId,
     enabled: audioAvailable && !!book,
@@ -276,6 +279,8 @@ export default function Reader({ bookId }: { bookId: string }) {
     narratorVoice: audioAvailable ? narratorVoice : null,
     tools: toolRunner,
     bookKind: book?.kind,
+    liveFace: live.face,
+    bookLanguage: book?.language,
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
       currentIndex: () => indexRef.current,
@@ -490,7 +495,7 @@ export default function Reader({ bookId }: { bookId: string }) {
                           choice={choiceFor(talkChoices, speakerId)} onChoice={changeTalk} voices={voiceOptions}
                           spoilers={spoilers} onSpoilers={(on) => { setSpoilers(on); saveSpoilers(bookId, on); }}
                           portrait={book.characters.find((c) => c.id === speakerId)?.portrait ?? book.narrator?.portrait ?? null}
-                          onBack={() => changeMode("read")} onRecap={recap} onVoices={() => setLabOpen(true)} />
+                          onBack={() => changeMode("read")} onRecap={recap} onVoices={() => setLabOpen(true)} live={live} />
           ) : (
             <BookText book={book} chunks={chunks} index={index} word={word} translation={translationView}
                       onPick={(i) => { lastManualScroll.current = Date.now(); seek(i); }} />

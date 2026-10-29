@@ -145,16 +145,16 @@ def test_llm_records_real_calls_only(tmp_path, monkeypatch):
 def test_realtime_token_mint_records_a_session(tmp_path, monkeypatch):
     import httpx
     from fastapi.testclient import TestClient
-    from app import main
+    from app import deps, main
     from app.boson import BosonClient
     from app.ratelimit import TokenBucket
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "boson_api_key", "k")
     monkeypatch.setattr(settings, "access_token", "")
-    monkeypatch.setattr(main, "token_bucket", TokenBucket(5, 60))
+    monkeypatch.setattr(deps, "token_bucket", TokenBucket(5, 60))
     handler = lambda req: httpx.Response(200, json={"value": "bai-eph-1", "expires_at": 1})  # noqa: E731
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     assert TestClient(main.app).post("/api/realtime/token").status_code == 200
     recs = lines(tmp_path)
     assert len(recs) == 1 and recs[0]["kind"] == "boson_realtime_session" and recs[0]["sessions"] == 1
