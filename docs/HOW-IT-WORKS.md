@@ -919,6 +919,20 @@ no sentence arrives within 15 s (`firstSentenceTimeoutMs`) and speaks sentences 
   and restored after. The round is tied to its turn: Stop, a barge-in or a new question bump the turn and nobody
   else answers.
 
+### 12.3b Answer clips (#80)
+
+- Each answer sentence is lip-synced separately (fragmented MP4 from Boson: H.264 + AAC, cached under the lip-sync
+  cache). `POST /api/clip/answer` takes the reply's sentences (audio URL, voice, face id, from the replay store) and
+  `app/mp4join.join_clips` copies every sample into one progressive MP4 with new index tables; the last frame of each
+  sentence is held or cut so the video ends with that sentence's audio (no drift across joins).
+- Without a face on every sentence, or when the server answers 409 (a sentence clip was never rendered; it never
+  renders one), the browser draws the portrait or letter circle (320x320), sends it as I420 pixels, and
+  `still_mp4` writes it as an H.264 I_PCM picture (no encoder) held by skipped P frames, with the cached MP3s.
+- Why server-side pure Python: the image has no ffmpeg (and Debian's is a GPL build); the clips share one codec setup,
+  so a remux is exact and fast (~5 ms for 3 clips); MediaRecorder would take real time and gives WebM in Firefox.
+- Bounds: ≤ 40 sentences, 80 MB of input, 300 s of still audio, `clip_bucket` 6/min per account or IP, and 2 joins
+  at a time (all file reads and the join run in a worker thread under the slot; none free: 429).
+
 ### 12.4 Language rule and translated search
 
 `multilingual.detect_language`: a non-Latin script, or ≥ 2 stopwords of a language that outnumber English ones.

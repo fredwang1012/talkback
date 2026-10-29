@@ -723,6 +723,8 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
 }
 .replay-btn { margin-top: 6px; min-width: 32px; min-height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--brass-soft); background: transparent; color: var(--brass); cursor: pointer; font-size: 0.8rem; }
 .replay-btn:hover, .replay-btn[aria-pressed="true"] { background: var(--brass-soft); }
+.clip-btn { margin-right: 6px; } /* #80 "Download clip", before the replay button */
+.clip-btn:disabled { opacity: 0.6; cursor: progress; }
 .tb-actions { align-items: center; gap: var(--s3, 12px); }
 .remembers { margin-right: auto; font-size: 0.8rem; color: var(--ink-faint); }
 

@@ -62,6 +62,8 @@ export type TalkUi = {
    * (TalkController caps the round at MAX_GROUP). `nameOf` names them for each other's history. [] = one-to-one. */
   setGroup?: (ids: string[], nameOf: (id: string) => string) => void;
   roundSpeaker?: string | null; // #79: the character of a group round answering now, when not the one talked to
+  /** #80: the stored voice (sentence clips) of a finished reply, for "Download clip"; undefined when not kept. */
+  replayItem?: (id: number) => ReplayItem | undefined;
 };
 
 /** A loaded recap: its text, a better heading (e.g. with the chapter name), and what to say when the text is empty. */
@@ -441,5 +443,6 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     }, []),
     setSpeaker: useCallback((id: string) => { void controller.current?.setSpeaker(id); }, []),
     dismissToast: useCallback(() => setToast(null), []),
+    replayItem: useCallback((id: number) => replayStore.current.get(id), []),
   };
 }

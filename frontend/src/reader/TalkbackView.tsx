@@ -10,6 +10,7 @@ import RecapMenu, { type RecapChoice } from "./RecapMenu";
 import GroupPicker from "./GroupPicker";
 import { groupChoices, validPicks } from "./groupScene";
 import { priorTurns } from "../talk/chatLog";
+import { clipFileName, clipPlan, drawStill, makeAnswerClip, saveBlob } from "../talk/answerDownload";
 import { chapterAt, createStatusGate, showSpoilerToggle, speakerChoices, speakerName, talkbackStatus, type TalkbackStatus } from "./talkbackLogic";
 
 type Props = {
@@ -95,6 +96,27 @@ export default function TalkbackView({
   useEffect(() => { setGroup?.(groupKey ? groupKey.split("|") : [], (id) => speakerName(book, id)); }, [groupKey, book, setGroup]);
   useEffect(() => () => setGroup?.([], (id) => id), [setGroup]); // leaving Talkback: questions asked from the reader are one-to-one
   const askedNames = [name, ...group.map((id) => speakerName(book, id))].join(", ");
+  // #80 "Download clip": the reply being made into an MP4 (one at a time) and what to tell the reader about it
+  const [clipping, setClipping] = useState<number | null>(null);
+  const [clipNote, setClipNote] = useState<string | null>(null);
+  const download = async (id: number, who: string) => {
+    const plan = clipPlan(talk.replayItem?.(id));
+    if (!plan || clipping !== null) return;
+    const name = speakerName(book, who);
+    const image = faceFor(who)?.image
+      ?? (who === "narrator" ? book.narrator?.portrait : book.characters.find((c) => c.id === who)?.portrait) ?? null;
+    setClipping(id);
+    setClipNote(null);
+    try {
+      const { blob, note } = await makeAnswerClip(book.id, name, plan, () => drawStill(image, name.charAt(0)));
+      saveBlob(blob, clipFileName(book.id, name));
+      setClipNote(note);
+    } catch (e) {
+      setClipNote(`Could not make the clip: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setClipping(null);
+    }
+  };
   const log = useRef<HTMLDivElement>(null);
   const held = useRef(false);
 
@@ -203,6 +225,14 @@ export default function TalkbackView({
                 </span>
                 <p>{m.text || (m.pending || m.loading ? "…" : "")}</p>
                 {m.role === "character" && <SourceLinks sources={m.sources} suggestions={m.searchSuggestions} />}
+                {m.role === "character" && !m.pending && m.id !== talk.liveId && clipPlan(talk.replayItem?.(m.id)) && (
+                  <button type="button" className="replay-btn clip-btn" disabled={clipping !== null}
+                          aria-label={`Download ${speakerName(book, m.speakerId)}'s reply as a video`}
+                          title="Download this reply as an MP4: its face videos joined, or its voice over the picture. Uses only videos already made (free)."
+                          onClick={() => void download(m.id, m.speakerId)}>
+                    {clipping === m.id ? "Preparing…" : "Download clip"}
+                  </button>
+                )}
                 {m.role !== "user" && (m.id === talk.liveId ? !!m.text : !m.pending && talk.replayable?.has(m.id)) && (() => {
                   const on = talk.replayingId === m.id;
                   const verb = on ? "Pause" : talk.isPaused?.(m.id) ? "Resume" : "Play";
@@ -228,6 +258,12 @@ export default function TalkbackView({
             <button className="link-btn" disabled={talk.messages.length === 0} onClick={talk.clearMessages}
                     title="Delete this chat; the character forgets it too">Clear chat</button>
           </div>
+          {clipNote && (
+            <div className="toast" role="status">
+              <span>{clipNote}</span>
+              <button onClick={() => setClipNote(null)} aria-label="Dismiss">Close</button>
+            </div>
+          )}
           {talk.toast && (
             <div className="toast" role="alert">
               <span>{talk.toast}</span>
