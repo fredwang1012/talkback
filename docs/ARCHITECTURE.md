@@ -188,7 +188,7 @@ then hybrid BM25 + e5.
 ```mermaid
 flowchart TB
   ASGI["asgi.py<br/>PUBLIC_API ? public_api.app : main.app"]
-  MAIN["main.py (FastAPI app, ~45 routes)<br/>TokenBucket limits, IngestGuard,<br/>background jobs, startup resume"]
+  MAIN["main.py + routes/ (FastAPI app, ~50 routes)<br/>deps.py: TokenBucket limits;<br/>processing.py: IngestGuard, background jobs, startup resume"]
   PAPI["public_api.py<br/>/api/public/* service"]
   ASGI --> MAIN
   ASGI --> PAPI
@@ -236,7 +236,7 @@ flowchart TB
   end
 
   subgraph ING["Upload ingest"]
-    ING1["ingest_upload.py<br/>pymupdf PDF parsing, figures,<br/>equation crops, status.json"]
+    ING1["ingest/ (re-exported by ingest_upload.py)<br/>pymupdf PDF parsing (pdfdoc.py engine), figures,<br/>equation crops, status.json"]
     PARSE["parsing.py<br/>sections, paragraphs, markers"]
     FD["face_detect.py Gemini face box"]
   end
@@ -334,7 +334,7 @@ flowchart TB
   ELLM --> USAGE
 ```
 
-### 3.1 Routes of the main app (`backend/app/main.py`)
+### 3.1 Routes of the main app (`backend/app/routes/*.py`, mounted by `backend/app/main.py`)
 
 Every route depends on `users.bind_identity`, which verifies the IAP JWT when `PER_USER=true`. The `require_access`
 dependency checks the `X-Talkback-Token` header against `TALKBACK_ACCESS_TOKEN`, but only when that variable is set.
@@ -873,7 +873,7 @@ Cache keys and identities:
 - Lip-sync clip key is `TTS key + "-" + sha256(face image)[:16]`. A per-key lock with a waiter count stops two renders of
   the same clip.
 - Vector Search data object id is `BOOK__CHUNK`. Its `data` holds `book_id, chunk_id, section, para_start, para_end, speaker, text`.
-- In memory: `books._cache` (keyed by mtime and size), `main._book_bodies` (JSON + gzip), `_index_for` (LRU 8),
+- In memory: `books._cache` (keyed by mtime and size), `deps._book_bodies` (JSON + gzip), `_index_for` (LRU 8),
   `_upload_status`, the job sets (`_enrich_jobs`, `_index_jobs`, `_equation_jobs`, `_kind_claims`, `_deleted`), and the
   translation cache (256 entries).
 
@@ -913,7 +913,7 @@ flowchart TB
 | Spend caps | `enrich/spend.py`, `public_api.py` | configurable. Code defaults: 4 USD per book and 15 USD total for uploads; 1.5 / 10 / 2 / 2 USD on the public service (per book, total, per IP per day, answers per day). The hackathon deploy scripts lift all of them to 1000 USD (export lower values before deploying to restore them), so the project budget is the real guard there |
 | Kill switches | `budget-stop` function, closing `talkback-public` (remove the `allUsers` invoker), `UPLOAD_ENRICH=false`, `WEB_SEARCH=false`, `--no-iap` toggle | |
 
-Rate limits in `main.py` (per account or per IP, per 60 s unless noted): token 10, tts 120 (cache misses only), clone 5,
+Rate limits in `deps.py` (per account or per IP, per 60 s unless noted): token 10, tts 120 (cache misses only), clone 5,
 answer 20, retrieve 30, upload 6, describe 12, avatar 12, face upload 10, face detect 12. The public service has its
 own buckets: enrich 1 per IP per hour, poll 120, answer 20, small 30, face 10 per hour, equation tickets 2 per hour,
 equation requests 60.

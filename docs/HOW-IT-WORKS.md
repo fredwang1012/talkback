@@ -14,7 +14,7 @@ Talkback has three parts:
 
 1. **Backend** (`backend/app`, FastAPI, Python 3.12). It holds the books (`data/books/<id>/book.json`), parses
    uploads, calls Boson (TTS, Realtime keys, Avatar, voice cloning) and Google Vertex (Gemini, embeddings, Vector
-   Search), and enforces the spoiler rule, caps and accounts. `app/main.py` is the API; `app/asgi.py` picks either the
+   Search), and enforces the spoiler rule, caps and accounts. `app/main.py` builds the API from the routers in `app/routes/` (shared state in `app/deps.py`, upload jobs in `app/processing.py`, PDF parsing in `app/ingest/`, re-exported by `app/ingest_upload.py`); `app/asgi.py` picks either the
    main app or the public processing API (`PUBLIC_API=true`).
 2. **Frontend** (`frontend/src`, React + TypeScript, Vite). The Library page, the Reader page (read mode + Stage),
    and Talkback (the chat view). Audio playback, mic capture, the Realtime WebSocket, lip-sync video and tool calls
@@ -39,7 +39,7 @@ External services and models:
 
 ```mermaid
 flowchart LR
-  B["Browser: Library / Reader / Talkback"] -->|"REST + NDJSON"| S["FastAPI main.py"]
+  B["Browser: Library / Reader / Talkback"] -->|"REST + NDJSON"| S["FastAPI app (main.py + routes/)"]
   B -->|"WebSocket (ephemeral key)"| RT["Boson Realtime"]
   S --> TTS["Boson TTS / Avatar / Voices"]
   S --> G["Vertex Gemini + embeddings"]
@@ -78,11 +78,11 @@ the library shows "This file is already in your library as “X”" with "Open t
      or a failed ingest does not block.
    - `make_book_dir(title)` creates `u-<slug>-<8 hex>` (ids never reused); `users.claim_book` writes `owner.txt`
     (PER_USER); the original file is saved to `data/uploads/<id>.<ext>`; the hash is recorded; status "Queued".
-   - The background task `main._ingest` runs; the request returns 202 `{book_id}`.
+   - The background task `processing._ingest` runs; the request returns 202 `{book_id}`.
 4. The client polls `GET /api/books/{id}/status` (`api.pollUpload`, every 2 s, tolerates 3 failures and up to 60 s of
    a restarting backend) until `uploads.uploadSettled`: error, or ready with indexing and enrichment no longer running.
    A 429 ("already being processed" / "Too many uploads") makes the card wait 15 s and retry (up to 40 times).
-5. `main._ingest` -> `_ingest_work` under `_ingest_slot` (`INGEST_CONCURRENCY = 2` parses at once): extract text,
+5. `processing._ingest` -> `_ingest_work` under `_ingest_slot` (`INGEST_CONCURRENCY = 2` parses at once): extract text,
    detect kind (section 3), `ingest_upload.process_upload` (parse + TTS chunks + retrieval chunks, sections 4, 5 and 11), then
    `publish_book` writes `book.json` (only now is the book listed: a half-processed upload is never visible).
 6. Then, in order: equations job (textbook PDFs with math), early series detection (novels), Vertex indexing (vertex
@@ -96,7 +96,7 @@ could not be processed." otherwise (no details leak). After a restart, a status 
 **Constants.** `MAX_UPLOAD_BYTES` 20 MB, `MAX_PAGES` 2000, `MAX_CHARS` 5,000,000, `MAX_PARAGRAPH_CHARS` 5000
 (longer paragraphs are split at sentences, never inside an inline formula: `ingest_upload.split_spans`).
 
-**Main files.** `pages/Library.tsx`, `uploads.ts`, `api.ts:uploadBook/pollUpload`, `main.py:upload_book/_ingest/_ingest_work`,
+**Main files.** `pages/Library.tsx`, `uploads.ts`, `api.ts:uploadBook/pollUpload`, `routes/uploads.py:upload_book, processing.py:_ingest/_ingest_work`,
 `ingest_upload.py:content_hash/find_upload/record_upload_hash/make_book_dir`, `uploadlimit.py`.
 
 ---
@@ -133,7 +133,7 @@ unless the user already typed in them.
 **What the user sees.** With Kind = Auto-detect, the card ends with "Detected: Novel" or "Detected: Textbook"; any
 upload can be moved later with "Move to Textbooks / Novels".
 
-**Flow.** `main._ingest_work`: when `kind == "auto"`, `ingest_upload.extract_text` runs first, then
+**Flow.** `processing._ingest_work`: when `kind == "auto"`, `ingest_upload.extract_text` runs first, then
 `enrich/detect.py:detect_kind(plain_text(raw))`:
 1. **LLM** (when `UPLOAD_ENRICH` and spend allows, or the public service on a clone): `sample()` takes ~3000 chars
    from start/middle/end; one fast call returns `KindGuess{kind, confidence}`; cost is added to the upload spend.
@@ -209,7 +209,7 @@ text width, or taller than 1.5 lines, or with more than normal leading above and
 excluded. The cluster becomes one `\x03` line carrying page, bbox (clipped at neighbouring prose), a `garbled` flag
 (lost glyphs, several rows, accents) and the equation number "(3.4)" moved to the end.
 
-**Pipeline after publish** (`main._start_equations` -> `_equations_job`, only textbook PDFs with math):
+**Pipeline after publish** (`processing._start_equations` -> `_equations_job`, only textbook PDFs with math):
 1. `ingest_upload.render_equations`: pymupdf crop at 200 dpi, grayscale, pad 2 pt, max 4 MP, at most 1500 per book;
    text of other lines painted white inside the box (`_crop`). Saved to `data/books/<id>/equations/e<n>.png`; the
    picture URL (with `?v=<hash>` cache-buster) is written to book.json at once (the reader shows pictures immediately).
@@ -779,7 +779,7 @@ never trusted to the client or the model.
 2. `multilingual.search_query` translates a non-English question to English for search (section 12.4); a book in
    another language is searched in its own language (section 5.6).
 3. `_clamp`: `spoiler_safe = kind == "novel" and not spoilers`. Textbooks and spoilers-on novels search the whole book.
-4. Index (`main._index_for`, LRU 8):
+4. Index (`indexes._index_for`, LRU 8):
    - **Local** (`RETRIEVAL_BACKEND=local`): `retrieval.Index` = BM25 (`rank_bm25.BM25Okapi` over `context_blurb + text`)
      plus, when `index/embeddings.npy` exists, multilingual-e5-small cosine: `score = 0.6 × cosine + 0.4 × min-max BM25`.
      Eligible chunks get +0.05 when within 15 paragraphs of the reader (`RECENCY_BOOST`). Top k returned in book order.
@@ -1047,13 +1047,13 @@ flowchart TD
   I --> SL["series_link.reconcile: same-author checks"]
 ```
 
-**Planning** (`main._plan_enrichment` -> `_decide_enrichment`): `enrich_pipeline.estimate_for(book)` (from text length,
+**Planning** (`processing._plan_enrichment` -> `_decide_enrichment`): `enrich_pipeline.estimate_for(book)` (from text length,
 ×1.15 margin, includes 5 series checks) and `check_caps(estimate, book_id)`: refuse when estimate + **what this book
 already cost** > `UPLOAD_BOOK_CAP_USD` (default $4) or total spend + estimate > `UPLOAD_TOTAL_CAP_USD` (default $15)
 -> status `refused` with a plain message. `UPLOAD_CONFIRM=true` (testing mode) waits with `awaiting_confirmation` and
 the estimate ("Process with characters (~$0.12)"). Otherwise `running/queued`.
 
-**Run** (`main._run_enrichment` under `_enrich_lock` = `ENRICH_PARALLEL` (1000) jobs at once; never two jobs per book):
+**Run** (`processing._run_enrichment` under `_enrich_lock` = `ENRICH_PARALLEL` (1000) jobs at once; never two jobs per book):
 textbooks -> recap notes only (section 15.6); a novel with characters and summaries is "done" without paying.
 `enrich_pipeline.enrich_book` -> `run_stages` with a save (checkpoint) after every stage:
 
@@ -1113,7 +1113,7 @@ meanwhile).
 ### 15.7 Equations: section 4.3 (separate background job, same spend ledger).
 
 ### 15.8 Index stage
-`main._enrich_indexer`: re-embeds the book's chunks into Vertex (waits for the upload's own indexing job to finish;
+`processing._enrich_indexer`: re-embeds the book's chunks into Vertex (waits for the upload's own indexing job to finish;
 `INDEX_CONCURRENCY = 2` jobs at once). It **never fails the run**: on error the index state becomes "error" (BM25 serves
 meanwhile), the enrich status is "done" with `index_failed` and "Characters and recap are ready; search uses basic mode
 until the index is rebuilt."
@@ -1187,7 +1187,7 @@ answers"). Answers, translation and face detection stay on `GEMINI_MODEL` (2.5 F
 
 ## 18. Resilience: resume, Try again, retry limits, refused status, spend per book
 
-- **Resume on restart** (`main._resume_enrichments`, at startup): uploads whose status.json says enrichment is
+- **Resume on restart** (`processing._resume_enrichments`, at startup): uploads whose status.json says enrichment is
   running/queued are restarted with `resume=True` (stages already saved are not paid again: a book with characters skips
   the cast; with summaries, it skips cast and segmentation). PER_USER: run as the owner from `owner.txt`; unknown owner ->
   left retryable. `UPLOAD_ENRICH=false` -> error "turned off". Caps re-checked (-> `refused`).
@@ -1262,7 +1262,7 @@ answers"). Answers, translation and face detection stay on `GEMINI_MODEL` (2.5 F
 | Public per-book / total / per-IP / answers | `PUBLIC_*_CAP_USD` | $1.5 / $10 / $2 per day / $2 per day | $1000 each |
 | Public grounded per day | `PUBLIC_GROUNDED_DAILY_CAP` | 50 | 50 |
 | Public face boxes per day | `FACE_DAILY_CALLS` | 100 | 100 |
-| Rate limits (per account/IP, per minute) | `main.py` TokenBuckets | token 10, TTS misses 120, clone 5, answer 20, retrieve 30, uploads 6, describe 12, avatar renders 12, faces 10, face detect 12 | same |
+| Rate limits (per account/IP, per minute) | `deps.py` TokenBuckets | token 10, TTS misses 120, clone 5, answer 20, retrieve 30, uploads 6, describe 12, avatar renders 12, faces 10, face detect 12 | same |
 
 - **Spend ledger**: `enrich/spend.py` keeps cumulative enrichment dollars in `data/usage/upload_spend.json`
  (`total_usd`, `by_provider`, `books`), totals in memory (caps act at once), flushed atomically off the event loop
