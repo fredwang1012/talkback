@@ -388,7 +388,8 @@ flowchart TB
 
   subgraph READER["reader/"]
     ENG["ReaderEngine.ts<br/>chunk queue, prefetch, word highlight"]
-    STAGE["Stage.tsx, FaceView.tsx<br/>face, loops, lip-sync video"]
+    STAGE["Stage.tsx, AskBar.tsx<br/>cast picker, ask while reading"]
+    PLAYER["AvatarPlayer.tsx, StageFace.tsx, FaceView.tsx<br/>mini / expanded face, loops, lip-sync video"]
     RF["readFace.ts, readLipSync.ts,<br/>clipFollow.ts"]
     BT["BookText.tsx, ChapterList.tsx"]
     FIG["Figure.tsx (textbook figures)"]
@@ -423,6 +424,7 @@ flowchart TB
 
   RDR --> ENG
   RDR --> STAGE
+  RDR --> PLAYER
   RDR --> BT
   RDR --> TBV
   RDR --> VL
@@ -431,7 +433,7 @@ flowchart TB
   BT --> FIG
   BT --> EQ
   TBV --> SRC
-  STAGE --> RF
+  PLAYER --> RF
   ENG --> SG
   ENG --> FS
   RF --> FS

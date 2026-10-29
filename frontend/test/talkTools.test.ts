@@ -154,7 +154,7 @@ const sections = [{ id: "s1", title: "One", start_para: 0 }, { id: "s2", title: 
 const paragraphs = Array.from({ length: 12 }, (_, i) => ({ idx: i, text: `p${i}` }));
 const chunks = paragraphs.flatMap((p) => [{ para: p.idx }, { para: p.idx }]);
 
-function setup(opts: { playing?: boolean; gemini?: boolean; spoilers?: boolean } = {}) {
+function setup(opts: { playing?: boolean; gemini?: boolean; spoilers?: boolean; route?: (q: string) => string | null } = {}) {
   const session = new FakeSession();
   const reader = new FakeReader(opts.playing ?? true, 10); // paragraph 5: chapter Two reached, Three not
   const states: TalkState[] = [];
@@ -174,7 +174,7 @@ function setup(opts: { playing?: boolean; gemini?: boolean; spoilers?: boolean }
   const spoken: string[] = [];
   const asked: string[] = [];
   const talk = new TalkController({
-    session, reader, tools, onToolRun: (c) => chips.push(c),
+    session, reader, tools, onToolRun: (c) => chips.push(c), route: opts.route,
     retrieve: async () => ({ instructions: "INSTR" }),
     ...(opts.gemini ? {
       answer: async (q: string, _p: number, _s: string, onSentence: (t: string) => void) => { asked.push(q); onSentence("An answer."); },
@@ -436,6 +436,18 @@ describe("TalkController quiz mode", () => {
     await g.talk.setSpeaker("someone-else");
     await ask(g, "answer one");
     expect(responds(g).at(-1)).toBe("INSTR");
+  });
+
+  it("an answer that is (or starts with) a character's name is graded, not routed to them (#34)", async () => {
+    const routed: string[] = [];
+    const h = setup({ playing: false, route: (q) => (/^(the knight|alice)\b/i.test(q) ? (routed.push(q), "knight") : null) });
+    await startQuiz(h);
+    await ask(h, "The Knight.");
+    expect(responds(h).at(-1)).toMatch(/question 1 of 3/);
+    await finishSpeaking(h);
+    await ask(h, "Alice, because she was small");
+    expect(responds(h).at(-1)).toMatch(/question 2 of 3/);
+    expect(routed).toEqual([]);
   });
 
   it("reading on (Play, or a mic tap that resumes the story) ends the quiz: the next question is a plain one", async () => {

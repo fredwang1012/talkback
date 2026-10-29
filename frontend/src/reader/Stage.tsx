@@ -1,53 +1,23 @@
-import { createClipFollower, type FollowAudio } from "./clipFollow";
-import { tryPlayQuietly } from "../audio/mediaErrors";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { Book, Face as FaceT, Health } from "../api";
-import type { FaceSync } from "../talk/faceSync";
 import type { TalkUi } from "../talk/useTalk";
-import type { TalkState } from "../talk/TalkController";
+import AskBar from "./AskBar";
 import { splitCharacters } from "./position";
-import { FaceView, ReadFace } from "./FaceView";
-import { answerOnStage, stageFace } from "./readFace";
-
-/** Read-mode lip-sync (#80, always on since #92): the persistent clip video the sync drives; `shown` once a clip has
- * a frame and is in step with the voice (otherwise the talk loop or the still face shows). */
-export type ReadLipSyncUi = {
-  sync: FaceSync;
-  shown: boolean;
-};
 
 type Props = {
   book: Book;
   para: number;
   speakerId: string;
-  onSpeaker: (id: string) => void;
+  onSpeaker: (id: string) => void; // "Talk to" picks who answers while reading (#34); no switch to Talkback
   health: Health | null;
   talk: TalkUi;
   audioAvailable: boolean;
-  avatarSrc: string | null; // pre-rendered clip for the line being read, when there is one
-  avatarPlaying: boolean;
-  getAudio?: () => FollowAudio | null; // read mode: the chunk's audio element, which the clip follows
-  onMode: (m: "read" | "talk") => void; // "Talkback" link
+  onMode: (m: "read" | "talk") => void; // "Open Talkback" link
   pinned: string | null; // demo mode: talk only to this character
   needsCode: boolean;
   onCode: (code: string, remember: boolean) => void;
   onOpenLab: () => void;
-  faceFor: (speakerId: string) => FaceT | undefined; // the face shown in Talk mode
-  readingFace: FaceT | null; // face of whoever is reading aloud right now in read mode
-  preloadLoops?: string[]; // read mode: the next reader's loop videos, warmed up so a speaker change starts on time
-  readSpeaking: boolean; // read mode: the audio is audibly speaking right now (not in a pause)
-  levelRef: { current: number }; // read mode: live loudness of the audio, for the still-image pulse
-  readLipSync?: ReadLipSyncUi;
-};
-
-const STATUS: Record<TalkState, string> = {
-  reading: "Hold Space or the button to ask a question.",
-  listening: "Listening…",
-  transcribing: "Hearing what you said…",
-  retrieving: "Checking the story so far…",
-  answering: "Answering…",
-  resuming: "Picking the story back up…",
-  "talk-idle": "Ask another question, or press play.",
+  faceFor: (speakerId: string) => FaceT | undefined; // the face an answer shows (the cast list's little faces)
 };
 
 function Face({ src, name }: { src: string | null; name: string }) {
@@ -56,27 +26,6 @@ function Face({ src, name }: { src: string | null; name: string }) {
       {src ? <img src={src} alt="" /> : name.charAt(0)}
     </span>
   );
-}
-
-/**
- * Muted on purpose: the page's own audio element stays the single source of sound, so it cannot double up.
- * The clip is driven by the chunk's audio (reader/clipFollow): it starts, pauses and ends with the voice and
- * corrects drift by nudging its playback rate rather than seeking.
- */
-function AvatarVideo({ src, playing, getAudio }: { src: string; playing: boolean; getAudio?: () => FollowAudio | null }) {
-  const ref = useRef<HTMLVideoElement>(null);
-  useEffect(() => {
-    const v = ref.current;
-    if (!v) return;
-    if (!getAudio) { // no audio to follow (silent preview): plain play/pause
-      if (playing) void tryPlayQuietly(v); else v.pause();
-      return;
-    }
-    const f = createClipFollower(v);
-    const h = window.setInterval(() => { if (playing) f.tick(getAudio()); else if (!v.paused) v.pause(); }, 100);
-    return () => window.clearInterval(h);
-  }, [src, playing, getAudio]);
-  return <video ref={ref} key={src} src={src} muted playsInline preload="auto" />;
 }
 
 function Lock() {
@@ -95,25 +44,13 @@ function Waveform() {
   );
 }
 
-/** The one persistent read-mode lip-sync <video>, owned by the sync (see talk/faceSync): never swapped, so nothing
- * flashes; it sits over the loop face (or the portrait) and fades in only while a clip plays in step. It stays
- * mounted whatever face is shown, so a chunk's clip is never lost to a face change between chunks. */
-function ReadClipVideo({ sync, shown }: { sync: FaceSync; shown: boolean }) {
-  const ref = useRef<HTMLVideoElement>(null);
-  useEffect(() => {
-    sync.setVideo(ref.current);
-    return () => sync.setVideo(null);
-  }, [sync]);
-  return <video ref={ref} className={`rf-clip${shown ? " on" : ""}`} muted playsInline />;
-}
-
-export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, avatarSrc, avatarPlaying, getAudio, onMode, pinned, needsCode, onCode, onOpenLab, faceFor, readingFace, preloadLoops = [], readSpeaking, levelRef, readLipSync }: Props) {
+/**
+ * The read-mode side panel: who answers questions asked while reading (#34) and the ask bar. The face itself lives in
+ * the avatar player (#33, reader/AvatarPlayer), so its videos are mounted once.
+ */
+export default function Stage({ book, para, speakerId, onSpeaker, health, talk, audioAvailable, onMode, pinned, needsCode, onCode, onOpenLab, faceFor }: Props) {
   const [codeDraft, setCodeDraft] = useState("");
   const [remember, setRemember] = useState(true);
-  // a question asked here (mic or Space) and its answer take the stage, as in Talkback: the paused reading's frozen
-  // lip-sync frame, reading face or pre-rendered clip must not cover the answering face
-  const answering = answerOnStage(talk.state, talk.speaking);
-  const clipShown = !!readLipSync?.shown && !answering;
   const tutor = book.kind === "textbook";
   // read mode (#94): the Talkback spoiler setting does not apply here, so unmet characters stay locked and no
   // spoiler note shows; Talkback has its own
@@ -123,30 +60,11 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
   const blurb = speaker ? speaker.persona : tutor ? "Explains the chapter in plain words. Ask about anything." : book.narrator?.is_character
     ? `Tells the story as ${book.characters.find((c) => c.id === book.narrator?.is_character)?.name ?? "a character"}.`
     : "Reads the text as written.";
-  const live = talk.state === "listening";
-  const portrait = speaker ? speaker.portrait : book.narrator?.portrait ?? null;
-  // In read mode the reading cast's face is shown while it reads; otherwise the Talk avatar choice decides.
-  const face = (answering ? null : readingFace) ?? faceFor(speakerId);
-  const shows = stageFace({ answering, avatar: !!avatarSrc, reading: !!readingFace, face: !!face });
-  const big = !!face || (shows === "avatar") || clipShown; // a real face grows the circle (animated); no face keeps the small monogram
-  const thinking = ["transcribing", "retrieving", "answering"].includes(talk.state) && !talk.speaking;
-  const talkTo = (id: string) => { onSpeaker(id); onMode("talk"); };
-  const pressed = useRef(false); // survives re-renders between press and release
-
-  const press = () => { if (!pressed.current) { pressed.current = true; talk.pttDown(); } };
-  const release = () => { if (pressed.current) { pressed.current = false; talk.pttUp(); } };
+  const talkTo = (id: string) => onSpeaker(id); // #34: they answer the next question, reading goes on
 
   return (
     <aside className="stage" aria-label="Stage">
-      <div className={`speaker${big ? " big" : ""}`}>
-        <div className={`medallion${big ? " big" : ""}${live ? " live" : ""}${thinking ? " thinking" : ""}${talk.speaking ? " speaking" : ""}`} aria-hidden="true">
-          {shows === "avatar" && avatarSrc ? <AvatarVideo src={avatarSrc} playing={avatarPlaying} getAudio={getAudio} />
-            : shows === "read" && face ? <ReadFace face={face} speaking={readSpeaking} levelRef={levelRef} clipShown={clipShown} />
-            : shows === "talk" && face ? <FaceView face={face} speaking={talk.speaking} sync={talk.faceSync} clipShown={talk.clipShown} />
-            : portrait ? <img src={portrait} alt="" /> : <span>{name.charAt(0)}</span>}
-          {readLipSync && <ReadClipVideo sync={readLipSync.sync} shown={clipShown} />}
-          {preloadLoops.map((src) => <video key={src} className="preload" src={src} muted playsInline preload="auto" />)}
-        </div>
+      <div className="speaker">
         <div>
           <h3>{name}</h3>
           <p>{blurb}</p>
@@ -161,7 +79,7 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
       <section aria-label="Who to talk to">
         <ul className="cast-list">
           <li>
-            <button className="talk-to" disabled={!audioAvailable || !!pinned} onClick={() => talkTo("narrator")}
+            <button className="talk-to" disabled={!audioAvailable || !!pinned} onClick={() => talkTo("narrator")} aria-pressed={speakerId === "narrator"}
                     title={audioAvailable ? undefined : "Talkback needs the Boson API key on the server"}>
               <Face src={faceFor("narrator")?.image ?? book.narrator?.portrait ?? null} name={tutor ? "Tutor" : "Narrator"} />
               <span className="who-text"><strong>Talk to {tutor ? "the Tutor" : "the Narrator"}</strong>
@@ -170,7 +88,7 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
           </li>
           {met.map((c) => (
             <li key={c.id}>
-              <button className="talk-to" disabled={!audioAvailable || (!!pinned && pinned !== c.id)} onClick={() => talkTo(c.id)}>
+              <button className="talk-to" disabled={!audioAvailable || (!!pinned && pinned !== c.id)} onClick={() => talkTo(c.id)} aria-pressed={speakerId === c.id}>
                 <Face src={faceFor(c.id)?.image ?? c.portrait} name={c.name} />
                 <span className="who-text"><strong>Talk to {c.name}</strong><small>{c.persona}</small></span>
               </button>
@@ -201,28 +119,8 @@ export default function Stage({ book, para, speakerId, onSpeaker, health, talk, 
       )}
       <button className="link-btn" onClick={onOpenLab}>Voices, faces and cloning</button>
       {audioAvailable && <button className="link-btn" onClick={() => onMode("talk")}>Open Talkback, a full conversation view</button>}
-      <div className="mic">
-        <button
-          className={`mic-button${live ? " live" : ""}`}
-          disabled={!audioAvailable}
-          aria-label={audioAvailable ? "Hold to talk" : "Hold to talk (needs the Boson API key)"}
-          onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); press(); }}
-          onPointerUp={release}
-          onPointerCancel={release}
-        >
-          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-            <rect x="9" y="3" width="6" height="12" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
-          </svg>
-        </button>
-        <div>
-          <p aria-live="polite">
-            {audioAvailable ? STATUS[talk.state] : health?.boson_key_set === false || !health
-              ? "Voice questions need the Boson API key on the server."
-              : STATUS[talk.state]}
-          </p>
-          {live && <div className="meter" aria-hidden="true"><span style={{ width: `${Math.min(100, talk.level * 600)}%` }} /></div>}
-        </div>
-      </div>
+      <AskBar talk={talk} name={name} audioAvailable={audioAvailable}
+              unavailableNote={health?.boson_key_set === false || !health ? "Voice questions need the Boson API key on the server." : undefined} />
 
       {talk.question && (
         <p className="question">

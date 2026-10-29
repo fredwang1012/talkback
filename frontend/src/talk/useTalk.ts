@@ -83,10 +83,14 @@ type Args = {
   /** #140: a live preset face in a LiveKit room. While set, answers are spoken through it (its own audio and video, in
    * sync) instead of local playback and per-sentence lip-sync clips. Null = today's clips. */
   liveFace?: LiveFace | null;
+  /** #34: who a question is addressed to (see talk/route), or null to keep `speakerId`. */
+  route?: (question: string) => string | null;
+  /** #34: a question was addressed to another character: make them the speaker (they answer this and what follows). */
+  onRoute?: (speakerId: string) => void;
 };
 
 /** Owns the Talk session for the reader screen. The real mic, speaker and socket are created once per book. */
-export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, faceIdFor = () => null, narratorFaceId = () => null, spoilers = false, talkback = false, narratorVoice = null, tools, bookKind, bookLanguage, liveFace = null }: Args): TalkUi {
+export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResume, health, faceIdFor = () => null, narratorFaceId = () => null, spoilers = false, talkback = false, narratorVoice = null, tools, bookKind, bookLanguage, liveFace = null, route, onRoute }: Args): TalkUi {
   const [state, setState] = useState<TalkState>("reading");
   const [caption, setCaption] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -165,13 +169,13 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     sessionSpeaker.current = latest.current.speakerId;
     clientRef.current?.resetConversation();
   };
-  const latest = useRef({ reader, voiceFor, speakerId, faceIdFor, narratorFaceId, spoilers, tools });
+  const latest = useRef({ reader, voiceFor, speakerId, faceIdFor, narratorFaceId, spoilers, tools, route, onRoute });
   // #140: read per reply, never a dependency of the session effect (a rebuild would drop a question asked meanwhile)
   const healthRef = useRef(health);
   healthRef.current = health;
   const liveRef = useRef<LiveFace | null>(liveFace);
   liveRef.current = liveFace;
-  latest.current = { reader, voiceFor, speakerId, faceIdFor, narratorFaceId, spoilers, tools };
+  latest.current = { reader, voiceFor, speakerId, faceIdFor, narratorFaceId, spoilers, tools, route, onRoute };
 
   useEffect(() => {
     if (!enabled) return;
@@ -291,11 +295,15 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       onSearching: (active, completed) => { setSearching(active); if (!active && completed) setMessages((m) => addToolChip(m, "Looked it up on the web")); },
       onSources: (sources) => setMessages((m) => setSources(m, { sources })),
       serverTurns: !localGateForcedHere(), // #135: hands-free on Boson's turn detection unless ?gate=local
+      readingIsEcho: true, // #34: hands-free while reading: the book read aloud is echo, never a question
       onState: (st) => { setState(st); if (st !== "answering") setLivePaused(false); if (["listening", "retrieving", "answering"].includes(st)) { replayer.current?.stop(); narration.current?.stop(); } if (["reading", "talk-idle", "resuming"].includes(st)) { setMessages(finishAnswer); resetIfSpeakerChanged.current(); } if (st === "listening") resetIfSpeakerChanged.current(); },
       onToast: setToast,
       onCaption: (text) => { setCaption(text); if (!viaGemini && text) setMessages((m) => setTextOf(m, liveAnswerId, text)); },
       onSpeaking: setSpeaking,
       onTiming: logTiming,
+      route: (q) => latest.current.route?.(q) ?? null,
+      // the routed speaker is current at once (the question's bubble, the answer's voice and face), before React re-renders
+      onRoute: (id) => { latest.current.speakerId = id; latest.current.onRoute?.(id); },
       onTranscript: (text) => {
         lastQuestion = text;
         setQuestion(text); setLanguage(detectLanguage(text));
