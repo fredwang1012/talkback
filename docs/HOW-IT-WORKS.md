@@ -891,6 +891,28 @@ no sentence arrives within 15 s (`firstSentenceTimeoutMs`) and speaks sentences 
 - Chat is kept per book in memory + sessionStorage (`talkback:chat:<bookId>`, ≤ 50 messages); "Clear" also resets the
   Realtime conversation.
 
+### 12.3b Answer clips (#80)
+
+- Each answer sentence is lip-synced separately (H.264 + AAC, cached under the lip-sync cache: fragmented MP4 from
+  `/api/avatar/stream`, progressive MP4 with B-frames and a 1024-tick video edit list from `/api/avatar/talk`).
+  `POST /api/clip/answer` takes the reply's sentences (audio URL, voice, face id, from the replay store) and
+  `app/mp4join.join_clips` reads either layout and copies every sample into one progressive MP4 with new index tables.
+  Edit lists are kept (one shared video start; composition offsets raised to it), each sentence's frames run until the
+  next sentence's voice starts (the last frame held or cut, frames past the voice dropped), so there is no drift.
+  Clips must share a decoder setup (avcC, AAC config, channels; per-file bitrates ignored): the two producers differ
+  (other SPS, mono vs stereo), so an answer mixing them is a 422.
+- Without a face on every sentence, or when the faced join answers 409 (a sentence clip was never rendered; it never
+  renders one), 404 (the face was deleted) or 422 (clips that do not join), the browser draws the portrait or letter
+  circle (320x320), sends it as I420 pixels, and `still_mp4` writes it as an H.264 I_PCM picture (no encoder, each of
+  the two IDR versions coded once) held by skipped P frames, with the cached MP3s (objectTypeIndication 0x69 for the
+  MPEG-2 24 kHz TTS, 0x6B for MPEG-1). The file name comes from the server's Content-Disposition.
+- Why server-side pure Python: the image has no ffmpeg (and Debian's is a GPL build); the clips share one codec setup,
+  so a remux is exact and fast (~5 ms for 3 clips); MediaRecorder would take real time and gives WebM in Firefox.
+- Bounds: ≤ 40 sentences, 80 MB of input, 300 s of still audio, `clip_bucket` 6/min per account or IP (spent only by
+  a request that gets a slot: bad input and busy 429s are free), and 2 joins at a time (all file reads and the join
+  run in a worker thread under the slot; none free: 429). The worker frees its slot itself when its work ends, so a
+  request aborted mid-join (the browser gives up at 60 s) does not free a slot while its thread still runs.
+
 ### 12.4 Language rule and translated search
 
 `multilingual.detect_language`: a non-Latin script, or ≥ 2 stopwords of a language that outnumber English ones.

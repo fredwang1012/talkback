@@ -28,6 +28,7 @@ translate_bucket = TokenBucket(capacity=60, per_seconds=60)  # paragraph transla
 upload_bucket = TokenBucket(capacity=6, per_seconds=60)  # uploads per IP (a multi-file drop; UPLOAD_QUEUE_MAX)
 describe_bucket = TokenBucket(capacity=12, per_seconds=60)  # per IP / account: each may cost one Gemini Flash call
 avatar_bucket = TokenBucket(capacity=12, per_seconds=60)  # every render spends Boson avatar credit
+clip_bucket = TokenBucket(capacity=6, per_seconds=60)  # #80 answer clip downloads: free, but each joins up to 80 MB on the CPU
 live_avatar_bucket = TokenBucket(capacity=6, per_seconds=60)  # session starts per IP / account (each holds a paid slot)
 face_bucket = TokenBucket(capacity=10, per_seconds=60)  # uploads write to disk
 face_detect_bucket = TokenBucket(capacity=12, per_seconds=60)  # per IP / account: each may cost one Gemini Flash call

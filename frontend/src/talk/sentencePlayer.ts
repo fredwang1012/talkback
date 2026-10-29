@@ -46,7 +46,8 @@ export interface AudioLike {
 /** A lip-synced video that is ready to show: `release` frees the stream and its object URL. */
 export type VideoClip = { url: string; release: () => void };
 
-export type Clip = { audio_url: string; openVideo?: () => Promise<VideoClip> };
+/** `lipsync` (#80): the voice and face its video is made of, so a finished answer can be downloaded as one MP4. */
+export type Clip = { audio_url: string; openVideo?: () => Promise<VideoClip>; lipsync?: { voice: string; faceId: string } };
 
 /**
  * Keeps the lip-sync video locked to the voice (see faceSync.ts); it never pauses or moves the voice. `join` before the

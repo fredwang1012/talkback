@@ -57,6 +57,8 @@ export type TalkUi = {
    * narrator voice. Never sent to the model as a question, and left out of the chat memory (see priorTurns). */
   narrate: (heading: string, load: () => Promise<Narration>) => Promise<void>;
   dismissToast: () => void;
+  /** #80: the stored voice (sentence clips) of a finished reply, for "Download clip"; undefined when not kept. */
+  replayItem?: (id: number) => ReplayItem | undefined;
 };
 
 /** A loaded recap: its text, a better heading (e.g. with the chapter name), and what to say when the text is empty. */
@@ -411,5 +413,6 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     }, []),
     setSpeaker: useCallback((id: string) => { void controller.current?.setSpeaker(id); }, []),
     dismissToast: useCallback(() => setToast(null), []),
+    replayItem: useCallback((id: number) => replayStore.current.get(id), []),
   };
 }

@@ -8,7 +8,7 @@ from starlette.datastructures import Headers
 
 from . import books, deps, indexes, processing, users
 from .config import settings
-from .routes import avatar, cast, faces, health, library, live, realtime, talk, tts, uploads, voices
+from .routes import avatar, cast, clip, faces, health, library, live, realtime, talk, tts, uploads, voices
 from .uploadlimit import UploadSizeLimit
 
 
@@ -101,7 +101,7 @@ app.mount("/portraits", PortraitFiles(directory=settings.data_dir / "portraits",
 
 # The routes, in the order they were registered when they all lived here (FastAPI matches in order:
 # /api/voices/account before /api/voices/{voice_id}); the frontend mount below stays last.
-for _routes in (health, library, realtime, tts, talk, uploads, avatar, voices, live, faces, cast):
+for _routes in (health, library, realtime, tts, talk, uploads, avatar, voices, live, faces, cast, clip):
     app.include_router(_routes.router)
 
 
