@@ -815,7 +815,8 @@ export async function startLiveAvatar(avatarId: string): Promise<LiveAvatarSessi
   return res.json() as Promise<LiveAvatarSession>;
 }
 
-export async function stopLiveAvatar(sessionId: string): Promise<void> {
-  const res = await timedFetch(`/api/live-avatar/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE", headers: authHeaders() }, 15000);
+/** `keepalive`: the request outlives the page (pagehide), so a closed tab still frees its slot. */
+export async function stopLiveAvatar(sessionId: string, opts: { keepalive?: boolean } = {}): Promise<void> {
+  const res = await timedFetch(`/api/live-avatar/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE", headers: authHeaders(), keepalive: !!opts.keepalive }, 15000);
   if (!res.ok && res.status !== 404) throw await readError(res, "Could not stop the live face");
 }

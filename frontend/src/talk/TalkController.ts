@@ -92,6 +92,8 @@ export interface TalkSession {
   setMonitor?(on: boolean): Promise<void>;
   /** Hold local playback where it is (the reply keeps arriving and waits), and continue it. Optional. */
   pausePlayback?(): Promise<void>;
+  /** False while the reply cannot be held (a live face, #140: the avatar protocol has no pause). Absent = it can. */
+  canPause?(): boolean;
   resumePlayback?(): Promise<void>;
   /** #135: use Boson's turn detection for hands-free (the session reconnects when the mode changes). Optional. */
   setServerTurns?(on: boolean): void;
@@ -255,8 +257,8 @@ export class TalkController {
    */
   pauseAnswer(): boolean {
     if (this._state !== "answering" || this.held) return false;
-    if (this.run && this.d.speaker?.pause) this.d.speaker.pause();
-    else if (!this.run && this.d.session.pausePlayback) void this.d.session.pausePlayback().catch(() => {});
+    if (this.run && this.d.speaker?.pause && this.d.speaker.canPause !== false) this.d.speaker.pause();
+    else if (!this.run && this.d.session.pausePlayback && this.d.session.canPause?.() !== false) void this.d.session.pausePlayback().catch(() => {});
     else return false;
     this.held = true;
     this.setSpeaking(false);

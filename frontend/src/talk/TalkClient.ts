@@ -110,6 +110,8 @@ export interface PlayerLike {
   /** Hold playback where it is (queued audio is kept) and continue it. Optional. */
   pausePlayback?(): Promise<void>;
   resumePlayback?(): Promise<void>;
+  /** False while playback cannot be held (a live face, #140). Absent = it can. */
+  readonly canPause?: boolean;
   /** The reply's audio is all in (response.done). Optional: a live face (#140) ends its audio segment here. */
   endTurn?(): void;
   reset(): void;
@@ -617,6 +619,7 @@ export class TalkClient implements TalkSession {
   }
 
   /** Pause / resume the reply being played (#90): the rest of the reply keeps arriving and waits in the ring buffer. */
+  canPause(): boolean { return this.speaker ? this.speaker.canPause !== false : this.player.canPause !== false; }
   async pausePlayback(): Promise<void> { if (this.speaker) this.speaker.pause?.(); else await this.player.pausePlayback?.(); }
   async resumePlayback(): Promise<void> { if (this.speaker) this.speaker.resume?.(); else await this.player.resumePlayback?.(); }
 

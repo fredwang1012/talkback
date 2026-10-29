@@ -63,7 +63,7 @@ export function useLiveFace(active: boolean): LiveFaceUi {
       setStatus(e instanceof LiveUnavailable ? "unavailable" : "error");
       setNote(e instanceof Error ? e.message : String(e));
     });
-    const leave = () => { void mine?.close(); };
+    const leave = () => { void mine?.close({ keepalive: true }); };
     window.addEventListener("pagehide", leave);
     return () => {
       cancelled = true;
