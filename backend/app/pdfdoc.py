@@ -16,6 +16,7 @@ further away starts a new block), so the two engines group text alike on ordinar
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import math
 import re
 import struct
@@ -279,6 +280,7 @@ class _PdfiumDocument(Document):
             self.page_count = len(self._pdf)
         except Exception as e:
             raise PdfError(str(e)) from e
+        self._cmaps = _CmapCache()
 
     @property
     def metadata(self) -> dict[str, str]:
@@ -293,7 +295,7 @@ class _PdfiumDocument(Document):
         return out
 
     def page(self, pno: int) -> "Page":
-        return _PdfiumPage(self._pdf[pno], pno)
+        return _PdfiumPage(self._pdf[pno], pno, self._cmaps)
 
     def close(self) -> None:
         self._pdf.close()
@@ -310,8 +312,9 @@ class _Char:
 
 
 class _PdfiumPage(Page):
-    def __init__(self, page, pno: int):
+    def __init__(self, page, pno: int, cmaps: "_CmapCache | None" = None):
         self._page = page
+        self._cmaps = cmaps if cmaps is not None else _CmapCache()
         self.number = pno
         w, h = page.get_width(), page.get_height()   # with the page's rotation applied
         self.rect = (0.0, 0.0, float(w), float(h))
@@ -366,7 +369,7 @@ class _PdfiumPage(Page):
                 font = raw.FPDFTextObj_GetFont(obj)
                 fkey = ctypes.addressof(font.contents) if font else 0
                 if fkey not in cmaps:
-                    cmaps[fkey] = _reverse_cmap(_font_program(raw, font)) if font else {}
+                    cmaps[fkey] = self._cmaps.get(_font_program(raw, font)) if font else {}
                 u = 0x2D if raw.FPDFText_IsHyphen(tp, i) else cmaps[fkey].get(code, code if 0 < code < 0x110000 else 0xFFFD)
             key = ctypes.addressof(obj.contents)
             style = fonts.get(key)
@@ -487,6 +490,23 @@ def _font_program(raw, font) -> bytes:
 
 
 CMAP_BUDGET = 0x10000   # codes visited per font program, over every subtable: a crafted cmap costs no more
+CMAP_FONTS = 256        # distinct font programs whose cmap is read per document; later ones map codes as they are
+
+
+class _CmapCache:
+    """The reverse cmaps of one document, per font program (pages share their fonts), at most CMAP_FONTS of them:
+    so a crafted PDF cannot make the cmaps cost more than CMAP_FONTS x CMAP_BUDGET codes in all."""
+
+    def __init__(self):
+        self._by_program: dict[bytes, dict[int, int]] = {}
+
+    def get(self, program: bytes) -> dict[int, int]:
+        key = hashlib.sha256(program).digest()
+        if key not in self._by_program:
+            if len(self._by_program) >= CMAP_FONTS:
+                return {}
+            self._by_program[key] = _reverse_cmap(program)
+        return self._by_program[key]
 
 
 def _reverse_cmap(data: bytes) -> dict[int, int]:

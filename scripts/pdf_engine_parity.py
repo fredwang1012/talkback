@@ -95,6 +95,7 @@ def main() -> None:
     ap.add_argument("--kind", choices=("novel", "textbook"), help="default: textbook when the file name says so")
     ap.add_argument("--json", help="write the per-file numbers here")
     args = ap.parse_args()
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # Greek letters in a paper on a cp1252 console
     if args.site:
         sys.path.insert(0, args.site)
     from app.config import settings

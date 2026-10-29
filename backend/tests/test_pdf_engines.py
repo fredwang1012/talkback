@@ -147,6 +147,17 @@ def test_reverse_cmap_reads_real_mappings_and_stays_bounded_on_a_crafted_font():
     assert len(rev) <= pdfdoc.CMAP_BUDGET
 
 
+def test_cmap_cache_reads_each_font_program_once_and_caps_the_fonts(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pdfdoc, "_reverse_cmap", lambda program: calls.append(program) or {1: 0x41})
+    monkeypatch.setattr(pdfdoc, "CMAP_FONTS", 2)
+    cache = pdfdoc._CmapCache()
+    assert cache.get(b"font a") == {1: 0x41} and cache.get(b"font a") == {1: 0x41}
+    assert cache.get(b"font b") == {1: 0x41}
+    assert cache.get(b"font c") == {}            # past the cap: codes are used as they are
+    assert calls == [b"font a", b"font b"]
+
+
 def test_png_encoder_round_trips_through_pymupdf():
     png = pdfdoc.encode_png(3, 2, bytes([0, 128, 255, 10, 20, 30]), gray=True)
     pix = fitz.Pixmap(png)
