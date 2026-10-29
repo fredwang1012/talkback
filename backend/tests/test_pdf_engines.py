@@ -344,3 +344,30 @@ def cff_font(codes: dict[int, str]) -> bytes:
     encoding = bytes([0, len(names)]) + bytes(codes)
     return head + top(base, base + len(charset), base + len(charset) + len(encoding)) + strings + b"\x00\x00" + \
         charset + encoding + charstrings
+
+
+def page_blocks(data: bytes, engine: str) -> list[list[str]]:
+    with pdfdoc.open_pdf(data, engine) as doc:
+        return [["".join(s["text"] for s in ln["spans"]) for ln in b["lines"]] for b in doc.page(0).text_blocks()
+                if b.get("type") == 0]
+
+
+@pdfium_only
+def test_pdfium_blocks_break_at_images_and_text_off_the_page_is_dropped():
+    # an image drawn between two runs of a line ends the block (MuPDF starts a new one after any image); a word
+    # drawn wholly left of the page is not read
+    image = b"q 4 0 0 10 120 196 cm BI /W 1 /H 1 /BPC 8 /CS /G ID \x80 EI Q"
+    content = (b"BT /F1 10 Tf 1 0 0 1 72 200 Tm (Alpha) Tj ET " + image +
+               b" BT /F1 10 Tf 1 0 0 1 130 200 Tm (Beta) Tj 1 0 0 1 -80 200 Tm (Gone) Tj ET")
+    data = raw_pdf(content)
+    assert page_blocks(data, "pdfium") == page_blocks(data, "pymupdf") == [["Alpha"], ["Beta"]]
+
+
+@pdfium_only
+def test_pdfium_line_end_hyphen_and_stretched_text():
+    # pdfium marks a hyphen ending a line with U+0002; a horizontally stretched text matrix advances further
+    content = (b"BT /F1 10 Tf 1 0 0 1 72 200 Tm (an exam-) Tj 1 0 0 1 72 188 Tm (ple of it) Tj"
+               b" 1.05 0 0 1 72 150 Tm [(stretched) -280 (words) -310 (here)] TJ ET")
+    data = raw_pdf(content)
+    assert page_lines(data, "pdfium") == page_lines(data, "pymupdf") == ["an exam-", "ple of it", "stretched words here"]
+    assert [s["text"] for s in page_spans(data, "pdfium")] == [s["text"] for s in page_spans(data, "pymupdf")]
