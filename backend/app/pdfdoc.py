@@ -11,7 +11,11 @@ The pdfium engine rebuilds lines and blocks from pdfium's characters with the ru
 text device (a character continues its line when it sits within 0.8 em of the baseline; a gap of 0.15–0.8 em between
 glyphs is a space, a larger one a new line; a line 0.8–1.5 em below the last one stays in the block unless it starts
 right of the line above by more than half a point and that line does not open with a number or bullet; anything
-further away starts a new block), so the two engines group text alike on ordinary pages.
+further away starts a new block), so the two engines group text alike on ordinary pages. It also reads like
+MuPDF where pdfium's text page differs: characters in content-stream order (pdfium sorts a line's objects by x),
+glyphs pdfium drops as fake bold put back when they do not overprint, advances from the font's widths, character
+boxes from the ascender and descender, a space for a gap over 0.3 em in a span of its own, a superscript flag for
+a glyph raised above the line's first, and a span per fill colour.
 """
 from __future__ import annotations
 
@@ -353,7 +357,8 @@ class _PdfiumPage(Page):
         raw = _pdfium().raw
         tp = self._page.get_textpage()
         n = tp.count_chars()
-        fonts: dict[int, tuple] = {}   # text object -> (font name, style flags, size, direction x, direction y)
+        fonts: dict[int, tuple] = {}   # text object -> (font name, style flags, size, direction x, direction y, ...)
+        faces: dict[int, tuple[str, int]] = {}   # font -> (name, style flags)
         extents: dict[int, tuple[float, float] | None] = {}   # font -> (ascender, descender) in em, as PyMuPDF uses
         name = ctypes.create_string_buffer(256)
         fd_flags = ctypes.c_int()
@@ -380,24 +385,15 @@ class _PdfiumPage(Page):
             u = units[i]
             if not obj or (u in (0x20, 0x0D, 0x0A, 0x09) and raw.FPDFText_IsGenerated(tp, i)):
                 continue   # a space or line break pdfium made up: spaces are put back by the rules below
-            pfont = raw.FPDFTextObj_GetFont(obj)
-            fkey = ctypes.addressof(pfont.contents) if pfont else 0
-            if u in (0, 0xFFFE, 0xFFFF):   # no ToUnicode entry: a hyphen pdfium recognised, the glyph's own cmap,
-                code = raw.FPDFText_GetUnicode(tp, i)   # else the code itself (as PyMuPDF does)
-                if fkey not in cmaps:
-                    cmaps[fkey] = self._cmaps.get(_font_program(raw, pfont)) if pfont else {}
-                u = 0x2D if raw.FPDFText_IsHyphen(tp, i) else cmaps[fkey].get(code, code if 0 <= code < 0x110000 else 0xFFFD)
-            elif u < 0x100 and raw.FPDFText_HasUnicodeMapError(tp, i):
-                # pdfium gave the code itself: the name the embedded font's own encoding gives the code, when
-                # pdfium's glyph list lacks it ("prime" in TeX's CMSY), as PyMuPDF reads it
-                if fkey not in encodings:
-                    encodings[fkey] = self._cmaps.encoding(_font_program(raw, pfont)) if pfont else {}
-                u = encodings[fkey].get(u, u)
             key = ctypes.addressof(obj.contents)
             style = fonts.get(key)
             if style is None:   # one font, size and writing direction per text object
-                n_name = raw.FPDFText_GetFontInfo(tp, i, name, 256, ctypes.byref(fd_flags))
-                font = _SUBSET_TAG.sub("", name.raw[:max(n_name - 1, 0)].decode("utf-8", "replace"))
+                pfont = raw.FPDFTextObj_GetFont(obj)
+                fkey = ctypes.addressof(pfont.contents) if pfont else 0
+                if fkey not in faces:   # the name and style flags are the font's: read once per font
+                    n_name = raw.FPDFText_GetFontInfo(tp, i, name, 256, ctypes.byref(fd_flags))
+                    face = _SUBSET_TAG.sub("", name.raw[:max(n_name - 1, 0)].decode("utf-8", "replace"))
+                    faces[fkey] = (face, _style_flags(face, fd_flags.value, raw.FPDFText_GetFontWeight(tp, i)))
                 raw.FPDFText_GetMatrix(tp, i, matrix)
                 scale = math.sqrt(abs(matrix.a * matrix.d - matrix.b * matrix.c)) or 1.0
                 # the writing direction, in page coordinates (y down) with the rotation applied
@@ -406,9 +402,21 @@ class _PdfiumPage(Page):
                 norm = math.hypot(dx, dy) or 1.0
                 color = (rgba[0].value << 16 | rgba[1].value << 8 | rgba[2].value) \
                     if raw.FPDFText_GetFillColor(tp, i, *rgba) else 0
-                style = fonts[key] = (font, _style_flags(font, fd_flags.value, raw.FPDFText_GetFontWeight(tp, i)),
-                                      raw.FPDFText_GetFontSize(tp, i) * scale, dx / norm, dy / norm, color)
-            font, flags, size, dx, dy, color = style
+                style = fonts[key] = (*faces[fkey], raw.FPDFText_GetFontSize(tp, i) * scale, dx / norm, dy / norm, color,
+                                      pfont, fkey)
+                if fkey not in extents:
+                    extents[fkey] = _font_extents(raw, pfont, asc, desc) if pfont else None
+                    # the names the embedded font's own encoding gives its codes, for the codes pdfium's glyph list
+                    # does not know ("prime" in TeX's CMSY): pdfium then gives the code itself, PyMuPDF the name's
+                    encodings[fkey] = self._cmaps.encoding(_font_program(raw, pfont, ENCODING_FONT_MAX)) if pfont else {}
+            font, flags, size, dx, dy, color, pfont, fkey = style
+            if u in (0, 0xFFFE, 0xFFFF):   # no ToUnicode entry: a hyphen pdfium recognised, the glyph's own cmap,
+                code = raw.FPDFText_GetUnicode(tp, i)   # else the code itself (as PyMuPDF does)
+                if fkey not in cmaps:
+                    cmaps[fkey] = self._cmaps.get(_font_program(raw, pfont)) if pfont else {}
+                u = 0x2D if raw.FPDFText_IsHyphen(tp, i) else cmaps[fkey].get(code, code if 0 <= code < 0x110000 else 0xFFFD)
+            elif u in encodings[fkey] and raw.FPDFText_HasUnicodeMapError(tp, i):
+                u = encodings[fkey][u]
             raw.FPDFText_GetCharOrigin(tp, i, ox, oy)
             raw.FPDFText_GetLooseCharBox(tp, i, rect)
             if upright:
@@ -423,8 +431,6 @@ class _PdfiumPage(Page):
                 widths[wkey] = width.value if pfont and u < 0x110000 and raw.FPDFFont_GetGlyphWidth(
                     pfont, u, 1.0, ctypes.byref(width)) and 0 < width.value < 10 else 0.0
             adv = widths[wkey] * size or None
-            if fkey not in extents:
-                extents[fkey] = _font_extents(raw, pfont, asc, desc) if pfont else None
             out.append(_Char(chr(u), font, flags, size, x, y, box, dx, dy, adv, color))
             owners.append(key)
             fkeys.append(fkey)
@@ -651,10 +657,12 @@ def _may_add_space(last: str) -> bool:
     return last != " " and not (0x700 <= ord(last) <= 0x1FFF or ord(last) > 0x20CF)
 
 
-def _font_program(raw, font) -> bytes:
-    """The embedded font file of a pdfium font handle, or b"" (a standard font, or one pdfium cannot give)."""
+def _font_program(raw, font, max_size: int | None = None) -> bytes:
+    """The embedded font file of a pdfium font handle, or b"" (a standard font, one pdfium cannot give, or one over
+    `max_size` bytes)."""
     size = ctypes.c_size_t()
-    if not raw.FPDFFont_GetFontData(font, None, 0, ctypes.byref(size)) or not size.value:
+    if not raw.FPDFFont_GetFontData(font, None, 0, ctypes.byref(size)) or not size.value \
+            or (max_size is not None and size.value > max_size):
         return b""
     buf = (ctypes.c_ubyte * size.value)()
     return bytes(buf) if raw.FPDFFont_GetFontData(font, buf, size.value, ctypes.byref(size)) else b""
@@ -689,6 +697,7 @@ class _CmapCache:
 
 
 TYPE1_HEAD = 0x10000   # bytes of a Type 1 font program searched for its built-in encoding (it precedes eexec)
+ENCODING_FONT_MAX = 1 << 20   # bytes: a bigger font program (a CJK font) is not read for its built-in encoding
 _ENCODING_ENTRY = re.compile(rb"dup\s+(\d{1,3})\s*/([A-Za-z0-9_.]{1,64})\s+put")
 CFF_STANDARD_STRINGS = 391   # string ids below this name the CFF standard strings (glyph names pdfium knows)
 # TeX glyph names outside the Adobe Glyph List that PyMuPDF (MuPDF) also maps, and whose Unicode names differ
