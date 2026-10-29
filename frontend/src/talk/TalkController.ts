@@ -44,6 +44,9 @@ export const MERGE_MS = 600;
 /** How many queued sentences are synthesised ahead of the one being spoken. */
 export const PREFETCH_DEPTH = 3;
 
+/** #79 group scene: at most this many characters answer one question (each answer is a separate, paid answer). */
+export const MAX_GROUP = 3;
+
 export type TalkState =
   | "reading" | "listening" | "transcribing" | "retrieving" | "answering" | "resuming" | "talk-idle";
 
@@ -180,6 +183,8 @@ export interface TalkDeps {
    * question) and a barge-in needs clear speech over its echo, as over an answer. Off: only answers count as echo.
    */
   readingIsEcho?: boolean;
+  /** #79: the next character of a group round starts answering (`index` >= 1; the first is the one talked to). */
+  onRoundTurn?: (speakerId: string, index: number) => void;
   now?: () => number;
   autoResumeDelayMs?: number;
   transcriptTimeoutMs?: number;
@@ -246,6 +251,10 @@ export class TalkController {
   private emptyTurns = 0; // real server turns in a row without a transcript
   private serverGaveUp = false; // fell back to the local gate after EMPTY_TURNS_FALLBACK of them
   private recentQuestions: string[] = []; // for the transcription language hint
+  private group: string[] = []; // #79: the other characters every question also goes to, in order
+  // #79: the group round of the current question: who answers, who answers now (`at`), and whether the session voice
+  // was switched for it. Tied to its turn: a barge-in, a new question or Stop bumps the turn and the rest never answer.
+  private round: { turn: number; query: string; speakers: string[]; at: number; voiced: boolean } | null = null;
   private hint: string | null = null;
   private off: () => void;
 
@@ -368,6 +377,24 @@ export class TalkController {
   private async routedVoice(changed: boolean): Promise<void> {
     if (!changed || (this.d.answer && this.d.speaker)) return;
     try { await this.d.session.setVoice(this.d.voiceFor(this.speakerId)); } catch { /* reconnects on the next open */ }
+  }
+
+  /**
+   * #79 group scene: every question also goes to these characters, one after the other in this order, after the one
+   * talked to (at most MAX_GROUP in all; duplicates and the one talked to are dropped). [] = a normal one-to-one chat.
+   */
+  setGroup(ids: string[]): void {
+    this.group = [...new Set(ids)].filter(Boolean).slice(0, MAX_GROUP); // startRound drops the one talked to and caps the round
+  }
+
+  /** Who answers now: the current character of a group round, else the one talked to. */
+  get answerSpeaker(): string {
+    const r = this.liveRound();
+    return r ? r.speakers[r.at] : this.speakerId;
+  }
+
+  private liveRound() {
+    return this.round && this.round.turn === this.turn ? this.round : null;
   }
 
   /** The resolved voice of the current speaker changed (Talk voice pick, cast edit, late cast load): re-apply it. */
@@ -787,13 +814,13 @@ export class TalkController {
     return { quiz: q, n };
   }
 
-  private async answerQuery(turn: number, query: string): Promise<void> {
+  private async answerQuery(turn: number, query: string, step = false): Promise<void> {
     this.set("retrieving");
     const r0 = this.d.now();
-    const quiz = this.quizTurn(query);
+    const quiz = step ? null : this.quizTurn(query);
     if (this.d.answer && this.d.speaker) {
       // Gemini writes the answer (no Realtime, so no function calling): a plain spoken command is acted on here instead
-      const intent = this.d.tools ? parseIntent(query) : null;
+      const intent = this.d.tools && !step ? parseIntent(query) : null;
       if (intent && this.d.tools) {
         const outcome = this.runTool(intent.name, intent.args);
         if (outcome.ok && outcome.ask) { void this.streamAndSpeak(turn, outcome.ask, r0); return; } // quiz / explain: Gemini answers it aloud
@@ -803,12 +830,21 @@ export class TalkController {
         this.endTurn();
         return;
       }
+      if (!step) this.startRound(turn, query, !!quiz);
       void this.streamAndSpeak(turn, quiz ? quizGeminiQuery(quiz.quiz, quiz.n, query) : query, r0);
       return;
     }
+    if (!step) this.startRound(turn, query, !!quiz);
+    const who = this.answerSpeaker;
+    if (step) { // the Realtime voice is per session: switch it for this character (TalkClient reconnects if refused)
+      const r = this.liveRound();
+      if (r) r.voiced = true;
+      try { await this.d.session.setVoice(this.d.voiceFor(who)); } catch { /* answered in the old voice: still their words */ }
+      if (turn !== this.turn) return;
+    }
     let instructions: string;
     try {
-      const res = await this.withTimeout(this.d.retrieve(query, this.d.reader.currentPara(), this.speakerId), this.d.retrieveTimeoutMs);
+      const res = await this.withTimeout(this.d.retrieve(query, this.d.reader.currentPara(), who), this.d.retrieveTimeoutMs);
       instructions = res.instructions;
     } catch (e) {
       if (turn !== this.turn) return;
@@ -884,7 +920,7 @@ export class TalkController {
     }, this.d.firstSentenceTimeoutMs ?? 15000);
 
     try {
-      await answer(query, this.d.reader.currentPara(), this.speakerId, (text) => {
+      await answer(query, this.d.reader.currentPara(), this.answerSpeaker, (text) => {
         if (!alive() || !text.trim()) return;
         if (delivered++ === 0) {
           clearTimer();
@@ -1010,6 +1046,7 @@ export class TalkController {
   }
 
   private afterAnswer(): void {
+    if (this.nextInRound()) return;
     const p = this.quizPending;
     this.quizPending = null;
     if (p && this.quiz === p.quiz) { // the graded answer is complete: it counts; the last one ends the quiz
@@ -1029,8 +1066,36 @@ export class TalkController {
     }
   }
 
+  // ---- group scene (#79) -----------------------------------------------------------------------------------
+
+  /** A new question: a group round when other characters are picked (not during a quiz, which is one-to-one). */
+  private startRound(turn: number, query: string, quiz: boolean): void {
+    this.endRound();
+    const speakers = [this.speakerId, ...this.group.filter((id) => id !== this.speakerId)].slice(0, MAX_GROUP);
+    if (quiz || speakers.length < 2) return;
+    this.round = { turn, query, speakers, at: 0, voiced: false };
+  }
+
+  /** One answer of the round is complete: the next character answers the same question (true), or the round is over. */
+  private nextInRound(): boolean {
+    const r = this.liveRound();
+    if (!r || r.at + 1 >= r.speakers.length) { this.endRound(); return false; }
+    r.at++;
+    this.d.onRoundTurn?.(r.speakers[r.at], r.at);
+    void this.answerQuery(r.turn, r.query, true);
+    return true;
+  }
+
+  /** The round is over (or abandoned): the session voice goes back to the one talked to. */
+  private endRound(): void {
+    const r = this.round;
+    this.round = null;
+    if (r?.voiced) void this.d.session.setVoice(this.d.voiceFor(this.speakerId)).catch(() => {});
+  }
+
   /** Back to where we were: resume reading only if the story was playing when the question started. */
   private backToReading(): void {
+    this.endRound(); // cut off, failed or stopped: the rest of a group round never answers
     const index = this.resumeIndex;
     const wasPlaying = this.wasPlayingBeforePress;
     this.quizPending = null; // the turn ended without a complete answer (or reading goes on): it does not count

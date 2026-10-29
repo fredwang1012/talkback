@@ -7,6 +7,8 @@ import { LiveFaceView } from "./LiveFaceView";
 import type { LiveFaceUi } from "../talk/useLiveFace";
 import { SourceLinks } from "./SourceLinks";
 import RecapMenu, { type RecapChoice } from "./RecapMenu";
+import GroupPicker from "./GroupPicker";
+import { groupChoices, validPicks } from "./groupScene";
 import { priorTurns } from "../talk/chatLog";
 import { chapterAt, createStatusGate, showSpoilerToggle, speakerChoices, speakerName, talkbackStatus, type TalkbackStatus } from "./talkbackLogic";
 
@@ -70,10 +72,13 @@ export default function TalkbackView({
   const fullBook = novel && spoilers;
   const choices = speakerChoices(book, para, fullBook);
   const name = speakerName(book, speakerId);
-  // a recap is read by the narrator: their face (lip-synced like an answer) and name show while it plays
-  const shownId = talk.narrating ? "narrator" : speakerId;
+  // a recap is read by the narrator: their face (lip-synced like an answer) and name show while it plays; in a group
+  // round (#79) the character answering now does
+  const round = !talk.narrating && talk.roundSpeaker && talk.roundSpeaker !== speakerId ? talk.roundSpeaker : null;
+  const shownId = talk.narrating ? "narrator" : round ?? speakerId;
   const shownName = speakerName(book, shownId);
-  const shownPortrait = talk.narrating ? book.narrator?.portrait ?? null : portrait;
+  const shownPortrait = talk.narrating || round === "narrator" ? book.narrator?.portrait ?? null
+    : round ? book.characters.find((c) => c.id === round)?.portrait ?? null : portrait;
   const status = talkbackStatus(talk.state, talk.speaking); // follows the audio: the face uses it
   const line = useStableStatus(status, talk.state === "answering"); // the status text and the busy state
   const face = faceFor(shownId);
@@ -81,6 +86,15 @@ export default function TalkbackView({
   const chapter = chapterAt(book, para);
   const voiceLabel = (v: string) => (PRESETS.includes(v) ? v : "your cloned voice");
   const [draft, setDraft] = useState("");
+  // #79 group scene: others who answer the same question after `speakerId`, in the order picked (never in demo mode)
+  const groupOptions = pinned ? [] : groupChoices(book, para, fullBook, speakerId);
+  const [picks, setPicks] = useState<string[]>([]);
+  const group = validPicks(picks, groupOptions);
+  const groupKey = group.join("|");
+  const setGroup = talk.setGroup;
+  useEffect(() => { setGroup?.(groupKey ? groupKey.split("|") : [], (id) => speakerName(book, id)); }, [groupKey, book, setGroup]);
+  useEffect(() => () => setGroup?.([], (id) => id), [setGroup]); // leaving Talkback: questions asked from the reader are one-to-one
+  const askedNames = [name, ...group.map((id) => speakerName(book, id))].join(", ");
   const log = useRef<HTMLDivElement>(null);
   const held = useRef(false);
 
@@ -157,6 +171,7 @@ export default function TalkbackView({
               </>
             )}
           </div>
+          <GroupPicker name={name} choices={groupOptions} picks={group} onPicks={setPicks} />
           {live?.status === "starting" && <p className="empty-note">Starting the live face…</p>}
           {live?.note && <p className="empty-note" role="status">{live.note}</p>}
           {novel && (
@@ -240,9 +255,11 @@ export default function TalkbackView({
         </button>
         <form className="tb-text" onSubmit={(e) => { e.preventDefault(); send(); }}>
           <label className="sr-only" htmlFor="tb-q">Type a question</label>
-          <input id="tb-q" type="text" value={draft} maxLength={500} autoComplete="off" placeholder={`Ask ${name}…`}
+          <input id="tb-q" type="text" value={draft} maxLength={500} autoComplete="off" placeholder={`Ask ${askedNames}…`}
                  onChange={(e) => setDraft(e.target.value)} />
-          <button type="submit" disabled={!draft.trim()}>Send</button>
+          <button type="submit" disabled={!draft.trim()} title={group.length ? `${group.length + 1} characters answer in turn` : undefined}>
+            {group.length ? `Send to ${group.length + 1}` : "Send"}
+          </button>
           <button type="button" onClick={talk.stop} disabled={!busy}>Stop</button>
         </form>
         <p className={`tb-status ${line}`} data-status={line}>{STATUS_TEXT[line]}</p>

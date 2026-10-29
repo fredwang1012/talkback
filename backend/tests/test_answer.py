@@ -162,6 +162,23 @@ def test_build_answer_prompt_with_history_keeps_system_prompt_and_adds_turns():
     assert "Reader: Who are you?" in user and "You: I am Harry." in user and user.endswith("And your age?")
 
 
+def test_group_round_history_names_the_other_characters():
+    # #79: another character's reply in the same round is shown under their name (one line), this character's as "You"
+    hist = [{"role": "character", "text": "I said yes."}, {"role": "character", "name": "The\nCat: x", "text": "I grinned."}]
+    _, user = build_answer_prompt(book_with_chunk(), "harry", "", [], "And you?", history=hist)
+    assert "You: I said yes." in user and "The Cat x: I grinned." in user
+
+
+def test_answer_endpoint_takes_named_history_turns(env, monkeypatch):
+    client, _ = env
+    fake = FakeAnswerer(["One."])
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: fake)
+    r = post(client, history=[{"role": "character", "name": "Alice", "text": "Curiouser."}])
+    assert r.status_code == 200
+    assert "Alice: Curiouser." in fake.prompts[0][1]
+    assert post(client, history=[{"role": "character", "name": "x" * 81, "text": "t"}]).status_code == 422
+
+
 def test_answer_endpoint_passes_history_to_the_model(env, monkeypatch):
     client, _ = env
     fake = FakeAnswerer(["One."])

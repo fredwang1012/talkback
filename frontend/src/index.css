@@ -278,6 +278,13 @@ button:disabled { cursor: not-allowed; }
 }
 .spoiler-toggle[aria-pressed="true"] { border-color: var(--seal-bright); color: var(--ink); background: var(--ground-raised); }
 .spoiler-toggle:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+/* #79 group scene: "Also ask" toggles under the Talkback controls */
+.group-pick { border: 0; margin: 0; padding: 0; width: 100%; min-width: 0; }
+.group-pick legend { padding: 0; margin-bottom: 6px; font-size: 0.9rem; color: var(--ink-soft); }
+.group-pick-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.group-pick .spoiler-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
+.group-order { display: inline-block; min-width: 1.2em; margin-right: 6px; font-weight: 600; color: var(--seal-bright); }
+.group-note { margin: 6px 0 0; font-size: 0.82rem; color: var(--ink-soft); line-height: 1.4; }
 
 .cast-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
 .cast-list button {

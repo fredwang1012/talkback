@@ -220,7 +220,9 @@ export type RetrieveResponse = {
  * instructions may say when to use it (the server still applies the textbook / spoilers rule); `history` is the chat so
  * far with this speaker, which the model only sees inside the instructions.
  */
-export type RetrieveOptions = { textAnswer?: boolean; webSearch?: boolean; history?: { role: "user" | "character"; text: string }[] };
+export type RetrieveOptions = { textAnswer?: boolean; webSearch?: boolean; history?: ChatTurn[] };
+/** One history line; `name` (#79): another character's reply in a group round (the model sees "Name: text"). */
+export type ChatTurn = { role: "user" | "character"; text: string; name?: string };
 
 export async function fetchRetrieve(bookId: string, query: string, readerPara: number, speakerId: string, spoilers = false, opts: RetrieveOptions = {}): Promise<RetrieveResponse> {
   const res = await timedFetch("/api/retrieve", {
@@ -278,7 +280,7 @@ export function cleanSources(raw: unknown): Source[] {
 export async function streamAnswer(
   bookId: string, query: string, readerPara: number, speakerId: string,
   onSentence: (text: string, emotion?: string) => void, signal?: AbortSignal, spoilers = false,
-  history: { role: "user" | "character"; text: string }[] = [],
+  history: ChatTurn[] = [],
   onSources?: (grounding: Grounding) => void,
 ): Promise<void> {
   const res = await timedFetch("/api/answer", {
