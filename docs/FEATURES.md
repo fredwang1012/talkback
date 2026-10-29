@@ -23,7 +23,7 @@ Every feature below was checked against the code (main files in brackets). Paths
 | 13. Developer experience | 13 |
 | **Total** | **192** |
 
-By status: **178 works** and **14 partial or gap**. The partial ones are L14, R15, V18, V20, T6, T12, T20, X6, E6, E10, E11 and C9. The real gaps are R7 (the #44 server position sync is missing from the code) and X12 (tables). Open issues and other known gaps are listed in the last section.
+By status: **179 works** and **13 partial or gap**. The partial ones are R15, V18, V20, T6, T12, T20, X6, E6, E10, E11 and C9. The real gaps are R7 (the #44 server position sync is missing from the code) and X12 (tables). Open issues and other known gaps are listed in the last section.
 Tests: the backend has about 1,080 test functions in 80 files (pytest, every provider faked). The frontend has about 675 `it`/`test` cases in 80 files (vitest).
 
 ---
@@ -45,7 +45,7 @@ Tests: the backend has about 1,080 test functions in 80 files (pytest, every pro
 | L11 | Live list refresh | The library refreshes every 10 s and skips re-rendering when nothing changed (keeps scroll and open stacks) | — | works | [fe/liveList.ts] |
 | L12 | Polling survives restart | Status polling waits out a backend restart (502/503/504, no response) for up to a minute | — | works | [fe/api.ts, test/pollRestart.test.ts] |
 | L13 | Try again | A failed, refused or interrupted job shows "Try again", which resumes from the saved stages. A stale Try again on a finished book reports it as ready | — | works | [VolumeNote.tsx, /api/books/{id}/enrich] |
-| L14 | Move to Textbooks / Novels | Moves an upload between shelves. To Textbooks re-reads the PDF to restore formulas. To Novels runs character enrichment | Gemini | partial (figures are not restored, **#148**) | [shelves.ts moveLabel, /api/books/{id}/kind, ingest_upload.rebuild_textbook_text] |
+| L14 | Move to Textbooks / Novels | Moves an upload between shelves. To Textbooks re-reads the PDF to restore formulas and figures (#118). To Novels runs character enrichment | Gemini | works | [shelves.ts moveLabel, /api/books/{id}/kind, ingest_upload.rebuild_textbook_text] |
 | L15 | Delete an uploaded book | The card disappears at once. Vertex datapoint deletes and file removal run in the background and resume after a retry | Vertex Vector Search | works | [routes/uploads.py DELETE /api/books/{id}, deleting.json] |
 | L16 | Hide / restore built-in books | Built-in books cannot be deleted, but each account can hide them. "Hidden books (N)" restores them | — | works | [/api/books/{id}/hide, /restore, users.set_hidden] |
 | L17 | Card action menu | Move / Delete / Hide in a keyboard-navigable menu (arrow keys wrap) | — | works | [shelves.ts cardActions, wrapIndex] |
@@ -300,7 +300,6 @@ Same image with `PUBLIC_API=true` (entry `app.asgi:app`), Cloud Run service `tal
 | Group scene: ask 2-3 characters at once | open, not built |
 | Share a character answer as an MP4 clip | open, not built |
 | Non-English uploads: no word-level highlighting, and English-only sound effects, singing, rule-based whisper/shout and equation readings (L20) | partial |
-| Moving a paper to Textbooks restores equations but not figures (`rebuild_textbook_text` omits `figures_dir`) | open, bug |
 | Server-side reading-position sync. The code keeps the position only in the browser (localStorage), so it does not follow you to another browser or device | gap |
 | Demo mode is hard-wired to HP1, which clones do not have | gap |
 | — | Local runs (no Google Cloud) search by keywords (BM25) unless the optional `embed` extra is installed; then e5 embeddings are built locally in the background for every book and search is hybrid | works (optional install) |

@@ -102,15 +102,16 @@ def build_book(book_id: str, title: str, author: str, kind: str, raw: str, kind_
 
 
 def rebuild_textbook_text(book: Book, data: bytes) -> Book:
-    """Re-read the PDF of a book stored as a novel, as a textbook, so its equations come back. Pure: nothing is
-    saved or indexed (the caller applies the result with `apply_textbook_text` under the book's write lock).
+    """Re-read the PDF of a book stored as a novel, as a textbook, so its equations and figures come back. Nothing is
+    saved or indexed except the figure crops, written to the book's figures dir exactly as a textbook upload writes
+    them (the caller applies the text with `apply_textbook_text` under the book's write lock).
 
-    A paper the detector calls a novel is stored with every formula turned into plain text. Moving it to Textbooks
-    cannot recover the pictures from that text; the original file is read again.
+    A paper the detector calls a novel is stored with every formula turned into plain text and no figure paragraphs.
+    Moving it to Textbooks cannot recover the pictures from that text; the original file is read again.
     """
     detected = book.kind_detected.model_dump() if book.kind_detected else None
-    return build_book(book.id, book.title, book.author, "textbook", extract_text(data, ".pdf"), detected,
-                      book.language)
+    raw = extract_text(data, ".pdf", figures_dir(book.id))
+    return build_book(book.id, book.title, book.author, "textbook", raw, detected, book.language)
 
 
 def apply_textbook_text(book: Book, rebuilt: Book) -> None:
