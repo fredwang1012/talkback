@@ -21,6 +21,7 @@ from .config import settings
 
 AVATAR_IDENTITY = "boson-avatar"
 TOKEN_SLACK_S = 300   # the avatar's token outlives the session cap by this much
+EXPIRE_SLACK_S = 60   # a session Boson has surely ended (its cap passed) is forgotten this long after
 
 
 def _b64(data: bytes) -> str:
@@ -87,6 +88,11 @@ def reserve(owner: str) -> str:
     return sid
 
 
+def snapshot() -> list[Session]:
+    expire()
+    return list(_sessions.values())
+
+
 def held_by(owner: str) -> list[Session]:
     expire()
     return [s for s in _sessions.values() if s.owner == owner]
@@ -111,5 +117,5 @@ def pop(session_id: str, owner: str) -> Session | None:
 def expire(now: float | None = None) -> None:
     """Forget sessions past their cap (Boson ends them itself at expires_at)."""
     now = now if now is not None else time.time()
-    for sid in [k for k, s in _sessions.items() if now - s.started > settings.live_avatar_max_seconds + TOKEN_SLACK_S]:
+    for sid in [k for k, s in _sessions.items() if now - s.started > settings.live_avatar_max_seconds + EXPIRE_SLACK_S]:
         _sessions.pop(sid, None)

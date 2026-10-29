@@ -2090,13 +2090,14 @@ _VOICE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
 
 
 @app.post("/api/voices/preview", dependencies=[Depends(require_access)])
-async def preview_voice(request: Request, audio: UploadFile = File(...), transcript: str = Form(..., max_length=2000)):
+async def preview_voice(request: Request, audio: UploadFile = File(...), transcript: str = Form(..., max_length=2000),
+                        consent: str = Form("false")):
     """Hear a recording as a voice before saving it: one-off cloning (ref_audio), nothing is stored at Boson."""
     if not clone_bucket.allow(rate_key(request)):
         raise HTTPException(429, "Too many voice previews; wait a moment.")
     data = await audio.read(voices.MAX_BYTES + 1)
     try:
-        voices.validate_clone_request(data, transcript, "preview", "true")
+        voices.validate_clone_request(data, transcript, "preview", consent)   # the same consent as cloning
     except voices.VoiceInputError as e:
         raise HTTPException(400, str(e))
     try:
@@ -2182,7 +2183,11 @@ _live_lock = asyncio.Lock()
 
 
 def _live_owner(request: Request) -> str:
+    """Whose live face this is: the account, or the client on a local run. Anonymous visitors of a PER_USER deploy all
+    share the namespace "public", so they cannot hold one (one could end or replace another's)."""
     ident = users.current()
+    if ident.ns == users.PUBLIC_NS:
+        raise HTTPException(403, "Sign in to use a live face.")
     return ident.ns if ident.ns else rate_key(request)
 
 
@@ -2220,6 +2225,8 @@ async def start_live_avatar(req: LiveAvatarStart, request: Request):
             logging.getLogger(__name__).warning("live avatar: could not release an older session")
             continue   # still held: it keeps counting until it expires
         live_avatar.pop(old.id, owner)
+    if live_avatar.count() >= settings.live_avatar_max_sessions:
+        await _drop_ended_live_sessions()   # sessions that ended without a release (closed tab, avatar left)
     async with _live_lock:  # only the in-memory checks and a reservation: parallel starts cannot pass either cap together
         if live_avatar.held_by(owner):   # still starting, or an older one that would not release
             raise HTTPException(409, "A live face is already running or starting for this account.")
@@ -2246,6 +2253,20 @@ async def start_live_avatar(req: LiveAvatarStart, request: Request):
     return {"session": made["id"], "url": settings.livekit_url, "token": plan["token"], "identity": plan["identity"],
             "avatar_identity": made.get("avatar_identity") or live_avatar.AVATAR_IDENTITY,
             "expires_at": made.get("expires_at"), "max_seconds": settings.live_avatar_max_seconds}
+
+
+async def _drop_ended_live_sessions() -> None:
+    """Ask Boson about each held session and forget the ones it has ended, so a tab closed without a release does not
+    keep "Live faces are busy" up until the session's cap."""
+    for s in live_avatar.snapshot():
+        if s.id.startswith(live_avatar.PENDING):
+            continue
+        try:
+            status = await boson.get_avatar_session(s.id)
+        except (BosonError, RuntimeError):
+            continue
+        if status in ("terminated", "gone"):
+            live_avatar.pop(s.id, s.owner)
 
 
 @app.delete("/api/live-avatar/sessions/{session_id}", dependencies=[Depends(require_access)])

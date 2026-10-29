@@ -637,6 +637,7 @@ export async function previewVoice(audio: Blob, filename: string, transcript: st
   const form = new FormData();
   form.append("audio", audio, filename);
   form.append("transcript", transcript);
+  form.append("consent", "true"); // the dialog's permission line, as for cloning (the user asked for no checkbox)
   const res = await timedFetch("/api/voices/preview", { method: "POST", headers: authHeaders(), body: form }, 60000);
   if (!res.ok) throw await readError(res, "Could not preview the voice");
   return res.blob();

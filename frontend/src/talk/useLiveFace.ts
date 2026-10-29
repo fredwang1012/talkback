@@ -29,8 +29,8 @@ export function useLiveFace(active: boolean): LiveFaceUi {
   const [pick, setPickState] = useState(readPick);
   const [face, setFace] = useState<LiveFace | null>(null);
   const [media, setMedia] = useState<LiveMedia>({ video: null, audio: null });
-  const [status, setStatus] = useState<LiveFaceUi["status"]>("off");
-  const [note, setNote] = useState<string | null>(null);
+  // how the latest start for `pick` ended up, when it is not simply running (null: starting, or nothing tried yet)
+  const [outcome, setOutcome] = useState<{ pick: string; status: "off" | "unavailable" | "error"; note: string } | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -45,23 +45,23 @@ export function useLiveFace(active: boolean): LiveFaceUi {
 
   const wanted = active && info.enabled && !!pick && info.avatars.some((a) => a.id === pick);
   useEffect(() => {
-    if (!wanted) { setStatus("off"); setNote(null); return; }
+    if (!wanted) return; // the status reads "off" while not wanted (below)
     let cancelled = false;
     let mine: LiveFace | null = null;
-    setStatus("starting");
-    setNote(null);
     LiveFace.start(pick).then((f) => {
       if (cancelled) { void f.close(); return; }
       mine = f;
       f.onMedia = (m) => setMedia(m);
-      f.onEnded = () => { setFace(null); setMedia({ video: null, audio: null }); setStatus("off"); setNote("The live face ended; using the usual face clips."); };
+      f.onEnded = () => {
+        setFace(null);
+        setMedia({ video: null, audio: null });
+        setOutcome({ pick, status: "off", note: "The live face ended; using the usual face clips." });
+      };
       setMedia(f.mediaNow);
       setFace(f);
-      setStatus("live");
     }).catch((e: unknown) => {
       if (cancelled) return;
-      setStatus(e instanceof LiveUnavailable ? "unavailable" : "error");
-      setNote(e instanceof Error ? e.message : String(e));
+      setOutcome({ pick, status: e instanceof LiveUnavailable ? "unavailable" : "error", note: e instanceof Error ? e.message : String(e) });
     });
     const leave = () => { void mine?.close({ keepalive: true }); };
     window.addEventListener("pagehide", leave);
@@ -71,8 +71,11 @@ export function useLiveFace(active: boolean): LiveFaceUi {
       void mine?.close();
       setFace(null);
       setMedia({ video: null, audio: null });
+      setOutcome(null); // a later start begins fresh ("starting")
     };
   }, [wanted, pick]);
 
-  return { info, pick, setPick, face, media, status, note };
+  const ended = outcome && outcome.pick === pick ? outcome : null;
+  const status: LiveFaceUi["status"] = !wanted ? "off" : face ? "live" : ended ? ended.status : "starting";
+  return { info, pick, setPick, face: wanted ? face : null, media, status, note: wanted && !face ? ended?.note ?? null : null };
 }

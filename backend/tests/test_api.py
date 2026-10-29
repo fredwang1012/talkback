@@ -276,6 +276,8 @@ def test_cached_only_never_calls_boson_and_serves_prerendered(env):
 def test_health_tells_the_ui_when_an_access_code_is_needed_without_leaking_it(env, monkeypatch):
     client, _ = env
     assert client.get("/api/health").json()["access_required"] is False
+    h = client.get("/api/health").json()
+    assert h["web_search"] is bool(settings.web_search) and h["avatar_size"] == settings.avatar_size
     monkeypatch.setattr(settings, "access_token", "letmein")
     body = client.get("/api/health").json()
     assert body["access_required"] is True

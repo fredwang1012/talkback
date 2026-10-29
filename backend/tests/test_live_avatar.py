@@ -11,6 +11,7 @@ from app import live_avatar, main
 from app.boson import BosonClient
 from app.config import settings
 from tests.test_api import env  # noqa: F401  (env is a fixture)
+from tests.test_per_user import pu  # noqa: F401  (pu is a fixture)
 
 
 def _claims(token: str) -> dict:
@@ -44,6 +45,11 @@ def lk(monkeypatch):
             state["n"] += 1
             return httpx.Response(201, json={"id": f"avrt_{state['n']}", "object": "avatar.realtime.session", "status": "active",
                                              "avatar_identity": "boson-avatar", "expires_at": "2026-10-28T01:00:00Z"})
+        if req.method == "GET" and req.url.path.startswith("/v1/avatar/sessions/"):
+            sid = req.url.path.rsplit("/", 1)[1]
+            if sid in state.get("ended", ()):
+                return httpx.Response(200, json={"id": sid, "status": "terminated"})
+            return httpx.Response(200, json={"id": sid, "status": "active"})
         if req.method == "DELETE" and req.url.path.startswith("/v1/avatar/sessions/"):
             state["deleted"].append(req.url.path.rsplit("/", 1)[1])
             return httpx.Response(200, json={"status": "releasing"})
@@ -139,3 +145,21 @@ def test_one_account_starting_twice_at_once_gets_one_session(env, lk, monkeypatc
     from app import live_avatar
     assert len(live_avatar.held_by("acct-a")) == 1             # never two held at once for one account
     assert len(lk["created"]) - len(lk["deleted"]) == 1       # any extra one was released at Boson
+
+
+def test_ended_sessions_free_their_slot_without_a_release(env, lk, monkeypatch):  # noqa: F811
+    """A tab closed without a release: when the cap is reached, Boson is asked and ended sessions are forgotten."""
+    client, _ = env
+    monkeypatch.setattr(settings, "live_avatar_max_sessions", 1)
+    monkeypatch.setattr(main, "_live_owner", lambda request: "acct-a")
+    a = client.post("/api/live-avatar/sessions", json={"avatar_id": "builtin_claire_v1"}).json()
+    monkeypatch.setattr(main, "_live_owner", lambda request: "acct-b")
+    assert client.post("/api/live-avatar/sessions", json={"avatar_id": "builtin_claire_v1"}).status_code == 503  # still active
+    lk["ended"] = {a["session"]}
+    assert client.post("/api/live-avatar/sessions", json={"avatar_id": "builtin_claire_v1"}).status_code == 200
+
+
+def test_anonymous_visitors_of_a_per_user_deploy_cannot_hold_a_live_face(pu, lk):  # noqa: F811
+    client, _ = pu
+    r = client.post("/api/live-avatar/sessions", json={"avatar_id": "builtin_claire_v1"})
+    assert r.status_code == 403 and lk["created"] == []

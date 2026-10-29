@@ -130,6 +130,15 @@ class BosonClient:
         usage.record("boson_avatar_live", "higgs-avatar", sessions=1)
         return resp.json()
 
+    async def get_avatar_session(self, session_id: str) -> str:
+        """GET /v1/avatar/sessions/{id}: its status (active, releasing, terminated); "gone" once Boson no longer has it."""
+        try:
+            return str((await self.request("GET", f"/v1/avatar/sessions/{quote(session_id, safe='')}")).json().get("status", ""))
+        except BosonError as e:
+            if e.status == 404:
+                return "gone"
+            raise
+
     async def release_avatar_session(self, session_id: str) -> None:
         """DELETE /v1/avatar/sessions/{id}; a 404 means it already ended."""
         try:

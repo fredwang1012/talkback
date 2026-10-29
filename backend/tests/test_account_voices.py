@@ -57,7 +57,7 @@ def test_account_voices_are_owner_only_when_accounts_are_separate(pu, boson):  #
 
 def test_preview_speaks_with_the_reference_clip_and_saves_nothing(env, boson):  # noqa: F811
     client, _ = env
-    r = client.post("/api/voices/preview", data={"transcript": "hello there"}, files={"audio": ("a.wav", silent_wav(4), "audio/wav")})
+    r = client.post("/api/voices/preview", data={"transcript": "hello there", "consent": "true"}, files={"audio": ("a.wav", silent_wav(4), "audio/wav")})
     assert r.status_code == 200 and r.headers["content-type"] == "audio/mpeg" and r.content == b"ID3mp3"
     body = boson["speech"][0]
     assert body["ref_text"] == "hello there" and body["ref_audio"] and "voice" not in body
@@ -66,5 +66,7 @@ def test_preview_speaks_with_the_reference_clip_and_saves_nothing(env, boson):  
 
 def test_preview_checks_the_clip_first(env, boson):  # noqa: F811
     client, _ = env
-    r = client.post("/api/voices/preview", data={"transcript": "hi"}, files={"audio": ("a.wav", silent_wav(1), "audio/wav")})
+    r = client.post("/api/voices/preview", data={"transcript": "hi", "consent": "true"}, files={"audio": ("a.wav", silent_wav(1), "audio/wav")})
     assert r.status_code == 400 and boson["speech"] == []
+    r = client.post("/api/voices/preview", data={"transcript": "hello there"}, files={"audio": ("a.wav", silent_wav(4), "audio/wav")})
+    assert r.status_code == 400 and boson["speech"] == []   # no consent, as for cloning
