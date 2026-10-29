@@ -36,6 +36,10 @@ describe("addressedSpeaker (#34): who a question asked while reading goes to", (
     expect(to("Alice said what?")).toBeNull();
     expect(to("Who is the White Rabbit")).toBeNull();
     expect(to("what happened to alice")).toBeNull();
+    // "ask" / "talk to" in the middle of a question is part of the story, not a cue
+    expect(to("Why did the Queen ask Alice to play croquet?")).toBeNull();
+    expect(to("Did the Duchess want to talk to the Hatter?")).toBeNull();
+    expect(to("Could you ask Alice what she saw?")).toBe("alice"); // a request at the start still is
     expect(to("")).toBeNull();
   });
 

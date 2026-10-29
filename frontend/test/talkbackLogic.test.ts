@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Book } from "../src/api";
 import { MAX_MESSAGES, addQuestion, appendSentence, finishAnswer, loadChat, resetChatMemory, saveChat } from "../src/talk/chatLog";
-import { chapterAt, validSpeaker, showSpoilerToggle, speakerChoices, spaceStartsTalk, talkbackStatus, toggleMode } from "../src/reader/talkbackLogic";
+import { chapterAt, routeCandidates, validSpeaker, showSpoilerToggle, speakerChoices, spaceStartsTalk, talkbackStatus, toggleMode } from "../src/reader/talkbackLogic";
 import { TalkController, type ReaderControl, type TalkSession } from "../src/talk/TalkController";
 
 const book = {
@@ -24,6 +24,13 @@ describe("talkback logic", () => {
     expect(speakerChoices({ ...book, kind: "textbook" } as Book, 5, true)).toEqual([]);
     expect(showSpoilerToggle({ kind: "textbook" })).toBe(false);
     expect(showSpoilerToggle({ kind: "novel" })).toBe(true);
+  });
+  it("routing (#34) offers who the current view offers: read mode never the unmet, whatever Talkback's spoiler setting", () => {
+    const aliased = { ...book, characters: [{ ...book.characters[0], aliases: ["Harry"] }, book.characters[1]] } as unknown as Book;
+    expect(routeCandidates(aliased, 5, true, "read")).toEqual([{ id: "narrator", name: "Narrator" }, { id: "h", name: "H", aliases: ["Harry"] }]);
+    expect(routeCandidates(aliased, 5, true, "talk").map((c) => c.id)).toEqual(["narrator", "h", "s"]);
+    expect(routeCandidates(aliased, 5, false, "talk").map((c) => c.id)).toEqual(["narrator", "h"]);
+    expect(routeCandidates({ ...aliased, kind: "textbook" } as Book, 5, true, "talk")).toEqual([]);
   });
   it("falls back to the narrator when the speaker is no longer offered", () => {
     expect(validSpeaker(book, 5, false, "h")).toBe("h");

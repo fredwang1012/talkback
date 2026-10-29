@@ -25,8 +25,8 @@ import { answerOnStage, loopsToPreload, showReadingFace } from "../reader/readFa
 import { lipSyncTargetFor, readClipsOn, readFaceFor, speechSeconds, type ReadFaces } from "../reader/readLipSync";
 import Stage from "../reader/Stage";
 import AvatarPlayer from "../reader/AvatarPlayer";
-import { loadPlayerMode, savePlayerMode, sentenceText, type PlayerMode } from "../reader/playerLogic";
-import { speakerChoices, speakerName, toggleMode, validSpeaker } from "../reader/talkbackLogic";
+import { leavingStopsAnswer, loadPlayerMode, playerPortrait, savePlayerMode, sentenceText, useChatSince, type PlayerMode } from "../reader/playerLogic";
+import { routeCandidates, speakerName, toggleMode, validSpeaker } from "../reader/talkbackLogic";
 import TalkbackView, { ModeToggle } from "../reader/TalkbackView";
 import { loadNaturalSpeed, saveNaturalSpeed, speedTagFor, type SpeedTag } from "../reader/naturalSpeed";
 import { loadSpoilers, saveSpoilers } from "../reader/spoilers";
@@ -34,7 +34,6 @@ import VoiceLab from "../reader/VoiceLab";
 import { spend, type SpendSnapshot } from "../spend";
 import { openClipVideo } from "../talk/clipVideo";
 import { FaceSync } from "../talk/faceSync";
-import { loadChat } from "../talk/chatLog";
 import { addressedSpeaker } from "../talk/route";
 import { runTool, type ToolActions, type ToolContext } from "../talk/tools";
 import { useTalk } from "../talk/useTalk";
@@ -65,8 +64,6 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [playerMode, setPlayerMode] = useState<PlayerMode>(loadPlayerMode);
   // read mode with the player hidden shows no face: no lip-sync clips are asked for (reading or answers)
   const facesShown = mode === "talk" || playerMode !== "hidden";
-  // chat lines from before this visit are not news: the answer bubble only shows questions asked from now on (#34)
-  const sinceId = useMemo(() => loadChat(bookId).at(-1)?.id ?? 0, [bookId]);
   const stopTalkRef = useRef<() => void>(() => {});
   const [word, setWord] = useState<{ charStart: number; charEnd: number } | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
@@ -276,9 +273,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   // #140: a live preset face while the Talkback view (or the expanded player, #33) is open, released on leaving it;
   // null keeps the face clips
   const live = useLiveFace(mode === "talk" || (mode === "read" && playerMode === "expanded"));
-  const routeCandidates = book && !(demo && book.characters.some((c) => c.id === DEMO_SPEAKER))
-    ? speakerChoices(book, para, spoilers && book.kind === "novel").map((c) => ({ ...c, aliases: book.characters.find((x) => x.id === c.id)?.aliases }))
-    : [];
+  const routeTo = book && !(demo && book.characters.some((c) => c.id === DEMO_SPEAKER)) ? routeCandidates(book, para, spoilers, mode) : [];
   const talk = useTalk({
     bookId,
     enabled: audioAvailable && !!book,
@@ -295,8 +290,8 @@ export default function Reader({ bookId }: { bookId: string }) {
     bookKind: book?.kind,
     liveFace: live.face,
     bookLanguage: book?.language,
-    // #34: "Alice, ..." goes to Alice when she may be talked to now (met, or spoilers on); the demo stays pinned
-    route: (q) => addressedSpeaker(q, routeCandidates),
+    // #34: "Alice, ..." goes to Alice when she may be talked to now (met, or spoilers on in Talkback); the demo stays pinned
+    route: (q) => addressedSpeaker(q, routeTo),
     onRoute: setSpeakerId,
     reader: {
       isPlaying: () => (engineRef.current ? ["playing", "loading"].includes(engineRef.current.snapshot().state) : playingRef.current),
@@ -313,6 +308,8 @@ export default function Reader({ bookId }: { bookId: string }) {
   });
   const { pttDown, pttUp } = talk;
   stopTalkRef.current = talk.stop;
+  // chat lines from before this visit are not news: the answer bubble only shows questions asked from now on (#34)
+  const sinceId = useChatSince(talk.messages);
 
   // Hold Space to talk (works while reading, to interrupt).
   useEffect(() => {
@@ -346,9 +343,13 @@ export default function Reader({ bookId }: { bookId: string }) {
       ? (chunk) => castVoice(book, cast, isNovel(book) ? chunk.speaker : "narrator") : null);
   }, [cast, castLoaded, book, audioAvailable]);
 
-  /** #33: mini, expanded or hidden. Leaving the expanded view releases a live face (#140), so its answer stops too. */
-  const changePlayer = (m: PlayerMode) => {
-    if (playerMode === "expanded" && m !== "expanded" && live.face && answerOnStage(talk.state, talk.speaking)) talk.stop();
+  /**
+   * #33: mini, expanded or hidden. Leaving the expanded view releases a live face (#140), so its answer stops too;
+   * not when it is left for Talkback (`toTalkback`), which keeps the live face and the answer.
+   */
+  const changePlayer = (m: PlayerMode, toTalkback = false) => {
+    const now = { live: !!live.face, answering: answerOnStage(talk.state, talk.speaking) };
+    if (leavingStopsAnswer(playerMode, toTalkback ? "talkback" : m, now)) talk.stop();
     setPlayerMode(m);
     savePlayerMode(m);
   };
@@ -552,7 +553,7 @@ export default function Reader({ bookId }: { bookId: string }) {
       {mode === "read" && (
         <AvatarPlayer mode={playerMode} onMode={changePlayer} book={book} name={speakerName(book, playerWho)} talk={talk}
                       face={{
-                        portrait: (playerWho === "narrator" ? null : book.characters.find((c) => c.id === playerWho)?.portrait) ?? book.narrator?.portrait ?? null,
+                        portrait: playerPortrait(book, playerWho),
                         speakerId, faceFor: talkFaceFor,
                         avatarSrc: chunks[index] && avatars.has(chunks[index].id) ? avatarUrl(book.id, chunks[index].id) : null,
                         avatarPlaying: playing && !loading, getAudio, readingFace, preloadLoops, readSpeaking, levelRef,
@@ -561,7 +562,7 @@ export default function Reader({ bookId }: { bookId: string }) {
                       audioAvailable={audioAvailable} playing={playing} loading={loading} onToggle={toggle}
                       onPrev={() => { lastManualScroll.current = 0; step(-1); }} onNext={() => { lastManualScroll.current = 0; step(1); }}
                       atStart={index === 0} atEnd={index >= last} caption={sentenceText(book, current)} sinceId={sinceId}
-                      onOpenTalkback={audioAvailable ? () => { changePlayer("mini"); changeMode("talk"); } : undefined} />
+                      onOpenTalkback={audioAvailable ? () => { changePlayer("mini", true); changeMode("talk"); } : undefined} />
       )}
       {debugEnabled() && <DebugDrawer entries={talk.logs} spend={spendNow} />}
       {mode === "read" && <PlayerBar

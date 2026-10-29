@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Book, Face } from "../src/api";
 import AvatarPlayer from "../src/reader/AvatarPlayer";
-import { isSwipeDown, latestExchange, loadPlayerMode, playerKey, savePlayerMode, sentenceText, type PlayerMode } from "../src/reader/playerLogic";
+import { isSwipeDown, latestExchange, leavingStopsAnswer, loadPlayerMode, playerKey, playerPortrait, savePlayerMode, sentenceText, useChatSince, type PlayerMode } from "../src/reader/playerLogic";
 import type { ChatMessage } from "../src/talk/chatLog";
 import type { FaceSync } from "../src/talk/faceSync";
 import type { TalkUi } from "../src/talk/useTalk";
@@ -89,6 +89,26 @@ describe("player logic (#33)", () => {
     expect(latestExchange([msg(1, "narrator", "recap")], 0)).toBeNull();
   });
 
+  it("the player's portrait: a character's own (or none, for the letter circle), the narrator's only for the narrator", () => {
+    const b = { ...book, narrator: { portrait: "/narrator.png" },
+      characters: [{ id: "alice", portrait: null }, { id: "hatter", portrait: "/hatter.png" }] } as unknown as Book;
+    expect(playerPortrait(b, "alice")).toBeNull();
+    expect(playerPortrait(b, "hatter")).toBe("/hatter.png");
+    expect(playerPortrait(b, "narrator")).toBe("/narrator.png");
+    expect(playerPortrait({ ...b, narrator: null } as unknown as Book, "narrator")).toBeNull();
+  });
+
+  it("leaving the expanded view stops a live-face answer, except into Talkback (which keeps the live face)", () => {
+    const on = { live: true, answering: true };
+    expect(leavingStopsAnswer("expanded", "mini", on)).toBe(true);
+    expect(leavingStopsAnswer("expanded", "hidden", on)).toBe(true);
+    expect(leavingStopsAnswer("expanded", "talkback", on)).toBe(false);
+    expect(leavingStopsAnswer("expanded", "expanded", on)).toBe(false);
+    expect(leavingStopsAnswer("mini", "hidden", on)).toBe(false);
+    expect(leavingStopsAnswer("expanded", "mini", { live: false, answering: true })).toBe(false); // clips: the answer goes on
+    expect(leavingStopsAnswer("expanded", "mini", { live: true, answering: false })).toBe(false);
+  });
+
   it("the caption is the sentence being read", () => {
     const chunk = { id: "c", speaker: "narrator", voice: "v", tts_text: "[calm] Alice was beginning", char_start: 0, char_end: 38, para: 0 };
     expect(sentenceText(book, chunk)).toBe("Alice was beginning to get very tired.");
@@ -116,7 +136,7 @@ describe("AvatarPlayer (#33)", () => {
     act(() => button(/Expand the player/)?.click());
     const dialog = host.querySelector("[role=dialog]");
     expect(dialog?.getAttribute("aria-modal")).toBe("true");
-    expect(document.activeElement?.getAttribute("aria-label")).toBe("Collapse the player (Esc)");
+    expect(document.activeElement).toBe(dialog); // the view itself, so Hold Space still talks (see the test below)
     expect(host.querySelector(".ap-caption")?.textContent).toContain("Alice was beginning");
     expect(host.querySelector("video.rf-clip")).toBe(clip); // the same lip-sync video: the sync is untouched
     press("Escape");
@@ -150,6 +170,28 @@ describe("AvatarPlayer (#33)", () => {
     act(() => tab?.click());
     expect(host.querySelector(".avatar-player.mini .medallion")).toBeTruthy();
     expect(document.activeElement?.getAttribute("aria-label")).toBe("Expand the player");
+  });
+
+  it("expanding leaves the focus off the buttons: Hold Space talks (the Reader skips buttons) and never collapses", () => {
+    mount();
+    act(() => button(/Expand the player/)?.click());
+    const focused = document.activeElement as HTMLElement;
+    expect(["BUTTON", "INPUT", "SELECT", "TEXTAREA"]).not.toContain(focused.tagName); // the Reader's Hold-Space guard
+    expect(host.querySelector("[role=dialog]")?.contains(focused)).toBe(true);
+    act(() => {
+      focused.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space", bubbles: true, cancelable: true }));
+      focused.dispatchEvent(new KeyboardEvent("keyup", { key: " ", code: "Space", bubbles: true, cancelable: true }));
+    });
+    expect(host.querySelector(".avatar-player.expanded")).toBeTruthy();
+  });
+
+  it("Shift+Tab from the expanded view itself wraps to its last control", () => {
+    mount();
+    act(() => button(/Expand the player/)?.click());
+    const dialog = host.querySelector<HTMLElement>("[role=dialog]") as HTMLElement;
+    const items = [...dialog.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex='-1'])")];
+    act(() => { dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true })); });
+    expect(document.activeElement).toBe(items[items.length - 1]);
   });
 
   it("Tab stays inside the expanded view", () => {
@@ -190,6 +232,43 @@ describe("answer bubble while reading (#34)", () => {
     expect(host.querySelector(".ap-bubble")).toBeTruthy();
     act(() => { vi.advanceTimersByTime(12_000); });
     expect(host.querySelector(".ap-bubble")).toBeNull();
+  });
+
+  it("goes by itself even while the Reader re-renders on every word", () => {
+    vi.useFakeTimers();
+    const t = talk({ state: "reading", messages: [msg(3, "user", "Alice, why?"), msg(4, "character", "Because.")] });
+    let rerender = () => {};
+    function Host() {
+      const [n, setN] = useState(0);
+      rerender = () => setN(n + 1);
+      return createElement(AvatarPlayer, {
+        mode: "mini", onMode: () => {}, book, name: "Alice", talk: t,
+        face: { portrait: null, speakerId: "alice", faceFor: () => face, avatarSrc: null, avatarPlaying: false, readingFace: null, readSpeaking: false,
+          levelRef: { current: 0 }, readLipSync: { sync: { setVideo: vi.fn() } as unknown as FaceSync, shown: false } },
+        audioAvailable: true, playing: true, loading: false, onToggle: () => {}, onPrev: () => {}, onNext: () => {}, atStart: false, atEnd: false,
+        caption: `word ${n}`, sinceId: 2,
+      });
+    }
+    act(() => root.render(createElement(Host)));
+    expect(host.querySelector(".ap-bubble")).toBeTruthy();
+    for (let i = 0; i < 30; i++) { act(() => { vi.advanceTimersByTime(500); }); act(() => rerender()); } // a new word every 500 ms
+    expect(host.querySelector(".ap-bubble")).toBeNull();
+  });
+
+  it("after Clear chat (ids start again at 1) a new question's answer shows again", () => {
+    let setMsgs: (m: ChatMessage[]) => void = () => {};
+    function Host() {
+      const [messages, set] = useState<ChatMessage[]>([msg(1, "user", "old"), msg(2, "character", "old answer")]);
+      setMsgs = set;
+      const since = useChatSince(messages);
+      const ex = latestExchange(messages, since);
+      return createElement("output", null, ex ? ex.answer : "none");
+    }
+    act(() => root.render(createElement(Host)));
+    expect(host.textContent).toBe("none"); // from before this visit
+    act(() => setMsgs([])); // Clear chat
+    act(() => setMsgs([msg(1, "user", "Alice, why?"), msg(2, "character", "Because.")]));
+    expect(host.textContent).toBe("Because.");
   });
 
   it("older chat from before this visit never pops up", () => {

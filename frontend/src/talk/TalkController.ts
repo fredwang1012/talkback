@@ -172,7 +172,7 @@ export interface TalkDeps {
   onSpeaking?: (speaking: boolean) => void;
   /**
    * #34: who a question is addressed to (a character the reader may talk to now), or null to keep the current
-   * speaker. Asked once per question, before it is shown or answered.
+   * speaker. Asked once per question, before it is shown or answered; never during a quiz (the reply is an answer).
    */
   route?: (query: string) => string | null;
   /** #34: a question was addressed to someone else: they answer it (and the questions after it). */
@@ -316,7 +316,8 @@ export class TalkController {
     const now = this.d.now();
     const tail = this.quietSince + TalkController.MIC_HOLD_TAIL - now;
     const want = this.handsFree && this.serverMode && !this.bargeOpen && (this.speaking || this.holdForReading || tail > 0);
-    if (want && !this.speaking) this.holdTimer = setTimeout(() => { this.holdTimer = null; this.updateMicHold(); }, tail);
+    // only a tail ends by itself: a hold for the reading ends when the reading stops (noteLevel), not on a timer
+    if (want && !this.speaking && tail > 0) this.holdTimer = setTimeout(() => { this.holdTimer = null; this.updateMicHold(); }, tail);
     this.applyHold(want);
   }
 
@@ -365,6 +366,8 @@ export class TalkController {
    * switched by `routedVoice` once nothing is being cancelled (the Gemini path voices each sentence itself).
    */
   private routeQuestion(query: string): boolean {
+    // during a quiz the reply is an answer, and an answer may well be a name ("The Knave of Hearts."): never routed
+    if (this.quiz) return false;
     const id = this.d.route?.(query) ?? null;
     if (!id || id === this.speakerId) return false;
     this.endQuiz(); // a quiz belongs to the one who asked it
