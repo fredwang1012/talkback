@@ -58,9 +58,16 @@ def is_quota_or_auth(exc: BaseException) -> bool:
     for e in _chain(exc):
         if status_of(e) in (401, 402, 403) or type(e).__name__ in AUTH_NAMES:
             return True
-        if any(m in str(e).lower() for m in NEVER):
+        if any(m in str(e).lower() for m in NEVER) and not _ai_studio_per_minute(e):
             return True
     return False
+
+
+def _ai_studio_per_minute(exc: BaseException) -> bool:
+    """Google AI Studio (GEMINI_API_KEY) words every 429 "check your plan and billing details", per-minute limits
+    included: those are waited out like Vertex's. Only a per-day quota (QuotaFailure quotaId "...PerDay...") is not."""
+    msg = str(exc).lower()
+    return status_of(exc) == 429 and "plan and billing details" in msg and "perday" not in msg
 
 
 def is_transient(exc: BaseException) -> bool:

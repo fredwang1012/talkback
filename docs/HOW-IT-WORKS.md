@@ -237,7 +237,7 @@ span with its reading (≤ 120 chars) inside the sentence, and the chunker measu
 form (`_fit_pieces`). `tts_cache.align_timestamps` maps each spoken word of the reading back to the formula's
 character span.
 
-**Fallbacks.** No Gemini (no `GCP_PROJECT`): pictures only, or the public service on a clone
+**Fallbacks.** No Gemini (no `GCP_PROJECT` or `GEMINI_API_KEY`): pictures only, or the public service on a clone
 (`public_client.transcribe_equations`, section 21). A failed batch stays pictures. Never raises.
 
 ### 4.4 Figures
@@ -814,8 +814,14 @@ must stay short; capped at 8,000 chars).
 ### 12.1 Realtime vs Gemini answer paths
 
 `main.answer_backend()` -> `/api/health.answer_backend`, read by `useTalk.answersViaGemini`:
-- `ANSWER_BACKEND` explicit; else `vertex` retrieval -> **gemini**; local retrieval -> **realtime**; a clone with the
-  public service reachable -> **gemini** (answers written by the service).
+- `ANSWER_BACKEND` explicit; else `vertex` retrieval or a `GEMINI_API_KEY` -> **gemini**; local retrieval ->
+  **realtime**; a clone with the public service reachable -> **gemini** (answers written by the service).
+- Which Gemini endpoint (`app/gemini.py`, #137, `/api/health.llm`): **vertex** with `GCP_PROJECT` (and, when a key is
+  also set, Application Default Credentials that load), else **ai_studio** with `GEMINI_API_KEY` (same google-genai
+  SDK in API-key mode, same model ids, Grounding with Google Search included), else none. Every Gemini call (answers,
+  upload processing, translation, face detect/describe, equations) builds its client through `gemini.client()`.
+  AI Studio's per-minute 429s (worded "check your plan and billing details") are retried through the shared pacer;
+  a per-day quota is not (`retrying._ai_studio_per_minute`).
 - **Realtime path, text mode (opt-in, B1: `?answers=text` or localStorage `talkback:answers=text`)**: `/api/retrieve` (`text_answer: true`) returns `instructions`
   (persona + rules + story so far + passages + the chat so far + the spoken-output and `[feeling]` marker rule, the
   same `ANSWER_SUFFIX` Gemini gets) -> `TalkClient.respond` sends `response.create {instructions, input: [the

@@ -4,7 +4,7 @@ with an English translation of the question, so BM25 and the English summaries s
 The language guess mirrors the reader's badge (frontend/src/talk/language.ts): a non-Latin script, or the common words
 of a language. It is deliberately cautious: a question only counts as non-English when its script says so or at least
 two of its common words belong to that language and outnumber the English ones, so an English question is never told
-to be answered in Spanish. Translation uses Gemini on Vertex when GCP_PROJECT is set, else the public processing service
+to be answered in Spanish. Translation uses Gemini (Vertex, or AI Studio with GEMINI_API_KEY: app/gemini.py) when set up, else the public processing service
 when the clone uses it (PUBLIC_API_URL); without either (or on any failure) the original question is searched, which the multilingual embeddings still partly match.
 
 A book in another language (#117, Book.language) is searched in its own language instead: see search_query.
@@ -14,7 +14,7 @@ import logging
 import re
 from collections import OrderedDict
 
-from . import booklang, pacer
+from . import booklang, gemini, pacer
 from .config import settings
 
 RETRY_ATTEMPTS = 2     # translation is on the question's critical path: one retry, a short wait
@@ -119,21 +119,20 @@ def translate_system(language: str) -> str:
 
 
 async def translate(text: str, language: str | None = None) -> str:
-    """English translation of `text` with Gemini on Vertex, or through the public processing service on a clone with
+    """English translation of `text` with Gemini (Vertex or AI Studio), or through the public processing service on a clone with
     no LLM of its own (public_client.active()). Raises on any failure (the caller falls back). `language` (an English
     language name): translate into that language instead (Gemini only; the service translates into English)."""
-    if not settings.gcp_project:
+    if not gemini.available():
         from . import public_client
         if public_client.active() and language is None:
             return await public_client.translate(text)
-        raise Unavailable("no GCP_PROJECT")
-    from google import genai
+        raise Unavailable("no Gemini (GCP_PROJECT or GEMINI_API_KEY)")
     from google.genai import types
 
     from .gcp import usage
     global _client
     if _client is None:
-        _client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
+        _client = gemini.client()
     system = TRANSLATE_SYSTEM if language is None else translate_system(language)
     config = types.GenerateContentConfig(system_instruction=system, temperature=0, max_output_tokens=200,
                                          thinking_config=types.ThinkingConfig(thinking_budget=0))

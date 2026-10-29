@@ -1,7 +1,7 @@
 """The main face's bounding box in a photo, for the head-and-shoulders crop of face uploads (#109).
 
 `detect(image, ext)` never raises: it returns {x, y, w, h} (fractions of the image, clamped inside it) or None (no
-face, a bad answer, a failed call, or no call allowed). One Gemini Flash call on Vertex (a fraction of a cent) with
+face, a bad answer, a failed call, or no call allowed). One Gemini Flash call (Vertex or AI Studio, app/gemini.py; a fraction of a cent) with
 structured JSON output. Guarded like the Add book describe (#83): its estimated cost is reserved in the upload budget
 before the call (no call when the budget cannot cover it), and a global token bucket plus a daily cap bound the calls
 across every account; the endpoint adds a per-caller bucket. Nothing is stored and the image is never logged.
@@ -10,7 +10,7 @@ import json
 import logging
 from datetime import date
 
-from . import pacer, retrying
+from . import gemini, pacer, retrying
 from .config import settings
 from .enrich import spend
 from .enrich.llm import price_usd
@@ -76,11 +76,10 @@ def _take_llm_call() -> bool:
 
 
 async def _gemini(image: bytes, mime: str) -> str:
-    """One structured-output Gemini Flash call on Vertex; returns the JSON text. Usage is metered and any cost over
+    """One structured-output Gemini Flash call; returns the JSON text. Usage is metered and any cost over
     the reserved estimate is added to the upload spend."""
-    from google import genai
     from google.genai import types
-    client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
+    client = gemini.client()
     config = types.GenerateContentConfig(
         max_output_tokens=1024, response_mime_type="application/json", response_json_schema=SCHEMA,
         thinking_config=types.ThinkingConfig(thinking_budget=0),
@@ -108,7 +107,7 @@ def estimate_usd() -> float:
 async def detect(image: bytes, ext: str) -> dict | None:
     """{x, y, w, h} of the main face as fractions of the image, or None. A clone with no GCP project of its own asks
     the public processing service (its own caps and rate limits apply there)."""
-    if not settings.gcp_project:
+    if not gemini.available():
         from . import public_client
         if public_client.active():
             return await public_client.detect_face(image, ext)

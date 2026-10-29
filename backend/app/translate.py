@@ -5,8 +5,8 @@ A paragraph is translated as the list of its TTS chunks' texts (one translated p
 the speaker, voice and delivery tags of the chunk it translates. Translation is lazy: only a paragraph the reader is
 about to hear (or see) is translated, never the whole book, so the spoiler rule holds by construction. Each paragraph's
 translation is cached on disk per book + paragraph + language (under the account's own folder with PER_USER), and
-invalidated when the paragraph's chunk texts change. Gemini on Vertex (TRANSLATE_MODEL, Flash-Lite by default) when
-GCP_PROJECT is set, else the public processing service on a clone (public_client.translate_passage)."""
+invalidated when the paragraph's chunk texts change. Gemini (TRANSLATE_MODEL, Flash-Lite by default) on
+Vertex or AI Studio (app/gemini.py) when set up, else the public processing service on a clone (public_client.translate_passage)."""
 import asyncio
 import hashlib
 import json
@@ -17,7 +17,7 @@ from typing import Awaitable, Callable
 from pydantic import BaseModel
 
 from . import pacer as pacing
-from . import tts_lang, users
+from . import gemini, tts_lang, users
 from .config import settings
 from .delivery import apply_speed
 from .schema import Book, Paragraph
@@ -103,13 +103,13 @@ async def _public_translate(pieces: list[str], language: str) -> list[str]:
 
 
 def default_translator() -> Translator:
-    """Gemini on Vertex with GCP_PROJECT, else the public service on a clone; raises Unavailable otherwise."""
-    if settings.gcp_project:
+    """Gemini (Vertex or AI Studio), else the public service on a clone; raises Unavailable otherwise."""
+    if gemini.available():
         return gemini_translate
     from . import public_client
     if public_client.active():
         return _public_translate
-    raise Unavailable("Translation needs Gemini (GCP_PROJECT) or the public processing service.")
+    raise Unavailable("Translation needs Gemini (GCP_PROJECT or GEMINI_API_KEY) or the public processing service.")
 
 
 async def _translate(src: list[str], language: str, translator: Translator) -> list[str]:

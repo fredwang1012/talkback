@@ -81,7 +81,7 @@ flowchart LR
 | Actor | How they use it |
 | --- | --- |
 | Signed-in user (owner, invited users) | The deployed site, behind IAP. Only accounts granted `roles/iap.httpsResourceAccessor` get in. `PER_USER=true` gives each account its own uploads, voices, faces and cast settings. |
-| Judge with a fresh clone | Runs the backend (and optionally the Vite dev server) locally with only `BOSON_API_KEY`. If `PUBLIC_API_URL` is set and the machine has no Anthropic key and no usable Google Cloud credentials, `public_client.active()` sends Gemini work (enrichment, typed answers, translation, detection, face box, equation readings) to `talkback-public`. |
+| Judge with a fresh clone | Runs the backend (and optionally the Vite dev server) locally with only `BOSON_API_KEY`. If `PUBLIC_API_URL` is set and the machine has no Anthropic key, no `GEMINI_API_KEY` and no usable Google Cloud credentials, `public_client.active()` sends Gemini work (enrichment, typed answers, translation, detection, face box, equation readings) to `talkback-public`. |
 | Boson AI | TTS, Realtime (speech-to-text, turn detection, function tools, spoken answers on the Realtime path), Avatar (lip-sync video), voice cloning. |
 | Google Cloud | Hosting, sign-in, storage, Gemini, embeddings, vector search, web grounding, secrets, logs, budget kill switch. |
 | GitHub | Source and PRs. Deploys are manual: `scripts/deploy_cloudrun.sh --yes` and `scripts/deploy_public_api.sh --yes`. There is no CI deploy. |
