@@ -13,7 +13,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import books, main, public_api, public_client, recap
+from app import books, deps, indexes, main, processing, public_api, public_client, recap
 from app.config import settings
 from app.enrich import pipeline, spend
 from app.enrich import textbook as tb
@@ -247,11 +247,11 @@ TB_RAW = ("Chapter 1 Basics\n\nm0x Intro text about indexes.\n\n1.1 Terms\n\nm1x
 def client(data_dir, monkeypatch):
     monkeypatch.setattr(settings, "upload_enrich", True)
     monkeypatch.setattr(settings, "upload_confirm", False)
-    main._upload_status.clear()
-    monkeypatch.setattr(main, "_ingest_guard", main.IngestGuard())
-    monkeypatch.setattr(main, "upload_bucket", TokenBucket(1000, 60))
-    monkeypatch.setattr(main, "_enrich_lock", asyncio.Lock())
-    main._index_for.cache_clear()
+    processing._upload_status.clear()
+    monkeypatch.setattr(processing, "_ingest_guard", processing.IngestGuard())
+    monkeypatch.setattr(deps, "upload_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(processing, "_enrich_lock", asyncio.Lock())
+    indexes._index_for.cache_clear()
     fake = FakeLLM()
     monkeypatch.setattr(pipeline, "make_llm", lambda *a, **k: make_llm(fake))
     c = TestClient(main.app)
@@ -303,7 +303,7 @@ def test_novel_moved_to_textbooks_gets_textbook_notes(client):
     b = Book.model_validate_json(path.read_text(encoding="utf-8"))
     b.kind, b.summaries = "novel", []
     books.save_book(path, b)
-    main._upload_status.pop(book_id, None)
+    processing._upload_status.pop(book_id, None)
     r = client.post(f"/api/books/{book_id}/kind", json={"kind": "textbook"})
     assert r.status_code == 202
     assert client.get(f"/api/books/{book_id}/status").json()["enrich"]["status"] == "done"
@@ -327,11 +327,11 @@ def test_run_enrichment_dispatches_textbooks_and_uses_the_public_api_when_active
     monkeypatch.setattr(pipeline, "enrich_textbook", fake_local)
     monkeypatch.setattr(pipeline, "enrich_book", novel_path)
     monkeypatch.setattr(public_client, "enrich_book", novel_path)
-    monkeypatch.setattr(main, "_enrich_lock", asyncio.Lock())
+    monkeypatch.setattr(processing, "_enrich_lock", asyncio.Lock())
     monkeypatch.setattr(public_client, "active", lambda: False)
-    asyncio.run(main._run_enrichment(BOOK_ID))
+    asyncio.run(processing._run_enrichment(BOOK_ID))
     monkeypatch.setattr(public_client, "active", lambda: True)
-    asyncio.run(main._run_enrichment(BOOK_ID))
+    asyncio.run(processing._run_enrichment(BOOK_ID))
     assert called == ["local", "public"]
 
 

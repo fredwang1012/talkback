@@ -6,7 +6,7 @@ import json
 
 import httpx
 
-from app import cast, genders, main
+from app import cast, deps, genders
 from app.boson import BosonClient
 from app.config import settings
 from app.schema import Book, Character, Narrator, Paragraph, Section, TtsChunk
@@ -47,7 +47,7 @@ def _install(book: Book, monkeypatch):
         sent.append((body["voice"], body["input"]))
         return httpx.Response(200, json={"audio": base64.b64encode(b"x").decode(), "response_format": "mp3", "input": "x"})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     return sent
 
 

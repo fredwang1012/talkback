@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from app import main
+from app import deps
 from app.config import settings
 from app.ratelimit import TokenBucket
 
@@ -12,19 +12,19 @@ def _req(xff=None, host="10.0.0.1"):
 
 def test_trust_proxy_uses_rightmost_xff_and_ignores_spoofed_left(monkeypatch):
     monkeypatch.setattr(settings, "trust_proxy", True)
-    assert main.client_ip(_req("6.6.6.6, 1.2.3.4")) == "1.2.3.4"
-    assert main.client_ip(_req("1.2.3.4, ")) == "1.2.3.4"
+    assert deps.client_ip(_req("6.6.6.6, 1.2.3.4")) == "1.2.3.4"
+    assert deps.client_ip(_req("1.2.3.4, ")) == "1.2.3.4"
 
 
 def test_trust_proxy_without_header_falls_back_to_peer(monkeypatch):
     monkeypatch.setattr(settings, "trust_proxy", True)
-    assert main.client_ip(_req()) == "10.0.0.1"
-    assert main.client_ip(_req("")) == "10.0.0.1"
+    assert deps.client_ip(_req()) == "10.0.0.1"
+    assert deps.client_ip(_req("")) == "10.0.0.1"
 
 
 def test_trust_proxy_off_ignores_header(monkeypatch):
     monkeypatch.setattr(settings, "trust_proxy", False)
-    assert main.client_ip(_req("6.6.6.6, 1.2.3.4")) == "10.0.0.1"
+    assert deps.client_ip(_req("6.6.6.6, 1.2.3.4")) == "10.0.0.1"
 
 
 def test_bucket_state_is_bounded_and_evicts_oldest():

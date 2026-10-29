@@ -7,7 +7,7 @@ import time
 import pymupdf as fitz
 import pytest
 
-from app import ingest_upload, main
+from app import deps, indexes, ingest_upload, main, processing
 from app.ratelimit import TokenBucket
 from app.schema import Book, Narrator, Paragraph, Section
 from app.ttschunks import ABBREVIATIONS, _SENT_END, chunk_paragraph, sentence_spans
@@ -73,7 +73,7 @@ def test_book_listed_during_indexing_and_after_index_failure(client, monkeypatch
         raise RuntimeError("boom")
 
     monkeypatch.setattr("app.gcp.indexing.index_book", failing_index)
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (None, None))
     monkeypatch.setattr(main.settings, "retrieval_backend", "vertex")
     book_id = post(client, "b.txt", b"One paragraph.\n\nTwo.").json()["book_id"]
     assert seen["listed_during"] == [book_id]  # readable while indexing
@@ -162,35 +162,35 @@ def test_huge_paragraph_chunks_fast():
 
 
 def test_upload_rate_limit(client, monkeypatch):
-    monkeypatch.setattr(main, "upload_bucket", TokenBucket(2, 60))
+    monkeypatch.setattr(deps, "upload_bucket", TokenBucket(2, 60))
     assert post(client, "a.txt", b"hello there").status_code == 202
     assert post(client, "a.txt", b"hello again").status_code == 202
     assert post(client, "a.txt", b"hello once more").status_code == 429
 
 
 def test_upload_queue_is_bounded(client):
-    tokens = [main._ingest_guard.acquire() for _ in range(main.UPLOAD_QUEUE_MAX)]
+    tokens = [processing._ingest_guard.acquire() for _ in range(processing.UPLOAD_QUEUE_MAX)]
     r = post(client, "a.txt", b"hello there")
     assert r.status_code == 429 and "already being processed" in r.json()["detail"]
     for token in tokens:
-        main._ingest_guard.release(token)
+        processing._ingest_guard.release(token)
     assert post(client, "a.txt", b"hello there").status_code == 202
-    assert not main._ingest_guard.busy  # released after the background task
+    assert not processing._ingest_guard.busy  # released after the background task
 
 
 def test_validation_failure_releases_guard(client):
     assert post(client, "a.pdf", b"not a pdf").status_code == 400
-    assert not main._ingest_guard.busy
+    assert not processing._ingest_guard.busy
 
 
 def test_stale_guard_is_taken_over():
     now = [0.0]
-    g = main.IngestGuard(clock=lambda: now[0], capacity=1)
+    g = processing.IngestGuard(clock=lambda: now[0], capacity=1)
     t1 = g.acquire()
     assert t1 is not None and g.acquire() is None
-    now[0] = main.IngestGuard.STALE_SECONDS - 1
+    now[0] = processing.IngestGuard.STALE_SECONDS - 1
     assert g.acquire() is None
-    now[0] = main.IngestGuard.STALE_SECONDS + 1
+    now[0] = processing.IngestGuard.STALE_SECONDS + 1
     t2 = g.acquire()
     assert t2 is not None and t2 != t1
     g.release(t1)  # the old, stale holder must not free the new holder's guard
@@ -200,16 +200,16 @@ def test_stale_guard_is_taken_over():
 
 
 def test_guard_released_when_ingest_raises(client, monkeypatch):
-    token = main._ingest_guard.acquire()
+    token = processing._ingest_guard.acquire()
 
     def boom(*a, **k):
         raise RuntimeError("x")
 
-    monkeypatch.setattr(main, "_set_status", boom)  # makes the error handler itself fail
+    monkeypatch.setattr(processing, "_set_status", boom)  # makes the error handler itself fail
     monkeypatch.setattr(ingest_upload, "process_upload", boom)
     with pytest.raises(RuntimeError):
-        asyncio.run(main._ingest("u-x-00000000", "t", "", "novel", b"hi", ".txt", token))
-    assert not main._ingest_guard.busy
+        asyncio.run(processing._ingest("u-x-00000000", "t", "", "novel", b"hi", ".txt", token))
+    assert not processing._ingest_guard.busy
 
 
 def test_oversized_content_length_rejected_before_endpoint(client, monkeypatch, tmp_path):
@@ -220,10 +220,10 @@ def test_oversized_content_length_rejected_before_endpoint(client, monkeypatch, 
         def allow(self, key):
             raise AssertionError("endpoint must not be entered")
 
-    monkeypatch.setattr(main, "upload_bucket", Boom())
+    monkeypatch.setattr(deps, "upload_bucket", Boom())
     r = post(client, "a.txt", b"x" * 300)
     assert r.status_code == 413
-    assert not main._ingest_guard.busy
+    assert not processing._ingest_guard.busy
     assert not (tmp_path / "uploads").exists()
 
 
@@ -255,12 +255,12 @@ class BoomBucket:
 
 
 def test_missing_content_length_is_411(client, monkeypatch):
-    monkeypatch.setattr(main, "upload_bucket", BoomBucket())
+    monkeypatch.setattr(deps, "upload_bucket", BoomBucket())
     assert asyncio.run(drive([("content-type", "multipart/form-data; boundary=b")], [b"--b--"]))[0] == 411
 
 
 def test_transfer_encoding_is_rejected(client, monkeypatch):
-    monkeypatch.setattr(main, "upload_bucket", BoomBucket())
+    monkeypatch.setattr(deps, "upload_bucket", BoomBucket())
     headers = [("content-type", "multipart/form-data; boundary=b"), ("content-length", "5"),
                ("transfer-encoding", "chunked")]
     assert asyncio.run(drive(headers, [b"--b--"]))[0] == 400
@@ -274,7 +274,7 @@ def test_transfer_encoding_is_rejected(client, monkeypatch):
 def test_body_longer_than_declared_is_cut_off(client, monkeypatch, tmp_path):
     monkeypatch.setattr(ingest_upload, "MAX_UPLOAD_BYTES", 100)
     monkeypatch.setattr(ingest_upload, "MULTIPART_SLACK", 0)
-    monkeypatch.setattr(main, "upload_bucket", BoomBucket())
+    monkeypatch.setattr(deps, "upload_bucket", BoomBucket())
     headers = [("content-type", "multipart/form-data; boundary=b"), ("content-length", "10")]
     crlf = bytes((13, 10))
     opening = b'--b' + crlf + b'Content-Disposition: form-data; name="file"; filename="a.txt"' + crlf + crlf
@@ -286,7 +286,7 @@ def test_body_longer_than_declared_is_cut_off(client, monkeypatch, tmp_path):
 
 
 def test_non_ascii_digit_content_length_is_not_a_500(client, monkeypatch):
-    monkeypatch.setattr(main, "upload_bucket", BoomBucket())
+    monkeypatch.setattr(deps, "upload_bucket", BoomBucket())
     headers = [("content-type", "multipart/form-data; boundary=b"), ("content-length", "²")]
     # headers are latin-1 on the wire: ² is a superscript two, str.isdigit() is True but int() raises
     scope_headers = [(k.encode("latin-1"), v.encode("latin-1")) for k, v in headers]
@@ -311,10 +311,10 @@ def test_non_ascii_digit_content_length_is_not_a_500(client, monkeypatch):
 
 def test_live_holder_is_not_taken_over():
     now = [0.0]
-    g = main.IngestGuard(clock=lambda: now[0], capacity=1)
+    g = processing.IngestGuard(clock=lambda: now[0], capacity=1)
     t1 = g.acquire()
     g.mark_started(t1)  # the ingest is running (possibly slow or hung)
-    now[0] = main.IngestGuard.STALE_SECONDS * 3
+    now[0] = processing.IngestGuard.STALE_SECONDS * 3
     assert g.acquire() is None and g.acquire() is None and g.busy
     g.release(t1)
     assert g.acquire() is not None
@@ -354,7 +354,7 @@ def test_merge_lines_dehyphenates_and_splits():
 
 
 def test_absurdly_long_content_length_is_400(client, monkeypatch):
-    monkeypatch.setattr(main, "upload_bucket", BoomBucket())
+    monkeypatch.setattr(deps, "upload_bucket", BoomBucket())
     headers = [("content-type", "multipart/form-data; boundary=b"), ("content-length", "9" * 13)]
     assert asyncio.run(drive(headers, [b"--b--"]))[0] == 400
 
@@ -368,7 +368,7 @@ def test_vertex_indexing_is_retried_after_a_failure(client, monkeypatch):
             raise RuntimeError("429 from Vertex")
 
     monkeypatch.setattr("app.gcp.indexing.index_book", flaky_index)
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (None, None))
     monkeypatch.setattr(main.settings, "retrieval_backend", "vertex")
     book_id = post(client, "b.txt", b"One paragraph.\n\nTwo.").json()["book_id"]
     st = client.get(f"/api/books/{book_id}/status").json()

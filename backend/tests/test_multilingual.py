@@ -3,7 +3,8 @@ import asyncio
 
 import pytest
 
-from app import main, multilingual, retrieval
+from app import multilingual, retrieval
+from app.routes import talk as talk_routes
 from app.config import settings
 from app.personas import LANGUAGE_RULE, build_answer_prompt, build_instructions
 
@@ -101,7 +102,7 @@ def test_retrieve_searches_in_english_and_tells_realtime_the_language(env, trans
     async def spy(book, index, query, *a, **kw):
         seen.append(query)
         return await real(book, index, query, *a, **kw)
-    monkeypatch.setattr(main.retrieval, "aretrieve", spy)
+    monkeypatch.setattr(retrieval, "aretrieve", spy)
     r = client.post("/api/retrieve", json={"book_id": "demo", "query": "¿Por qué sonrió el hombre?", "reader_para": 1,
                                         "speaker_id": "harry"})
     assert r.status_code == 200
@@ -116,14 +117,14 @@ def test_retrieve_searches_in_english_and_tells_realtime_the_language(env, trans
 def test_answer_searches_in_english_and_answers_in_the_readers_language(env, translations, monkeypatch):
     client, _ = env
     fake = FakeAnswerer(["Sonrió porque estaba contento."])
-    monkeypatch.setattr(main, "get_answerer", lambda: fake)
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: fake)
     seen = []
     real = retrieval.aretrieve
 
     async def spy(book, index, query, *a, **kw):
         seen.append(query)
         return await real(book, index, query, *a, **kw)
-    monkeypatch.setattr(main.retrieval, "aretrieve", spy)
+    monkeypatch.setattr(retrieval, "aretrieve", spy)
     r = client.post("/api/answer", json={"book_id": "demo", "query": "¿Por qué sonrió el hombre?", "reader_para": 1,
                                       "speaker_id": "harry"})
     assert [m["type"] for m in lines(r)] == ["sentence", "done"]

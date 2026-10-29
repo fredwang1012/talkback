@@ -5,7 +5,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from app import books, ingest_upload, main
+from app import books, deps, indexes, ingest_upload, main, processing
 from app.config import settings
 from app.enrich import detect as detect_mod
 from app.enrich import pipeline, spend
@@ -103,11 +103,11 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "access_token", "")
     monkeypatch.setattr(settings, "upload_enrich", True)
     monkeypatch.setattr(settings, "upload_confirm", False)
-    main._upload_status.clear()
-    monkeypatch.setattr(main, "_ingest_guard", main.IngestGuard())
-    monkeypatch.setattr(main, "upload_bucket", TokenBucket(1000, 60))
-    monkeypatch.setattr(main, "_enrich_lock", asyncio.Lock())
-    main._index_for.cache_clear()
+    processing._upload_status.clear()
+    monkeypatch.setattr(processing, "_ingest_guard", processing.IngestGuard())
+    monkeypatch.setattr(deps, "upload_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(processing, "_enrich_lock", asyncio.Lock())
+    indexes._index_for.cache_clear()
     fake = KindProvider("textbook", 0.9)
     monkeypatch.setattr(pipeline, "make_llm", lambda *a, **k: LLM("claude", {"claude": fake}))
     monkeypatch.setattr(detect_mod, "make_llm", lambda *a, **k: LLM("claude", {"claude": fake}))
@@ -217,7 +217,7 @@ def test_a_novel_pdf_gets_its_equations_back_when_moved_to_textbooks(client, mon
     page.insert_textbox(fitz.Rect(72, 240, 500, 330),
                         "A second paragraph explains how those sugars are broken down again.", fontsize=11)
     started = []
-    monkeypatch.setattr(main, "_start_equations", lambda book_id, data: started.append(book_id))
+    monkeypatch.setattr(processing, "_start_equations", lambda book_id, data: started.append(book_id))
     r = client.post("/api/books/upload", files={"file": ("paper.pdf", doc.tobytes())},
                     data={"title": "Paper", "author": "Me", "kind": "novel"})
     book_id = r.json()["book_id"]
@@ -246,7 +246,7 @@ def test_novel_to_textbook_keeps_characters(client):
 
 def test_change_kind_refused_while_enrichment_runs(client):
     book_id = upload(client, kind="textbook").json()["book_id"]
-    main._upload_status[book_id] = ingest_upload.write_status(
+    processing._upload_status[book_id] = ingest_upload.write_status(
         book_id, "ready", enrich={"status": "running", "stage": "segment", "progress": 0.3})
     r = client.post(f"/api/books/{book_id}/kind", json={"kind": "novel"})
     assert r.status_code == 409
@@ -272,13 +272,13 @@ def test_concurrent_kind_changes_start_only_one_enrichment(client):
 def test_run_enrichment_skips_in_flight_and_already_enriched(client):
     book_id = upload(client, kind="novel").json()["book_id"]  # enriched on upload
     n = client.fake.calls.count("MainCast")
-    asyncio.run(main._run_enrichment(book_id))  # already has characters
+    asyncio.run(processing._run_enrichment(book_id))  # already has characters
     assert client.fake.calls.count("MainCast") == n
-    main._enrich_jobs.add(book_id)
+    processing._enrich_jobs.add(book_id)
     try:
-        asyncio.run(main._run_enrichment(book_id))
+        asyncio.run(processing._run_enrichment(book_id))
     finally:
-        main._enrich_jobs.discard(book_id)
+        processing._enrich_jobs.discard(book_id)
     assert client.fake.calls.count("MainCast") == n
 
 
@@ -342,7 +342,7 @@ def has_math(book: dict) -> bool:
 @pytest.fixture
 def no_equations(monkeypatch):
     started = []
-    monkeypatch.setattr(main, "_start_equations", lambda book_id, data: started.append(book_id))
+    monkeypatch.setattr(processing, "_start_equations", lambda book_id, data: started.append(book_id))
     return started
 
 
@@ -404,8 +404,8 @@ def test_moved_paper_schedules_vertex_indexing(client, monkeypatch, no_equations
         async def delete(self, ids):
             deleted.append(list(ids))
 
-    monkeypatch.setattr(main, "_index_in_background", fake_index)
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, Store()))
+    monkeypatch.setattr(processing, "_index_in_background", fake_index)
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (None, Store()))
     from app.gcp import indexing
     old_ids = set(indexing.datapoint_ids(books.load_book(book_id)))
     assert client.post(f"/api/books/{book_id}/kind", json={"kind": "textbook"}).status_code == 202

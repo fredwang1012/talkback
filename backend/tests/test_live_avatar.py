@@ -7,7 +7,8 @@ import json
 import httpx
 import pytest
 
-from app import live_avatar, main
+from app import deps, live_avatar
+from app.routes import live as live_routes
 from app.boson import BosonClient
 from app.config import settings
 from tests.test_api import env  # noqa: F401  (env is a fixture)
@@ -28,7 +29,7 @@ def lk(monkeypatch):
     monkeypatch.setattr(settings, "livekit_api_secret", "secret-xyz")
     monkeypatch.setattr(settings, "boson_api_key", "k")
     monkeypatch.setattr(settings, "live_avatar_max_sessions", 2)
-    monkeypatch.setattr(main, "live_avatar_bucket", main.TokenBucket(100, 60))
+    monkeypatch.setattr(deps, "live_avatar_bucket", deps.TokenBucket(100, 60))
     monkeypatch.setattr(live_avatar, "_sessions", {})
     state = {"created": [], "deleted": [], "create_status": 201, "n": 0}
 
@@ -55,7 +56,7 @@ def lk(monkeypatch):
             return httpx.Response(200, json={"status": "releasing"})
         return httpx.Response(500, json={"error": {"type": "api_error", "message": "unexpected"}})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     return state
 
 
@@ -120,11 +121,11 @@ def test_parallel_starts_cannot_pass_the_cap(env, lk, monkeypatch):  # noqa: F81
     monkeypatch.setattr(settings, "live_avatar_max_sessions", 1)
 
     async def both():
-        reqs = [main.LiveAvatarStart(avatar_id="builtin_claire_v1") for _ in range(2)]
+        reqs = [live_routes.LiveAvatarStart(avatar_id="builtin_claire_v1") for _ in range(2)]
         owners = iter(["acct-a", "acct-b"])
-        monkeypatch.setattr(main, "_live_owner", lambda request: next(owners))
-        monkeypatch.setattr(main, "rate_key", lambda request: "ip")
-        return await asyncio.gather(*(main.start_live_avatar(r, None) for r in reqs), return_exceptions=True)
+        monkeypatch.setattr(live_routes, "_live_owner", lambda request: next(owners))
+        monkeypatch.setattr(deps, "rate_key", lambda request: "ip")
+        return await asyncio.gather(*(live_routes.start_live_avatar(r, None) for r in reqs), return_exceptions=True)
 
     out = asyncio.run(both())
     assert sum(isinstance(o, dict) for o in out) == 1
@@ -134,12 +135,12 @@ def test_parallel_starts_cannot_pass_the_cap(env, lk, monkeypatch):  # noqa: F81
 def test_one_account_starting_twice_at_once_gets_one_session(env, lk, monkeypatch):  # noqa: F811
     import asyncio
 
-    monkeypatch.setattr(main, "_live_owner", lambda request: "acct-a")
-    monkeypatch.setattr(main, "rate_key", lambda request: "ip")
+    monkeypatch.setattr(live_routes, "_live_owner", lambda request: "acct-a")
+    monkeypatch.setattr(deps, "rate_key", lambda request: "ip")
 
     async def both():
-        reqs = [main.LiveAvatarStart(avatar_id="builtin_claire_v1") for _ in range(2)]
-        return await asyncio.gather(*(main.start_live_avatar(r, None) for r in reqs), return_exceptions=True)
+        reqs = [live_routes.LiveAvatarStart(avatar_id="builtin_claire_v1") for _ in range(2)]
+        return await asyncio.gather(*(live_routes.start_live_avatar(r, None) for r in reqs), return_exceptions=True)
 
     asyncio.run(both())
     from app import live_avatar
@@ -151,9 +152,9 @@ def test_ended_sessions_free_their_slot_without_a_release(env, lk, monkeypatch):
     """A tab closed without a release: when the cap is reached, Boson is asked and ended sessions are forgotten."""
     client, _ = env
     monkeypatch.setattr(settings, "live_avatar_max_sessions", 1)
-    monkeypatch.setattr(main, "_live_owner", lambda request: "acct-a")
+    monkeypatch.setattr(live_routes, "_live_owner", lambda request: "acct-a")
     a = client.post("/api/live-avatar/sessions", json={"avatar_id": "builtin_claire_v1"}).json()
-    monkeypatch.setattr(main, "_live_owner", lambda request: "acct-b")
+    monkeypatch.setattr(live_routes, "_live_owner", lambda request: "acct-b")
     assert client.post("/api/live-avatar/sessions", json={"avatar_id": "builtin_claire_v1"}).status_code == 503  # still active
     lk["ended"] = {a["session"]}
     assert client.post("/api/live-avatar/sessions", json={"avatar_id": "builtin_claire_v1"}).status_code == 200

@@ -5,7 +5,7 @@ import asyncio
 import pymupdf as fitz
 import pytest
 
-from app import main
+from app import main, processing
 from app.config import settings
 from app.enrich import equations
 from app.ingest_upload import (HEADING_REGEX, _attach_deco_rows, _by_x, _cap_paragraphs, _clean_line_text, _crop,
@@ -325,7 +325,7 @@ def test_equations_job_reads_inline_formulas(data_dir, monkeypatch):
         calls.append((list(found), kw.get("fit", False)))
         return {k: {"latex": "\\beta_1", "spoken": "beta one"} for k in found}
     monkeypatch.setattr(equations, "transcribe", fake_transcribe)
-    asyncio.run(main._equations_job(book_id, data))
+    asyncio.run(processing._equations_job(book_id, data))
     assert calls == [(["m1"], True)]
     ms = [m for p in load(book_id).paragraphs for m in p.inline_math]
     assert len(ms) == 2 and all(m.latex == "\\beta_1" and m.spoken == "beta one" and m.image for m in ms)
