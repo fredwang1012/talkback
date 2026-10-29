@@ -890,6 +890,14 @@ no sentence arrives within 15 s (`firstSentenceTimeoutMs`) and speaks sentences 
   socket after a speaker switch once no answer is in progress, so each character's session holds only its own chat.
 - Chat is kept per book in memory + sessionStorage (`talkback:chat:<bookId>`, ≤ 50 messages); "Clear" also resets the
   Realtime conversation.
+- Group scene (#79): with others picked under "Also ask", `TalkController` runs a round for each question: the one
+  talked to answers, then each other in order (at most `MAX_GROUP = 3`), each a normal answer for that speaker id
+  (retrieval, persona, voice and face). `onRoundTurn` opens the next speaker's bubble; `groupRound.historyFor` gives
+  each later speaker their own turns plus the round's earlier answers as named lines (`ChatTurn.name`, rendered
+  "Name: text" by `personas.format_history`, ≤ 300 chars each, ≤ 8 lines in all). On the Realtime path the session
+  voice is switched with `setVoice` (TalkClient's `session.update`, reconnect if refused) before each later answer
+  and restored after. The round is tied to its turn: Stop, a barge-in or a new question bump the turn and nobody
+  else answers.
 
 ### 12.4 Language rule and translated search
 
