@@ -64,7 +64,7 @@ def load_book(book_id: str) -> Book | None:
 
 # Auto-upgrade of books whose tts_chunks were built with older chunk rules (ttschunks.CHUNK_RULES_VERSION).
 # Re-chunking HP5 (18k chunks) takes ~2 s, so it runs on one background thread and requests keep the old chunks
-# until the new book.json is saved; the next load_book sees the new mtime and serves it (main._book_bodies follows).
+# until the new book.json is saved; the next load_book sees the new mtime and serves it (deps._book_bodies follows).
 _upgrade_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rechunk")
 _upgrade_lock = threading.Lock()
 _upgrading: dict[str, Future] = {}   # resolved book.json path -> running / queued upgrade
