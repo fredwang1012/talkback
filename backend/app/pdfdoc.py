@@ -486,33 +486,44 @@ def _font_program(raw, font) -> bytes:
     return bytes(buf) if raw.FPDFFont_GetFontData(font, buf, size.value, ctypes.byref(size)) else b""
 
 
+CMAP_BUDGET = 0x10000   # codes visited per font program, over every subtable: a crafted cmap costs no more
+
+
 def _reverse_cmap(data: bytes) -> dict[int, int]:
     """Glyph id -> Unicode from a TrueType / OpenType font program's cmap table (formats 4 and 12), {} when the
-    program has none (a bare CFF or Type 1 font). The lowest code point mapping to a glyph wins. Bounded by the
-    table sizes, so a crafted font cannot make it slow."""
+    program has none (a bare CFF or Type 1 font). The lowest code point mapping to a glyph wins.
+
+    The work is bounded whatever the font says: at most CMAP_BUDGET codes are visited in all (a Latin font maps a
+    few hundred; a CJK font's later codes go unmapped), a subtable offset is read once, a segment running backwards
+    is skipped, and a glyph id past the font's glyph count (maxp) or 65,535 is ignored."""
+    out: dict[int, int] = {}
+    budget = CMAP_BUDGET
     try:
         if data[:4] == b"ttcf":
             data = data[struct.unpack(">I", data[12:16])[0]:]
-        n_tables = struct.unpack(">H", data[4:6])[0]
-        cmap = None
-        for i in range(min(n_tables, 64)):
+        tables: dict[bytes, tuple[int, int]] = {}
+        for i in range(min(struct.unpack(">H", data[4:6])[0], 64)):
             tag, _check, offset, length = struct.unpack(">4sIII", data[12 + 16 * i:28 + 16 * i])
-            if tag == b"cmap":
-                cmap = data[offset:offset + length]
-        if cmap is None:
+            tables.setdefault(tag, (offset, length))
+        if b"cmap" not in tables:
             return {}
-        subtables = []
-        for i in range(min(struct.unpack(">H", cmap[2:4])[0], 32)):
-            platform, encoding, offset = struct.unpack(">HHI", cmap[4 + 8 * i:12 + 8 * i])
-            if platform in (0, 3) and offset < len(cmap):
-                subtables.append(cmap[offset:])
-        out: dict[int, int] = {}
+        n_glyphs = 0x10000
+        if b"maxp" in tables:
+            n_glyphs = struct.unpack(">H", data[tables[b"maxp"][0] + 4:tables[b"maxp"][0] + 6])[0] or n_glyphs
+        offset, length = tables[b"cmap"]
+        cmap = data[offset:offset + length]
 
         def put(code: int, gid: int) -> None:
-            if gid and (gid not in out or code < out[gid]):
+            if 0 < gid < n_glyphs and (gid not in out or code < out[gid]):
                 out[gid] = code
 
-        for sub in subtables:
+        seen: set[int] = set()
+        for i in range(min(struct.unpack(">H", cmap[2:4])[0], 32)):
+            platform, _encoding, sub_offset = struct.unpack(">HHI", cmap[4 + 8 * i:12 + 8 * i])
+            if platform not in (0, 3) or sub_offset in seen or sub_offset >= len(cmap) or budget <= 0:
+                continue
+            seen.add(sub_offset)
+            sub = cmap[sub_offset:]
             fmt = struct.unpack(">H", sub[:2])[0]
             if fmt == 4:
                 seg2 = struct.unpack(">H", sub[6:8])[0]
@@ -522,21 +533,33 @@ def _reverse_cmap(data: bytes) -> dict[int, int]:
                 range_pos = 16 + 3 * seg2
                 offsets = struct.unpack(f">{seg2 // 2}H", sub[range_pos:range_pos + seg2])
                 for k, (start, end) in enumerate(zip(starts, ends)):
-                    for code in range(start, min(end, 0xFFFE) + 1):
+                    end = min(end, 0xFFFE)
+                    if start > end:
+                        continue
+                    for code in range(start, min(end, start + budget - 1) + 1):
                         if offsets[k]:
                             at = range_pos + 2 * k + offsets[k] + 2 * (code - start)
                             gid = struct.unpack(">H", sub[at:at + 2])[0]
                             put(code, (gid + deltas[k]) & 0xFFFF if gid else 0)
                         else:
                             put(code, (code + deltas[k]) & 0xFFFF)
+                    budget -= min(end, start + budget - 1) - start + 1
+                    if budget <= 0:
+                        break
             elif fmt == 12:
                 for g in range(min(struct.unpack(">I", sub[12:16])[0], 20_000)):
                     start, end, gid = struct.unpack(">III", sub[16 + 12 * g:28 + 12 * g])
-                    for code in range(start, min(end, start + 0xFFFF) + 1):
+                    if start > end or start > 0x10FFFF:
+                        continue
+                    end = min(end, 0x10FFFF, start + budget - 1)
+                    for code in range(start, end + 1):
                         put(code, gid + code - start)
-        return out
+                    budget -= end - start + 1
+                    if budget <= 0:
+                        break
     except (struct.error, IndexError, ValueError):
-        return {}
+        pass
+    return out
 
 
 def _group_blocks(chars: list[_Char]) -> list[dict]:

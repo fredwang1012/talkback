@@ -1,6 +1,9 @@
 """The PDF engines behind app/pdfdoc.py agree on small synthetic pages (built with pymupdf, which the tests have),
 and the ingest heuristics give the same book under either. pdfium tests are skipped when pypdfium2 is not
 installed (it is not a project dependency while pymupdf is the default engine)."""
+import struct
+import time
+
 import pymupdf as fitz
 import pytest
 
@@ -87,6 +90,61 @@ def test_cluster_rects_joins_neighbours_and_drops_rules():
     rects = [(10, 10, 20, 20), (22, 10, 30, 20), (50, 50, 60, 60), (0, 90, 100, 91), (200, 200, 300, 300)]
     assert pdfdoc.cluster_rects(rects, page) == [(10, 10, 30, 20), (50, 50, 60, 60)]  # the rule and the off-page rect go
     assert pdfdoc.cluster_rects([], page) == []
+
+
+def font_blob(subtables: list[bytes], num_glyphs: int, repeat_offset: bool = False) -> bytes:
+    """A TrueType table directory holding a cmap with these subtables (platform 3) and a maxp glyph count."""
+    records, body = b"", b""
+    for sub in subtables:
+        records += struct.pack(">HHI", 3, 1, 4 + 8 * (len(subtables) + repeat_offset) + len(body))
+        body += sub
+    if repeat_offset:   # a second record pointing at the first subtable again
+        records += struct.pack(">HHI", 3, 1, 4 + 8 * (len(subtables) + 1))
+    cmap = struct.pack(">HH", 0, len(subtables) + repeat_offset) + records + body
+    maxp = struct.pack(">IH", 0x00010000, num_glyphs)
+    tables = [(b"cmap", cmap), (b"maxp", maxp)]
+    head = struct.pack(">IHHHH", 0x00010000, len(tables), 0, 0, 0)
+    directory, data = b"", b""
+    for tag, table in tables:
+        directory += struct.pack(">4sIII", tag, 0, 12 + 16 * len(tables) + len(data), len(table))
+        data += table
+    return head + directory + data
+
+
+def format4(segments: list[tuple[int, int, int, int]], glyph_array: list[int]) -> bytes:
+    """A format 4 subtable: segments (start, end, delta, id range offset) plus the glyph id array."""
+    n = len(segments)
+    ends = b"".join(struct.pack(">H", s[1]) for s in segments)
+    starts = b"".join(struct.pack(">H", s[0]) for s in segments)
+    deltas = b"".join(struct.pack(">h", s[2]) for s in segments)
+    offsets = b"".join(struct.pack(">H", s[3]) for s in segments)
+    glyphs = b"".join(struct.pack(">H", g) for g in glyph_array)
+    length = 16 + 8 * n + len(glyphs)
+    return struct.pack(">HHHHHHH", 4, length, 0, 2 * n, 0, 0, 0) + ends + b"\x00\x00" + starts + deltas + offsets + glyphs
+
+
+def test_reverse_cmap_reads_real_mappings_and_stays_bounded_on_a_crafted_font():
+    # segment 0: A-C -> glyphs 5-7 by delta; segment 1: a-b -> glyphs 9-10 through the glyph array (offset from
+    # &idRangeOffset[1] past its own and the 3 later offsets: 2 * (5 - 1)); segment 2 runs backwards; segment 3 maps
+    # every code from U+1000 up to its own glyph id (61,440 codes); then the closing 0xFFFF segment
+    segs = [(0x41, 0x43, 5 - 0x41, 0), (0x61, 0x62, 0, 2 * (5 - 1)), (0x300, 0x100, 0, 0), (0x1000, 0xFFFF, 0, 0), (0xFFFF, 0xFFFF, 1, 0)]
+    huge12 = struct.pack(">HHIII", 12, 0, 16 + 12 * 20_000, 0, 20_000) + struct.pack(">III", 0, 0x10FFFF, 1) * 20_000
+    blob = font_blob([format4(segs, [9, 10])], num_glyphs=20_000, repeat_offset=True)
+    started = time.perf_counter()
+    rev = pdfdoc._reverse_cmap(blob)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 2.0, elapsed
+    assert rev[5] == 0x41 and rev[7] == 0x43 and rev[9] == 0x61 and rev[10] == 0x62
+    assert 30_000 not in rev          # past the font's glyph count, although the full-range segment maps it
+    assert len(rev) <= pdfdoc.CMAP_BUDGET
+    assert pdfdoc._reverse_cmap(b"not a font") == {} and pdfdoc._reverse_cmap(b"") == {}
+    assert pdfdoc._reverse_cmap(font_blob([], num_glyphs=10)) == {}
+    # format 12 alone (20,000 groups of 1.1 million codes each, listed twice) stops at the budget too
+    started = time.perf_counter()
+    rev = pdfdoc._reverse_cmap(font_blob([huge12], num_glyphs=0xFFFF, repeat_offset=True))
+    assert time.perf_counter() - started < 2.0
+    assert rev[1] == 0 and rev[2] == 1
+    assert len(rev) <= pdfdoc.CMAP_BUDGET
 
 
 def test_png_encoder_round_trips_through_pymupdf():
