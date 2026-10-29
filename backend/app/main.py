@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 
-from . import books, deps, indexes, processing, users
+from . import books, deps, gemini, indexes, processing, users
 from .config import settings
 from .routes import avatar, cast, faces, health, library, live, realtime, talk, tts, uploads, voices
 from .uploadlimit import UploadSizeLimit
@@ -34,6 +34,7 @@ def _warm_up() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await asyncio.to_thread(users.migrate_on_startup)  # PER_USER only; never raises
+    await gemini.resolve()   # GCP_PROJECT + GEMINI_API_KEY: the ADC probe runs here, off the loop (app/gemini.py)
     task = asyncio.create_task(asyncio.to_thread(_warm_up))
     resume = asyncio.create_task(processing._resume_enrichments())   # no job survives a restart: pick up the interrupted ones
     reindex = asyncio.create_task(processing._retry_failed_indexes())   # Vertex indexes a transient error left in state "error"

@@ -17,9 +17,8 @@ from typing import AsyncIterator, Awaitable, Callable
 import httpx
 from pydantic import ValidationError
 
-from . import books
+from . import books, gemini
 from .config import settings
-from .gemini import gcp_credentials_usable
 from .enrich import cast as cast_mod
 from .enrich import equations, pipeline, series_link, textbook
 from .enrich.minor import MINOR_IDS, MINOR_VOICES
@@ -53,7 +52,7 @@ class PublicFailure(Exception):
 
 def local_llm_configured() -> bool:
     """Claude, Vertex (GCP_PROJECT with working ADC) or an AI Studio key (GEMINI_API_KEY)."""
-    return bool(settings.anthropic_api_key) or gcp_credentials_usable() or bool(settings.gemini_api_key)
+    return bool(settings.anthropic_api_key) or gemini.gcp_credentials_usable() or bool(settings.gemini_api_key)
 
 
 def active() -> bool:

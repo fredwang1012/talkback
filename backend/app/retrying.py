@@ -55,19 +55,29 @@ def describe(exc: BaseException) -> str:
 
 def is_quota_or_auth(exc: BaseException) -> bool:
     """Out of credit / quota or not authorised: retrying can only waste time (and the caps must see it at once)."""
-    for e in _chain(exc):
+    chain = list(_chain(exc))
+    ai_studio_429 = any(status_of(e) == 429 for e in chain)
+    for e in chain:
         if status_of(e) in (401, 402, 403) or type(e).__name__ in AUTH_NAMES:
             return True
-        if any(m in str(e).lower() for m in NEVER) and not _ai_studio_per_minute(e):
+        if any(m in str(e).lower() for m in NEVER) and not (ai_studio_429 and _ai_studio_per_minute_text(e)):
             return True
     return False
 
 
-def _ai_studio_per_minute(exc: BaseException) -> bool:
+def _ai_studio_per_minute_text(exc: BaseException) -> bool:
     """Google AI Studio (GEMINI_API_KEY) words every 429 "check your plan and billing details", per-minute limits
-    included: those are waited out like Vertex's. Only a per-day quota (QuotaFailure quotaId "...PerDay...") is not."""
+    included: those are waited out like Vertex's. Only a per-day quota (QuotaFailure quotaId "...PerDay...") is not.
+    Judged on the text alone, so a wrapper repeating the 429's message (no status of its own) reads the same; the
+    caller requires a 429 somewhere in the chain."""
     msg = str(exc).lower()
-    return status_of(exc) == 429 and "plan and billing details" in msg and "perday" not in msg
+    return "plan and billing details" in msg and "perday" not in msg
+
+
+def is_daily_quota(exc: BaseException) -> bool:
+    """An AI Studio per-day quota 429: final until the quota resets, so it must not throttle the shared pacer either."""
+    return any(status_of(e) == 429 and "plan and billing details" in (m := str(e).lower()) and "perday" in m
+               for e in _chain(exc))
 
 
 def is_transient(exc: BaseException) -> bool:
