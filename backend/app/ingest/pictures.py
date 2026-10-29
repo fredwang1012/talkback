@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .. import books
 from ..config import settings
+from ..pdfdoc import open_pdf
 from ..schema import Book
 from ..ttschunks import BookIndex, chunk_paragraph
 from .equations import _PROSE_WORD
@@ -34,7 +35,6 @@ def render_equations(book_id: str, data: bytes, stop=lambda: False) -> dict[str,
     """Worker thread: crop every equation of the published book from the PDF into equations/<id>.png and record the
     picture in book.json. Returns {equation id: (PNG, extracted text)} for the model. `stop()` is checked between
     pictures (a deleted book): nothing more is written, and the folder is never recreated."""
-    import pymupdf
     path = _book_json(book_id)
     try:
         book = Book.model_validate_json(books.read_bytes(path))
@@ -50,7 +50,7 @@ def render_equations(book_id: str, data: bytes, stop=lambda: False) -> dict[str,
         return {}
     found: dict[str, tuple[bytes, str]] = {}
     spans: dict = {}
-    with pymupdf.open(stream=data, filetype="pdf") as doc:
+    with open_pdf(data) as doc:
         for p in eqs:
             m = p.math
             if stop():
@@ -75,50 +75,53 @@ def _crop(doc, page_no: int, bbox: list[float], pad: tuple[float, float] = (EQ_P
     below its baseline), so the box can overlap the next line's letters. A span belongs to another line when its
     baseline lies outside the box; prose beside an inline formula is painted out too, up to the box's edge.
     With `mask_prose`, a word whose baseline sits inside a tall glyph's box (a sum or a root reaching the line
-    above) is painted out as well. `spans` caches each page's span boxes across calls."""
-    import pymupdf
+    above) is painted out as well. `spans` caches each page's span boxes across calls. `doc` is an open
+    pdfdoc.Document."""
     if not 0 <= page_no < doc.page_count:
         return None
-    page = doc[page_no]
+    page = doc.page(page_no)
     x0, y0, x1, y1 = bbox
-    clip = pymupdf.Rect(x0 - pad[0], y0 - pad[1], x1 + pad[0], y1 + pad[1]) & page.rect
-    if clip.is_empty or clip.width * clip.height * (EQ_DPI / 72) ** 2 > EQ_MAX_PIXELS:
+    clip = page.clip_rect((x0 - pad[0], y0 - pad[1], x1 + pad[0], y1 + pad[1]))
+    if _empty(clip) or (clip[2] - clip[0]) * (clip[3] - clip[1]) * (EQ_DPI / 72) ** 2 > EQ_MAX_PIXELS:
         return None
-    pix = page.get_pixmap(clip=clip, dpi=EQ_DPI, colorspace=pymupdf.csGRAY, alpha=False)
+    raster = page.render(clip, dpi=EQ_DPI, gray=True)
     if spans is None:
         spans = {}
     if page_no not in spans:
-        spans[page_no] = [(pymupdf.Rect(s["bbox"]), s["origin"][1], s["size"], s["text"])
-                          for b in page.get_text("dict")["blocks"]
+        spans[page_no] = [(tuple(s["bbox"]), s["origin"][1], s["size"], s["text"])
+                          for b in page.text_blocks()
                           for ln in b.get("lines", ()) for s in ln["spans"] if s["text"].strip()]
     anchor = main = None
     if mask_prose:
         body = [(base, size) for rect, base, size, text in spans[page_no]
-                if y0 <= base <= y1 and rect.x1 > x0 and rect.x0 < x1 and not _PROSE_WORD.search(text)]
+                if y0 <= base <= y1 and rect[2] > x0 and rect[0] < x1 and not _PROSE_WORD.search(text)]
         if body:
             anchor = max(base for base, _size in body)
             main = max(size for _base, size in body)
-    zoom = pymupdf.Matrix(EQ_DPI / 72, EQ_DPI / 72)
     for rect, base, size, text in spans[page_no]:
-        if not rect.intersects(clip):
+        if _empty(rect) or not (rect[0] < clip[2] and clip[0] < rect[2] and rect[1] < clip[3] and clip[1] < rect[3]):
             continue
-        area = rect & clip
+        ax0, ay0 = max(rect[0], clip[0]), max(rect[1], clip[1])   # the span's box within the clip
+        ax1, ay1 = min(rect[2], clip[2]), min(rect[3], clip[3])
         # a word on the line above, tucked into a tall sum or root, is not part of the formula
         tucked = (anchor is not None and _PROSE_WORD.search(text)
                   and (base < anchor - 0.7 * main or base > anchor + 0.45 * main))
         if base < y0 or base > y1 or tucked:   # another line: only where its letters are, not its font's whole box
-            area.y0, area.y1 = max(area.y0, base - 0.78 * size), min(area.y1, base + 0.25 * size)
+            ay0, ay1 = max(ay0, base - 0.78 * size), min(ay1, base + 0.25 * size)
         else:   # the formula's own line: only prose beside it, outside the box, is painted out
-            if rect.x0 >= x1 - 0.5:
-                area.x0 = max(area.x0, x1)
-            elif rect.x1 <= x0 + 0.5:
-                area.x1 = min(area.x1, x0)
+            if rect[0] >= x1 - 0.5:
+                ax0 = max(ax0, x1)
+            elif rect[2] <= x0 + 0.5:
+                ax1 = min(ax1, x0)
             else:
                 continue
-        if not area.is_empty:
-            area = area * zoom
-            pix.set_rect(pymupdf.IRect(area.x0, area.y0, area.x1 + 1, area.y1 + 1) & pix.irect, (255,))
-    return pix.tobytes("png")
+        if not _empty((ax0, ay0, ax1, ay1)):
+            raster.paint_out(ax0, ay0, ax1, ay1)
+    return raster.png()
+
+
+def _empty(rect: tuple) -> bool:
+    return rect[0] >= rect[2] or rect[1] >= rect[3]
 
 
 INLINE_MAX_BOOK = 3000   # distinct inline formulas cropped per book
@@ -130,7 +133,6 @@ def render_inline(book_id: str, data: bytes, stop=lambda: False) -> tuple[dict[s
     """Worker thread: crop the inline formulas of the published book, like render_equations. Formulas with the same
     extracted text and size share one picture (and one reading). Returns ({first id: (PNG, extracted text)},
     {first id: every id sharing it})."""
-    import pymupdf
     path = _book_json(book_id)
     try:
         book = Book.model_validate_json(books.read_bytes(path))
@@ -155,7 +157,7 @@ def render_inline(book_id: str, data: bytes, stop=lambda: False) -> tuple[dict[s
     found: dict[str, tuple[bytes, str]] = {}
     shared: dict[str, list[str]] = {}
     spans: dict = {}
-    with pymupdf.open(stream=data, filetype="pdf") as doc:
+    with open_pdf(data) as doc:
         for (text, _w, _h), (m, *ids) in groups.items():
             if stop():
                 return {}, {}

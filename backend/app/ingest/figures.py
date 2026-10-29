@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ..config import settings
 from ..parsing import EQ_MARK, FIGURE_MARK
+from ..pdfdoc import open_pdf
 from .layout import COLUMN_GAP, _LEADING_SYMBOLS
 
 
@@ -49,22 +50,16 @@ def _figure_regions(rects: list[tuple], lines: list[tuple], page_area: float) ->
     return out
 
 
-def _page_figures(doc, page, blocks: list[list[tuple]], rects: list[tuple]) -> list[tuple]:
-    """Labelled figure regions of a page: its images (`rects`) plus its clustered vector drawings, within bounds."""
+def _page_figures(page, blocks: list[list[tuple]], rects: list[tuple]) -> list[tuple]:
+    """Labelled figure regions of a page (a pdfdoc.Page): its images (`rects`) plus its clustered vector drawings,
+    within bounds (past a bound, or with a broken content stream, there is no figure detection: the text is still
+    read)."""
     if not blocks or len(rects) > MAX_FIGURE_RECTS:
         return []
-    try:
-        size = sum(len(doc.xref_stream_raw(x) or b"") for x in page.get_contents())
-    except Exception:  # a broken content stream: no figure detection, the text is still read
+    clusters = page.drawing_clusters(MAX_CONTENT_BYTES, MAX_DRAWINGS)
+    if clusters is None:
         return []
-    if size > MAX_CONTENT_BYTES:
-        return []
-    drawings = page.get_drawings() if size else []
-    if len(drawings) > MAX_DRAWINGS:
-        return []
-    if drawings:
-        rects = rects + [tuple(r) for r in page.cluster_drawings(drawings=drawings)]
-    return _figure_regions(rects, [ln for blk in blocks for ln in blk], abs(page.rect))
+    return _figure_regions(rects + clusters, [ln for blk in blocks for ln in blk], page.area)
 
 
 def _in_figure(blk: list[tuple], figures: list[tuple]) -> bool:
@@ -217,8 +212,7 @@ class _FigureRenderer:
     def __init__(self, data: bytes, out_dir: Path | None):
         self.out_dir, self.count, self.doc = out_dir, 0, None
         if out_dir is not None:
-            import pymupdf
-            self.doc = pymupdf.open(stream=data, filetype="pdf")
+            self.doc = open_pdf(data)
 
     def page(self, pno: int):
         return lambda box: self.render(pno, box)
@@ -226,14 +220,13 @@ class _FigureRenderer:
     def render(self, pno: int, box: tuple) -> str | None:
         if self.doc is None or self.count >= MAX_FIGURES:
             return None
-        import pymupdf
         w, h = box[2] - box[0], box[3] - box[1]
         zoom = min(FIGURE_DPI / 72, FIGURE_MAX_PX / max(w, h, 1.0))
         try:
-            pix = self.doc[pno].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=pymupdf.Rect(box), alpha=False)
+            raster = self.doc.page(pno).render(box, zoom=zoom)
             self.out_dir.mkdir(parents=True, exist_ok=True)
             name = f"fig-{self.count + 1}.png"
-            pix.save(self.out_dir / name)
+            raster.save(self.out_dir / name)
         except Exception:  # an unrenderable region: the figure is skipped, the text is still read
             return None
         self.count += 1

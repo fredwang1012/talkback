@@ -49,6 +49,8 @@ class Settings(BaseSettings):
         return self.gemini_location or self.gcp_region
     vs_collection: str = "chunks"
 
+    # The library that reads uploaded PDFs (app/pdfdoc.py): pymupdf (AGPL-3.0) or pdfium (pypdfium2, Apache / BSD).
+    pdf_engine: Literal["pymupdf", "pdfium"] = "pymupdf"
     # Uploaded novels: cast, dialogue split and summaries by an LLM after the text ingest (app/enrich).
     usage_log_file: bool = True       # append every billable call to data/cache/usage.jsonl (off on Cloud Run: logs only)
     upload_enrich: bool = True

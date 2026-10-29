@@ -23,7 +23,10 @@ FACE_SIZE = 640
 
 
 def square_face(path: Path) -> bytes:
-    """Centred square crop (a third of the spare height above the face) scaled to FACE_SIZE, as PNG bytes."""
+    """Centred square crop (a third of the spare height above the face) scaled to FACE_SIZE, as PNG bytes.
+
+    The face is an image file, not a PDF, so this developer-only script opens it with pymupdf (which reads images)
+    rather than the app's PDF engine (app/pdfdoc.py): it needs pymupdf installed, as the default engine does."""
     import pymupdf
 
     with pymupdf.open(path) as doc:

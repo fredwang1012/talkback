@@ -158,9 +158,12 @@ writes textbook notes if needed. A kind change is refused (409) while any job ru
 
 ### 4.1 Paragraphs, headers, chapters and sections
 
-**Flow** (`ingest_upload.pdf_to_text`, then `parsing.parse`, then `ingest_upload.build_book`):
-1. pymupdf `page.get_text("dict")` per page. Lines are regrouped into visual rows (`_assemble_rows`,
-   `_attach_deco_rows`: a root/sum/hat glyph that pymupdf split into its own line is re-attached to its prose row).
+**Flow** (`ingest_upload.pdf_to_text`, then `parsing.parse`, then `ingest_upload.build_book`; `app/ingest_upload.py`
+is a facade over the `app/ingest/` package, one module per stage):
+1. The PDF engine (`app/pdfdoc.py`: pymupdf by default, `PDF_ENGINE=pdfium` for pypdfium2, which rebuilds pymupdf's
+   blocks / lines / spans from pdfium's characters) gives each page's text as blocks of lines of spans. Lines are
+   regrouped into visual rows (`_assemble_rows`, `_attach_deco_rows`: a root/sum/hat glyph that pymupdf split into
+   its own line is re-attached to its prose row).
 2. Per line: cleaned text (ligatures, control codes), bbox, largest font size, bold, monospace.
 3. Page furniture is dropped: first/last blocks repeated on ≥ 3 pages and ≥ 20 % of pages (digits normalized), bare
    page numbers, running headers "2.4 Title 39" (`_drop_running_headers`), table-of-contents pages and dot-leader lines.

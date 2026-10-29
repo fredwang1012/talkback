@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app import retrieval  # noqa: E402
 from app.ingest_upload import _LIGATURES, _PAGE_NUMBER, Line, _cap_paragraphs, merge_lines  # noqa: E402
 from app.parsing import normalize  # noqa: E402
+from app.pdfdoc import open_pdf  # noqa: E402
 from app.schema import Book, Narrator, Paragraph, Section  # noqa: E402
 from app.books import save_book  # noqa: E402
 from app.ttschunks import rechunk_book  # noqa: E402
@@ -63,7 +64,7 @@ def page_lines(page, first: bool) -> list[tuple]:
     """(text, x0, y0, x1, y1) per text line; on a chapter's first page, headings dropped and the drop cap re-joined."""
     out: list[tuple] = []
     drop_cap = ""
-    for b in page.get_text("dict")["blocks"]:
+    for b in page.text_blocks():
         if b.get("type") != 0:
             continue
         for ln in b["lines"]:
@@ -89,7 +90,7 @@ def page_lines(page, first: bool) -> list[tuple]:
 def chapter_paragraphs(doc, first_page: int, last_page: int) -> list[str]:
     lines: list[Line] = []
     for pno in range(first_page - 1, last_page):
-        flat = page_lines(doc[pno], first=not lines)  # heading pages (a divider page, then the opening) until text starts
+        flat = page_lines(doc.page(pno), first=not lines)  # heading pages (a divider page, then the opening) until text starts
         if not flat:
             continue
         x0s, x1s = sorted(ln[1] for ln in flat), sorted(ln[3] for ln in flat)
@@ -115,16 +116,14 @@ def build(doc, spec: dict) -> Book:
 
 
 def main() -> None:
-    import pymupdf
-
     ap = argparse.ArgumentParser()
     ap.add_argument("--pdf", required=True)
     ap.add_argument("--only", type=int, action="append", help="series index to ingest (repeatable); default all")
     ap.add_argument("--skip-existing", action="store_true",
                     help="keep books that already have a book.json (re-ingesting drops their cast, segments and summaries)")
     args = ap.parse_args()
-    doc = pymupdf.open(args.pdf)
-    specs = plan_books(doc.get_toc())
+    doc = open_pdf(Path(args.pdf).read_bytes())
+    specs = plan_books(doc.toc())
     if len(specs) != len(IDS):
         sys.exit(f"expected {len(IDS)} books in the table of contents, found {[s['title'] for s in specs]}")
     for spec in specs:

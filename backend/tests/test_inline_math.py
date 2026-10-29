@@ -12,6 +12,7 @@ from app.ingest_upload import (HEADING_REGEX, _attach_deco_rows, _by_x, _cap_par
                                _equation_clip, _mark_inline, _math_class, build_book, equation_path, make_book_dir,
                                pdf_to_text, plain_text, publish_book, render_inline, update_equations)
 from app.parsing import IM_CLOSE, IM_OPEN, inline_marker, parse, split_inline, strip_inline
+from app.pdfdoc import open_pdf
 from app.schema import Book, InlineMath, Paragraph, Section
 from app.ttschunks import MAX_CHARS, chunk_paragraph, inline_spans
 from app.tts_cache import align_timestamps
@@ -287,7 +288,8 @@ def test_crops_paint_out_other_lines():
 
     def ink(png: bytes) -> int:
         return sum(v < 128 for v in fitz.Pixmap(png).samples)
-    assert ink(_crop(doc, 0, box, (0.5, 0.5), {})) == ink(_crop(clean, 0, box, (0.5, 0.5), {})) > 0
+    with open_pdf(doc.tobytes()) as d, open_pdf(clean.tobytes()) as c:
+        assert ink(_crop(d, 0, box, (0.5, 0.5), {})) == ink(_crop(c, 0, box, (0.5, 0.5), {})) > 0
 
 
 def test_crop_hides_a_word_tucked_into_a_tall_formula():
@@ -302,8 +304,9 @@ def test_crop_hides_a_word_tucked_into_a_tall_formula():
 
     def ink(png: bytes) -> int:
         return sum(v < 128 for v in fitz.Pixmap(png).samples)
-    kept = _crop(doc, 0, box, (0, 0), {}, mask_prose=True)
-    assert ink(kept) == ink(_crop(clean, 0, box, (0, 0), {}, mask_prose=True)) > 0
+    with open_pdf(doc.tobytes()) as d, open_pdf(clean.tobytes()) as c:
+        kept = _crop(d, 0, box, (0, 0), {}, mask_prose=True)
+        assert ink(kept) == ink(_crop(c, 0, box, (0, 0), {}, mask_prose=True)) > 0
 
 
 def test_update_rechunks_with_the_reading(data_dir):

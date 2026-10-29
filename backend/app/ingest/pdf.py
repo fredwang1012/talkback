@@ -16,6 +16,7 @@ from collections import Counter
 from pathlib import Path
 
 from ..parsing import EQ_MARK, HEADING_MARK
+from ..pdfdoc import open_pdf
 from . import common
 from .code import _mark_code
 from .common import UploadError
@@ -33,9 +34,8 @@ def pdf_to_text(data: bytes, figures_out: Path | None = None) -> str:
 
     With `figures_out`, captioned figures are cropped into PNGs there and become FIGURE_MARK paragraphs (#40);
     without it their text is still left out of the body text."""
-    import pymupdf
     try:
-        doc = pymupdf.open(stream=data, filetype="pdf")
+        doc = open_pdf(data)
     except Exception as e:
         raise UploadError("The PDF could not be read.") from e
     with doc:
@@ -54,7 +54,7 @@ def pdf_to_text(data: bytes, figures_out: Path | None = None) -> str:
             blocks = []
             info = []  # per line: (math class, glyphs lost), see _mark_math
             rects = []  # images and drawing clusters: figure candidates
-            raw_blocks = page.get_text("dict")["blocks"]
+            raw_blocks = page.text_blocks()
             grouped: list[list] = []
             for b in raw_blocks:
                 if b.get("type") == 1:
@@ -98,10 +98,10 @@ def pdf_to_text(data: bytes, figures_out: Path | None = None) -> str:
                     info.append(line_info)
             blocks = _mark_math(blocks, info, page.number)
             pages.append(blocks)
-            widths.append(page.rect.width)
-            figures.append(_page_figures(doc, page, blocks, rects))
+            widths.append(page.width)
+            figures.append(_page_figures(page, blocks, rects))
             page_rects.append(rects + figures[-1])
-            page_boxes.append(tuple(page.rect))
+            page_boxes.append(page.rect)
 
     def key(block):
         return _norm_key(" ".join(ln[0] for ln in block))
