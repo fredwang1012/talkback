@@ -41,12 +41,13 @@ SPACE_DIST = 0.15        # em: a smaller gap between two glyphs is nothing
 SPACE_MAX_DIST = 0.8     # em: a gap up to this is a space, beyond it a new line
 BASE_MAX_DIST = 0.8      # em: a glyph this close to the baseline is on the same line
 PARAGRAPH_DIST = 1.5     # em: a line further below the last one than this starts a new block
+MARK_MAX_DIST = 1.0      # em: an accent further off the line than this (over the next row's glyph) is lost, as in PyMuPDF
 PARA_INDENT = 0.5        # points: a new line starting this far right of the line above is indented: a new block
 DUP_SHIFT = 0.1          # em: a text object pdfium dropped as a copy this close to the original is fake bold
 DUP_LOOKBACK = 5         # text objects before a dropped one that pdfium compares it with
 OBJ_MAX_DEPTH = 4        # form XObject nesting walked for the content order of text objects
 OBJ_MAX_OBJECTS = 20_000  # page objects walked per page; past it the text keeps pdfium's order
-_BULLETS = set("•·‣◦▪▫■□●○◆◇-–—*")  # a line opening with one of these (or a digit) may be a list item
+_BULLETS = set("•·‣◦▪▫■□●○◆◇*☚☛☜☝☞☟♠♡♢♣♤♥♦♧")  # a line opening with one of these (or a digit) may be a list item
 
 
 class PdfError(Exception):
@@ -310,20 +311,23 @@ class _PdfiumDocument(Document):
 
 
 class _Char:
-    __slots__ = ("c", "font", "flags", "size", "x", "y", "box", "dx", "dy", "mark", "adv", "color", "synthetic")
+    __slots__ = ("c", "font", "flags", "size", "x", "y", "box", "dx", "dy", "mark", "adv", "color", "synthetic", "nomap",
+                 "brk")
 
-    def __init__(self, c, font, flags, size, x, y, box, dx, dy, adv=None, color=0, synthetic=False):
+    def __init__(self, c, font, flags, size, x, y, box, dx, dy, adv=None, color=0, synthetic=False, nomap=False):
         self.c, self.font, self.flags, self.size = c, font, flags, size
         self.x, self.y, self.box, self.dx, self.dy = x, y, box, dx, dy
         self.mark = c >= "̀" and unicodedata.category(c) == "Mn"   # a combining accent sits on the glyph before it
         self.adv = adv   # the glyph's advance width in points, when the font gives it (else the box is used)
         self.color = color             # sRGB fill colour, as PyMuPDF gives a span's
         self.synthetic = synthetic     # a space put in for a gap over 2 x SPACE_DIST: PyMuPDF gives it a span of its own
+        self.nomap = nomap             # the font gives the code no Unicode: the code stands for it (a span starts)
+        self.brk = False               # an image was drawn since the text before: this starts a block, as in MuPDF
 
     def moved(self, ddx: float, ddy: float) -> "_Char":
         x0, y0, x1, y1 = self.box
         return _Char(self.c, self.font, self.flags, self.size, self.x + ddx, self.y + ddy,
-                     (x0 + ddx, y0 + ddy, x1 + ddx, y1 + ddy), self.dx, self.dy, self.adv, self.color)
+                     (x0 + ddx, y0 + ddy, x1 + ddx, y1 + ddy), self.dx, self.dy, self.adv, self.color, False, self.nomap)
 
 
 class _PdfiumPage(Page):
@@ -403,20 +407,26 @@ class _PdfiumPage(Page):
                 color = (rgba[0].value << 16 | rgba[1].value << 8 | rgba[2].value) \
                     if raw.FPDFText_GetFillColor(tp, i, *rgba) else 0
                 style = fonts[key] = (*faces[fkey], raw.FPDFText_GetFontSize(tp, i) * scale, dx / norm, dy / norm, color,
-                                      pfont, fkey)
+                                      pfont, fkey, raw.FPDFText_GetFontSize(tp, i) * math.hypot(matrix.a, matrix.b))
                 if fkey not in extents:
                     extents[fkey] = _font_extents(raw, pfont, asc, desc) if pfont else None
                     # the names the embedded font's own encoding gives its codes, for the codes pdfium's glyph list
                     # does not know ("prime" in TeX's CMSY): pdfium then gives the code itself, PyMuPDF the name's
                     encodings[fkey] = self._cmaps.encoding(_font_program(raw, pfont, ENCODING_FONT_MAX)) if pfont else {}
-            font, flags, size, dx, dy, color, pfont, fkey = style
+            font, flags, size, dx, dy, color, pfont, fkey, hsize = style
+            nomap = bool(raw.FPDFText_HasUnicodeMapError(tp, i))
             if u in (0, 0xFFFE, 0xFFFF):   # no ToUnicode entry: a hyphen pdfium recognised, the glyph's own cmap,
                 code = raw.FPDFText_GetUnicode(tp, i)   # else the code itself (as PyMuPDF does)
                 if fkey not in cmaps:
                     cmaps[fkey] = self._cmaps.get(_font_program(raw, pfont)) if pfont else {}
-                u = 0x2D if raw.FPDFText_IsHyphen(tp, i) else cmaps[fkey].get(code, code if 0 <= code < 0x110000 else 0xFFFD)
-            elif u in encodings[fkey] and raw.FPDFText_HasUnicodeMapError(tp, i):
-                u = encodings[fkey][u]
+                if raw.FPDFText_IsHyphen(tp, i) or code in cmaps[fkey]:
+                    u, nomap = 0x2D if raw.FPDFText_IsHyphen(tp, i) else cmaps[fkey][code], False
+                else:
+                    u, nomap = code if 0 <= code < 0x110000 else 0xFFFD, True
+            elif nomap and u in encodings[fkey]:
+                u, nomap = encodings[fkey][u], False
+            elif u == 0x02 and raw.FPDFText_IsHyphen(tp, i):
+                u = 0x2D   # pdfium's mark for a hyphen ending a line
             raw.FPDFText_GetCharOrigin(tp, i, ox, oy)
             raw.FPDFText_GetLooseCharBox(tp, i, rect)
             if upright:
@@ -430,11 +440,16 @@ class _PdfiumPage(Page):
             if wkey not in widths:
                 widths[wkey] = width.value if pfont and u < 0x110000 and raw.FPDFFont_GetGlyphWidth(
                     pfont, u, 1.0, ctypes.byref(width)) and 0 < width.value < 10 else 0.0
-            adv = widths[wkey] * size or None
-            out.append(_Char(chr(u), font, flags, size, x, y, box, dx, dy, adv, color))
+            adv = widths[wkey] * hsize or None   # along the line: a stretched font (Tz, a scaled Tm) advances further
+            out.append(_Char(chr(u), font, flags, size, x, y, box, dx, dy, adv, color, False, nomap))
             owners.append(key)
             fkeys.append(fkey)
         _quad_boxes(out, owners, [extents[f] for f in fkeys])
+        # a glyph whose box lies wholly off the page is not read (PyMuPDF clips to the page)
+        w, h = self.rect[2], self.rect[3]
+        keep = [k for k, c in enumerate(out) if c.box[2] > 0 and c.box[0] < w and c.box[3] > 0 and c.box[1] < h]
+        if len(keep) < len(out):
+            out, owners = [out[k] for k in keep], [owners[k] for k in keep]
         return self._content_order(out, owners)
 
     def _content_order(self, chars: list[_Char], owners: list[int]) -> list[_Char]:
@@ -467,10 +482,14 @@ class _PdfiumPage(Page):
         o0 = self._pt(0.0, 0.0)
         out: list[_Char] = []
         placed: set[int] = set()
-        for j, (o, key, hold, (ma, mb, mc, md)) in enumerate(objects):
+        brk = False
+        for j, (o, key, hold, (ma, mb, mc, md), after_image) in enumerate(objects):
+            brk = brk or after_image
             if key in placed:
                 continue   # a form drawn twice holds the same objects: pdfium reads them once
             if key in texts:
+                texts[key][0].brk = brk
+                brk = False
                 out.extend(texts[key])
                 placed.add(key)
                 continue
@@ -478,7 +497,7 @@ class _PdfiumPage(Page):
             if x1 <= x0 or y1 <= y0:
                 continue   # draws nothing (a space)
             seen = 0
-            for po, pkey, phold, _m in reversed(objects[max(0, j - 4 * DUP_LOOKBACK):j]):
+            for po, pkey, phold, _m, _b in reversed(objects[max(0, j - 4 * DUP_LOOKBACK):j]):
                 if phold != hold:
                     continue
                 seen += 1
@@ -496,6 +515,8 @@ class _PdfiumPage(Page):
                 if abs(ddx * first.dx + ddy * first.dy) <= DUP_SHIFT * (first.size or 1.0):
                     break   # drawn over itself: fake bold
                 texts[key] = [c.moved(ddx, ddy) for c in texts[pkey]]
+                texts[key][0].brk = brk
+                brk = False
                 out.extend(texts[key])
                 placed.add(key)
                 break
@@ -504,15 +525,17 @@ class _PdfiumPage(Page):
         return out
 
     def _text_objects(self, raw) -> list[tuple] | None:
-        """(handle, key, holder key, linear matrix from the holder to page space) of the page's text objects in
-        content order, through form XObjects OBJ_MAX_DEPTH deep; None when the page has more than OBJ_MAX_OBJECTS
-        objects in all (a form drawn many times counts each time)."""
+        """(handle, key, holder key, linear matrix from the holder to page space, whether an image was drawn since
+        the text object before) of the page's text objects in content order, through form XObjects OBJ_MAX_DEPTH
+        deep; None when the page has more than OBJ_MAX_OBJECTS objects in all (a form drawn many times counts each
+        time)."""
         out: list[tuple] = []
         seen = 0
+        image = False
         m = raw.FS_MATRIX()
 
         def visit(form, hold: int, lin: tuple, depth: int) -> bool:
-            nonlocal seen
+            nonlocal seen, image
             count = raw.FPDFFormObj_CountObjects(form) if form else raw.FPDFPage_CountObjects(self._page.raw)
             for i in range(max(count, 0)):
                 seen += 1
@@ -523,7 +546,10 @@ class _PdfiumPage(Page):
                     continue
                 kind = raw.FPDFPageObj_GetType(o)
                 if kind == raw.FPDF_PAGEOBJ_TEXT:
-                    out.append((o, ctypes.addressof(o.contents), hold, lin))
+                    out.append((o, ctypes.addressof(o.contents), hold, lin, image))
+                    image = False
+                elif kind == raw.FPDF_PAGEOBJ_IMAGE:
+                    image = True
                 elif kind == raw.FPDF_PAGEOBJ_FORM and depth < OBJ_MAX_DEPTH and raw.FPDFPageObj_GetMatrix(o, m):
                     a, b, c, d = lin
                     inner = (m.a * a + m.b * c, m.a * b + m.b * d, m.c * a + m.d * c, m.c * b + m.d * d)
@@ -538,9 +564,12 @@ class _PdfiumPage(Page):
             self._blocks = _group_blocks(self._chars()) + [{"type": 1, "bbox": r} for r in self._image_rects()]
         return self._blocks
 
-    def _bounds(self, obj) -> tuple[float, float, float, float]:
-        """An object's box on the page: pdfium reports the children of a form XObject in the form's own space."""
+    def _bounds(self, obj, inset: float = 0.0) -> tuple[float, float, float, float]:
+        """An object's box on the page, `inset` (its own units) less on every side: pdfium reports the children of
+        a form XObject in the form's own space."""
         left, bottom, right, top = obj.get_bounds()
+        if inset and right - left > 2 * inset and top - bottom > 2 * inset:
+            left, bottom, right, top = left + inset, bottom + inset, right - inset, top - inset
         container = obj.container
         while container is not None:
             left, bottom, right, top = container.get_matrix().on_rect(left, bottom, right, top)
@@ -561,13 +590,16 @@ class _PdfiumPage(Page):
     def drawing_clusters(self, max_content_bytes: int, max_paths: int) -> list[tuple] | None:
         raw = _pdfium().raw
         fill, stroke = ctypes.c_int(), ctypes.c_int()
+        width = ctypes.c_float()
         rects = []
         for o in self._page.get_objects(filter=[raw.FPDF_PAGEOBJ_PATH]):
             if len(rects) >= max_paths:
                 return None
             raw.FPDFPath_GetDrawMode(o, fill, stroke)
             if fill.value or stroke.value:   # a path neither filled nor stroked draws nothing
-                rects.append(self._bounds(o))
+                # pdfium's box of a stroked path takes in half the line width; PyMuPDF's is the path's own
+                half = width.value / 2 if stroke.value and raw.FPDFPageObj_GetStrokeWidth(o, width) else 0.0
+                rects.append(self._bounds(o, half))
         return cluster_rects(rects, self.rect) if rects else []
 
     def render(self, clip: tuple, zoom: float | None = None, dpi: float | None = None, gray: bool = False) -> "Raster":
@@ -638,7 +670,7 @@ def _quad_boxes(chars: list[_Char], owners: list[int], extents: list) -> None:
             # how far pdfium's box reaches along the writing direction: past the advance when ink overhangs it, so
             # a font width beyond it is not this glyph's (a code the font maps back from the Unicode wrongly)
             reach = max(x1 - c.x if c.dx > 0.5 else c.x - x0 if c.dx < -0.5 else y1 - c.y if c.dy > 0 else c.y - y0, 0.0)
-            if j > k or not c.adv or c.adv > reach + 0.01:
+            if j > k or not c.adv or c.nomap or c.adv > reach + 0.01:   # (a code without Unicode: no width by it)
                 c.adv = reach
             if ext is None:
                 continue
@@ -650,6 +682,14 @@ def _quad_boxes(chars: list[_Char], owners: list[int], extents: list) -> None:
             ys += (ys[0] + ey, ys[1] + ey)
             c.box = (min(xs), min(ys), max(xs), max(ys))
         k = j + 1
+
+
+def _near_pen(ch: _Char, pen: tuple[float, float]) -> bool:
+    """`ch` sits less than MARK_MAX_DIST em off the baseline the pen is on."""
+    size = ch.size or 1.0
+    delta = (ch.x - pen[0], ch.y - pen[1])
+    base = (-ch.dy * delta[0] + ch.dx * delta[1]) / size
+    return abs(base) < MARK_MAX_DIST
 
 
 def _may_add_space(last: str) -> bool:
@@ -912,13 +952,20 @@ def _group_blocks(chars: list[_Char]) -> list[dict]:
     line: list[_Char] | None = None
     ldir = (1.0, 0.0)
     pen = (0.0, 0.0)
-    lag_size = 0.0
     line_start = (0.0, 0.0)
     bullet = False
     last: _Char | None = None
     for ch in chars:
-        if ch.mark and line is not None:
-            line.append(ch)   # an accent over the glyph before it: in place, the pen stays
+        if ch.mark and line is not None and not ch.brk:
+            # a combining accent: put at the pen, as MuPDF does, so it reads before the glyph drawn after it; one
+            # drawn a block away (over a glyph that starts another row) is lost, as PyMuPDF loses it
+            if not _near_pen(ch, pen):
+                continue
+            up, down = ch.y - ch.box[1], ch.box[3] - ch.y
+            ch.x, ch.y, ch.adv = pen[0], pen[1], 0.0
+            ch.box = (pen[0], pen[1] - up, pen[0], pen[1] + down) if abs(ch.dy) < 1e-3 else (pen[0], pen[1]) * 2
+            line.append(ch)
+            last = ch   # no space follows an accent
             continue
         if line is not None and last is not None and (ch.x, ch.y) == (last.x, last.y):
             # pdfium gives a ligature as its letters at one origin, sharing the advance of the whole glyph: in place,
@@ -929,12 +976,12 @@ def _group_blocks(chars: list[_Char]) -> list[dict]:
             continue
         size = ch.size or 1.0
         new_line = new_para = add_space = large = False
-        if line is None or ch.dx * ldir[0] + ch.dy * ldir[1] < 0.999:
+        if line is None or ch.brk or ch.dx * ldir[0] + ch.dy * ldir[1] < 0.999:
             new_line = new_para = True
         else:
             delta = (ch.x - pen[0], ch.y - pen[1])
             spacing = (ch.dx * delta[0] + ch.dy * delta[1]) / size
-            base = (-ch.dy * delta[0] + ch.dx * delta[1]) / (min(lag_size, size) or size)
+            base = (-ch.dy * delta[0] + ch.dx * delta[1]) / size   # MuPDF 1.27 (PyMuPDF 1.28): the size of this glyph
             if abs(base) < BASE_MAX_DIST:
                 if SPACE_DIST <= spacing < SPACE_MAX_DIST:
                     add_space = last is not None and _may_add_space(last.c)
@@ -965,7 +1012,7 @@ def _group_blocks(chars: list[_Char]) -> list[dict]:
                 if abs(ch.dy) < 1e-3 else (pen[0], pen[1], pen[0], pen[1])
             line.append(_Char(" ", ch.font, ch.flags, ch.size, pen[0], pen[1], box, ch.dx, ch.dy, gap, ch.color, large))
         line.append(ch)
-        last, lag_size = ch, size
+        last = ch
         pen = (ch.x + ch.adv * ch.dx, ch.y + ch.adv * ch.dy)
     out = []
     for lines in blocks:
@@ -978,12 +1025,13 @@ def _group_blocks(chars: list[_Char]) -> list[dict]:
             for c in chs:
                 sup = 1 if level and c.y < chs[0].y - 0.1 * c.size else 0
                 key = (c.font, c.size, c.flags | sup, c.color, c.synthetic)
-                if spans and spans[-1][0] == key:
+                # a code without Unicode starts a span (PyMuPDF flags it) that runs on past it
+                if spans and spans[-1][0] == key and (not c.nomap or spans[-1][2]):
                     spans[-1][1].append(c)
                 else:
-                    spans.append((key, [c]))
+                    spans.append((key, [c], c.nomap))
             dict_spans = []
-            for (font, size, flags, color, _synthetic), cs in spans:
+            for (font, size, flags, color, _synthetic), cs, _nomap in spans:
                 box = (min(c.box[0] for c in cs), min(c.box[1] for c in cs), max(c.box[2] for c in cs), max(c.box[3] for c in cs))
                 first = cs[0]
                 dict_spans.append({"text": "".join(c.c for c in cs), "font": font, "size": size, "flags": flags,
