@@ -398,6 +398,14 @@ describe("TalkClient voice changes", () => {
     await p;
   }
 
+  it("the voice it already speaks in is not sent again (#34: a routed question switched it first)", async () => {
+    const h = setup();
+    await open(h);
+    const before = h.sockets[0].sent.length;
+    await h.client.setVoice("marcus");
+    expect(h.sockets[0].sent).toHaveLength(before);
+  });
+
   it("changes voice in place when the server accepts session.update", async () => {
     const h = setup();
     await open(h);

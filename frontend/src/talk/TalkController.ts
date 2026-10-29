@@ -167,6 +167,19 @@ export interface TalkDeps {
   onHeard?: (text: string) => void;
   /** True while answer audio is coming out of the speakers (drives the waveform). */
   onSpeaking?: (speaking: boolean) => void;
+  /**
+   * #34: who a question is addressed to (a character the reader may talk to now), or null to keep the current
+   * speaker. Asked once per question, before it is shown or answered.
+   */
+  route?: (query: string) => string | null;
+  /** #34: a question was addressed to someone else: they answer it (and the questions after it). */
+  onRoute?: (speakerId: string) => void;
+  /**
+   * #34: hands-free while the book is read aloud. The reading voice through the speakers is treated like the
+   * character's: on Boson's turn detection the mic is held while it plays (the server must not take the book for a
+   * question) and a barge-in needs clear speech over its echo, as over an answer. Off: only answers count as echo.
+   */
+  readingIsEcho?: boolean;
   now?: () => number;
   autoResumeDelayMs?: number;
   transcriptTimeoutMs?: number;
@@ -293,7 +306,7 @@ export class TalkController {
     if (this.holdTimer) { clearTimeout(this.holdTimer); this.holdTimer = null; }
     const now = this.d.now();
     const tail = this.quietSince + TalkController.MIC_HOLD_TAIL - now;
-    const want = this.handsFree && this.serverMode && !this.bargeOpen && (this.speaking || tail > 0);
+    const want = this.handsFree && this.serverMode && !this.bargeOpen && (this.speaking || this.holdForReading || tail > 0);
     if (want && !this.speaking) this.holdTimer = setTimeout(() => { this.holdTimer = null; this.updateMicHold(); }, tail);
     this.applyHold(want);
   }
@@ -306,6 +319,12 @@ export class TalkController {
   }
 
   private static readonly MIC_HOLD_TAIL = MIC_HOLD_TAIL_MS;
+
+  private holdForReading = false; // #34 server turns: the mic is held because the book is being read aloud
+  /** #34: the book is being read aloud right now, and that counts as echo (`readingIsEcho`). */
+  private readingAloud(): boolean {
+    return !!this.d.readingIsEcho && this.handsFree && this._state === "reading" && this.d.reader.isPlaying();
+  }
 
   /** The sentence audio started or stopped coming out of the speakers (drives the face and the waveform). */
   notePlaying(on: boolean): void { this.setSpeaking(on && this._state === "answering"); }
@@ -329,6 +348,26 @@ export class TalkController {
     if (id !== this.speakerId) this.endQuiz(); // a quiz belongs to the one who asked it
     this.speakerId = id;
     try { await this.d.session.setVoice(this.d.voiceFor(id)); } catch { /* the next ensureOpen reconnects with the right voice */ }
+  }
+
+  /**
+   * #34: a question addressed to another character goes to them: the speaker changes before the question is shown
+   * (so its bubble, voice, face and memory are theirs). True when it changed; the Realtime session's voice is then
+   * switched by `routedVoice` once nothing is being cancelled (the Gemini path voices each sentence itself).
+   */
+  private routeQuestion(query: string): boolean {
+    const id = this.d.route?.(query) ?? null;
+    if (!id || id === this.speakerId) return false;
+    this.endQuiz(); // a quiz belongs to the one who asked it
+    this.speakerId = id;
+    this.d.onRoute?.(id);
+    return true;
+  }
+
+  /** The routed speaker's voice on the Realtime session (never rejects: the next ensureOpen reconnects anyway). */
+  private async routedVoice(changed: boolean): Promise<void> {
+    if (!changed || (this.d.answer && this.d.speaker)) return;
+    try { await this.d.session.setVoice(this.d.voiceFor(this.speakerId)); } catch { /* reconnects on the next open */ }
   }
 
   /** The resolved voice of the current speaker changed (Talk voice pick, cast edit, late cast load): re-apply it. */
@@ -368,6 +407,7 @@ export class TalkController {
     this.strongGate.reset();
     this.echo.reset();
     this.bargeOpen = false;
+    this.holdForReading = false;
     this.emptyTurns = 0;
     if (on) this.serverGaveUp = false; // a fresh hands-free session gives Boson's turn detection another chance
     if (!on) this.applyHold(false);
@@ -397,8 +437,15 @@ export class TalkController {
     const now = this.d.now();
     const dt = this.lastLevelAt === null ? 0 : Math.min(200, Math.max(0, now - this.lastLevelAt));
     this.lastLevelAt = now;
-    if (this.speaking) this.echo.feed(rms, now); // what the mic hears of the character: barge-in must be well over it
+    const reading = this.readingAloud();
+    // what the mic hears of the character (or of the book read aloud, #34): barge-in must be well over it
+    if (this.speaking || reading) this.echo.feed(rms, now);
     if (this.serverMode) { // #135: the server decides the turns; the level detects barge-in (and wakes a closed session)
+      if (reading !== this.holdForReading) { // the book started or stopped being read aloud: hold the mic, or release it
+        this.holdForReading = reading;
+        if (reading) this.bargeOpen = false;
+        this.updateMicHold();
+      }
       if (this.micHeld) { // the character speaks (or its tail): the server hears nothing; clear speech over it cuts in
         const ev = this.strongGate.feed(rms, now, this.echo.profile());
         if (ev === "start" && ["reading", "talk-idle", "answering", "resuming"].includes(this._state)) this.bargeIn();
@@ -416,7 +463,7 @@ export class TalkController {
       }
       return;
     }
-    const overSpeech = this._state !== "listening" && (this.speaking || now - this.quietSince < TalkController.ECHO_TAIL_MS);
+    const overSpeech = this._state !== "listening" && (this.speaking || reading || now - this.quietSince < TalkController.ECHO_TAIL_MS);
     const ev = this.gate.feed(rms, now, overSpeech ? this.echo.profile() : undefined);
     if (ev === "start" && ["reading", "talk-idle", "answering", "resuming"].includes(this._state)) void this.beginTurn(true, overSpeech);
     else if (ev === "stop" && this._state === "listening") { this.handsFreeTurn = true; void this.pttUp(); } // a pressed turn ends on silence too, and is never a tap
@@ -533,8 +580,11 @@ export class TalkController {
     const query = transcript && transcript.type === "transcript" ? transcript.text.trim() : "";
     this.latency = { commitToTranscriptMs: this.d.now() - t0 };
     if (!query) { this.noTranscript(); return; } // nothing heard (silence, a failed or late transcription): never ask an empty question
+    const routed = this.routeQuestion(query);
     this.d.onTranscript?.(query);
     this.noteQuestion(query);
+    await this.routedVoice(routed);
+    if (turn !== this.turn) return;
 
     await this.answerQuery(turn, query);
   }
@@ -663,9 +713,11 @@ export class TalkController {
     }
     this.emptyTurns = 0;
     this.latency = { commitToTranscriptMs: this.d.now() - srv.stoppedAt };
+    const routed = this.routeQuestion(query);
     this.d.onTranscript?.(query);
     this.noteQuestion(query);
     await this.opening; // a barge-in's cancel must be acknowledged before our response.create
+    await this.routedVoice(routed);
     if (turn !== this.turn) return;
     await this.answerQuery(turn, query);
   }
@@ -695,12 +747,15 @@ export class TalkController {
     if (this.d.reader.isPlaying()) this.d.reader.pause();
     this.d.onCaption?.("", false);
     this.latency = {};
+    const routed = this.routeQuestion(query); // before onTranscript: the question bubble is the routed speaker's
     this.d.onTranscript?.(query);
     this.noteQuestion(query);
     this.set("retrieving");
     if ((wasAnswering || wasBusy) && !viaAnswer) {
       try { await this.d.session.interrupt(); } catch (e) { this.fail(turn, e); return; }
     }
+    if (turn !== this.turn) return;
+    await this.routedVoice(routed);
     if (turn !== this.turn) return;
     if (!(this.d.answer && this.d.speaker)) {
       try { await this.d.session.ensureOpen(this.d.voiceFor(this.speakerId)); } catch (e) { this.fail(turn, e); return; }

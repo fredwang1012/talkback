@@ -2,9 +2,9 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Book, Face } from "../src/api";
+import type { Face } from "../src/api";
 import { answerOnStage, stageFace } from "../src/reader/readFace";
-import Stage from "../src/reader/Stage";
+import { StageFace } from "../src/reader/StageFace";
 import type { FaceSync } from "../src/talk/faceSync";
 import type { TalkUi } from "../src/talk/useTalk";
 
@@ -12,7 +12,6 @@ import type { TalkUi } from "../src/talk/useTalk";
 HTMLMediaElement.prototype.play = vi.fn(async () => {});
 HTMLMediaElement.prototype.pause = vi.fn();
 
-const book = { id: "b", kind: "novel", narrator: null, sections: [], paragraphs: [], characters: [] } as unknown as Book;
 const face = { id: "f1", name: "Alice", image: "/f1.png", talk: "/f1-talk.mp4", idle: "/f1-idle.mp4" } as unknown as Face;
 const talkSync = { setVideo: vi.fn() } as unknown as FaceSync;
 const readSync = { setVideo: vi.fn() } as unknown as FaceSync;
@@ -27,9 +26,9 @@ beforeEach(() => { host = document.createElement("div"); document.body.appendChi
 afterEach(() => { act(() => root.unmount()); host.remove(); });
 
 function render(t: TalkUi, { readingFace = null as Face | null, readClipShown = false, avatarSrc = null as string | null } = {}) {
-  act(() => root.render(createElement(Stage, {
-    book, para: 0, speakerId: "narrator", onSpeaker: () => {}, health: null, talk: t, audioAvailable: true, avatarSrc, avatarPlaying: false,
-    onMode: () => {}, pinned: null, needsCode: false, onCode: () => {}, onOpenLab: () => {}, faceFor: () => face,
+  // the read-mode face moved from the Stage into the avatar player (#33): same component, same rules
+  act(() => root.render(createElement(StageFace, {
+    name: "Narrator", portrait: null, speakerId: "narrator", talk: t, avatarSrc, avatarPlaying: false, faceFor: () => face,
     readingFace, readSpeaking: false, levelRef: { current: 0 }, readLipSync: { sync: readSync, shown: readClipShown },
   })));
 }
@@ -53,7 +52,7 @@ describe("which face the read-mode stage shows", () => {
   });
 });
 
-describe("Stage: a spoken answer in read mode animates the face like Talkback", () => {
+describe("StageFace: a spoken answer in read mode animates the face like Talkback", () => {
   it("the paused reading's frozen lip-sync frame does not cover the answering face", () => {
     // the reader was lip-synced when the mic was pressed: its clip froze on the pause and still reports shown
     render(talk({ state: "answering", speaking: true }), { readClipShown: true });

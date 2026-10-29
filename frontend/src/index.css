@@ -784,3 +784,79 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
 .bubble .sources li { display: inline; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bubble .sources a { color: var(--brass); }
 .bubble .search-suggestions { display: block; width: 100%; border: 0; margin-top: 4px; background: transparent; }
+
+/* ask while reading (#34): mic, type box and hands-free on the reading screen */
+.ask-bar { display: flex; flex-direction: column; gap: var(--s3); }
+.ask-text { display: flex; gap: 8px; }
+.ask-text input {
+  flex: 1; min-width: 0; background: var(--ground-raised); color: var(--ink); border: 1px solid var(--brass-soft);
+  border-radius: var(--radius); padding: 7px 8px; font: inherit;
+}
+.ask-text button { background: var(--ground-raised); border: 1px solid var(--brass-soft); border-radius: var(--radius); padding: 7px 12px; color: var(--ink); }
+.ask-text button:disabled { opacity: 0.5; }
+.ask-hands-free { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.headphone-hint { color: var(--ink-faint); font-size: 0.8rem; line-height: 1.4; }
+
+/* the avatar player (#33): mini card in the corner, expanded near full screen, or a small tab */
+.avatar-player, .avatar-player-tab, .ap-bubble-wrap { --ap-gap: 16px; --ap-right: calc(360px + var(--ap-gap)); }
+@media (max-width: 960px) { .avatar-player, .avatar-player-tab, .ap-bubble-wrap { --ap-right: var(--ap-gap); } }
+.avatar-player.mini {
+  position: fixed; z-index: 6; right: var(--ap-right); bottom: calc(var(--ap-bottom, 96px) + var(--ap-gap));
+  display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "face info" "face controls"; gap: 4px 12px; align-items: center;
+  width: min(280px, calc(100vw - 2 * var(--ap-gap))); padding: 10px 12px;
+  background: var(--ground-sunk); border: 1px solid var(--brass-soft); border-radius: var(--r-lg);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  animation: ap-in 200ms ease-out;
+}
+.avatar-player .ap-face { grid-area: face; }
+.avatar-player .ap-info { grid-area: info; min-width: 0; }
+.avatar-player .ap-controls { grid-area: controls; display: flex; gap: 6px; align-items: center; }
+.avatar-player .ap-face .medallion { width: 72px; height: 72px; font-size: 2rem; box-shadow: none; }
+.avatar-player .ap-face .medallion .mono { line-height: 1; }
+.ap-name { font-family: var(--font-title); font-weight: 400; font-size: 1.15rem; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.avatar-player.mini .icon-btn { width: 36px; height: 36px; }
+.avatar-player.mini .icon-btn.primary { width: 40px; height: 40px; }
+.avatar-player.expanded {
+  position: fixed; z-index: 30; inset: 0; overflow-y: auto;
+  display: flex; flex-direction: column; align-items: center; gap: var(--s4);
+  padding: var(--s4) var(--s4) var(--s6);
+  background: color-mix(in srgb, var(--ground) 97%, transparent); backdrop-filter: blur(8px);
+  animation: ap-up 240ms ease-out;
+}
+.avatar-player.expanded .ap-top { align-self: stretch; display: flex; justify-content: flex-end; }
+.avatar-player.expanded .ap-face .medallion { width: min(42vh, 360px, 72vw); height: min(42vh, 360px, 72vw); font-size: 6rem; }
+.avatar-player.expanded .ap-info { text-align: center; max-width: 40rem; }
+.avatar-player.expanded .ap-name { font-size: 1.9rem; white-space: normal; }
+.ap-caption { margin: 8px 0 0; font-family: var(--font-book); font-style: italic; color: var(--ink-soft); line-height: 1.55; min-height: 1.55em; }
+.avatar-player.expanded .ap-controls { justify-content: center; gap: 12px; }
+.ap-talk { width: min(40rem, 100%); display: flex; flex-direction: column; gap: var(--s3); }
+.ap-log {
+  max-height: 34vh; min-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+  padding: 12px; background: var(--ground-sunk); border: 1px solid var(--brass-soft); border-radius: var(--radius);
+}
+.avatar-player-tab { position: fixed; z-index: 6; right: var(--ap-right); bottom: calc(var(--ap-bottom, 96px) + var(--ap-gap)); display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.ap-tab {
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px 6px 6px; border-radius: 999px;
+  background: var(--ground-sunk); border: 1px solid var(--brass-soft); color: var(--ink); font-size: 0.88rem;
+}
+.ap-tab span { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--ground-raised); color: var(--brass); font-family: var(--font-title); }
+.ap-bubble-wrap { position: fixed; z-index: 6; right: var(--ap-right); bottom: calc(var(--ap-bottom, 96px) + var(--ap-gap) + 110px); }
+.ap-bubble {
+  position: relative; width: min(320px, calc(100vw - 2 * var(--ap-gap))); max-height: 30vh; overflow-y: auto;
+  padding: 10px 34px 10px 14px; border-radius: 10px; border: 1px solid var(--brass-soft); background: var(--ground-raised);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3); animation: ap-in 200ms ease-out;
+}
+.ap-bubble .who-line { display: block; font-size: 0.75rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--brass); margin-bottom: 2px; }
+.ap-bubble p { margin: 0; font-family: var(--font-book); font-size: 0.92rem; line-height: 1.5; white-space: pre-wrap; }
+.ap-bubble-close { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; padding: 0; display: grid; place-items: center; background: transparent; border: 0; color: var(--ink-soft); }
+.ap-bubble-close svg { width: 14px; height: 14px; }
+.avatar-player button:focus-visible, .ap-tab:focus-visible, .ap-bubble-close:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+@keyframes ap-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes ap-up { from { opacity: 0; transform: translateY(24px); } }
+@media (max-width: 600px) {
+  .avatar-player.mini { width: min(240px, calc(100vw - 2 * var(--ap-gap))); }
+  .avatar-player .ap-face .medallion { width: 56px; height: 56px; }
+  .avatar-player.expanded .ap-face .medallion { width: min(34vh, 72vw); height: min(34vh, 72vw); font-size: 4rem; }
+  .ap-bubble-wrap { bottom: calc(var(--ap-bottom, 140px) + var(--ap-gap) + 92px); }
+}
+@media (prefers-reduced-motion: reduce) { .avatar-player.mini, .avatar-player.expanded, .ap-bubble { animation: none; } }
