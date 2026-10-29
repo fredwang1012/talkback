@@ -182,13 +182,19 @@ MAX_HISTORY_TURNS = 8
 
 
 def format_history(history: list | None) -> str:
-    """Earlier turns of this chat as plain lines (the reader's questions and this character's replies)."""
+    """Earlier turns of this chat as plain lines (the reader's questions and this character's replies).
+
+    A character turn with a `name` (#79 group scene) is another character's reply to the same question, said just
+    before: it is shown under that name (one line, no newlines), so this character can react to it."""
     lines = []
     for t in (history or [])[-MAX_HISTORY_TURNS:]:
         role = t["role"] if isinstance(t, dict) else t.role
         text = (t["text"] if isinstance(t, dict) else t.text).strip()
+        name = (t.get("name") if isinstance(t, dict) else getattr(t, "name", None)) or ""
+        name = " ".join(name.replace(":", " ").split())[:80]
         if text:
-            lines.append(f"{'Reader' if role == 'user' else 'You'}: {text}")
+            who = "Reader" if role == "user" else name if name else "You"
+            lines.append(f"{who}: {text}")
     return "\n".join(lines)
 
 

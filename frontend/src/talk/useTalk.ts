@@ -15,6 +15,7 @@ import { createPlayingGate, type TimingEvent } from "./speechGate";
 import { answerClip, lipSyncClip } from "./clipVideo";
 import { createEmotionMemo } from "./answerEmotion";
 import { createSentenceSpeaker, type Clip } from "./sentencePlayer";
+import { addRoundAnswer, historyFor } from "./groupRound";
 import { createReplayPlayer, createReplayStore, runPcm, runSentences, type ReplayItem } from "./replay";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
 import { TalkController, type Latency, type ReaderControl, type TalkState } from "./TalkController";
@@ -57,6 +58,10 @@ export type TalkUi = {
    * narrator voice. Never sent to the model as a question, and left out of the chat memory (see priorTurns). */
   narrate: (heading: string, load: () => Promise<Narration>) => Promise<void>;
   dismissToast: () => void;
+  /** #79 group scene: every question also goes to these characters, answering in turn after the one talked to
+   * (TalkController caps the round at MAX_GROUP). `nameOf` names them for each other's history. [] = one-to-one. */
+  setGroup?: (ids: string[], nameOf: (id: string) => string) => void;
+  roundSpeaker?: string | null; // #79: the character of a group round answering now, when not the one talked to
 };
 
 /** A loaded recap: its text, a better heading (e.g. with the chapter name), and what to say when the text is empty. */
@@ -130,6 +135,12 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   const [livePaused, setLivePaused] = useState(false);
   const [handsFree, setHandsFreeState] = useState(false);
   const [searching, setSearching] = useState(false);
+  const [roundSpeaker, setRoundSpeaker] = useState<string | null>(null);
+  const roundIds = useRef<number[]>([]); // #79: the answer bubbles of the current question, in order
+  const nameOf = useRef<(id: string) => string>((id) => id);
+  const groupIds = useRef<string[]>([]); // #79: kept here too, so a rebuilt controller (new book, backend) gets it
+  /** The history given to `speaker`: their own chat, plus the answers of this group round so far (#79). */
+  const historyOf = (speaker: string) => historyFor(msgs.current, speaker, roundIds.current, nameOf.current);
   /** The message of the answer being given now (retrieving or speaking), if any. */
   const liveMsgId = () => {
     const c = controller.current;
@@ -228,7 +239,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
           return clip;
         }, undefined, { sync: faceSync.current as FaceSync, onPlaying: (on: boolean) => { gate.playing(on); onPlaying(on); }, onTiming: logTiming })),
         onSentence: (text: string, emotion: string | null, first: boolean) => {
-          if (first) startAnswer(latest.current.speakerId);
+          if (first) startAnswer(talk?.answerSpeaker ?? latest.current.speakerId); // #79: a group round's current character
           answerEmotion.note(text, emotion ?? undefined);
         },
       }),
@@ -256,13 +267,13 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         const spoilers = latest.current.spoilers;
         client.setTools(toolsNow()); // B2: rebuilt every turn, so the spoilers switch takes web_search away (or gives it) at once
         return fetchRetrieve(bookId, query, para, speaker, spoilers, {
-          textAnswer: answerMode === "text", webSearch: webSearchAllowed(bookKind, spoilers, searchOn()), history: priorTurns(msgs.current, speaker) });
+          textAnswer: answerMode === "text", webSearch: webSearchAllowed(bookKind, spoilers, searchOn()), history: historyOf(speaker) });
       },
       ...(viaGemini ? {
         answer: (query, para, speaker, onSentence, signal) => {
           lastQuestion = query;
           startAnswer(speaker);
-          return streamAnswer(bookId, query, para, speaker, (t, emotion) => { answerEmotion.note(t, emotion); const id = answerMsgId; setMessages((m) => appendSentenceTo(m, id, t)); onSentence(t); }, signal, latest.current.spoilers, priorTurns(msgs.current, speaker), (s) => setMessages((m) => setSources(m, s)));
+          return streamAnswer(bookId, query, para, speaker, (t, emotion) => { answerEmotion.note(t, emotion); const id = answerMsgId; setMessages((m) => appendSentenceTo(m, id, t)); onSentence(t); }, signal, latest.current.spoilers, historyOf(speaker), (s) => setMessages((m) => setSources(m, s)));
         },
         speaker: createRoutedSpeaker(() => liveRef.current, (face) => createLiveSpeaker(async (text) => {
           const r = await speak(text, answerVoice, answerEmotion.get(text), answerLang);
@@ -291,7 +302,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       onSearching: (active, completed) => { setSearching(active); if (!active && completed) setMessages((m) => addToolChip(m, "Looked it up on the web")); },
       onSources: (sources) => setMessages((m) => setSources(m, { sources })),
       serverTurns: !localGateForcedHere(), // #135: hands-free on Boson's turn detection unless ?gate=local
-      onState: (st) => { setState(st); if (st !== "answering") setLivePaused(false); if (["listening", "retrieving", "answering"].includes(st)) { replayer.current?.stop(); narration.current?.stop(); } if (["reading", "talk-idle", "resuming"].includes(st)) { setMessages(finishAnswer); resetIfSpeakerChanged.current(); } if (st === "listening") resetIfSpeakerChanged.current(); },
+      onState: (st) => { setState(st); if (["reading", "talk-idle", "resuming", "listening"].includes(st)) setRoundSpeaker(null); if (st !== "answering") setLivePaused(false); if (["listening", "retrieving", "answering"].includes(st)) { replayer.current?.stop(); narration.current?.stop(); } if (["reading", "talk-idle", "resuming"].includes(st)) { setMessages(finishAnswer); resetIfSpeakerChanged.current(); } if (st === "listening") resetIfSpeakerChanged.current(); },
       onToast: setToast,
       onCaption: (text) => { setCaption(text); if (!viaGemini && text) setMessages((m) => setTextOf(m, liveAnswerId, text)); },
       onSpeaking: setSpeaking,
@@ -301,11 +312,20 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         setQuestion(text); setLanguage(detectLanguage(text));
         setMessages((m) => addQuestion(m, text, latest.current.speakerId, via.current));
         liveAnswerId = pendingId(); // the new empty answer bubble of this question
+        roundIds.current = liveAnswerId === undefined ? [] : [liveAnswerId];
         via.current = "voice";
       },
       onLatency: (l) => { setLatency(l); console.info("[talk] latency", l); },
+      // #79: the next character of the group round: their own bubble (captions and sentences go there) and face
+      onRoundTurn: (speaker) => {
+        setMessages((m) => addRoundAnswer(m, speaker));
+        liveAnswerId = pendingId();
+        if (liveAnswerId !== undefined) roundIds.current = [...roundIds.current, liveAnswerId];
+        setRoundSpeaker(speaker);
+      },
     });
     controller.current = talk;
+    talk.setGroup(groupIds.current);
     clientRef.current = client;
     const sync = faceSync.current;
     const replaySpeaker = createSentenceSpeaker(async (text) => {
@@ -338,6 +358,8 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   return {
     state, caption, toast, level, latency, speaking, question, language, faceSync: faceSync.current, clipShown, logs,
     narrating: narratingKey !== null,
+    roundSpeaker,
+    setGroup: useCallback((ids: string[], names: (id: string) => string) => { nameOf.current = names; groupIds.current = ids; controller.current?.setGroup(ids); }, []),
     handsFree,
     searching,
     setHandsFree: useCallback((on: boolean) => {
