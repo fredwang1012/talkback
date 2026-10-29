@@ -6,7 +6,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import deps, indexes, processing, public_api, public_client
+from app import deps, gemini, indexes, processing, public_api, public_client
 from app.routes import talk as talk_routes
 from app.config import settings
 from app.enrich import pipeline, spend
@@ -58,9 +58,9 @@ def test_active_needs_url_and_no_local_llm(monkeypatch):
     monkeypatch.setattr(settings, "anthropic_api_key", "sk-x")
     assert not public_client.active()                       # a local LLM wins
     monkeypatch.setattr(settings, "anthropic_api_key", "")
-    monkeypatch.setattr(public_client, "gcp_credentials_usable", lambda: True)
+    monkeypatch.setattr(gemini, "gcp_credentials_usable", lambda: True)
     assert not public_client.active()
-    monkeypatch.setattr(public_client, "gcp_credentials_usable", lambda: False)
+    monkeypatch.setattr(gemini, "gcp_credentials_usable", lambda: False)
     monkeypatch.setattr(settings, "public_api", True)       # the service itself never calls a service
     assert not public_client.active()
 

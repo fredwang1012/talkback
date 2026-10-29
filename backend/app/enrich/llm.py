@@ -12,6 +12,7 @@ from typing import Callable, Protocol, TypeVar
 
 from pydantic import BaseModel
 
+from .. import gemini
 from .. import pacer as pacing
 from ..config import settings
 from ..gcp import usage as usage_log
@@ -201,10 +202,7 @@ class GeminiProvider:
 
     def __init__(self, client=None, model: str | None = None, sleep=None, pacer: "pacing.Pacer | None" = None,
                  fallback: str | None = None, clock=time.monotonic):
-        if client is None:
-            from google import genai
-            client = genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
-        self.client = client
+        self.client = client or gemini.client()
         self.model = model or enrich_gemini_model()
         self.fallback = fallback if fallback is not None else (
             settings.gemini_model if settings.gemini_model and settings.gemini_model != self.model else "")

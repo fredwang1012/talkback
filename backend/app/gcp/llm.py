@@ -1,12 +1,11 @@
-"""Gemini on Vertex AI: stream an answer and yield it sentence by sentence."""
+"""Gemini (Vertex AI, or AI Studio with GEMINI_API_KEY: app/gemini.py): stream an answer and yield it sentence by sentence."""
 import logging
 import re
 from typing import AsyncIterator, Callable
 
-from google import genai
 from google.genai import types
 
-from .. import pacer, websearch
+from .. import gemini, pacer, websearch
 from ..config import settings
 from ..ttschunks import ends_with_abbreviation
 from . import usage
@@ -35,7 +34,7 @@ class GeminiAnswerer:
     _sleep = None   # retry backoff sleep (asyncio.sleep; tests swap it)
 
     def __init__(self, client=None, model: str | None = None):
-        self.client = client or genai.Client(vertexai=True, project=settings.gcp_project, location=settings.gemini_region())
+        self.client = client or gemini.client()
         self.model = model or settings.gemini_model
 
     async def stream_sentences(self, system: str, user: str,

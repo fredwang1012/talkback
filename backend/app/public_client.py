@@ -6,7 +6,6 @@ local: answers send only passages the local retrieval already filtered. If the s
 capped, enrichment falls back to the simple local cast (with a message saying why) and typed answers report why.
 """
 import asyncio
-import functools
 import json
 import logging
 import time
@@ -18,7 +17,7 @@ from typing import AsyncIterator, Awaitable, Callable
 import httpx
 from pydantic import ValidationError
 
-from . import books
+from . import books, gemini
 from .config import settings
 from .enrich import cast as cast_mod
 from .enrich import equations, pipeline, series_link, textbook
@@ -51,21 +50,9 @@ class PublicFailure(Exception):
 
 # ---------- when to use the service ----------
 
-@functools.lru_cache(maxsize=1)
-def gcp_credentials_usable() -> bool:
-    """A GCP project is configured and Application Default Credentials load (checked once)."""
-    if not settings.gcp_project:
-        return False
-    try:
-        import google.auth
-        google.auth.default()
-        return True
-    except Exception:
-        return False
-
-
 def local_llm_configured() -> bool:
-    return bool(settings.anthropic_api_key) or gcp_credentials_usable()
+    """Claude, Vertex (GCP_PROJECT with working ADC) or an AI Studio key (GEMINI_API_KEY)."""
+    return bool(settings.anthropic_api_key) or gemini.gcp_credentials_usable() or bool(settings.gemini_api_key)
 
 
 def active() -> bool:
