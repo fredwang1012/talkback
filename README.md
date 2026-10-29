@@ -16,8 +16,12 @@ Five fully processed public-domain books ship in the repo, so everything works w
 - **A full cast.** Every line is spoken by its character with Higgs TTS 3 tags: one of 20 emotions per line,
   whispering and shouting from the speech tags, sound effects (laughter, sighs, humming), pauses at scene breaks, and
   songs that are actually sung. Two voices (male and female) or one.
-- **Talk to the characters, hands-free.** Hold Space to ask, or turn on hands-free: Boson's `semantic_vad` decides
-  when your question has ended, and you can talk over the character to interrupt.
+- **Talk to the characters, hands-free, while you read.** Hold Space, press the mic or type a question on the reading
+  screen: reading pauses, the character answers (text in a small bubble) and reading picks up at the same sentence.
+  Start with a name ("Alice, ...") to ask that character. Or turn on hands-free: Boson's `semantic_vad` decides when
+  your question has ended, and you can talk over the character (or the book) to interrupt.
+- **A face like a podcast player.** The face sits in a corner mini player (play/pause, expand, hide); expand it to a
+  near full-screen view with the sentence being read, the controls and the conversation. Esc or a swipe down collapses.
 - **Faces.** Lip-synced with Higgs Avatar and streamed, so the video starts before the render ends. Any voice can
   drive any face.
 - **Your own voice.** Clone a voice from a recording and give it a face from a photo or your webcam.
@@ -50,11 +54,11 @@ Open **http://localhost:8000** in desktop Chrome, Edge or Firefox and allow the 
 `cd frontend && npm run dev` and open http://localhost:5173 (Vite proxies to port 8000; set `TALKBACK_API` for another).
 
 Try it: open *Alice's Adventures in Wonderland* and press play; open **Character Control** to change voices and
-faces; switch to **Talkback**, pick the Cheshire Cat, hold Space and ask a question; ask about something later in the
-book and it declines.
+faces; while it reads, hold Space (or type in the box under the cast list) and ask "Cheshire Cat, why do you grin?";
+ask about something later in the book and it declines. **Talkback** is still there as a full conversation view.
 
-Keys: hold Space to talk, K play/pause, left/right sentence, `[` `]` speed, T switches Read/Talkback, backtick opens
-the debug drawer. Audio is generated on demand and cached in `data/cache/`, so a passage costs credit only once.
+Keys: hold Space to talk, K play/pause, left/right sentence, `[` `]` speed, T switches Read/Talkback, Esc collapses the
+expanded face player, backtick opens the debug drawer. Audio is generated on demand and cached in `data/cache/`, so a passage costs credit only once.
 
 ### What needs more than a Boson key
 

@@ -666,6 +666,7 @@ export class TalkClient implements TalkSession {
   }
 
   async setVoice(voice: string): Promise<void> {
+    if (voice === this.voice && this.isOpen) return; // already speaking in it (#34: a routed question sets it first)
     this.voice = voice;
     if (!this.isOpen) return; // the next ensureOpen uses it
     const ack = this.waitForServer((e) => e.type === "session.updated" || e.type === "error", this.d.voiceChangeWaitMs);
