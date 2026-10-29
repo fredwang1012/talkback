@@ -224,3 +224,160 @@ def test_same_book_under_both_engines(monkeypatch):
     assert [s.title for s in b.sections] == [s.title for s in a.sections] == ["Chapter 1", "Chapter 2"]
     assert [p.text for p in b.paragraphs] == [p.text for p in a.paragraphs]
     assert HEADING_REGEX  # the shared regex is what parses both
+
+
+def raw_pdf(content: bytes, font: bytes = b"Helvetica") -> bytes:
+    """A one-page PDF (400 x 300 pt) drawing `content` with /F1 = a standard font, written by hand so each Tj can
+    be its own text object, as some converted books draw every glyph."""
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Resources << /Font << /F1 4 0 R >> >>"
+            b" /Contents 5 0 R >>",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /" + font + b" >>",
+            b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream"]
+    out, offsets = b"%PDF-1.4\n", []
+    for i, obj in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % i + obj + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1) + b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    return out + b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+
+
+def one_object_per_glyph(text: str, x: float = 72, y: float = 200, size: float = 12, font: str = "helv",
+                         scale: float = 0.75) -> bytes:
+    """Content drawing each glyph of `text` with its own Tm and Tj, advancing by the glyph's width, under a
+    `scale` CTM (a converted book's page matrix: pdfium then takes two neighbouring f's for one drawn twice)."""
+    widths = fitz.Font(font)
+    ops = [b"%g 0 0 %g 0 0 cm BT /F1 %g Tf" % (scale, scale, size / scale)]
+    for ch in text:
+        ops.append(b"1 0 0 1 %.3f %.3f Tm (%s) Tj" % (x / scale, y / scale, ch.encode("latin-1")))
+        x += widths.text_length(ch, size)
+    return b"\n".join(ops + [b"ET"])
+
+
+def page_lines(data: bytes, engine: str) -> list[str]:
+    with pdfdoc.open_pdf(data, engine) as doc:
+        return ["".join(s["text"] for s in ln["spans"]) for b in doc.page(0).text_blocks() if b.get("type") == 0
+                for ln in b["lines"]]
+
+
+def page_spans(data: bytes, engine: str) -> list[dict]:
+    with pdfdoc.open_pdf(data, engine) as doc:
+        return [s for b in doc.page(0).text_blocks() if b.get("type") == 0 for ln in b["lines"] for s in ln["spans"]]
+
+
+@pdfium_only
+def test_pdfium_keeps_a_letter_drawn_again_as_its_own_object():
+    # each glyph its own object under a scaled page matrix: pdfium's text page drops the second f of "ff" as fake
+    # bold ("ofer stuf"); the engine puts it back, and the italic f's overhang does not swallow the word space
+    data = raw_pdf(one_object_per_glyph("offer stuff of them this effort", font="tiit"), b"Times-Italic")
+    assert page_lines(data, "pdfium") == page_lines(data, "pymupdf") == ["offer stuff of them this effort"]
+    # a glyph drawn twice in (nearly) the same place is fake bold: once, under both engines
+    bold = b"BT /F1 12 Tf 1 0 0 1 72 200 Tm (A) Tj 1 0 0 1 72.3 200 Tm (A) Tj 1 0 0 1 80.5 200 Tm (B) Tj ET"
+    assert page_lines(raw_pdf(bold), "pdfium") == page_lines(raw_pdf(bold), "pymupdf") == ["AB"]
+
+
+@pdfium_only
+def test_pdfium_reads_text_in_content_order():
+    # a hat drawn before the letter under it, which starts a little further left: pdfium's text page sorts a
+    # line's objects by x, PyMuPDF keeps the order they are drawn in (the ingest then orders spans itself)
+    content = (b"BT /F1 10 Tf 1 0 0 1 72 200 Tm (see) Tj 1 0 0 1 90.6 202 Tm (^) Tj 1 0 0 1 90 200 Tm (Q) Tj"
+               b" 1 0 0 1 98 200 Tm (here) Tj ET")
+    data = raw_pdf(content)
+    assert page_lines(data, "pdfium") == page_lines(data, "pymupdf")
+    assert [s["text"] for s in page_spans(data, "pdfium")] == [s["text"] for s in page_spans(data, "pymupdf")]
+
+
+@pdfium_only
+def test_pdfium_spans_split_like_pymupdf():
+    # word gaps of a quarter em join the span; a gap over 0.3 em is a space span of its own; a raised glyph is
+    # flagged superscript and starts a span; a coloured word is a span of its own
+    content = (b"BT /F1 10 Tf 1 0 0 1 72 200 Tm [(one) -250 (two) -450 (three)] TJ 1 0 0 1 150 204 Tm (2) Tj"
+               b" 0 0 1 rg 1 0 0 1 160 200 Tm (blue) Tj ET")
+    data = raw_pdf(content)
+    a, b = page_spans(data, "pymupdf"), page_spans(data, "pdfium")
+    assert [s["text"] for s in b] == [s["text"] for s in a]
+    assert [s["flags"] for s in b] == [s["flags"] for s in a] and [s["color"] for s in b] == [s["color"] for s in a]
+    for x, y in zip(a, b):   # boxes from the advance (and the font's ascender / descender: the two libraries
+        # carry their own metrics for the standard 14 fonts, embedded ones agree)
+        assert abs(x["bbox"][0] - y["bbox"][0]) < 0.05 and abs(x["bbox"][2] - y["bbox"][2]) < 0.05, (x, y)
+        assert abs(x["bbox"][1] - y["bbox"][1]) < 0.2 * x["size"] and abs(x["bbox"][3] - y["bbox"][3]) < 0.2 * x["size"]
+
+
+def test_builtin_encoding_of_type1_and_cff_programs():
+    type1 = (b"%!PS-AdobeFont-1.0: CMSY7 003.002\n/Encoding 256 array\n0 1 255 {1 index exch /.notdef put} for\n"
+             b"dup 0 /minus put\ndup 48 /prime put\ndup 104 /angbracketleft put\ndup 65 /uni2207 put\n"
+             b"readonly def\ncurrentfile eexec\n\x80\x81 dup 49 /infinity put")
+    # minus is left to pdfium's own glyph list; nothing after eexec is read
+    assert pdfdoc._builtin_encoding(type1) == {48: 0x2032, 104: 0x27E8, 65: 0x2207}
+    assert pdfdoc._builtin_encoding(cff_font({126: "vector", 107: "bardbl", 40: "notaglyphname"})) == \
+        {126: 0x20D7, 107: 0x2225}
+    assert pdfdoc._builtin_encoding(b"\x01\x00\x04\x02garbage") == {}
+    assert pdfdoc._builtin_encoding(b"\x00\x01\x00\x00") == {}   # a TrueType program: its cmap is read elsewhere
+
+
+def cff_index(items: list[bytes]) -> bytes:
+    if not items:
+        return b"\x00\x00"
+    offs, at = [], 1
+    for it in items:
+        offs.append(at)
+        at += len(it)
+    offs.append(at)
+    return struct.pack(">HB", len(items), 4) + b"".join(struct.pack(">I", o) for o in offs) + b"".join(items)
+
+
+def cff_font(codes: dict[int, str]) -> bytes:
+    """A bare CFF font program whose own encoding gives each code a custom-named glyph (charset format 0,
+    encoding format 0); the charstrings are empty."""
+    names = list(codes.values())
+    strings = cff_index([n.encode() for n in names])
+    charstrings = cff_index([b"\x0e"] * (len(names) + 1))
+    head = b"\x01\x00\x04\x02" + cff_index([b"T"])
+
+    def top(charset: int, encoding: int, chars: int) -> bytes:   # operands as 5-byte ints: a fixed size
+        return cff_index([b"\x1d" + struct.pack(">i", charset) + b"\x0f" + b"\x1d" + struct.pack(">i", encoding) + b"\x10"
+                          + b"\x1d" + struct.pack(">i", chars) + b"\x11"])
+
+    base = len(head) + len(top(0, 0, 0)) + len(strings) + 2   # + the empty global subr INDEX
+    charset = b"\x00" + b"".join(struct.pack(">H", 391 + k) for k in range(len(names)))
+    encoding = bytes([0, len(names)]) + bytes(codes)
+    return head + top(base, base + len(charset), base + len(charset) + len(encoding)) + strings + b"\x00\x00" + \
+        charset + encoding + charstrings
+
+
+def test_style_flags_follow_mupdf():
+    # serifed unless sans by name; bold by name or ForceBold only; italic by flag, angle or name; mono by name
+    assert pdfdoc._style_flags("Palatino-Roman", 0) == 4
+    assert pdfdoc._style_flags("NimbusRomNo9L-Medi", 0) == 20 and pdfdoc._style_flags("CMBX10", 0) == 20
+    assert pdfdoc._style_flags("CMMI10", 0, slanted=True) == 6 and pdfdoc._style_flags("CMTI10", 0) == 6
+    assert pdfdoc._style_flags("Helvetica", 0) == 0 and pdfdoc._style_flags("DejaVuSans-Bold", 0) == 16
+    assert pdfdoc._style_flags("Courier", 0) == 8 and pdfdoc._style_flags("SFTT1000", 0) == 12
+    assert pdfdoc._style_flags("Anything", pdfdoc._FD_FORCE_BOLD) == 20
+
+
+def page_blocks(data: bytes, engine: str) -> list[list[str]]:
+    with pdfdoc.open_pdf(data, engine) as doc:
+        return [["".join(s["text"] for s in ln["spans"]) for ln in b["lines"]] for b in doc.page(0).text_blocks()
+                if b.get("type") == 0]
+
+
+@pdfium_only
+def test_pdfium_blocks_break_at_images_and_text_off_the_page_is_dropped():
+    # an image drawn between two runs of a line ends the block (MuPDF starts a new one after any image); a word
+    # drawn wholly left of the page is not read
+    image = b"q 4 0 0 10 120 196 cm BI /W 1 /H 1 /BPC 8 /CS /G ID \x80 EI Q"
+    content = (b"BT /F1 10 Tf 1 0 0 1 72 200 Tm (Alpha) Tj ET " + image +
+               b" BT /F1 10 Tf 1 0 0 1 130 200 Tm (Beta) Tj 1 0 0 1 -80 200 Tm (Gone) Tj ET")
+    data = raw_pdf(content)
+    assert page_blocks(data, "pdfium") == page_blocks(data, "pymupdf") == [["Alpha"], ["Beta"]]
+
+
+@pdfium_only
+def test_pdfium_line_end_hyphen_and_stretched_text():
+    # pdfium marks a hyphen ending a line with U+0002; a horizontally stretched text matrix advances further
+    content = (b"BT /F1 10 Tf 1 0 0 1 72 200 Tm (an exam-) Tj 1 0 0 1 72 188 Tm (ple of it) Tj"
+               b" 1.05 0 0 1 72 150 Tm [(stretched) -280 (words) -310 (here)] TJ ET")
+    data = raw_pdf(content)
+    assert page_lines(data, "pdfium") == page_lines(data, "pymupdf") == ["an exam-", "ple of it", "stretched words here"]
+    assert [s["text"] for s in page_spans(data, "pdfium")] == [s["text"] for s in page_spans(data, "pymupdf")]

@@ -161,7 +161,9 @@ writes textbook notes if needed. A kind change is refused (409) while any job ru
 **Flow** (`ingest_upload.pdf_to_text`, then `parsing.parse`, then `ingest_upload.build_book`; `app/ingest_upload.py`
 is a facade over the `app/ingest/` package, one module per stage):
 1. The PDF engine (`app/pdfdoc.py`: pymupdf by default, `PDF_ENGINE=pdfium` for pypdfium2, which rebuilds pymupdf's
-   blocks / lines / spans from pdfium's characters) gives each page's text as blocks of lines of spans. Lines are
+   blocks / lines / spans from pdfium's characters: in content-stream order, with the glyphs pdfium's text page
+   drops as "fake bold" put back, advances from the font widths, MuPDF's space / line / span rules and character
+   boxes) gives each page's text as blocks of lines of spans. Lines are
    regrouped into visual rows (`_assemble_rows`, `_attach_deco_rows`: a root/sum/hat glyph that pymupdf split into
    its own line is re-attached to its prose row).
 2. Per line: cleaned text (ligatures, control codes), bbox, largest font size, bold, monospace.
