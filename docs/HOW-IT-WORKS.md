@@ -146,7 +146,7 @@ upload can be moved later with "Move to Textbooks / Novels".
 
 **Moving shelves** (`main.change_kind`, `POST /api/books/{id}/kind`, uploads only): textbook -> novel starts enrichment
 unless characters exist; novel -> textbook **re-reads the original PDF as a textbook** (`ingest_upload.rebuild_textbook_text`
-in a thread, outside the write lock) so equations, code listings and nested sections come back (figures do not yet), applies it
+in a thread, outside the write lock) so equations, code listings, nested sections and figures (cropped into the book's figures dir, #118) come back, applies it
 under the book's write lock (`apply_textbook_text`; summaries are dropped because their paragraph numbers belong to
 the old text), rebuilds the local index, deletes stale Vertex datapoints, re-indexes, restarts the equations job, and
 writes textbook notes if needed. A kind change is refused (409) while any job runs (`_kind_claims`, `_enrich_jobs`,
@@ -1392,11 +1392,9 @@ These are the real limitations of the current code. The full list of gaps, with 
    speakers, emotions and styles stay). Equation readings are English, so a non-English textbook reads the extracted
    formula text instead. Detection covers scripts plus the common words of Spanish, French, German, Italian,
    Portuguese, Dutch and Polish; any other Latin-script language is treated as English.
-4. **Moving a paper to Textbooks does not bring back its figures**. Equations, code listings and nested
-   sections are restored (section 3), figures are not. Uploading it as a textbook in the first place keeps them.
-5. **Hands-free with speakers can interrupt itself.** The barge-in thresholds were lowered (0.04 RMS,
+4. **Hands-free with speakers can interrupt itself.** The barge-in thresholds were lowered (0.04 RMS,
    echo ratio 1, section 10.4) so the reader can cut in easily. With laptop speakers instead of headphones, the
    character's own voice can then pass the gate and stop the answer. Use headphones, or push-to-talk.
-6. **Gemini quota can slow processing.** Vertex Gemini uses dynamic shared quota, so many books processed at once can
+5. **Gemini quota can slow processing.** Vertex Gemini uses dynamic shared quota, so many books processed at once can
    hit 429 errors. The pacer (section 17.2) backs off and retries, so books finish later rather than fail; a note that
    cannot be written after its retries is skipped and counted on the card.

@@ -1,4 +1,6 @@
 """Textbook figures shown in the reader (#40): found from their captions, cropped to PNGs, placed between paragraphs."""
+import shutil
+
 import pymupdf as fitz
 import pytest
 from fastapi.testclient import TestClient
@@ -170,6 +172,38 @@ def test_an_uploaded_textbook_serves_its_figures(client, tmp_path):
     assert client.get("/api/books/no-such-book/figures/fig-1.png").status_code == 404
     client.delete(f"/api/books/{book_id}")
     assert not ingest_upload.figures_dir(book_id).exists()
+
+
+def test_a_paper_moved_from_novels_to_textbooks_gets_its_figures_like_a_textbook_upload(client, monkeypatch):
+    """#118: the novel -> textbook re-read crops the figures and keeps their paragraphs, as a textbook upload does."""
+    monkeypatch.setattr(settings, "upload_enrich", False)
+    monkeypatch.setattr(processing, "_start_equations", lambda book_id, data: None)
+    pdf = build(textbook_page, lambda p: prose(p, 60, 300))
+
+    def shown(book_id):
+        book = client.get(f"/api/books/{book_id}").json()
+        return [(p["kind"], p["figure"], p["text"]) for p in book["paragraphs"]]
+
+    def upload(kind):
+        r = client.post("/api/books/upload", files={"file": ("t.pdf", pdf)},
+                        data={"title": "Botany", "author": "", "kind": kind})
+        assert r.status_code == 202
+        return r.json()["book_id"]
+
+    direct = upload("textbook")
+    expected = shown(direct)
+    expected_png = (ingest_upload.figures_dir(direct) / "fig-1.png").read_bytes()
+    assert ("figure", "fig-1.png", "Figure 2.1: A tiny incidence table of four terms.") in expected
+    client.delete(f"/api/books/{direct}")
+
+    book_id = upload("novel")
+    assert all(kind is None and fig is None for kind, fig, _ in shown(book_id))
+    shutil.rmtree(ingest_upload.figures_dir(book_id), ignore_errors=True)   # the move must crop them itself
+    assert client.post(f"/api/books/{book_id}/kind", json={"kind": "textbook"}).status_code == 202
+    assert shown(book_id) == expected
+    assert (ingest_upload.figures_dir(book_id) / "fig-1.png").read_bytes() == expected_png
+    img = client.get(f"/api/books/{book_id}/figures/fig-1.png")
+    assert img.status_code == 200 and img.content == expected_png
 
 
 def test_figures_need_the_access_code_like_the_book(client, monkeypatch, tmp_path):
