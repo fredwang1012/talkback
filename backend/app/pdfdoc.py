@@ -35,7 +35,9 @@ _SUBSET_TAG = re.compile(r"^[A-Z]{6}\+")
 # PDF font descriptor flags (ISO 32000 9.8.2)
 _FD_FIXED_PITCH, _FD_SERIF, _FD_ITALIC, _FD_FORCE_BOLD = 1, 2, 1 << 6, 1 << 18
 _BOLD_NAME = re.compile(r"bold|black|heavy|semibold|demibold|extrabold|ultrabold|cmbx|cmb\d|cmssbx|nimbus\w*-medi", re.I)
-_ITALIC_NAME = re.compile(r"italic|oblique|cmmi|cmti|cmsl", re.I)
+_ITALIC_NAME = re.compile(r"italic|oblique|cmti|cmsl", re.I)
+_MONO_NAME = re.compile(r"courier|mono|cmtt|sftt|typewriter|consol", re.I)
+_SANS_NAME = re.compile(r"sans|helvetica|arial|verdana|tahoma|calibri|segoe|courier|dingbat", re.I)
 # PyMuPDF's text device constants (see the module docstring)
 SPACE_DIST = 0.15        # em: a smaller gap between two glyphs is nothing
 SPACE_MAX_DIST = 0.8     # em: a gap up to this is a space, beyond it a new line
@@ -397,7 +399,9 @@ class _PdfiumPage(Page):
                 if fkey not in faces:   # the name and style flags are the font's: read once per font
                     n_name = raw.FPDFText_GetFontInfo(tp, i, name, 256, ctypes.byref(fd_flags))
                     face = _SUBSET_TAG.sub("", name.raw[:max(n_name - 1, 0)].decode("utf-8", "replace"))
-                    faces[fkey] = (face, _style_flags(face, fd_flags.value, raw.FPDFText_GetFontWeight(tp, i)))
+                    angle = ctypes.c_int()
+                    slanted = bool(pfont) and raw.FPDFFont_GetItalicAngle(pfont, ctypes.byref(angle)) and angle.value != 0
+                    faces[fkey] = (face, _style_flags(face, fd_flags.value, slanted))
                 raw.FPDFText_GetMatrix(tp, i, matrix)
                 scale = math.sqrt(abs(matrix.a * matrix.d - matrix.b * matrix.c)) or 1.0
                 # the writing direction, in page coordinates (y down) with the rotation applied
@@ -629,16 +633,18 @@ class _PdfiumRaster(Raster):
         return encode_png(w, h, self._pixels.tobytes(), self._gray)
 
 
-def _style_flags(font: str, fd_flags: int, weight: int) -> int:
-    """PyMuPDF's span flags from a font's descriptor flags, StemV weight and name."""
+def _style_flags(font: str, fd_flags: int, slanted: bool = False) -> int:
+    """PyMuPDF's span flags from a font's descriptor flags, italic angle and name, as MuPDF sets them: italic for
+    a slanted font, serifed unless the name says sans (or Courier), monospaced, bold by name or ForceBold (not by
+    pdfium's StemV weight guess, which calls most text bold)."""
     flags = 0
-    if fd_flags & _FD_ITALIC or _ITALIC_NAME.search(font):
+    if fd_flags & _FD_ITALIC or slanted or _ITALIC_NAME.search(font):
         flags |= 2
-    if fd_flags & _FD_SERIF:
+    if fd_flags & _FD_SERIF or not _SANS_NAME.search(font):
         flags |= 4
-    if fd_flags & _FD_FIXED_PITCH:
+    if fd_flags & _FD_FIXED_PITCH or _MONO_NAME.search(font):
         flags |= 8
-    if fd_flags & _FD_FORCE_BOLD or weight >= 600 or _BOLD_NAME.search(font):
+    if fd_flags & _FD_FORCE_BOLD or _BOLD_NAME.search(font):
         flags |= 16
     return flags
 

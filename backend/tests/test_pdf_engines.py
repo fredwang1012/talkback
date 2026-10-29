@@ -346,6 +346,16 @@ def cff_font(codes: dict[int, str]) -> bytes:
         charset + encoding + charstrings
 
 
+def test_style_flags_follow_mupdf():
+    # serifed unless sans by name; bold by name or ForceBold only; italic by flag, angle or name; mono by name
+    assert pdfdoc._style_flags("Palatino-Roman", 0) == 4
+    assert pdfdoc._style_flags("NimbusRomNo9L-Medi", 0) == 20 and pdfdoc._style_flags("CMBX10", 0) == 20
+    assert pdfdoc._style_flags("CMMI10", 0, slanted=True) == 6 and pdfdoc._style_flags("CMTI10", 0) == 6
+    assert pdfdoc._style_flags("Helvetica", 0) == 0 and pdfdoc._style_flags("DejaVuSans-Bold", 0) == 16
+    assert pdfdoc._style_flags("Courier", 0) == 8 and pdfdoc._style_flags("SFTT1000", 0) == 12
+    assert pdfdoc._style_flags("Anything", pdfdoc._FD_FORCE_BOLD) == 20
+
+
 def page_blocks(data: bytes, engine: str) -> list[list[str]]:
     with pdfdoc.open_pdf(data, engine) as doc:
         return [["".join(s["text"] for s in ln["spans"]) for ln in b["lines"]] for b in doc.page(0).text_blocks()
