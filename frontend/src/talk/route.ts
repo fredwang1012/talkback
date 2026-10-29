@@ -5,7 +5,8 @@
  * think of Alice?" stays with whoever was asked. An address is the name
  *  - at the start, followed by a comma (or ?, !, :, a dash) or nothing: "Alice, ..." / "Hey Alice ..." / "Alice?";
  *  - at the end after a comma or dash: "..., Alice?";
- *  - after "ask", "talk to", "speak to/with", "question for": "Ask the Hatter why ...".
+ *  - after "ask", "talk to", "speak to/with", "question for" at the start: "Ask the Hatter why ...", "Can I speak with
+ *    Alice?" (not "Why did the Queen ask Alice ...?").
  * A name may be given in full, by an alias, or by one of its words ("Hatter" for "The Mad Hatter") unless another
  * candidate shares that word. Matching ignores case and works for any script.
  */
@@ -15,11 +16,12 @@ export type RouteCandidate = { id: string; name: string; aliases?: string[] };
 const FILLERS = "hey|hi|hello|ok|okay|so|and|now|oh|well|dear|um|uh|excuse me";
 const GREETINGS = "hey|hi|hello|dear|oh";
 const CUES = "ask|asking|talk to|talk with|speak to|speak with|question for|let me talk to|i want to talk to";
+// what may come before a cue at the start: "Can I speak with ...", "Could you ask ...", "I'd like to talk to ..."
+const REQUESTS = "please|can i|could i|may i|can you|could you|would you|will you|i want to|i'd like to|i would like to|let me|i have a";
 // words that never name anyone on their own ("Mr" of "Mr Dursley", "the" of "the Queen")
 const SKIP = new Set(["the", "a", "an", "of", "and", "mr", "mrs", "ms", "miss", "mister", "dr", "sir", "madam", "lady", "lord", "de", "la", "le", "von", "van", "du", "da"]);
 
 const NOT_WORD = "(?![\\p{L}\\p{N}])";
-const NOT_AFTER_WORD = "(?<![\\p{L}\\p{N}])";
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
 const words = (s: string) => s.toLowerCase().match(/[\p{L}\p{N}'’]+/gu) ?? [];
 
@@ -38,7 +40,8 @@ function addressAt(q: string, v: string): number {
     new RegExp(`^\\s*(?:(?:${FILLERS})[\\s,]+)*${name}\\s*(?:[,:!?.\u2014\u2013\u3001\uff0c\uff1a\uff01\uff1f\u3002-]|$)`, "iu"),
     new RegExp(`^\\s*(?:${GREETINGS})[\\s,]+${name}`, "iu"),
     new RegExp(`[,\u2014\u2013\u3001\uff0c-]\\s*${name}\\s*[?.!\u2026\uff1f\uff01\u3002]*\\s*$`, "iu"),
-    new RegExp(`${NOT_AFTER_WORD}(?:${CUES})\\s+${name}`, "iu"),
+    // a cue at the start only ("Why did the Queen ask Alice ..." is about Alice, not to her)
+    new RegExp(`^\\s*(?:(?:${FILLERS})[\\s,]+)*(?:(?:${REQUESTS})\\s+)*(?:${CUES})\\s+${name}`, "iu"),
   ];
   let best = -1;
   for (const p of patterns) {

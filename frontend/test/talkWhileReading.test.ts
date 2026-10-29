@@ -163,6 +163,17 @@ describe("TalkController: hands-free while the book is read aloud (#34)", () => 
     expect(h.session.calls).toEqual(["hold:true", "hold:false"]);
   });
 
+  it("server turns: holding the mic for the reading arms no timer (no busy loop while the book is read aloud)", async () => {
+    const h = setup({ readingIsEcho: true, serverTurns: true });
+    await h.talk.setHandsFree(true);
+    await level(h, 0.01, 40);
+    expect(h.session.calls).toContain("hold:true");
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    await h.advance(200); // no level readings: nothing should be re-checking the hold
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
   it("server turns: clear speech over the reading cuts in (barge-in pauses the book)", async () => {
     const h = setup({ readingIsEcho: true, serverTurns: true });
     await h.talk.setHandsFree(true);

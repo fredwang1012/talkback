@@ -645,9 +645,11 @@ pauses the reading; after the answer, auto-resume continues at the start of the 
 in a small dismissable bubble by the face player (`reader/playerLogic.latestExchange`; only questions asked this visit).
 **Who answers:** `talk/route.addressedSpeaker` looks for an address, not a mention: the name (full, an alias, or one of
 its words that no other candidate shares) at the start followed by a comma or nothing ("Alice, ..."), at the end after a
-comma ("..., Alice?"), or after "ask" / "talk to" / "speak with". Candidates are the Talkback choices (narrator + met
-main characters, everyone with spoilers on; none for textbooks or the pinned demo). The controller asks
-`route(query)` once per question, before `onTranscript`, so the question bubble, retrieval speaker, Gemini voice and
+comma ("..., Alice?"), or after "ask" / "talk to" / "speak with" at the start ("Can I speak with Alice?", not "Why did
+the Queen ask Alice ...?"). Candidates are who the open view offers (`talkbackLogic.routeCandidates`: narrator + met
+main characters; everyone only in Talkback with spoilers on, since read mode keeps the unmet locked (#94); none for
+textbooks or the pinned demo). The controller asks `route(query)` once per question (never during a quiz: the reply is
+an answer, maybe a name), before `onTranscript`, so the question bubble, retrieval speaker, Gemini voice and
 face are the routed character's; on the Realtime path the session voice is switched (`setVoice`) after any cancel, just
 before the answer is requested. The routed character stays picked. **Hands-free while reading:** with `readingIsEcho`
 the book read aloud counts like the character's own voice: on server turns the mic is held while it plays (Boson must

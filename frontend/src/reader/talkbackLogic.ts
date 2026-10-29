@@ -23,6 +23,15 @@ export function speakerChoices(book: Book, para: number, spoilers: boolean): { i
   return [{ id: "narrator", name: "Narrator" }, ...met.map((c: Character) => ({ id: c.id, name: c.name }))];
 }
 
+/**
+ * Who a question can be routed to by name (#34, talk/route): who the open view offers. Read mode never applies the
+ * Talkback spoiler setting (#94: its Stage shows the unmet as locked), so routing there never picks one of them.
+ */
+export function routeCandidates(book: Book, para: number, spoilers: boolean, mode: Mode): { id: string; name: string; aliases?: string[] }[] {
+  return speakerChoices(book, para, mode === "talk" && spoilers && book.kind === "novel")
+    .map((c) => ({ ...c, aliases: book.characters.find((x) => x.id === c.id)?.aliases }));
+}
+
 /** The speaker to keep: the current one if still offered, else the narrator (spoilers off, position moved back, no longer main). */
 export function validSpeaker(book: Book, para: number, spoilers: boolean, id: string): string {
   if (id === "narrator") return id;

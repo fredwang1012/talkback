@@ -48,7 +48,6 @@ export default function AvatarPlayer(p: Props) {
   const expanded = mode === "expanded";
   const root = useRef<HTMLDivElement>(null);
   const expandBtn = useRef<HTMLButtonElement>(null);
-  const collapseBtn = useRef<HTMLButtonElement>(null);
   const tab = useRef<HTMLButtonElement>(null);
   const moved = useRef(false); // the mode changed from a control here: move the focus with it
   const swipe = useRef<Point | null>(null);
@@ -61,11 +60,13 @@ export default function AvatarPlayer(p: Props) {
 
   const go = (m: PlayerMode) => { moved.current = true; onMode(m); };
 
-  // focus follows the view: into the expanded view, back to the expand button, to the tab when hidden
+  // focus follows the view: into the expanded view, back to the expand button, to the tab when hidden. The expanded
+  // view itself takes the focus, not its first button: Hold Space must talk there (the Reader leaves Space on a button
+  // to the button, which would collapse the view)
   useEffect(() => {
     if (!moved.current) return;
     moved.current = false;
-    (mode === "expanded" ? collapseBtn : mode === "hidden" ? tab : expandBtn).current?.focus();
+    (mode === "expanded" ? root : mode === "hidden" ? tab : expandBtn).current?.focus();
   }, [mode]);
 
   // Esc collapses the expanded view (a dialog of its own handles Esc first)
@@ -89,13 +90,14 @@ export default function AvatarPlayer(p: Props) {
     return () => ro.disconnect();
   }, []);
 
-  // the bubble goes away on its own a while after reading went on
+  // the bubble goes away on its own a while after reading went on (keyed by the reply, not the bubble object: the
+  // Reader re-renders on every word, which must not restart the wait)
+  const doneReply = bubble && !bubble.pending ? bubble.replyId : null;
   useEffect(() => {
-    if (!bubble || !idle || bubble.pending) return;
-    const id = bubble.replyId;
-    const t = window.setTimeout(() => setDismissed(id), BUBBLE_HOLD_MS);
+    if (doneReply === null || !idle) return;
+    const t = window.setTimeout(() => setDismissed(doneReply), BUBBLE_HOLD_MS);
     return () => window.clearTimeout(t);
-  }, [bubble, idle]);
+  }, [doneReply, idle]);
 
   useEffect(() => {
     const el = log.current;
@@ -108,8 +110,9 @@ export default function AvatarPlayer(p: Props) {
     const items = [...root.current.querySelectorAll<HTMLElement>(FOCUSABLE)];
     if (!items.length) return;
     const first = items[0], last = items[items.length - 1];
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    const at = document.activeElement;
+    if (e.shiftKey && (at === first || at === root.current)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
   };
   const swipeStart = (e: ReactPointerEvent<HTMLDivElement>) => {
     const interactive = (e.target as HTMLElement).closest?.("button, input, select, textarea, a, .ap-log");
@@ -148,12 +151,12 @@ export default function AvatarPlayer(p: Props) {
     <>
       {!expanded && bubble && <div className="ap-bubble-wrap" style={style}>{bubbleEl}</div>}
       <div ref={root} className={`avatar-player ${mode}`} style={style}
-           role={expanded ? "dialog" : "region"} aria-modal={expanded ? true : undefined}
+           role={expanded ? "dialog" : "region"} aria-modal={expanded ? true : undefined} tabIndex={expanded ? -1 : undefined}
            aria-label={expanded ? `${p.name}, expanded player` : `Face player: ${p.name}`}
            onKeyDown={trap} onPointerDown={swipeStart} onPointerUp={swipeEnd} onPointerCancel={() => { swipe.current = null; }}>
         {expanded && (
           <div className="ap-top">
-            <button ref={collapseBtn} type="button" className="icon-btn" onClick={() => go("mini")} aria-label="Collapse the player (Esc)">
+            <button type="button" className="icon-btn" onClick={() => go("mini")} aria-label="Collapse the player (Esc)">
               <Icon d={COLLAPSE} />
             </button>
           </div>

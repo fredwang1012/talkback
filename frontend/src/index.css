@@ -823,7 +823,10 @@ input[type="checkbox"] { accent-color: var(--brass); width: 18px; height: 18px; 
   background: color-mix(in srgb, var(--ground) 97%, transparent); backdrop-filter: blur(8px);
   animation: ap-up 240ms ease-out;
 }
+.avatar-player.expanded:focus { outline: none; } /* the view itself takes the focus on expand (Hold Space talks) */
 .avatar-player.expanded .ap-top { align-self: stretch; display: flex; justify-content: flex-end; }
+/* the face is the swipe-down handle: a finger drag on it is the swipe, not a scroll (that would send pointercancel) */
+.avatar-player.expanded .ap-face { touch-action: none; }
 .avatar-player.expanded .ap-face .medallion { width: min(42vh, 360px, 72vw); height: min(42vh, 360px, 72vw); font-size: 6rem; }
 .avatar-player.expanded .ap-info { text-align: center; max-width: 40rem; }
 .avatar-player.expanded .ap-name { font-size: 1.9rem; white-space: normal; }
