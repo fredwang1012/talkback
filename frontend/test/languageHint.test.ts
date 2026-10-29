@@ -71,3 +71,12 @@ describe("speak sends the language only when there is one (#135)", () => {
     expect(body(1)).toEqual({ text: "Hi.", voice: "marcus", emotion: "joy" });
   });
 });
+
+describe("answerLanguage: a question in the book's own script (code review)", () => {
+  it("Ukrainian and Persian books keep their language for questions in their script", () => {
+    expect(answerLanguage(["Хто такий головний герой?"], "ukr")).toBe("ukr");
+    expect(answerLanguage(["قهرمان داستان کیست؟"], "fas")).toBe("fas");
+    expect(answerLanguage(["Who is the main character in this story?"], "ukr")).toBeNull(); // English: no language tag
+    expect(answerLanguage(["¿Quién es el personaje principal de la historia?"], "ukr")).toBe("spa");
+  });
+});

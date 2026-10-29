@@ -105,6 +105,13 @@ OTHER_LANGUAGE_RULE = ("The reader wrote in {lang}. Answer only in {lang}, even 
                        "them.\n\n")
 
 
+# A book's language (ISO 639-3) -> the script the question detector reports for it (multilingual.clear_language reads
+# any Cyrillic as Russian, any Arabic script as Arabic, any Han as Chinese): a question in that script is in the book's language.
+SCRIPT_FAMILY = {"rus": "ru", "ukr": "ru", "bel": "ru", "bul": "ru", "srp": "ru", "mkd": "ru", "kaz": "ru",
+                 "ara": "ar", "fas": "ar", "urd": "ar", "zho": "zh", "cmn": "zh", "yue": "zh", "jpn": "ja", "kor": "ko",
+                 "hin": "hi", "mar": "hi", "nep": "hi", "heb": "he", "yid": "he", "ell": "el", "tha": "th"}
+
+
 def answer_language(book: Book, query: str) -> str | None:
     """The language (English name) the answer must be in, when the prompt has to say so.
 
@@ -113,6 +120,8 @@ def answer_language(book: Book, query: str) -> str | None:
     if booklang.is_english(book.language):
         return multilingual.foreign_language(query)
     clear = multilingual.clear_language(query)
+    if clear and clear[0] == SCRIPT_FAMILY.get(book.language or ""):
+        return booklang.name(book.language)  # the book's own script: Ukrainian is not Russian, Persian is not Arabic
     return clear[1] if clear else booklang.name(book.language)
 
 

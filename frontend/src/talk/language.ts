@@ -77,6 +77,13 @@ export function transcriptionHint(recent: string[]): string | null {
   return clear.length >= 2 && a === b && a !== "en" ? a : null;
 }
 
+/** A book's language (ISO 639-3) -> the script the detector reports for it (it reads any Cyrillic as "ru", any Arabic
+ * script as "ar"): a question in that script is in the book's language. Same table as personas.SCRIPT_FAMILY. */
+const SCRIPT_FAMILY: Record<string, string> = {
+  rus: "ru", ukr: "ru", bel: "ru", bul: "ru", srp: "ru", mkd: "ru", kaz: "ru", ara: "ar", fas: "ar", urd: "ar",
+  zho: "zh", cmn: "zh", yue: "zh", jpn: "ja", kor: "ko", hin: "hi", mar: "hi", nep: "hi", heb: "he", yid: "he", ell: "el", tha: "th",
+};
+
 /** ISO 639-1 (the detector's codes) -> ISO 639-3 for /api/speak `language`; null for English and anything unknown. */
 const ISO_639_3: Record<string, string> = {
   es: "spa", fr: "fra", de: "deu", pt: "por", it: "ita", ja: "jpn", ko: "kor", zh: "zho", ru: "rus", ar: "ara",
@@ -93,6 +100,6 @@ export function toIso6393(code: string | null | undefined): string | null {
  */
 export function answerLanguage(recent: string[], bookLanguage?: string | null): string | null {
   const code = newestClear(recent); // the voice follows the newest clear question at once (a wrong guess only sounds odd)
-  if (code === null && bookLanguage && bookLanguage !== "eng") return bookLanguage;
+  if (bookLanguage && bookLanguage !== "eng" && (code === null || code === SCRIPT_FAMILY[bookLanguage])) return bookLanguage;
   return code === "en" ? null : toIso6393(code);
 }

@@ -87,7 +87,7 @@ export type BookSummary = {
   series?: string | null;
   series_index?: number | null;
 };
-export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean; answer_backend: "gemini" | "realtime"; avatar_size?: string };
+export type Health = { ok: boolean; boson_key_set: boolean; access_required: boolean; answer_backend: "gemini" | "realtime"; avatar_size?: string; web_search?: boolean };
 
 /** Sent when the server requires an access code (TALKBACK_ACCESS_TOKEN). Typed in by the visitor, never built in. */
 export function authHeaders(): Record<string, string> {

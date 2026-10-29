@@ -454,3 +454,16 @@ def test_tts_of_an_english_book_sends_no_language(speech_requests):
     r = client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0"})
     assert r.status_code == 200, r.text
     assert "language" not in bodies[-1] and "normalize" not in bodies[-1] and bodies[-1]["timestamps"] is True
+
+
+def test_a_question_in_the_books_own_script_is_answered_in_the_books_language():
+    """The question detector reads any Cyrillic as Russian and any Arabic script as Arabic (code review): a Ukrainian or
+    Persian book asked in its own script still answers in its own language; another script or English still wins."""
+    from app.personas import answer_language
+    ukr = book_in("ukr", ["Текст."])
+    assert answer_language(ukr, "Хто такий головний герой?") == "Ukrainian"
+    assert answer_language(ukr, "Who is the main character in this story?") == "English"
+    fas = book_in("fas", ["متن."])
+    assert answer_language(fas, "قهرمان داستان کیست؟") == "Persian"
+    rus = book_in("rus", ["Текст."])
+    assert answer_language(rus, "Кто главный герой?") == "Russian"

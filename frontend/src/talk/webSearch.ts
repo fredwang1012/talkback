@@ -15,9 +15,10 @@ import { toolDefsFor, type BookKind } from "./tools";
 /** The open-web form. `allowed_domains` is left out on purpose: the docs warn a scoped search often returns little or nothing. */
 export const WEB_SEARCH_TOOL = { type: "web_search" } as const;
 
-/** Textbooks always; novels only with spoilers on (an unknown kind is a novel). Same rule as `backend/app/websearch.py`. */
-export function webSearchAllowed(kind: BookKind | undefined, spoilers: boolean): boolean {
-  return kind === "textbook" || spoilers === true;
+/** Textbooks always; novels only with spoilers on (an unknown kind is a novel); never when the server's WEB_SEARCH is
+ * off (`serverOn`, from /api/health). Same rule as `backend/app/websearch.py`. */
+export function webSearchAllowed(kind: BookKind | undefined, spoilers: boolean, serverOn = true): boolean {
+  return serverOn && (kind === "textbook" || spoilers === true);
 }
 
 /** The reader's country (ISO 3166-1 alpha-2) from a locale like "en-CA", for local results; null when the locale has none. */
@@ -33,9 +34,9 @@ export function webSearchTool(locale: string | undefined = typeof navigator === 
 }
 
 /** The tools to declare for this book right now: its function tools, plus web_search when allowed. */
-export function sessionTools(kind: BookKind | undefined, spoilers: boolean, locale?: string): readonly unknown[] {
+export function sessionTools(kind: BookKind | undefined, spoilers: boolean, locale?: string, serverOn = true): readonly unknown[] {
   const fns: readonly unknown[] = toolDefsFor(kind);
-  return webSearchAllowed(kind, spoilers) ? [...fns, webSearchTool(locale)] : fns;
+  return webSearchAllowed(kind, spoilers, serverOn) ? [...fns, webSearchTool(locale)] : fns;
 }
 
 /**

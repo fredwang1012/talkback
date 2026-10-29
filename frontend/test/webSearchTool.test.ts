@@ -259,3 +259,12 @@ async function openServerMode() {
   sockets[0].recv({ type: "session.created", session: { audio: { input: { turn_detection: { type: "semantic_vad", create_response: false } } } } });
   return { client, ws: sockets[0], events, speaker };
 }
+
+describe("web_search: the server's WEB_SEARCH switch (review)", () => {
+  it("off on the server: never declared, whatever the book or the spoilers switch", () => {
+    expect(webSearchAllowed("textbook", false, false)).toBe(false);
+    expect(webSearchAllowed("novel", true, false)).toBe(false);
+    expect(JSON.stringify(sessionTools("textbook", true, "en", false))).not.toContain("web_search");
+    expect(webSearchAllowed("textbook", false)).toBe(true); // default: on
+  });
+});

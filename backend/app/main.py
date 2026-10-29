@@ -180,7 +180,9 @@ def answer_backend() -> str:
 @app.get("/api/health")
 def health():
     return {"ok": True, "boson_key_set": bool(settings.boson_api_key), "access_required": bool(settings.access_token),
-            "answer_backend": answer_backend()}
+            "answer_backend": answer_backend(),
+            # WEB_SEARCH off also takes Boson's server-side web_search away from the Realtime session (the browser declares it)
+            "web_search": bool(settings.web_search), "avatar_size": settings.avatar_size}
 
 
 @app.get("/api/me")

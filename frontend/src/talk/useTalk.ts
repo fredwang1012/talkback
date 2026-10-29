@@ -167,6 +167,8 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   };
   const latest = useRef({ reader, voiceFor, speakerId, faceIdFor, narratorFaceId, spoilers, tools });
   // #140: read per reply, never a dependency of the session effect (a rebuild would drop a question asked meanwhile)
+  const healthRef = useRef(health);
+  healthRef.current = health;
   const liveRef = useRef<LiveFace | null>(liveFace);
   liveRef.current = liveFace;
   latest.current = { reader, voiceFor, speakerId, faceIdFor, narratorFaceId, spoilers, tools };
@@ -193,7 +195,8 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     // and Higgs TTS speak each sentence with its emotion tag, lip-synced, like a Gemini answer (slower to start)
     const answerMode = viaGemini ? "audio" : answerModeHere();
     /** B2: the tool list for this book right now; web_search only for a textbook or a novel with spoilers on. */
-    const toolsNow = () => sessionTools(bookKind, latest.current.spoilers);
+    const searchOn = () => healthRef.current?.web_search !== false; // the server's WEB_SEARCH switch
+    const toolsNow = () => sessionTools(bookKind, latest.current.spoilers, undefined, searchOn());
     /** The voice, face, language and bubble of an answer are fixed when it starts, so a mid-answer speaker switch cannot change them. */
     const startAnswer = (speaker: string) => {
       answerVoice = latest.current.voiceFor(speaker);
@@ -253,7 +256,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         const spoilers = latest.current.spoilers;
         client.setTools(toolsNow()); // B2: rebuilt every turn, so the spoilers switch takes web_search away (or gives it) at once
         return fetchRetrieve(bookId, query, para, speaker, spoilers, {
-          textAnswer: answerMode === "text", webSearch: webSearchAllowed(bookKind, spoilers), history: priorTurns(msgs.current, speaker) });
+          textAnswer: answerMode === "text", webSearch: webSearchAllowed(bookKind, spoilers, searchOn()), history: priorTurns(msgs.current, speaker) });
       },
       ...(viaGemini ? {
         answer: (query, para, speaker, onSentence, signal) => {
