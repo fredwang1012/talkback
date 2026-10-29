@@ -100,5 +100,5 @@ def _no_local_upload_embedding_unless_a_test_says_otherwise(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_index_retry_waits(monkeypatch):
     """Vertex indexing retries after 30 s and 90 s in production; tests retry at once."""
-    from app import main
-    monkeypatch.setattr(main, "INDEX_RETRY_WAITS_S", (0.0, 0.0))
+    from app import processing
+    monkeypatch.setattr(processing, "INDEX_RETRY_WAITS_S", (0.0, 0.0))

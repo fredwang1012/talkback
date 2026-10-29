@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 
-from app import booklang, main, multilingual, personas, retrieval, tts_cache
+from app import booklang, deps, multilingual, personas, retrieval, tts_cache
 from app.boson import BosonClient
 from app.enrich import cast as cast_mod
 from app.enrich import detect as detect_mod
@@ -429,7 +429,7 @@ def speech_requests(env, monkeypatch, tmp_path):
         if body.get("timestamps"):
             return httpx.Response(200, json={"audio": "TVAz", "timestamps": [{"word": "It", "start": 0, "end": 0.2}]})
         return httpx.Response(200, content=b"MP3BYTES")
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     book = book_in("spa", [SPANISH])
     rechunk_book(book)
     d = tmp_path / "books" / "es"

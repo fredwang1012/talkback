@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from app import face_detect, main
+from app import deps, face_detect
 from app.config import settings
 from app.ratelimit import TokenBucket
 from tests.test_upload import client  # noqa: F401  (client is a fixture)
@@ -121,7 +121,7 @@ def test_endpoint_validation_gating_and_rate_limit(client, gem, monkeypatch):  #
     assert client.post("/api/faces/detect", files={"image": ("a.gif", b"GIF89a...")}).status_code == 400
     big = b"\x89PNG\r\n\x1a\n" + b"0" * (5 * 1024 * 1024)
     assert client.post("/api/faces/detect", files={"image": ("a.png", big)}).status_code == 400
-    monkeypatch.setattr(main, "face_detect_bucket", TokenBucket(1, 60))
+    monkeypatch.setattr(deps, "face_detect_bucket", TokenBucket(1, 60))
     assert client.post("/api/faces/detect", files={"image": ("a.png", PNG)}).status_code == 200
     assert client.post("/api/faces/detect", files={"image": ("a.png", PNG)}).status_code == 429
     monkeypatch.setattr(settings, "access_token", "sesame")

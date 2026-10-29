@@ -6,7 +6,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import faces, main
+from app import deps, faces, main
+from app.routes import faces as faces_routes
 from app.boson import BosonClient
 from app.config import settings
 from app.ratelimit import TokenBucket
@@ -20,9 +21,9 @@ WEBP = b"RIFF\x00\x00\x00\x00WEBPfake"
 def lib(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "access_token", "")
-    monkeypatch.setattr(main, "avatar_bucket", TokenBucket(1000, 60))
-    monkeypatch.setattr(main, "face_bucket", TokenBucket(1000, 60))
-    main._face_locks.clear()
+    monkeypatch.setattr(deps, "avatar_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(deps, "face_bucket", TokenBucket(1000, 60))
+    faces_routes._face_locks.clear()
     calls = []
 
     def handler(req: httpx.Request):
@@ -37,7 +38,7 @@ def lib(tmp_path, monkeypatch):
             return httpx.Response(200, content=b"MP4DATA")
         return httpx.Response(404, json={"error": {"type": "invalid_request_error", "message": "no"}})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     monkeypatch.setattr(settings, "boson_api_key", "k" * 20)
 
     real_sleep = asyncio.sleep
@@ -132,7 +133,7 @@ def test_double_click_does_not_double_spend(lib):
 
 def test_animate_is_rate_limited_but_idempotent_hits_are_free(lib, monkeypatch):
     client, calls = lib
-    monkeypatch.setattr(main, "avatar_bucket", TokenBucket(1, 3600))
+    monkeypatch.setattr(deps, "avatar_bucket", TokenBucket(1, 3600))
     a, b = upload(client).json()["id"], upload(client, JPG).json()["id"]
     assert client.post(f"/api/faces/{a}/animate").status_code == 200
     assert client.post(f"/api/faces/{b}/animate").status_code == 429
@@ -143,7 +144,7 @@ def test_animate_is_rate_limited_but_idempotent_hits_are_free(lib, monkeypatch):
 def test_animate_failure_is_a_clean_error(lib, monkeypatch):
     client, _ = lib
     fid = upload(client).json()["id"]
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(
         lambda r: httpx.Response(402, json={"error": {"type": "insufficient_quota", "message": "no credit"}}))))
     r = client.post(f"/api/faces/{fid}/animate")
     assert r.status_code == 402
@@ -203,14 +204,14 @@ def test_partial_failure_cancels_the_sibling_render_and_retry_recovers(lib, monk
             return httpx.Response(200, json={"id": vid, "status": "processing"})
         return httpx.Response(404, json={"error": {"type": "invalid_request_error", "message": "no"}})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     assert client.post(f"/api/faces/{fid}/animate").status_code >= 500
     polls = st["polls2"]
     client.get("/api/faces")  # give the app loop time: a leaked sibling would keep polling
     client.get("/api/faces")
     assert st["polls2"] == polls, "the idle render was cancelled, not left running"
     assert faces.get_face(fid)["talk"] is None and faces.get_face(fid)["idle"] is None
-    assert not list(faces.face_dir().glob("*.tmp")) and main._face_locks == {}
+    assert not list(faces.face_dir().glob("*.tmp")) and faces_routes._face_locks == {}
     st["ok"] = True
     posts = st["posts"]
     body = client.post(f"/api/faces/{fid}/animate").json()
@@ -249,13 +250,13 @@ def test_delete_during_animate_leaves_no_orphans_and_locks_are_released(lib):
     a, d = asyncio.run(go())
     assert a.status_code in (200, 404) and d.status_code in (200, 404)
     assert not list(faces.face_dir().glob(f"{fid}*")), "no orphan image or loops after delete"
-    assert main._face_locks == {}
+    assert faces_routes._face_locks == {}
 
 
 def test_locks_are_released_after_a_failed_animate(lib, monkeypatch):
     client, _ = lib
     fid = upload(client).json()["id"]
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(
         lambda r: httpx.Response(402, json={"error": {"type": "insufficient_quota", "message": "x"}}))))
     assert client.post(f"/api/faces/{fid}/animate").status_code == 402
-    assert main._face_locks == {}
+    assert faces_routes._face_locks == {}

@@ -6,7 +6,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main
+from app import deps, indexes, main
 from app.boson import BosonClient
 from app.config import settings
 from app.ratelimit import TokenBucket
@@ -41,11 +41,11 @@ def env(tmp_path, monkeypatch):
     d = tmp_path / "books" / "demo"
     d.mkdir(parents=True)
     (d / "book.json").write_text(book_with_chunk().model_dump_json(), encoding="utf-8")
-    main._index_for.cache_clear()
-    monkeypatch.setattr(main, "token_bucket", TokenBucket(3, 60))
-    monkeypatch.setattr(main, "tts_bucket", TokenBucket(1000, 60))   # fresh limiter state per test
-    monkeypatch.setattr(main, "clone_bucket", TokenBucket(1000, 60))
-    monkeypatch.setattr(main, "retrieve_bucket", TokenBucket(1000, 60))
+    indexes._index_for.cache_clear()
+    monkeypatch.setattr(deps, "token_bucket", TokenBucket(3, 60))
+    monkeypatch.setattr(deps, "tts_bucket", TokenBucket(1000, 60))   # fresh limiter state per test
+    monkeypatch.setattr(deps, "clone_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(deps, "retrieve_bucket", TokenBucket(1000, 60))
     monkeypatch.setattr(settings, "access_token", "")
     calls = {"n": 0}
 
@@ -61,7 +61,7 @@ def env(tmp_path, monkeypatch):
             return httpx.Response(200, json={"voice": "voice_abc", "ref_text": "t"})
         return httpx.Response(404, json={"error": {"type": "invalid_request_error", "message": "no"}})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     return TestClient(main.app), calls
 
 
@@ -215,7 +215,7 @@ def test_tts_accepts_a_registered_cloned_voice(env):
 
 def test_new_audio_is_rate_limited_but_cache_hits_are_free(env, monkeypatch):
     client, calls = env
-    monkeypatch.setattr(main, "tts_bucket", TokenBucket(2, 60))
+    monkeypatch.setattr(deps, "tts_bucket", TokenBucket(2, 60))
     voices = ["marcus", "nora", "jake"]
     codes = [client.post("/api/tts", json={"book_id": "demo", "chunk_id": "p0c0", "voice_override": v}).status_code for v in voices]
     assert codes == [200, 200, 429]
@@ -249,7 +249,7 @@ def test_clone_upload_is_read_with_a_bound_and_rejected_when_too_big(env, monkey
 
 def test_clone_is_rate_limited(env, monkeypatch):
     client, _ = env
-    monkeypatch.setattr(main, "clone_bucket", TokenBucket(1, 60))
+    monkeypatch.setattr(deps, "clone_bucket", TokenBucket(1, 60))
     assert clone(client).status_code == 200
     assert clone(client).status_code == 429
 
@@ -299,7 +299,7 @@ def test_retrieve_is_gated_and_rate_limited(env, monkeypatch):
     monkeypatch.setattr(settings, "access_token", "letmein")
     assert client.post("/api/retrieve", json=body).status_code == 401
     h = {"X-Talkback-Token": "letmein"}
-    monkeypatch.setattr(main, "retrieve_bucket", TokenBucket(1, 60))
+    monkeypatch.setattr(deps, "retrieve_bucket", TokenBucket(1, 60))
     assert client.post("/api/retrieve", json=body, headers=h).status_code == 200
     assert client.post("/api/retrieve", json=body, headers=h).status_code == 429
 

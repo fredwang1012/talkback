@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from app import main
+from app import deps
 from app.boson import BosonClient
 from tests.test_api import env, silent_wav  # noqa: F401  (env is a fixture)
 from tests.test_per_user import ALICE, OWNER, h, pu, token  # noqa: F401  (pu is a fixture)
@@ -26,7 +26,7 @@ def boson(monkeypatch):
             return httpx.Response(200, content=b"ID3mp3", headers={"content-type": "audio/mpeg"})
         return httpx.Response(500, json={"error": {"type": "api_error", "message": "unexpected"}})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     return state
 
 
