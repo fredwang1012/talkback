@@ -128,6 +128,7 @@ Tests: the backend has about 1,080 test functions in 80 files (pytest, every pro
 | T22 | Non-English TTS | Answers in 102 documented languages are voiced with `language` + `normalize`. The caption highlights the whole sentence (no timestamps) | Higgs TTS 3 | works | [be/tts_lang.py, /api/speak] |
 | T23 | Web search in answers | Textbooks and spoilers-on novels can use Google Search grounding. Source links and Google Search suggestions show in a sandboxed iframe. Daily cap | **Gemini Grounding with Google Search** | works (Realtime path never searches; Gemini decides when to search) | [be/websearch.py, fe/reader/SourceLinks.tsx] |
 | T24 | Connection & quota handling | Plain messages for Boson connection limit (1013), key (3000) and billing (4429). 3-minute playback ring buffer, so long answers do not skip | Realtime | works | [TalkClient.ts, audio/playback.ts] |
+| T25 | Group scene (#79) | "Also ask" up to 2 more characters (same rule as Talk to: met so far, or everyone with spoilers on). One question, answered in turn in the order picked: each its own bubble, voice, face (or live face) and spoiler-safe persona, and later ones see the earlier answers of the round as named history lines. One answer request per character ("Send to 3"). Stop or barge-in ends the whole round. Read mode and quizzes stay one-to-one | Gemini / Realtime (`session.update` voice per answer) | works (Realtime voice switching not tried live) | [fe/talk/TalkController.ts round, talk/groupRound.ts, reader/GroupPicker.tsx, test/groupScene.test.ts] |
 
 ## 5. Voice agent & tools (Realtime function calling)
 
@@ -297,7 +298,6 @@ Same image with `PUBLIC_API=true` (entry `app.asgi:app`), Cloud Run service `tal
 |---|---|
 | Podcast-style avatar mini-player (corner player, expand/collapse) | open, not built |
 | Unified talk-while-reading screen (no Read/Talkback switch) | open, not built. Read-mode mic (T19) covers part of it |
-| Group scene: ask 2-3 characters at once | open, not built |
 | Share a character answer as an MP4 clip | open, not built |
 | Non-English uploads: no word-level highlighting, and English-only sound effects, singing, rule-based whisper/shout and equation readings (L20) | partial |
 | Moving a paper to Textbooks restores equations but not figures (`rebuild_textbook_text` omits `figures_dir`) | open, bug |

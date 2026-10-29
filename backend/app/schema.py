@@ -15,6 +15,8 @@ class ChatTurn(BaseModel):
     """One earlier turn of the Talkback chat, sent back so the character remembers it (history, never new facts)."""
     role: Literal["user", "character"]
     text: str = Field(max_length=600)
+    # #79 group scene: a reply by ANOTHER character in the same round (shown as "Name: text"); None = this character's own
+    name: str | None = Field(default=None, max_length=80)
 
 
 class Section(BaseModel):

@@ -44,6 +44,9 @@ export const MERGE_MS = 600;
 /** How many queued sentences are synthesised ahead of the one being spoken. */
 export const PREFETCH_DEPTH = 3;
 
+/** #79 group scene: at most this many characters answer one question (each answer is a separate, paid answer). */
+export const MAX_GROUP = 3;
+
 export type TalkState =
   | "reading" | "listening" | "transcribing" | "retrieving" | "answering" | "resuming" | "talk-idle";
 
@@ -105,6 +108,8 @@ export interface TalkSession {
    * clear, so a hands-free turn must end with this or the next question carries every earlier one. Optional.
    */
   clearInput?(): void;
+  /** B1: the answers are written and voiced by Higgs TTS in the browser, so the session voice is never heard. Optional. */
+  readonly textMode?: boolean;
   /** Server turns: hold the mic (nothing sent) while our own playback could be heard; release it with a pre-roll
    * (ms of the held audio sent first, a barge-in) or without (the held audio is dropped). Optional. */
   setMicHold?(hold: boolean, preRollMs?: number): void;
@@ -167,6 +172,8 @@ export interface TalkDeps {
   onHeard?: (text: string) => void;
   /** True while answer audio is coming out of the speakers (drives the waveform). */
   onSpeaking?: (speaking: boolean) => void;
+  /** #79: the next character of a group round starts answering (`index` >= 1; the first is the one talked to). */
+  onRoundTurn?: (speakerId: string, index: number) => void;
   now?: () => number;
   autoResumeDelayMs?: number;
   transcriptTimeoutMs?: number;
@@ -233,6 +240,11 @@ export class TalkController {
   private emptyTurns = 0; // real server turns in a row without a transcript
   private serverGaveUp = false; // fell back to the local gate after EMPTY_TURNS_FALLBACK of them
   private recentQuestions: string[] = []; // for the transcription language hint
+  private group: string[] = []; // #79: the other characters every question also goes to, in order
+  // #79: the group round of the current question: who answers, who answers now (`at`), and whether the session voice
+  // was switched for it. Tied to its turn: a barge-in, a new question or Stop bumps the turn and the rest never answer.
+  private round: { turn: number; query: string; speakers: string[]; at: number; voiced: boolean } | null = null;
+  private restoring: Promise<void> | null = null; // #79: the voice of the one talked to being put back after a round
   private hint: string | null = null;
   private off: () => void;
 
@@ -329,6 +341,24 @@ export class TalkController {
     if (id !== this.speakerId) this.endQuiz(); // a quiz belongs to the one who asked it
     this.speakerId = id;
     try { await this.d.session.setVoice(this.d.voiceFor(id)); } catch { /* the next ensureOpen reconnects with the right voice */ }
+  }
+
+  /**
+   * #79 group scene: every question also goes to these characters, one after the other in this order, after the one
+   * talked to (at most MAX_GROUP in all; duplicates and the one talked to are dropped). [] = a normal one-to-one chat.
+   */
+  setGroup(ids: string[]): void {
+    this.group = [...new Set(ids)].filter(Boolean).slice(0, MAX_GROUP); // startRound drops the one talked to and caps the round
+  }
+
+  /** Who answers now: the current character of a group round, else the one talked to. */
+  get answerSpeaker(): string {
+    const r = this.liveRound();
+    return r ? r.speakers[r.at] : this.speakerId;
+  }
+
+  private liveRound() {
+    return this.round && this.round.turn === this.turn ? this.round : null;
   }
 
   /** The resolved voice of the current speaker changed (Talk voice pick, cast edit, late cast load): re-apply it. */
@@ -732,13 +762,13 @@ export class TalkController {
     return { quiz: q, n };
   }
 
-  private async answerQuery(turn: number, query: string): Promise<void> {
+  private async answerQuery(turn: number, query: string, step = false): Promise<void> {
     this.set("retrieving");
     const r0 = this.d.now();
-    const quiz = this.quizTurn(query);
+    const quiz = step ? null : this.quizTurn(query);
     if (this.d.answer && this.d.speaker) {
       // Gemini writes the answer (no Realtime, so no function calling): a plain spoken command is acted on here instead
-      const intent = this.d.tools ? parseIntent(query) : null;
+      const intent = this.d.tools && !step ? parseIntent(query) : null;
       if (intent && this.d.tools) {
         const outcome = this.runTool(intent.name, intent.args);
         if (outcome.ok && outcome.ask) { void this.streamAndSpeak(turn, outcome.ask, r0); return; } // quiz / explain: Gemini answers it aloud
@@ -748,12 +778,25 @@ export class TalkController {
         this.endTurn();
         return;
       }
+      if (!step) this.startRound(turn, query, !!quiz);
       void this.streamAndSpeak(turn, quiz ? quizGeminiQuery(quiz.quiz, quiz.n, query) : query, r0);
       return;
     }
+    if (!step) this.startRound(turn, query, !!quiz);
+    const who = this.answerSpeaker;
+    // a later character of a round: the Realtime voice is per session, so it is switched for them (ensureOpen: nothing
+    // when it is already that voice; TalkClient reconnects if refused) while the passages are fetched. Text mode: Higgs
+    // TTS speaks the answer in their voice, the session voice is never heard
+    let voicing: Promise<void> = Promise.resolve();
+    if (step && !this.d.session.textMode) {
+      const voice = this.d.voiceFor(who);
+      const r = this.liveRound();
+      if (r) r.voiced = voice !== this.d.voiceFor(this.speakerId);
+      voicing = this.d.session.ensureOpen(voice).catch(() => { /* answered in the old voice: still their words */ });
+    }
     let instructions: string;
     try {
-      const res = await this.withTimeout(this.d.retrieve(query, this.d.reader.currentPara(), this.speakerId), this.d.retrieveTimeoutMs);
+      const res = await this.withTimeout(this.d.retrieve(query, this.d.reader.currentPara(), who), this.d.retrieveTimeoutMs);
       instructions = res.instructions;
     } catch (e) {
       if (turn !== this.turn) return;
@@ -763,6 +806,9 @@ export class TalkController {
     }
     if (turn !== this.turn) return;
     this.latency.retrieveMs = this.d.now() - r0;
+    await voicing;
+    if (this.restoring) await this.restoring; // a round's voice restore (refused: a reconnect) must not close this answer's socket
+    if (turn !== this.turn) return;
 
     this.set("answering");
     const a0 = this.d.now();
@@ -829,7 +875,7 @@ export class TalkController {
     }, this.d.firstSentenceTimeoutMs ?? 15000);
 
     try {
-      await answer(query, this.d.reader.currentPara(), this.speakerId, (text) => {
+      await answer(query, this.d.reader.currentPara(), this.answerSpeaker, (text) => {
         if (!alive() || !text.trim()) return;
         if (delivered++ === 0) {
           clearTimer();
@@ -874,7 +920,8 @@ export class TalkController {
       this.latency.firstAudioMs ??= this.d.now() - a0;
       this.d.onLatency?.({ ...this.latency });
     } else if (first?.type === "response-done") {
-      this.afterAnswer(); // finished without any audio: nothing to wait for
+      // finished without any audio: nothing to wait for (unless its playback-drained, emitted with it, already ended it)
+      if (this._state === "answering") this.afterAnswer();
     } else if (!first) {
       this.d.onToast?.("The answer took too long. Continuing the story.");
       void this.d.session.interrupt().catch(() => {});
@@ -925,7 +972,13 @@ export class TalkController {
 
   /** The model stopped to act: run each call in the reader, hand the results back, and let it go on speaking. */
   private onToolCalls(calls: ToolCall[]): void {
+    // #79: a command is the reader's, not a question for the group: it runs once, in the first answer, and the others do
+    // not answer; a later character of a round never runs one again
+    const r = this.liveRound();
+    const again = r !== null && r.at > 0;
+    if (r && !again) this.endRound();
     const results: ToolResult[] = calls.map((c) => {
+      if (again) return { callId: c.callId, output: "Not run: the reader's request was already handled. Just answer the question in character." };
       const outcome = this.d.tools ? this.runTool(c.name, c.args) : { ok: false, output: "Tools are not available here.", chip: null };
       return { callId: c.callId, output: outcome.output };
     });
@@ -955,6 +1008,7 @@ export class TalkController {
   }
 
   private afterAnswer(): void {
+    if (this.nextInRound()) return;
     const p = this.quizPending;
     this.quizPending = null;
     if (p && this.quiz === p.quiz) { // the graded answer is complete: it counts; the last one ends the quiz
@@ -974,8 +1028,41 @@ export class TalkController {
     }
   }
 
+  // ---- group scene (#79) -----------------------------------------------------------------------------------
+
+  /** A new question: a group round when other characters are picked (not during a quiz, which is one-to-one). */
+  private startRound(turn: number, query: string, quiz: boolean): void {
+    this.endRound();
+    const speakers = [this.speakerId, ...this.group.filter((id) => id !== this.speakerId)].slice(0, MAX_GROUP);
+    if (quiz || speakers.length < 2) return;
+    this.round = { turn, query, speakers, at: 0, voiced: false };
+  }
+
+  /** One answer of the round is complete: the next character answers the same question (true), or the round is over. */
+  private nextInRound(): boolean {
+    const r = this.liveRound();
+    if (!r || r.at + 1 >= r.speakers.length) { this.endRound(); return false; }
+    r.at++;
+    this.d.onRoundTurn?.(r.speakers[r.at], r.at);
+    void this.answerQuery(r.turn, r.query, true);
+    return true;
+  }
+
+  /** The round is over (or abandoned): the session voice goes back to the one talked to. */
+  private endRound(): void {
+    const r = this.round;
+    this.round = null;
+    if (!r?.voiced) return;
+    // the next answer waits for it (answerQuery): TalkClient takes the voice at once, so a refused update would
+    // otherwise close the socket under that answer
+    const p: Promise<void> = this.d.session.setVoice(this.d.voiceFor(this.speakerId)).catch(() => {})
+      .finally(() => { if (this.restoring === p) this.restoring = null; });
+    this.restoring = p;
+  }
+
   /** Back to where we were: resume reading only if the story was playing when the question started. */
   private backToReading(): void {
+    this.endRound(); // cut off, failed or stopped: the rest of a group round never answers
     const index = this.resumeIndex;
     const wasPlaying = this.wasPlayingBeforePress;
     this.quizPending = null; // the turn ended without a complete answer (or reading goes on): it does not count

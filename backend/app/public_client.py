@@ -354,7 +354,8 @@ async def summarize_textbook(book_id: str, report: Callable[..., None], *, clien
 
 def answer_payload(book: Book, speaker, speaker_id: str, out: dict, query: str, spoilers: bool, history=()) -> dict:
     """The request for /api/public/answer from locally retrieved (already spoiler-filtered) passages."""
-    extra = {"history": [{"role": t.role, "text": t.text} for t in history]} if history else {}
+    extra = {"history": [{"role": t.role, "text": t.text, **({"name": t.name} if getattr(t, "name", None) else {})}
+                         for t in history]} if history else {}
     if not settings.web_search:
         extra["web_search"] = False   # this app turned web search off; the service decides the rest (textbook/spoilers)
     if book.language != "eng":
