@@ -10,7 +10,7 @@ import RecapMenu, { type RecapChoice } from "./RecapMenu";
 import GroupPicker from "./GroupPicker";
 import { groupChoices, validPicks } from "./groupScene";
 import { priorTurns } from "../talk/chatLog";
-import { clipFileName, clipPlan, drawStill, makeAnswerClip, saveBlob } from "../talk/answerDownload";
+import { clipPlan, drawStill, makeAnswerClip, saveBlob } from "../talk/answerDownload";
 import { chapterAt, createStatusGate, showSpoilerToggle, speakerChoices, speakerName, talkbackStatus, type TalkbackStatus } from "./talkbackLogic";
 
 type Props = {
@@ -108,8 +108,8 @@ export default function TalkbackView({
     setClipping(id);
     setClipNote(null);
     try {
-      const { blob, note } = await makeAnswerClip(book.id, name, plan, () => drawStill(image, name.charAt(0)));
-      saveBlob(blob, clipFileName(book.id, name));
+      const { blob, name: file, note } = await makeAnswerClip(book.id, name, plan, () => drawStill(image, name.charAt(0)));
+      saveBlob(blob, file);
       setClipNote(note);
     } catch (e) {
       setClipNote(`Could not make the clip: ${e instanceof Error ? e.message : String(e)}`);

@@ -1,12 +1,14 @@
 """Shareable answer clips (#80) in pure Python: MP4 files built without ffmpeg (not in the container image).
 
-- `join_clips`: the per-sentence lip-sync clips of one answer (Boson's fragmented MP4: one H.264 video and one AAC
-  audio track each, the same encoder settings) become one ordinary (progressive) MP4. No re-encoding: the samples are
-  copied as they are and only the index tables are written anew. Each clip's video is fitted to the end of its audio, so
-  voice and face stay in step across the joins.
+- `join_clips`: the per-sentence lip-sync clips of one answer (one H.264 video and one AAC audio track each, the same
+  encoder settings) become one ordinary (progressive) MP4. Boson's stream gives fragmented MP4, its download a
+  progressive one (with B-frames and an edit list); both are read. No re-encoding: the samples are copied as they are
+  and only the index tables are written anew. Each clip's video is fitted to the start of the next clip's voice (edit
+  lists honoured), so voice and face stay in step across the joins.
 - `still_mp4`: an answer with no face: the sentences' cached MP3s with a still picture (the portrait or letter circle
   as the reader saw it, sent as raw I420 pixels). The picture is coded as H.264 I_PCM (uncompressed macroblocks, no
-  encoder needed), held by skipped frames; MP3 goes into MP4 as is (object type 0x6B).
+  encoder needed), held by skipped frames; MP3 goes into MP4 as is (object type 0x69 for MPEG-2/2.5 audio, as the
+  cached 24 kHz TTS is; 0x6B for MPEG-1).
 
 Everything here works on bytes the caller has already bounded (clip count and size); any malformed input raises
 Mp4Error, never a partial file.
@@ -19,11 +21,11 @@ from . import mp3dur
 
 
 class Mp4Error(ValueError):
-    """The input cannot be joined (malformed, not fragmented, or clips in different formats)."""
+    """The input cannot be joined (malformed, an unsupported layout, or clips in different formats)."""
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# reading (fragmented MP4)
+# reading (progressive or fragmented MP4)
 
 def _boxes(data: bytes, start: int, end: int):
     """(type, box start, content start, box end) of each box in data[start:end]."""
@@ -67,6 +69,7 @@ class _Track:
     width: int  # 16.16 fixed point, as in tkhd
     height: int
     trex: tuple[int, int, int] = (0, 0, 0)  # default sample duration, size, flags
+    media_time: int = 0  # the edit list's start in the media (B-frame delay, AAC priming); presentation = CT - this
     sizes: list[int] = field(default_factory=list)
     durations: list[int] = field(default_factory=list)
     ctos: list[int] = field(default_factory=list)
@@ -78,8 +81,106 @@ def _u24(data: bytes, off: int) -> int:
     return int.from_bytes(data[off:off + 3], "big")
 
 
-def parse_fragmented(data: bytes) -> dict[str, _Track]:
-    """The tracks of a fragmented MP4 by handler ("vide", "soun"), with every sample's bytes and timing."""
+def _edit_start(data: bytes, cs: int, ce: int) -> int:
+    """media_time of a track's edit list (0 without one). Only the plain form encoders write is accepted: one edit that
+    plays the media from some start at normal rate; anything else (gaps, several pieces) would need re-timing."""
+    edts = _child(data, cs, ce, "edts")
+    elst = edts and _child(data, edts[2], edts[3], "elst")
+    if not elst:
+        return 0
+    v, n, p = data[elst[2]], struct.unpack_from(">I", data, elst[2] + 4)[0], elst[2] + 8
+    if n == 0:
+        return 0
+    if n != 1 or p + (20 if v else 12) > elst[3]:
+        raise Mp4Error("unsupported edit list")
+    _seg, start, rate = struct.unpack_from(">QqI" if v else ">IiI", data, p)
+    if start < 0 or rate != 0x10000:
+        raise Mp4Error("unsupported edit list")
+    return start
+
+
+def _table(data: bytes, box, width: int, fmt: str) -> list[tuple]:
+    """The entries of a full box that is a count followed by fixed-size entries (stts, ctts, stsc, stco, ...)."""
+    _, _, cs, ce = box
+    n = struct.unpack_from(">I", data, cs + 4)[0]
+    if n * width > ce - cs - 8:
+        raise Mp4Error("bad sample table")
+    return [struct.unpack_from(fmt, data, cs + 8 + i * width) for i in range(n)]
+
+
+def _read_stbl(data: bytes, track: _Track, s: int, e: int) -> None:
+    """The samples a progressive MP4 lists in the track's sample tables (none in a fragmented MP4's init segment)."""
+    stsz = _child(data, s, e, "stsz")
+    if stsz is None:
+        if _child(data, s, e, "stz2"):
+            raise Mp4Error("unsupported sample size table")
+        return
+    size, count = struct.unpack_from(">II", data, stsz[2] + 4)
+    if not count:
+        return
+    if size:
+        if count * size > len(data):
+            raise Mp4Error("sample outside the file")
+        sizes = [size] * count
+    else:
+        if count * 4 > stsz[3] - stsz[2] - 12:
+            raise Mp4Error("bad sample table")
+        sizes = list(struct.unpack_from(f">{count}I", data, stsz[2] + 12))
+    durations: list[int] = []
+    for n, d in _table(data, _need(data, s, e, "stts"), 8, ">II"):
+        if len(durations) + n > count:
+            raise Mp4Error("bad sample table")
+        durations += [d] * n
+    ctos = [0] * count
+    ctts = _child(data, s, e, "ctts")
+    if ctts:
+        ctos = []
+        for n, c in _table(data, ctts, 8, ">Ii" if data[ctts[2]] else ">II"):
+            if len(ctos) + n > count:
+                raise Mp4Error("bad sample table")
+            ctos += [c] * n
+    stss = _child(data, s, e, "stss")
+    syncs = [True] * count
+    if stss:
+        syncs = [False] * count
+        for (i,) in _table(data, stss, 4, ">I"):
+            if not 1 <= i <= count:
+                raise Mp4Error("bad sample table")
+            syncs[i - 1] = True
+    stco, co64 = _child(data, s, e, "stco"), _child(data, s, e, "co64")
+    offsets = [o for (o,) in (_table(data, stco, 4, ">I") if stco else _table(data, co64, 8, ">Q") if co64 else [])]
+    stsc = _table(data, _need(data, s, e, "stsc"), 12, ">III")
+    if len(durations) != count or len(ctos) != count or not stsc or stsc[0][0] != 1:
+        raise Mp4Error("bad sample table")
+    i = 0
+    for k, (first, per, desc) in enumerate(stsc):
+        last = stsc[k + 1][0] - 1 if k + 1 < len(stsc) else len(offsets)
+        if desc != 1:
+            raise Mp4Error("more than one sample description")
+        if last > len(offsets) or last < first - 1:
+            raise Mp4Error("bad sample table")
+        for chunk in range(first - 1, last):
+            pos = offsets[chunk]
+            for _ in range(min(per, count - i)):
+                if pos + sizes[i] > len(data):
+                    raise Mp4Error("sample outside the file")
+                track.data.append(bytes(data[pos:pos + sizes[i]]))
+                pos += sizes[i]
+                i += 1
+    if i != count:
+        raise Mp4Error("bad sample table")
+    track.sizes, track.durations, track.ctos, track.syncs = sizes, durations, ctos, syncs
+
+
+def parse_clip(data: bytes) -> dict[str, _Track]:
+    """The tracks of a progressive or fragmented MP4 by handler ("vide", "soun"), with every sample's bytes and timing."""
+    try:
+        return _parse(data)
+    except (struct.error, IndexError):
+        raise Mp4Error("truncated")
+
+
+def _parse(data: bytes) -> dict[str, _Track]:
     _, _, ms, me = _need(data, 0, len(data), "moov")
     tracks: dict[int, _Track] = {}
     for typ, _, cs, ce in _boxes(data, ms, me):
@@ -93,13 +194,13 @@ def parse_fragmented(data: bytes) -> dict[str, _Track]:
         timescale = struct.unpack_from(">I", data, hs + (20 if data[hs] == 1 else 12))[0]
         _, _, ds, _ = _need(data, cs, ce, "mdia", "hdlr")
         handler = data[ds + 8:ds + 12].decode("latin-1")
-        _, s0, _, s1 = _need(data, cs, ce, "mdia", "minf", "stbl", "stsd")
-        stsz = _child(data, *_need(data, cs, ce, "mdia", "minf", "stbl")[2:4], "stsz")
-        if stsz and struct.unpack_from(">I", data, stsz[2] + 8)[0]:
-            raise Mp4Error("not a fragmented MP4")
+        _, _, bs, be = _need(data, cs, ce, "mdia", "minf", "stbl")
+        _, s0, _, s1 = _need(data, bs, be, "stsd")
         if not timescale:
             raise Mp4Error("zero timescale")
-        tracks[track_id] = _Track(track_id, handler, timescale, bytes(data[s0:s1]), width, height)
+        track = _Track(track_id, handler, timescale, bytes(data[s0:s1]), width, height, media_time=_edit_start(data, cs, ce))
+        _read_stbl(data, track, bs, be)
+        tracks[track_id] = track
     mvex = _child(data, ms, me, "mvex")
     if mvex:
         for typ, _, cs, _ in _boxes(data, mvex[2], mvex[3]):
@@ -207,6 +308,7 @@ class OutTrack:
     height: int = 0
     ctos: list[int] | None = None  # composition offsets; None = all zero
     syncs: list[bool] | None = None  # None = every sample is a sync sample
+    edit: tuple[int, int] | None = None  # (duration, media start) in the track's timescale; None = no edit list
 
 
 def _runs(values: list[int]) -> list[tuple[int, int]]:
@@ -244,7 +346,7 @@ def _stbl(t: OutTrack, sizes: list[int], chunk_counts: list[int], offsets: list[
 
 def _moov(tracks: list[OutTrack], sizes: list[list[int]], counts: list[list[int]], offsets: list[list[int]]) -> bytes:
     def movie_dur(t: OutTrack) -> int:
-        return sum(t.durations) * 1000 // t.timescale
+        return (t.edit[0] if t.edit else sum(t.durations)) * 1000 // t.timescale
     total = max((movie_dur(t) for t in tracks), default=0)
     mvhd = _full("mvhd", 0, 0, struct.pack(">IIII", 0, 0, 1000, total), struct.pack(">IH10x", 0x10000, 0x100), _MATRIX,
                  b"\0" * 24, struct.pack(">I", len(tracks) + 1))
@@ -259,7 +361,9 @@ def _moov(tracks: list[OutTrack], sizes: list[list[int]], counts: list[list[int]
         head = _full("vmhd", 0, 1, b"\0" * 8) if video else _full("smhd", 0, 0, b"\0" * 4)
         dinf = _box("dinf", _full("dref", 0, 0, struct.pack(">I", 1), _full("url ", 0, 1)))
         minf = _box("minf", head, dinf, _stbl(t, sizes[i], counts[i], offsets[i]))
-        traks.append(_box("trak", tkhd, _box("mdia", mdhd, hdlr, minf)))
+        # an edit list: the media plays from edit[1] (B-frame delay or AAC priming skipped), as in the source clips
+        edts = [_box("edts", _full("elst", 0, 0, struct.pack(">IIiI", 1, movie_dur(t), t.edit[1], 0x10000)))] if t.edit else []
+        traks.append(_box("trak", tkhd, *edts, _box("mdia", mdhd, hdlr, minf)))
     return _box("moov", mvhd, *traks)
 
 
@@ -294,45 +398,131 @@ def write_mp4(tracks: list[OutTrack], chunks: list[tuple[int, list[bytes]]]) -> 
 # ---------------------------------------------------------------------------------------------------------------
 # joining lip-sync clips
 
+def _descriptors(b: bytes, off: int, end: int):
+    """(tag, body start, body end) of the MPEG-4 descriptors in b[off:end] (esds)."""
+    while off + 2 <= end:
+        tag, n, off = b[off], 0, off + 1
+        for _ in range(4):
+            n, off = (n << 7) | (b[off] & 0x7F), off + 1
+            if not b[off - 1] & 0x80:
+                break
+        if off + n > end:
+            raise Mp4Error("bad esds")
+        yield tag, off, off + n
+        off += n
+
+
+def _esds_key(b: bytes) -> tuple:
+    """What decodes an esds: object type, stream type and decoder config, not its (per-file) bitrate fields."""
+    for tag, s, e in _descriptors(b, 4, len(b)):
+        if tag != 0x03:
+            continue
+        flags, off = b[s + 2], s + 3
+        off += (2 if flags & 0x80 else 0) + (2 if flags & 0x20 else 0)
+        if flags & 0x40:
+            off += 1 + b[off]
+        for t2, s2, e2 in _descriptors(b, off, e):
+            if t2 == 0x04 and e2 - s2 >= 13:
+                dsi = next((b[s3:e3] for t3, s3, e3 in _descriptors(b, s2 + 13, e2) if t3 == 0x05), b"")
+                return b[s2], b[s2 + 1] >> 2, dsi
+    raise Mp4Error("bad esds")
+
+
+def _format_key(handler: str, stsd: bytes) -> tuple:
+    """The parts of a track's sample description a decoder depends on. Two clips with equal keys can share one sample
+    description; per-file statistics (btrt, the esds bitrates, the encoder name) are left out, since an encoder writes
+    them differently for every clip."""
+    entries = list(_boxes(stsd, 16, len(stsd)))
+    if struct.unpack_from(">I", stsd, 12)[0] != 1 or len(entries) != 1:
+        raise Mp4Error("more than one sample description")
+    typ, _, cs, ce = entries[0]
+    if ce - cs < (78 if handler == "vide" else 28):
+        return typ, stsd[cs:ce]  # not a sample entry this knows: compared as it is
+    if handler == "vide":
+        fixed, kids = stsd[cs + 24:cs + 28], cs + 78  # width, height
+    else:
+        version = struct.unpack_from(">H", stsd, cs + 8)[0]
+        fixed, kids = stsd[cs + 8:cs + 28], cs + 28 + {0: 0, 1: 16, 2: 36}.get(version, 0)  # channels, sample size, rate
+    try:
+        children = tuple((t, _esds_key(stsd[s:e]) if t == "esds" else stsd[s:e])
+                         for t, _, s, e in _boxes(stsd, kids, ce) if t != "btrt")
+    except IndexError:
+        raise Mp4Error("bad esds")
+    return typ, fixed, children
+
+
 def join_clips(clips: list[bytes]) -> bytes:
     """The sentence clips of one answer, in order, as one MP4 (video and voice from the clips, no re-encoding)."""
     if not clips:
         raise Mp4Error("no clips")
-    parsed = [parse_fragmented(c) for c in clips]
+    parsed = [parse_clip(c) for c in clips]
     ref = parsed[0]
     if "vide" not in ref or "soun" not in ref:
         raise Mp4Error("a clip has no video or no audio")
     v_ref, a_ref = ref["vide"], ref["soun"]
+    keys = {h: _format_key(h, r.stsd) for h, r in (("vide", v_ref), ("soun", a_ref))}
     for p in parsed:
         for h, r in (("vide", v_ref), ("soun", a_ref)):
             t = p.get(h)
-            if t is None or t.stsd != r.stsd or t.timescale != r.timescale:
+            if t is None or t.timescale != r.timescale or _format_key(h, t.stsd) != keys[h]:
                 raise Mp4Error("the sentence clips are not in the same format")
             if not t.sizes:
                 raise Mp4Error("an empty clip")
     vts, ats = v_ref.timescale, a_ref.timescale
+    # Presentation time = composition time - the edit's start. B-frame clips start late by their reorder delay (their
+    # edit skips it): one shared start for the joined video, each clip's offsets raised to it, keeps every frame where
+    # its clip showed it. The audio keeps the first clip's start (priming); a later clip's priming plays as the short
+    # silence it is, and that clip's face waits for the voice behind it.
+    shift = max(p["vide"].media_time for p in parsed)
+    a_start = ref["soun"].media_time
+    for p in parsed:
+        v = p["vide"]
+        if any(cto + i_dts < v.media_time for cto, i_dts in zip(v.ctos, _dts(v.durations))):
+            raise Mp4Error("unsupported edit list")  # frames the clip never shows
+    voice_at = []  # where each clip's voice starts in the joined audio's presentation (audio timescale), then its end
+    cum_a = 0
+    for p in parsed:
+        voice_at.append(cum_a + p["soun"].media_time - a_start)
+        cum_a += sum(p["soun"].durations)
+    voice_at.append(cum_a - a_start)
+    if any(b <= a for a, b in zip(voice_at, voice_at[1:])):
+        raise Mp4Error("a clip with no voice")
     vd: list[int] = []
     ad: list[int] = []
     vc: list[int] = []
     vs: list[bool] = []
     chunks: list[tuple[int, list[bytes]]] = []
-    cum_a = cum_v = 0
-    for p in parsed:
+    cum_v = 0
+    for i, p in enumerate(parsed):
         v, a = p["vide"], p["soun"]
-        durs = list(v.durations)
-        cum_a += sum(a.durations)
-        target = (cum_a * vts + ats // 2) // ats  # where this sentence's voice ends, in video time
-        before_last = cum_v + sum(durs[:-1])
-        durs[-1] = max(1, target - before_last)  # the last frame is held (or cut) to end with the voice
-        cum_v = before_last + durs[-1]
+        # this clip's frames run until the next clip's voice starts (the last clip's: until the voice ends)
+        end = (voice_at[i + 1] * vts + ats // 2) // ats - cum_v
+        dts = _dts(v.durations)
+        n = len(dts)
+        # frames the clip has after its voice would cover the next sentence: leave them out (the tail in decoding
+        # order: nothing kept refers to them)
+        while n > 1 and (dts[n - 1] >= end or dts[n - 1] + v.ctos[n - 1] - v.media_time >= end):
+            n -= 1
+        durs = v.durations[:n]
+        durs[-1] = max(1, end - dts[n - 1])  # the last frame is held (or cut) to meet the next voice
+        cum_v += dts[n - 1] + durs[-1]
         vd += durs
-        vc += v.ctos
-        vs += v.syncs
+        vc += [c + shift - v.media_time for c in v.ctos[:n]]
+        vs += v.syncs[:n]
         ad += a.durations
-        chunks += [(0, v.data), (1, a.data)]
-    video = OutTrack("vide", vts, v_ref.stsd, vd, v_ref.width, v_ref.height, vc, vs)
-    audio = OutTrack("soun", ats, a_ref.stsd, ad)
+        chunks += [(0, v.data[:n]), (1, a.data)]
+    video = OutTrack("vide", vts, v_ref.stsd, vd, v_ref.width, v_ref.height, vc, vs,
+                     (sum(vd), shift) if shift else None)
+    audio = OutTrack("soun", ats, a_ref.stsd, ad, edit=(sum(ad) - a_start, a_start) if a_start else None)
     return write_mp4([video, audio], chunks)
+
+
+def _dts(durations: list[int]) -> list[int]:
+    out, t = [], 0
+    for d in durations:
+        out.append(t)
+        t += d
+    return out
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -487,8 +677,10 @@ def _descr(tag: int, body: bytes) -> bytes:
     return bytes([tag, 0x80 | (n >> 21 & 0x7F), 0x80 | (n >> 14 & 0x7F), 0x80 | (n >> 7 & 0x7F), n & 0x7F]) + body
 
 
-def _mp4a_mp3(rate: int, channels: int, bitrate: int) -> bytes:
-    dcd = _descr(0x04, bytes([0x6B, 0x15]) + (0).to_bytes(3, "big") + struct.pack(">II", bitrate, bitrate))
+def _mp4a_mp3(rate: int, channels: int, bitrate: int, mpeg1: bool) -> bytes:
+    # objectTypeIndication: 0x6B is ISO 11172-3 (MPEG-1 audio, 32-48 kHz), 0x69 ISO 13818-3 (MPEG-2 audio: the half
+    # rates, 16-24 kHz, and in practice MPEG-2.5 too); players that check it mute or reject a mislabelled stream
+    dcd = _descr(0x04, bytes([0x6B if mpeg1 else 0x69, 0x15]) + (0).to_bytes(3, "big") + struct.pack(">II", bitrate, bitrate))
     esd = _descr(0x03, struct.pack(">HB", 1, 0) + dcd + _descr(0x06, b"\x02"))
     entry = _box("mp4a", b"\0" * 6, struct.pack(">H", 1), b"\0" * 8, struct.pack(">HHHH", channels, 16, 0, 0),
                  struct.pack(">I", rate << 16), _full("esds", 0, 0, esd))
@@ -541,15 +733,17 @@ def still_mp4(i420: bytes, width: int, height: int, mp3s: list[bytes]) -> bytes:
     vd[-1] = total_ms - 1000 * (n_video - 1)
     sps, pps = _sps(width, height), _pps()
     with4 = lambda nal: struct.pack(">I", len(nal)) + nal  # noqa: E731  (length-prefixed NAL, avcC lengthSize 4)
-    idr_ids = 0
+    idrs: dict[int, bytes] = {}  # neighbouring IDRs differ only in idr_pic_id: each of the two is coded once
     chunks: list[tuple[int, list[bytes]]] = []
     syncs: list[bool] = []
     per_second = rate / spf  # MP3 frames per second
     taken = 0
     for i in range(n_video):
         if i % IDR_EVERY == 0:
-            sample = with4(_idr(i420, width, height, idr_ids % 2))
-            idr_ids += 1
+            idr_id = i // IDR_EVERY % 2
+            if idr_id not in idrs:
+                idrs[idr_id] = with4(_idr(i420, width, height, idr_id))
+            sample = idrs[idr_id]
             syncs.append(True)
         else:
             sample = with4(_skip(width, height, i % IDR_EVERY))
@@ -559,5 +753,6 @@ def still_mp4(i420: bytes, width: int, height: int, mp3s: list[bytes]) -> bytes:
         chunks.append((1, frames[taken:upto]))
         taken = upto
     video = OutTrack("vide", 1000, _avc1(width, height, sps, pps), vd, width << 16, height << 16, None, syncs)
-    audio = OutTrack("soun", rate, _mp4a_mp3(rate, ch, bitrate), [spf] * len(frames))
+    mpeg1 = (frames[0][1] >> 3) & 3 == 3  # the header's version bits; the rate check above keeps one version
+    audio = OutTrack("soun", rate, _mp4a_mp3(rate, ch, bitrate, mpeg1), [spf] * len(frames))
     return write_mp4([video, audio], chunks)
