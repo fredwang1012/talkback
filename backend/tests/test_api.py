@@ -187,6 +187,16 @@ def test_align_handles_numbers_tags_and_null():
     assert len(align_timestamps(tagged, plain)) == 2  # tag token skipped
 
 
+def test_align_reads_boson_millisecond_timestamps():
+    """Boson's current reply: text/start_ms/end_ms per word (it used to send word/start/end in seconds)."""
+    plain = "The spice must flow."
+    words = [{"index": i, "text": w, "start_ms": 160 + i * 300, "end_ms": 280 + i * 300, "start_idx": 0, "end_idx": 0,
+              "normalized": []} for i, w in enumerate(["The", "spice", "must", "flow."])]
+    out = align_timestamps(words, plain)
+    assert [plain[o["char_start"]:o["char_end"]] for o in out] == ["The", "spice", "must", "flow."]
+    assert out[0]["start"] == pytest.approx(0.16) and out[3]["end"] == pytest.approx(1.18)
+
+
 # ---------- hardening: cost abuse, resource bounds, access control ----------
 
 def test_tts_rejects_unknown_voice_without_calling_boson(env):

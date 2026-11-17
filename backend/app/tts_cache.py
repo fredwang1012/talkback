@@ -63,7 +63,7 @@ def align_timestamps(words: list[dict] | None, plain: str,
         return None
     result, cur = [], 0
     for w in words:
-        text = w["word"]
+        text = w.get("word", w.get("text")) or ""  # Boson now sends text/start_ms/end_ms; older replies word/start/end
         if _TAG.fullmatch(text.strip()) or not _norm(text):
             continue  # delivery tags and bare punctuation are not words
         target = _norm(strip_tag_residue(_TAG.sub("", text)))
@@ -86,7 +86,9 @@ def align_timestamps(words: list[dict] | None, plain: str,
         else:  # could not match: keep the previous token's span so highlighting never jumps backwards
             k = min(max(cur - 1, 0), len(tokens) - 1)
             cs, ce = tokens[k][1], tokens[k][2]
-        result.append({"start": float(w["start"]), "end": float(w["end"]), "char_start": cs, "char_end": ce})
+        start = float(w["start"]) if "start" in w else float(w["start_ms"]) / 1000
+        end = float(w["end"]) if "end" in w else float(w["end_ms"]) / 1000
+        result.append({"start": start, "end": end, "char_start": cs, "char_end": ce})
     return result or None
 
 
