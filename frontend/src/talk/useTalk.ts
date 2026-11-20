@@ -16,7 +16,9 @@ import { createSentenceSpeaker, type Clip } from "./sentencePlayer";
 import { createReplayPlayer, createReplayStore, runPcm, runSentences, type ReplayItem } from "./replay";
 import { TalkClient, type MicLike, type PlayerLike } from "./TalkClient";
 import { TalkController, type Latency, type ReaderControl, type TalkState } from "./TalkController";
-import { toolDefsFor, type BookKind, type ToolRunner } from "./tools";
+import { type BookKind, type ToolRunner } from "./tools";
+import { answerModeHere } from "./answerMode";
+import { sessionTools, webSearchAllowed } from "./webSearch";
 
 /** Gemini (via /api/answer) writes the answer and Boson TTS speaks it only when the server says so; else Realtime answers itself. */
 export const answersViaGemini = (health: Health | null): boolean => health?.answer_backend === "gemini";
@@ -35,6 +37,7 @@ export type TalkUi = {
   narrating?: boolean; // a narrator recap is being read aloud now: the narrator's face shows (lip-synced like answers)
   handsFree?: boolean; // #10: the mic stays open; speaking interrupts the character and silence ends the question
   setHandsFree?: (on: boolean) => void;
+  searching?: boolean; // B2: Boson's server-side web_search is running for the current answer ("Searching…" chip)
   logs: LogEntry[];
   pttDown: () => void;
   pttUp: () => void;
@@ -117,6 +120,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
   const [narratingKey, setNarratingKey] = useState<string | null>(null);
   const [livePaused, setLivePaused] = useState(false);
   const [handsFree, setHandsFreeState] = useState(false);
+  const [searching, setSearching] = useState(false);
   /** The message of the answer being given now (retrieving or speaking), if any. */
   const liveMsgId = () => {
     const c = controller.current;
@@ -156,25 +160,11 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
 
   useEffect(() => {
     if (!enabled) return;
-    const client = new TalkClient({
-      tokenProvider: fetchRealtimeKey,
-      tools: toolDefsFor(bookKind),
-      createPlayer: (onSpeaking) => new RingPlayer(onSpeaking) as unknown as PlayerLike,
-      createMic: (onChunk, onLevel) => new MicCapture(onChunk, onLevel) as unknown as MicLike,
-      onLevel: (rms) => { setLevel(rms); talk?.noteLevel(rms); },
-      onAudioChunk: (b64, first) => { if (first) rtMsgId = pendingId(); if (rtMsgId !== undefined) replayStore.current.addPcm(rtMsgId, b64); },
-      historyProvider: () => priorTurns(msgs.current, latest.current.speakerId),
-      onLog: (dir, type, raw) => {
-        const r = raw as { audio?: string; delta?: string };
-        if (dir === "send" && type === "input_audio_buffer.append" && r.audio) spend.addAudioIn(r.audio.length);
-        if (dir === "recv" && type === "response.output_audio.delta" && r.delta) spend.addAudioOut(r.delta.length);
-        setLogs((l) => [...l.slice(-299), { id: ++logSeq.current, dir, type, at: Date.now(), raw }]);
-      },
-    });
     let answerVoice = "";
     let answerFaceId: string | null = null;
     let answerMsgId: number | undefined;
     let answerLang: string | null = null; // #135: ISO 639-3 when the reader's questions are clearly not English
+    let lastQuestion = "";
     const answerEmotion = createEmotionMemo();
     let rtMsgId: number | undefined;
     // the answer bubble of the current question (made by onTranscript): text only ever goes into it, never into an
@@ -186,6 +176,51 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       console.info("[talk] timing", e);
       setLogs((l) => [...l.slice(-299), { id: ++logSeq.current, dir: "info", type: `timing:${e.stage}`, at: Date.now(), raw: e }]);
     };
+    // B1: on the Realtime answer path Boson speaks the answer itself by default; `?answers=text` has the model write it
+    // and Higgs TTS speak each sentence with its emotion tag, lip-synced, like a Gemini answer (slower to start)
+    const answerMode = viaGemini ? "audio" : answerModeHere();
+    /** B2: the tool list for this book right now; web_search only for a textbook or a novel with spoilers on. */
+    const toolsNow = () => sessionTools(bookKind, latest.current.spoilers);
+    /** The voice, face, language and bubble of an answer are fixed when it starts, so a mid-answer speaker switch cannot change them. */
+    const startAnswer = (speaker: string) => {
+      answerVoice = latest.current.voiceFor(speaker);
+      answerFaceId = latest.current.faceIdFor(speaker);
+      answerMsgId = liveAnswerId ?? pendingId();
+      answerEmotion.clear();
+      answerLang = answerLanguage([...priorTurns(msgs.current, speaker).filter((t) => t.role === "user").map((t) => t.text), lastQuestion]);
+    };
+    const client = new TalkClient({
+      tokenProvider: fetchRealtimeKey,
+      tools: toolsNow(),
+      answerMode,
+      createPlayer: (onSpeaking) => new RingPlayer(onSpeaking) as unknown as PlayerLike,
+      createMic: (onChunk, onLevel) => new MicCapture(onChunk, onLevel) as unknown as MicLike,
+      ...(viaGemini ? {} : {
+        // text mode (B1): each sentence through /api/speak (emotion tag, the speaker's voice, the answer's language) and
+        // its lip-sync clip on the face shown; the same sentence player, start gate and face sync as the Gemini path
+        createSpeaker: (onPlaying: (on: boolean) => void) => createSentenceSpeaker(async (text) => {
+          const voice = answerVoice;
+          const r = await speak(text, voice, answerEmotion.get(text), answerLang);
+          if (!r.cached) spend.addTts(text.length);
+          const clip = lipSyncClip(r.audio_url, voice, answerFaceId);
+          if (answerMsgId !== undefined) replayStore.current.addSentence(answerMsgId, text, clip);
+          return clip;
+        }, undefined, { sync: faceSync.current as FaceSync, onPlaying: (on: boolean) => { gate.playing(on); onPlaying(on); }, onTiming: logTiming }),
+        onSentence: (text: string, emotion: string | null, first: boolean) => {
+          if (first) startAnswer(latest.current.speakerId);
+          answerEmotion.note(text, emotion ?? undefined);
+        },
+      }),
+      onLevel: (rms) => { setLevel(rms); talk?.noteLevel(rms); },
+      onAudioChunk: (b64, first) => { if (first) rtMsgId = pendingId(); if (rtMsgId !== undefined) replayStore.current.addPcm(rtMsgId, b64); },
+      historyProvider: () => priorTurns(msgs.current, latest.current.speakerId),
+      onLog: (dir, type, raw) => {
+        const r = raw as { audio?: string; delta?: string };
+        if (dir === "send" && type === "input_audio_buffer.append" && r.audio) spend.addAudioIn(r.audio.length);
+        if (dir === "recv" && type === "response.output_audio.delta" && r.delta) spend.addAudioOut(r.delta.length);
+        setLogs((l) => [...l.slice(-299), { id: ++logSeq.current, dir, type, at: Date.now(), raw }]);
+      },
+    });
     talk = new TalkController({
       session: client,
       reader: {
@@ -196,15 +231,16 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
         play: () => latest.current.reader.play(),
         resumeAt: (i) => latest.current.reader.resumeAt(i),
       },
-      retrieve: (query, para, speaker) => fetchRetrieve(bookId, query, para, speaker, latest.current.spoilers),
+      retrieve: (query, para, speaker) => {
+        const spoilers = latest.current.spoilers;
+        client.setTools(toolsNow()); // B2: rebuilt every turn, so the spoilers switch takes web_search away (or gives it) at once
+        return fetchRetrieve(bookId, query, para, speaker, spoilers, {
+          textAnswer: answerMode === "text", webSearch: webSearchAllowed(bookKind, spoilers), history: priorTurns(msgs.current, speaker) });
+      },
       ...(viaGemini ? {
-        // the voice and face are fixed when the answer starts, so a mid-answer speaker switch cannot change them
         answer: (query, para, speaker, onSentence, signal) => {
-          answerVoice = latest.current.voiceFor(speaker);
-          answerFaceId = latest.current.faceIdFor(speaker);
-          answerMsgId = liveAnswerId ?? pendingId();
-          answerEmotion.clear();
-          answerLang = answerLanguage([...priorTurns(msgs.current, speaker).filter((t) => t.role === "user").map((t) => t.text), query]);
+          lastQuestion = query;
+          startAnswer(speaker);
           return streamAnswer(bookId, query, para, speaker, (t, emotion) => { answerEmotion.note(t, emotion); const id = answerMsgId; setMessages((m) => appendSentenceTo(m, id, t)); onSentence(t); }, signal, latest.current.spoilers, priorTurns(msgs.current, speaker), (s) => setMessages((m) => setSources(m, s)));
         },
         speaker: createSentenceSpeaker(async (text) => {
@@ -226,6 +262,9 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       onToolRun: (chip) => setMessages((m) => addToolChip(m, chip)),
       onInterrupted: () => setMessages(markInterrupted),
       onHeard: (text) => setMessages((m) => cutHeard(m, text)), // #135: the cut-off reply keeps the words heard
+      // B2: the "Searching…" chip while Boson searches; a lasting chip once its answer followed; links under the reply
+      onSearching: (active, completed) => { setSearching(active); if (!active && completed) setMessages((m) => addToolChip(m, "Looked it up on the web")); },
+      onSources: (sources) => setMessages((m) => setSources(m, { sources })),
       serverTurns: !localGateForcedHere(), // #135: hands-free on Boson's turn detection unless ?gate=local
       onState: (st) => { setState(st); if (st !== "answering") setLivePaused(false); if (["listening", "retrieving", "answering"].includes(st)) { replayer.current?.stop(); narration.current?.stop(); } if (["reading", "talk-idle", "resuming"].includes(st)) { setMessages(finishAnswer); resetIfSpeakerChanged.current(); } if (st === "listening") resetIfSpeakerChanged.current(); },
       onToast: setToast,
@@ -233,6 +272,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       onSpeaking: setSpeaking,
       onTiming: logTiming,
       onTranscript: (text) => {
+        lastQuestion = text;
         setQuestion(text); setLanguage(detectLanguage(text));
         setMessages((m) => addQuestion(m, text, latest.current.speakerId, via.current));
         liveAnswerId = pendingId(); // the new empty answer bubble of this question
@@ -253,7 +293,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
       return runSentences(item.parts, replaySpeaker);
     }, setReplayingId, (e) => setToast(e instanceof Error ? e.message : String(e)));
     return () => {
-      replayer.current?.stop(); replayer.current = null; narration.current?.reset(); gate.reset(); sync?.leave(); talk?.dispose(); client.close(); controller.current = null; clientRef.current = null; setState("reading"); setSpeaking(false); setHandsFreeState(false); };
+      replayer.current?.stop(); replayer.current = null; narration.current?.reset(); gate.reset(); sync?.leave(); talk?.dispose(); client.close(); controller.current = null; clientRef.current = null; setState("reading"); setSpeaking(false); setHandsFreeState(false); setSearching(false); };
   }, [bookId, enabled, viaGemini, bookKind]);
 
   useEffect(() => { controller.current?.setAutoResume(autoResume); }, [autoResume, enabled]);
@@ -274,6 +314,7 @@ export function useTalk({ bookId, enabled, reader, speakerId, voiceFor, autoResu
     state, caption, toast, level, latency, speaking, question, language, faceSync: faceSync.current, clipShown, logs,
     narrating: narratingKey !== null,
     handsFree,
+    searching,
     setHandsFree: useCallback((on: boolean) => {
       const c = controller.current;
       if (!c) return;

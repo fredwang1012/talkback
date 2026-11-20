@@ -98,7 +98,7 @@ describe("TalkController core loop", () => {
     await up;
     expect(h.retrieved[0]).toEqual(["What do you make of him?", 2, "narrator"]);
     expect(h.talk.state).toBe("answering");
-    expect(h.session.calls).toContain("respond:INSTR");
+    expect(h.session.calls).toContain("respond:INSTR:What do you make of him?"); // the transcript travels with the request
 
     h.session.emit({ type: "audio-start" });
     await tick(0);
@@ -347,15 +347,15 @@ describe("TalkController core loop", () => {
   });
 });
 
-describe("TalkController typed questions reach the model (#97)", () => {
-  it("a typed question is handed to respond() as text; a spoken one is not (its audio is the user item)", async () => {
+describe("TalkController questions reach the model (#97)", () => {
+  it("a typed question and a spoken one (its transcript) are both handed to respond() with the instructions", async () => {
     const h = setup();
     await h.talk.ask("What is a monad?");
     expect(h.session.calls.at(-1)).toBe("respond:INSTR:What is a monad?");
     await finishAnswer(h);
     await tick(1500);
     await ask(h, "and then?");
-    expect(h.session.calls.at(-1)).toBe("respond:INSTR");
+    expect(h.session.calls.at(-1)).toBe("respond:INSTR:and then?"); // live, the committed audio alone is not seen under instructions
   });
 });
 

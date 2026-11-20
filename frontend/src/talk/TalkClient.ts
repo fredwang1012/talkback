@@ -1,7 +1,12 @@
 import { AUDIO_RATE } from "../audio/constants";
-import { describeClose, functionCallOutput, historyItem, inputAudioAppend, truncateItem, userTextItem, type ClientEvent, type ServerEvent } from "../realtime/events";
+import { describeClose, functionCallOutput, historyItem, inputAudioAppend, truncateItem, userInput, type ClientEvent, type ServerEvent } from "../realtime/events";
 import type { SessionEvent, TalkSession, ToolCall, ToolResult } from "./TalkController";
+import type { AnswerMode } from "./answerMode";
+import { splitMarker } from "./emotionMarker";
+import type { SentenceSpeaker } from "./sentencePlayer";
+import { takeSentences } from "./sentences";
 import { TOOL_DEFS } from "./tools";
+import { sourcesFromSearchOutput } from "./webSearch";
 
 /** The Realtime model (A6): the 1.5 preview by default (live-checked with our exact session config). `?rt=higgs-realtime`
  * on the page URL picks another for an A/B. If the preview is refused, the page drops to the stable model for good. */
@@ -33,6 +38,8 @@ export const PRESS_PREROLL_MS = 300;
 export const STREAM_HOLD_MS = 3000;
 /** Caption reveal tick (#135): how often the played position is read while an answer plays. */
 export const CAPTION_TICK_MS = 100;
+/** Text mode (B1): how many answer sentences are synthesised ahead of the one being spoken. */
+export const TEXT_PREFETCH_DEPTH = 3;
 /** Boson's turn detection types, best first (#135); the next one is tried when the server refuses one. */
 export const VAD_TYPES = ["semantic_vad", "server_vad"] as const;
 export type VadType = (typeof VAD_TYPES)[number];
@@ -125,8 +132,20 @@ export interface TalkClientDeps {
   voiceChangeWaitMs?: number;
   /** Waits between retries when Boson refuses a connection with close code 1013 (concurrency limit). */
   backoffMs?: number[];
-  /** The function tools declared to the session (#72); `[]` declares none. Never Boson's server-side web_search. */
+  /** The tools declared to the session (#72): the client function tools, plus Boson's server-side web_search when the
+   * book allows it (webSearch.sessionTools); `[]` declares none. `setTools` changes them for the next turn. */
   tools?: readonly unknown[];
+  /**
+   * B1: "text" (default): the model writes the answer (output_modalities ["text"]) and `createSpeaker`'s sentence
+   * player voices it sentence by sentence with Higgs TTS (emotion tag, the speaker's voice, lip-sync), like a Gemini
+   * answer. "audio": Boson speaks the answer itself through `createPlayer` (the old path). Without `createSpeaker`
+   * the client is in audio mode whatever this says.
+   */
+  answerMode?: AnswerMode;
+  /** The sentence player for text mode; `onPlaying` must report when a sentence's sound starts and stops. */
+  createSpeaker?: (onPlaying: (on: boolean) => void) => SentenceSpeaker;
+  /** Text mode: each clean answer sentence with its feeling marker (null = neutral), `first` for the first of an answer. */
+  onSentence?: (text: string, emotion: string | null, first: boolean) => void;
 }
 
 /** Close code 1013 before the session opened: too many concurrent connections. Safe to retry after a pause. */
@@ -134,7 +153,7 @@ export class ConnectionLimitError extends Error {}
 /** The socket was dropped before it opened (a turn-mode change): openWithBackoff opens the next one at once. */
 class SupersededError extends Error {}
 
-export type SessionOptions = { model?: string; turnDetection?: Record<string, unknown> | null; language?: string | null };
+export type SessionOptions = { model?: string; turnDetection?: Record<string, unknown> | null; language?: string | null; textOutput?: boolean };
 
 export function sessionConfig(voice: string, tools: readonly unknown[] = TOOL_DEFS, opts: SessionOptions = {}): ClientEvent {
   return {
@@ -143,8 +162,8 @@ export function sessionConfig(voice: string, tools: readonly unknown[] = TOOL_DE
       type: "realtime",
       model: opts.model ?? realtimeModel(),
       instructions: SESSION_INSTRUCTIONS,
-      output_modalities: ["audio"],
-      tools, // client function tools only: the model asks, the browser acts (see tools.ts)
+      output_modalities: opts.textOutput ? ["text"] : ["audio"], // B1: text mode, voiced by Higgs TTS in the browser
+      tools, // client function tools (the model asks, the browser acts: tools.ts) and, when allowed, the server-side web_search
       tool_choice: "auto",
       audio: {
         input: {
@@ -155,7 +174,8 @@ export function sessionConfig(voice: string, tools: readonly unknown[] = TOOL_DE
           // words; the browser's own noise suppression and echo cancellation still apply in the capture
           ...(opts.turnDetection ? {} : { noise_reduction: { type: "near_field" } }),
         },
-        output: { format: { type: "audio/pcm", rate: AUDIO_RATE }, voice },
+        // text mode keeps the voice (so a switch back to audio needs no reconnect) but asks for no audio format
+        output: opts.textOutput ? { voice } : { format: { type: "audio/pcm", rate: AUDIO_RATE }, voice },
       },
       temperature: 0.3,
     },
@@ -174,6 +194,22 @@ export class TalkClient implements TalkSession {
   private voice = "default";
   private player: PlayerLike;
   private mic: MicLike;
+  private tools: readonly unknown[];
+  // B1 text mode: the answer arrives as text, is split into sentences and spoken by the sentence player
+  private readonly speaker: SentenceSpeaker | null;
+  private textBuf = ""; // text received, not yet a whole sentence
+  private textTotal = ""; // all text of the current content part (output_text.done repeats it: a lost delta is made up)
+  private textQueue: string[] = []; // clean sentences waiting to be spoken
+  private textPumping = false;
+  private textEpoch = 0; // bumped by stopText(): a pump loop from before exits
+  private textCurrent: string | null = null; // the sentence being spoken
+  private spoken: string[] = []; // sentences whose sound has started (the caption, and "heard" on a cut)
+  private sentenceCount = 0;
+  // B2 server-side web_search: the server runs the call, adds its result and starts the answer itself
+  private serverToolPending = false;
+  private searchCalls = new Set<string>(); // call ids of web_search calls in this turn (their outputs carry the links)
+  private searching = false;
+  private lastCallNames = new Map<string, string>(); // call id -> tool name, for the continuation's instructions
   private micOn = false;
   private monitor = false; // hands-free (#10): the mic stays open between turns; chunks are kept briefly, not sent
   private recent: { b64: string; ms: number }[] = []; // rolling pre-roll while monitoring (#114): sent first when a turn starts
@@ -191,6 +227,7 @@ export class TalkClient implements TalkSession {
   private assistantItemId: string | null = null;
   private caption = "";
   private lastInstructions = "";
+  private lastQuestion = ""; // repeated to the model in a tool continuation (it does not see the earlier input)
   private pendingCalls: ToolCall[] = []; // tool calls announced by function_call_arguments.done, until response.done
 
   // #135 server turn detection: wanted (hands-free), and the VAD type the open (or next) session uses
@@ -219,8 +256,20 @@ export class TalkClient implements TalkSession {
 
   constructor(deps: TalkClientDeps) {
     this.d = { cancelWaitMs: 2000, voiceChangeWaitMs: 3000, backoffMs: [1000, 2000, 4000], ...deps };
+    this.tools = deps.tools ?? TOOL_DEFS;
     this.player = deps.createPlayer((speaking) => this.onSpeaking(speaking));
     this.mic = deps.createMic((b64) => this.onMicChunk(b64), deps.onLevel);
+    this.speaker = deps.answerMode !== "audio" && deps.createSpeaker ? deps.createSpeaker((on) => this.onSentencePlaying(on)) : null;
+  }
+
+  /** B1: the answer is written by the model and voiced by Higgs TTS here (else Boson speaks it as PCM). */
+  get textMode(): boolean { return this.speaker !== null; }
+
+  /** The tools for the next turn (B2: web_search comes and goes with the spoilers switch). Sent to an open session at once. */
+  setTools(tools: readonly unknown[]): void {
+    if (JSON.stringify(tools) === JSON.stringify(this.tools)) return;
+    this.tools = tools;
+    this.send({ type: "session.update", session: { tools } });
   }
 
   get isOpen(): boolean { return this.ws?.readyState === OPEN; }
@@ -279,7 +328,7 @@ export class TalkClient implements TalkSession {
         const turn = this.sessionServer ? turnDetection(VAD_TYPES[this.vadIndex]) : null;
         // the first session.update starts the session; no need to wait for session.created
         this.sessionModel = model;
-        this.send(sessionConfig(voice, this.d.tools, { model, turnDetection: turn, language: this.language }));
+        this.send(sessionConfig(voice, this.tools, { model, turnDetection: turn, language: this.language, textOutput: this.textMode }));
         this.seedHistory();
         this.flushPending();
         resolve();
@@ -342,7 +391,8 @@ export class TalkClient implements TalkSession {
   /** A turn is in progress (audio going out, an answer generated, played or waiting for its tools): a socket dropped
    * now would never report the answer's end, and the controller would stay "answering" (#141). */
   private get turnBusy(): boolean {
-    return this.micOn || this.responseActive || (this.responseDone && this.audioStarted) || this.expectResponse > 0 || this.toolsOut;
+    return this.micOn || this.responseActive || (this.responseDone && this.audioStarted) || this.expectResponse > 0 || this.toolsOut
+      || this.textPumping || this.textQueue.length > 0 || this.serverToolPending;
   }
 
   /** The turn is idle again: make the deferred mode change (drop the session, open one with the right config). */
@@ -410,6 +460,7 @@ export class TalkClient implements TalkSession {
 
   close(): void {
     this.stopCaptionTimer();
+    this.stopText();
     this.ws?.close(1000, "client disconnect");
     this.ws = null;
     this.monitor = false;
@@ -516,33 +567,40 @@ export class TalkClient implements TalkSession {
   }
 
   /**
-   * Ask for the answer. A typed question (`question`) is first put into the conversation as a user text item (#97):
-   * the instructions carry the passages, not the question, and a bare response.create answers an empty turn. A spoken
-   * question needs none: the committed audio is the user item.
+   * Ask for the answer. The question (typed, or the transcript of what was said) goes as `response.input` (#97 and the
+   * 2026-10-24 probe, see events.userInput): with per-response instructions the model sees nothing else of the
+   * conversation, not even the committed audio turn, so the instructions carry the passages and `input` the question.
    */
   respond(instructions: string, question?: string): void {
     this.resetResponse();
     this.lastInstructions = instructions;
     this.responseActive = true;
     this.currentResponseId = null;
-    if (question?.trim()) this.send(userTextItem(question.trim()));
     this.expectResponse++;
-    this.send({ type: "response.create", response: { instructions, max_output_tokens: 600 } });
+    const q = question?.trim() ?? "";
+    this.lastQuestion = q;
+    this.send({ type: "response.create", response: { instructions, max_output_tokens: 600, ...(q ? { input: [userInput(q)] } : {}) } });
   }
 
-  /** Tool calls done (#72): hand every result back, then ask for the spoken continuation under the same instructions. */
+  /**
+   * Tool calls done (#72): hand every result back as function_call_output (the conversation stays well-formed), then
+   * ask for the spoken continuation. The results are repeated as the continuation's `input` message: live (probes 5
+   * and 6, 2026-10-24) a function_call_output item is not seen under per-response instructions, a note inside the
+   * instructions is not acted on either, and a `system` input role is refused; a `user` input message works.
+   */
   returnTools(results: ToolResult[]): void {
     this.toolsOut = false;
     for (const r of results) this.send(functionCallOutput(r.callId, r.output));
     this.responseActive = true;
     this.currentResponseId = null;
     this.expectResponse++;
-    this.send({ type: "response.create", response: { instructions: this.lastInstructions, max_output_tokens: 600 } });
+    const note = toolResultsNote(results, this.lastCallNames, this.lastQuestion);
+    this.send({ type: "response.create", response: { instructions: this.lastInstructions, max_output_tokens: 600, ...(note ? { input: [userInput(note)] } : {}) } });
   }
 
   /** Pause / resume the reply being played (#90): the rest of the reply keeps arriving and waits in the ring buffer. */
-  async pausePlayback(): Promise<void> { await this.player.pausePlayback?.(); }
-  async resumePlayback(): Promise<void> { await this.player.resumePlayback?.(); }
+  async pausePlayback(): Promise<void> { if (this.speaker) this.speaker.pause?.(); else await this.player.pausePlayback?.(); }
+  async resumePlayback(): Promise<void> { if (this.speaker) this.speaker.resume?.(); else await this.player.resumePlayback?.(); }
 
   /**
    * Barge-in: stop playback, truncate the item at what was actually heard, cancel generation, wait for the ack.
@@ -565,8 +623,12 @@ export class TalkClient implements TalkSession {
     this.stopCaptionTimer();
     const segs = this.segs;
     const heardAudio = this.audioStarted;
+    const heardText = this.spoken.join(" ");
+    this.stopText(); // text mode: the sentence being spoken stops, the queued ones are dropped
     const playedMs = await this.player.flush();
-    if (heardAudio && segs.length && this.timed) this.emit({ type: "heard", text: captionAt(segs, playedMs) }); // #135: the words the reader heard
+    if (this.speaker) { if (heardText) this.emit({ type: "heard", text: heardText }); } // text mode: the sentences whose sound had started
+    else if (heardAudio && segs.length && this.timed) this.emit({ type: "heard", text: captionAt(segs, playedMs) }); // #135: the words the reader heard
+    this.endSearch(false); // B2: a search in progress no longer has a turn to answer
     if (this.assistantItemId && playedMs > 0) this.send(truncateItem(this.assistantItemId, playedMs));
     if (!active) { this.resetResponse(); return; }
     const ack = this.waitForServer((e) => e.type === "response.done" || (e.type === "error" && errorCode(e) === "response_not_active"), this.d.cancelWaitMs);
@@ -626,7 +688,116 @@ export class TalkClient implements TalkSession {
     this.assistantItemId = null;
     this.caption = "";
     this.pendingCalls = [];
+    this.lastCallNames.clear();
     this.clearCaptions();
+    this.stopText();
+    this.spoken = [];
+    this.sentenceCount = 0;
+    this.serverToolPending = false;
+    this.endSearch(false);
+    this.searchCalls.clear();
+  }
+
+  // ---- text mode (B1): sentences -> Higgs TTS -> the sentence player -------------------------------------------
+
+  /** Text received: whole sentences go to the speaker now, the tail waits for more (or for `final`). */
+  private takeText(delta: string, final = false): void {
+    this.textBuf += delta;
+    const { done, rest } = takeSentences(this.textBuf, final);
+    this.textBuf = rest;
+    for (const raw of done) this.enqueueSentence(raw);
+  }
+
+  private enqueueSentence(raw: string): void {
+    const { text, emotion } = splitMarker(raw);
+    if (!text || !this.speaker) return;
+    this.d.onSentence?.(text, emotion, this.sentenceCount === 0);
+    this.sentenceCount++;
+    this.textQueue.push(text);
+    this.prefetchText();
+    void this.pumpText();
+  }
+
+  /** Synthesise the next few queued sentences while the current one plays; rank 0 opens its lip-sync stream too. */
+  private prefetchText(): void {
+    this.textQueue.slice(0, TEXT_PREFETCH_DEPTH).forEach((t, i) => this.speaker?.prefetch(t, i));
+  }
+
+  private async pumpText(): Promise<void> {
+    if (this.textPumping || !this.speaker) return;
+    this.textPumping = true;
+    const epoch = this.textEpoch;
+    while (this.textQueue.length && epoch === this.textEpoch) {
+      const text = this.textQueue.shift() as string;
+      this.textCurrent = text;
+      this.prefetchText();
+      try {
+        await this.speaker.play(text);
+      } catch (e) {
+        if (epoch !== this.textEpoch) return;
+        this.textPumping = false;
+        this.failText(e instanceof Error ? e.message : String(e));
+        return;
+      }
+    }
+    if (epoch !== this.textEpoch) return;
+    this.textCurrent = null;
+    this.textPumping = false;
+    this.finishTextIfDone();
+  }
+
+  /** The sentence player reports sound starting or stopping (text mode). */
+  private onSentencePlaying(on: boolean): void {
+    if (!on || !this.textCurrent) return;
+    if (!this.audioStarted) { this.audioStarted = true; this.emit({ type: "audio-start" }); }
+    if (this.spoken.at(-1) !== this.textCurrent) {
+      this.spoken.push(this.textCurrent);
+      this.emit({ type: "caption", text: this.spoken.join(" "), done: false });
+    }
+  }
+
+  /** The model has finished writing and every sentence has been spoken: the turn's playback is over. */
+  private finishTextIfDone(): void {
+    if (!this.speaker || !this.responseDone || this.textPumping || this.textQueue.length || this.serverToolPending || this.textBuf.trim()) return;
+    this.responseDone = false;
+    const text = this.spoken.join(" ");
+    if (text) this.emit({ type: "caption", text, done: true });
+    this.emit({ type: "playback-drained" });
+    this.applyModeChange();
+  }
+
+  /** Drop what is queued and stop the sentence being spoken (a cut, a new question, a closed socket). */
+  private stopText(): void {
+    this.textEpoch++;
+    this.textBuf = "";
+    this.textTotal = "";
+    this.textQueue = [];
+    this.textPumping = false;
+    this.textCurrent = null;
+    this.speaker?.stop();
+  }
+
+  /** TTS or playback of a sentence failed: the answer ends here, with the message, and the model is told to stop. */
+  private failText(message: string): void {
+    this.stopText();
+    const active = this.responseActive;
+    this.responseActive = false;
+    this.responseDone = false;
+    this.dropOutput = true;
+    if (this.currentResponseId) this.markCancelled(this.currentResponseId);
+    this.currentResponseId = null;
+    this.endSearch(false);
+    this.serverToolPending = false;
+    if (active) this.send({ type: "response.cancel" });
+    this.emit({ type: "error", message });
+  }
+
+  // ---- server-side web_search (B2) --------------------------------------------------------------------------------
+
+  private endSearch(completed: boolean): void {
+    if (!this.searching) return;
+    this.searching = false;
+    this.emit({ type: "searching", active: false, completed });
   }
 
   // ---- voice-timed captions (#135) -----------------------------------------------------------------------------
@@ -663,19 +834,27 @@ export class TalkClient implements TalkSession {
     if (text) this.emit({ type: "caption", text, done: true });
   }
 
-  /** The tool calls of a finished response that are ours to run: `executor` "client" (the server runs its own, e.g. web_search). */
-  private clientCalls(response: unknown): ToolCall[] {
+  /**
+   * The tool calls of a finished response: `client` are ours to run (`executor` "client", or none); `server` the server
+   * runs itself (web_search): it adds the result and starts the answer response, so such a response is not a finished
+   * turn (latent bug #4, fixed with B2).
+   */
+  private splitCalls(response: unknown): { client: ToolCall[]; server: ToolCall[] } {
     const output = (response as { output?: unknown[] } | undefined)?.output;
-    const calls: ToolCall[] = [];
+    const client: ToolCall[] = [];
+    const server: ToolCall[] = [];
     let listed = false;
     for (const raw of Array.isArray(output) ? output : []) {
       const item = raw as { type?: string; call_id?: string; name?: string; arguments?: string; executor?: string };
       if (item.type !== "function_call" || typeof item.call_id !== "string" || typeof item.name !== "string") continue;
       listed = true;
-      if (item.executor !== undefined && item.executor !== "client") continue;
-      calls.push({ callId: item.call_id, name: item.name, args: parseArgs(item.arguments) });
+      const call = { callId: item.call_id, name: item.name, args: parseArgs(item.arguments) };
+      if (item.executor === "server" || (item.executor === undefined && item.name === "web_search")) server.push(call);
+      else client.push(call);
     }
-    return listed ? calls : this.pendingCalls; // a response.done without its items: only the *.arguments.done events named them
+    if (listed) return { client, server };
+    // a response.done without its items: only the *.arguments.done events named them
+    return { client: this.pendingCalls.filter((c) => !this.searchCalls.has(c.callId)), server: this.pendingCalls.filter((c) => this.searchCalls.has(c.callId)) };
   }
 
   private onMessage(raw: string): void {
@@ -734,14 +913,39 @@ export class TalkClient implements TalkSession {
         this.dropOutput = false; // a new answer: its output is wanted again
         this.responseActive = true;
         this.responseDone = false;
-        this.audioStarted = false;
+        if (!this.textMode) this.audioStarted = false; // text mode keeps counting across a tool or search continuation
         this.caption = "";
+        if (this.serverToolPending) { this.serverToolPending = false; this.endSearch(true); } // B2: the answer after the search
+        break;
+      }
+      case "conversation.item.added": { // B2: the web_search result (the server adds it); its links go under the reply
+        const item = evt.item as { type?: string; call_id?: string; output?: unknown } | undefined;
+        if (item?.type !== "function_call_output" || typeof item.call_id !== "string" || !this.searchCalls.has(item.call_id)) break;
+        const sources = sourcesFromSearchOutput(item.output);
+        if (sources.length) this.emit({ type: "sources", sources });
         break;
       }
       case "response.output_item.added": {
         if (this.stale(evt)) break;
-        const item = evt.item as { id?: string; type?: string } | undefined;
+        const item = evt.item as { id?: string; type?: string; name?: string; call_id?: string; executor?: string } | undefined;
         if (item?.type === "message" && typeof item.id === "string") this.assistantItemId = item.id;
+        if (item?.type === "function_call" && (item.executor === "server" || item.name === "web_search") && typeof item.call_id === "string") {
+          this.searchCalls.add(item.call_id); // B2: the server is searching; a "Searching…" chip until its answer starts
+          if (!this.searching) { this.searching = true; this.emit({ type: "searching", active: true }); }
+        }
+        break;
+      }
+      case "response.output_text.delta": // B1 text mode: the answer as text, voiced sentence by sentence
+        if (this.stale(evt) || !this.textMode) break;
+        if (typeof evt.item_id === "string") this.assistantItemId = evt.item_id;
+        if (typeof evt.delta === "string") { this.textTotal += evt.delta; this.takeText(evt.delta); }
+        break;
+      case "response.output_text.done": {
+        if (this.stale(evt) || !this.textMode) break;
+        const full = typeof evt.text === "string" ? evt.text : "";
+        if (full.length > this.textTotal.length && full.startsWith(this.textTotal)) this.takeText(full.slice(this.textTotal.length)); // a delta went missing
+        this.textTotal = "";
+        this.takeText("", true); // the tail is a sentence too
         break;
       }
       case "response.output_audio.delta":
@@ -784,16 +988,27 @@ export class TalkClient implements TalkSession {
         if (typeof doneId === "string" && (this.cancelledIds.has(doneId) || (this.currentResponseId !== null && doneId !== this.currentResponseId))) break; // not the current answer
         this.responseActive = false;
         if (this.dropOutput) { this.pendingCalls = []; break; } // the cancelled answer's end is not the new turn's end (the interrupt waiter saw it)
-        const calls = status === "cancelled" ? [] : this.clientCalls(evt.response);
+        const { client: calls, server } = status === "cancelled" ? { client: [], server: [] } : this.splitCalls(evt.response);
         this.pendingCalls = [];
         if (calls.length) { // the model stopped to act: run the tools, then returnTools() continues the answer
+          for (const c of calls) this.lastCallNames.set(c.callId, c.name);
           this.toolsOut = true;
           this.emit({ type: "tool-call", calls });
           break;
         }
+        if (server.length) { // B2: the server runs the search, adds its result and starts the answer itself: wait for it
+          for (const c of server) this.searchCalls.add(c.callId);
+          if (!this.searching) { this.searching = true; this.emit({ type: "searching", active: true }); }
+          this.serverToolPending = true;
+          this.responseActive = true; // a barge-in now cancels the answer the server is about to start
+          this.currentResponseId = null;
+          this.expectResponse++; // its response.created is expected, never cancelled as a stray one (#135)
+          break;
+        }
         this.responseDone = true;
         this.emit({ type: "response-done", status: status === "cancelled" ? "cancelled" : status === "failed" ? "failed" : "completed" });
-        if (!this.audioStarted) { this.emit({ type: "playback-drained" }); this.applyModeChange(); } // nothing was spoken, nothing to wait for
+        if (this.textMode) this.finishTextIfDone(); // drained once the last sentence has been spoken (or at once, nothing to say)
+        else if (!this.audioStarted) { this.emit({ type: "playback-drained" }); this.applyModeChange(); } // nothing was spoken, nothing to wait for
         break;
       }
       case "error": {
@@ -822,6 +1037,7 @@ export class TalkClient implements TalkSession {
   }
 
   private onSpeaking(speaking: boolean): void {
+    if (this.textMode) return; // text mode answers drain through the sentence player (finishTextIfDone)
     if (!speaking && this.responseDone && this.audioStarted) {
       if (this.timed && (this.segs.length || this.finalCaption !== null)) this.finishCaption();
       this.emit({ type: "playback-drained" });
@@ -829,6 +1045,18 @@ export class TalkClient implements TalkSession {
       this.applyModeChange();
     }
   }
+}
+
+/**
+ * The input message of a tool continuation: what the reader asked and what each tool did. Live, a function_call_output
+ * item is not visible to a response that carries `instructions`, so this is how the model learns the result it must
+ * confirm ("Moved to Chapter Two") or the refusal it must relay ("spoilers are off"). Empty when there is nothing to tell.
+ */
+export function toolResultsNote(results: ToolResult[], names: Map<string, string>, question = ""): string {
+  if (!results.length) return "";
+  const lines = results.map((r) => `- ${names.get(r.callId) ?? "tool"}: ${r.output.trim().slice(0, 500)}`);
+  const asked = question.trim() ? `, who said: "${question.trim().slice(0, 300)}"` : "";
+  return `You just acted for the reader${asked}. What each tool did:\n${lines.join("\n")}\nTell the reader what happened in one short spoken sentence, in character. Do not call the tool again.`;
 }
 
 /** The `code` of a server error event (nested under `error`, or flat). */
