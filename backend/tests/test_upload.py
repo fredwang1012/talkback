@@ -2,7 +2,7 @@ import pymupdf as fitz
 import pytest
 from fastapi.testclient import TestClient
 
-from app import ingest_upload, main
+from app import deps, indexes, ingest_upload, main, processing
 from app.config import settings
 from app.ratelimit import TokenBucket
 from app.ttschunks import chunk_paragraph, sentence_spans
@@ -33,10 +33,10 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "access_token", "")
     monkeypatch.setattr(settings, "retrieval_backend", "local")
-    main._upload_status.clear()
-    monkeypatch.setattr(main, "_ingest_guard", main.IngestGuard())
-    monkeypatch.setattr(main, "upload_bucket", TokenBucket(1000, 60))
-    main._index_for.cache_clear()
+    processing._upload_status.clear()
+    monkeypatch.setattr(processing, "_ingest_guard", processing.IngestGuard())
+    monkeypatch.setattr(deps, "upload_bucket", TokenBucket(1000, 60))
+    indexes._index_for.cache_clear()
     return TestClient(main.app)
 
 
@@ -120,7 +120,7 @@ def test_vertex_indexing_only_when_enabled(client, monkeypatch):
         return len(chunks)
 
     monkeypatch.setattr("app.gcp.indexing.index_book", fake_index_book)
-    monkeypatch.setattr(main, "_vertex_deps", lambda: ("EMB", "STORE"))
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: ("EMB", "STORE"))
     post(client, "a.txt", b"One paragraph.")
     assert calls == []
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
@@ -128,7 +128,7 @@ def test_vertex_indexing_only_when_enabled(client, monkeypatch):
     assert len(calls) == 1 and calls[0][0] == book_id and calls[0][2:] == ("EMB", "STORE")
     st = client.get(f"/api/books/{book_id}/status").json()
     assert st["status"] == "ready" and st["index"]["state"] == "done" and st["index"]["done"] == st["index"]["total"]
-    assert main._vertex_index_ready(book_id)
+    assert indexes._vertex_index_ready(book_id)
 
 
 def test_vertex_failure_keeps_book_readable_with_error(client, monkeypatch):
@@ -136,13 +136,13 @@ def test_vertex_failure_keeps_book_readable_with_error(client, monkeypatch):
         raise RuntimeError("secret detail")
 
     monkeypatch.setattr("app.gcp.indexing.index_book", boom)
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (None, None))
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
     book_id = post(client, "b.txt", b"One paragraph.").json()["book_id"]
     st = client.get(f"/api/books/{book_id}/status").json()
     assert st["status"] == "ready" and st["index"]["state"] == "error" and "secret" not in st["index"]["message"]
     assert (settings.data_dir / "books" / book_id / "book.json").is_file()
-    assert not main._vertex_index_ready(book_id)  # stays on BM25
+    assert not indexes._vertex_index_ready(book_id)  # stays on BM25
 
 
 def test_book_readable_and_bm25_while_vertex_indexing(client, monkeypatch):
@@ -153,18 +153,18 @@ def test_book_readable_and_bm25_while_vertex_indexing(client, monkeypatch):
         on_progress(1, 5)
         seen["status"] = client.get(f"/api/books/{book.id}/status").json()
         seen["readable"] = client.get(f"/api/books/{book.id}").status_code
-        seen["index"] = main._index_for(book.id)
+        seen["index"] = indexes._index_for(book.id)
         return 0
 
     monkeypatch.setattr("app.gcp.indexing.index_book", slow_index)
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (None, None))
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
     book_id = post(client, "b.txt", b"One paragraph.").json()["book_id"]
     assert seen["status"]["status"] == "ready"
     assert seen["status"]["index"] == {"state": "running", "done": 1, "total": 5}
     assert seen["readable"] == 200
     assert type(seen["index"]).__name__ == "Index"  # local BM25, not VertexIndex
-    assert type(main._index_for(book_id)).__name__ == "VertexIndex"  # after completion
+    assert type(indexes._index_for(book_id)).__name__ == "VertexIndex"  # after completion
 
 
 def test_interrupted_indexing_reported_on_restart(client, monkeypatch):
@@ -190,8 +190,8 @@ def test_novel_enrichment_runs_after_vertex_indexing(client, monkeypatch):
         order.append("enrich")
 
     monkeypatch.setattr("app.gcp.indexing.index_book", fake_index)
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
-    monkeypatch.setattr(main, "_plan_enrichment", fake_plan)
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(processing, "_plan_enrichment", fake_plan)
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
     monkeypatch.setattr(settings, "upload_enrich", True)
     post(client, "n.txt", b"One paragraph.", kind="novel")
@@ -200,7 +200,7 @@ def test_novel_enrichment_runs_after_vertex_indexing(client, monkeypatch):
 
 def test_status_survives_restart(client, tmp_path):
     book_id = post(client, "a.txt", b"One paragraph.").json()["book_id"]
-    main._upload_status.clear()
+    processing._upload_status.clear()
     assert client.get(f"/api/books/{book_id}/status").json() == {"status": "ready"}
 
 
@@ -268,8 +268,8 @@ def test_book_deleted_during_indexing_is_not_recreated_or_enriched(client, monke
     async def index_then_deleted(book, chunks, embedder, store, on_progress=None):
         on_progress(1, 5)
         ingest_upload.delete_book_files(book.id)   # what delete_book does (it is refused while indexing; defence)
-        main._deleted.add(book.id)
-        main._forget_book(book.id)
+        processing._deleted.add(book.id)
+        processing._forget_book(book.id)
         on_progress(2, 5)   # must stop the job
         raise AssertionError("indexing carried on after the delete")
 
@@ -277,22 +277,22 @@ def test_book_deleted_during_indexing_is_not_recreated_or_enriched(client, monke
         planned.append(book_id)
 
     monkeypatch.setattr("app.gcp.indexing.index_book", index_then_deleted)
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
-    monkeypatch.setattr(main, "_plan_enrichment", fake_plan)
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(processing, "_plan_enrichment", fake_plan)
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
     monkeypatch.setattr(settings, "upload_enrich", True)
     bid = post(client, "n.txt", b"One paragraph.", kind="novel").json()["book_id"]
     assert planned == []
     assert not (settings.data_dir / "books" / bid).exists()
-    assert bid not in main._upload_status
-    main._deleted.discard(bid)
+    assert bid not in processing._upload_status
+    processing._deleted.discard(bid)
 
 
 def test_set_index_keeps_the_enrich_status(client):
     ingest_upload.write_status("u-k-00000000", "ready", enrich={"status": "awaiting_confirmation"})
-    main._upload_status["u-k-00000000"] = ingest_upload.read_status("u-k-00000000")
-    main._set_index("u-k-00000000", state="done", done=2, total=2)
-    for st in (main._upload_status["u-k-00000000"], ingest_upload.read_status("u-k-00000000")):
+    processing._upload_status["u-k-00000000"] = ingest_upload.read_status("u-k-00000000")
+    processing._set_index("u-k-00000000", state="done", done=2, total=2)
+    for st in (processing._upload_status["u-k-00000000"], ingest_upload.read_status("u-k-00000000")):
         assert st["enrich"] == {"status": "awaiting_confirmation"} and st["index"]["state"] == "done"
 
 
@@ -310,13 +310,13 @@ def test_index_progress_is_throttled_and_written_off_the_loop(client, monkeypatc
         for i in range(1, 51):
             on_progress(i, 50)
         await asyncio.sleep(0.05)   # let a pending background write finish
-        seen["mem"] = main._upload_status[book.id]["index"]
+        seen["mem"] = processing._upload_status[book.id]["index"]
         return 50
 
     import asyncio
     monkeypatch.setattr(ingest_upload, "save_status", counting)
     monkeypatch.setattr("app.gcp.indexing.index_book", many_ticks)
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (None, None))
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
     bid = post(client, "b.txt", b"One paragraph.").json()["book_id"]
     assert seen["mem"] == {"state": "running", "done": 50, "total": 50}   # memory is always current
@@ -337,8 +337,8 @@ def test_novel_moved_to_textbooks_while_indexing_is_not_enriched(client, monkeyp
         planned.append(book_id)
 
     monkeypatch.setattr("app.gcp.indexing.index_book", index_and_move)
-    monkeypatch.setattr(main, "_vertex_deps", lambda: (None, None))
-    monkeypatch.setattr(main, "_plan_enrichment", fake_plan)
+    monkeypatch.setattr(indexes, "_vertex_deps", lambda: (None, None))
+    monkeypatch.setattr(processing, "_plan_enrichment", fake_plan)
     monkeypatch.setattr(settings, "retrieval_backend", "vertex")
     monkeypatch.setattr(settings, "upload_enrich", True)
     post(client, "n.txt", b"One paragraph.", kind="novel")

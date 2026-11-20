@@ -3,7 +3,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import faces, main, voices
+from app import deps, faces, main, voices
+from app.routes import avatar as avatar_routes
 from app.boson import BosonClient
 from app.config import settings
 from app.ratelimit import TokenBucket
@@ -16,7 +17,7 @@ CHUNKS = [b"\x00\x00\x00\x18ftypiso5", b"moof-1", b"mdat-1", b"moof-2"]
 def stream_env(tmp_path, monkeypatch, *, fail_after=None, status=200, headers=None):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "access_token", "")
-    monkeypatch.setattr(main, "avatar_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(deps, "avatar_bucket", TokenBucket(1000, 60))
     monkeypatch.setattr("app.boson.MAX_RETRIES", 0)
     voices.save_voice("me", "voice_abc")
     faces.create_face(PNG, "me", voice="voice_abc")
@@ -37,7 +38,7 @@ def stream_env(tmp_path, monkeypatch, *, fail_after=None, status=200, headers=No
                                                           "message": "busy"}}, headers=headers or {})
         return httpx.Response(200, content=gen(), headers={"X-Video-Id": "video_9", "Content-Type": "video/mp4"})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     return TestClient(main.app), calls, tmp_path / "cache" / "avatar" / "talk"
 
 
@@ -62,12 +63,12 @@ def test_stream_failure_removes_temp_and_caches_nothing(tmp_path, monkeypatch):
     with pytest.raises(Exception):
         client.post("/api/avatar/stream", json=BODY)
     assert not list(d.glob("*.mp4")) and not list(d.glob("*.tmp"))
-    assert main._avatar_locks == {}
+    assert avatar_routes._avatar_locks == {}
 
 
 def test_stream_oversize_is_cut_off(tmp_path, monkeypatch):
     client, _, d = stream_env(tmp_path, monkeypatch)
-    monkeypatch.setattr(main, "STREAM_MAX_BYTES", 10)
+    monkeypatch.setattr(avatar_routes, "STREAM_MAX_BYTES", 10)
     with pytest.raises(Exception):
         client.post("/api/avatar/stream", json=BODY)
     assert not list(d.glob("*.mp4")) and not list(d.glob("*.tmp"))
@@ -77,7 +78,7 @@ def test_stream_boson_busy_is_a_clean_429_and_releases_lock(tmp_path, monkeypatc
     client, _, d = stream_env(tmp_path, monkeypatch, status=429, headers={"Retry-After": "0"})
     r = client.post("/api/avatar/stream", json=BODY)
     assert r.status_code == 429
-    assert not list(d.glob("*")) and main._avatar_locks == {}
+    assert not list(d.glob("*")) and avatar_routes._avatar_locks == {}
 
 
 def test_stream_validation_gating_and_rate_limit(tmp_path, monkeypatch):
@@ -90,7 +91,7 @@ def test_stream_validation_gating_and_rate_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "access_token", "letmein")
     assert client.post("/api/avatar/stream", json=BODY).status_code == 401
     assert client.post("/api/avatar/stream", json=BODY, headers={"X-Talkback-Token": "letmein"}).status_code == 200
-    monkeypatch.setattr(main, "avatar_bucket", TokenBucket(0, 60))
+    monkeypatch.setattr(deps, "avatar_bucket", TokenBucket(0, 60))
     (tmp_path / "cache" / "avatar" / "talk").joinpath(*[]).mkdir(exist_ok=True)
     for f in (tmp_path / "cache" / "avatar" / "talk").glob("*.mp4"):
         f.unlink()
@@ -102,24 +103,24 @@ def test_stream_validation_gating_and_rate_limit(tmp_path, monkeypatch):
 def test_cached_after_wait_releases_the_lock_and_next_request_proceeds(tmp_path, monkeypatch):
     import asyncio
     client, calls, d = stream_env(tmp_path, monkeypatch)
-    key = main._lipsync_inputs(main.LipSyncRequest(**BODY))[2]
+    key = avatar_routes._lipsync_inputs(avatar_routes.LipSyncRequest(**BODY))[2]
     d.mkdir(parents=True, exist_ok=True)
 
     async def scenario():
-        await main._acquire_avatar_key(key)  # a render is "in progress"
-        req = main.LipSyncRequest(**BODY)
-        task = asyncio.create_task(main.lipsync_stream(req, _FakeRequest()))
+        await avatar_routes._acquire_avatar_key(key)  # a render is "in progress"
+        req = avatar_routes.LipSyncRequest(**BODY)
+        task = asyncio.create_task(avatar_routes.lipsync_stream(req, _FakeRequest()))
         await asyncio.sleep(0.01)
         (d / f"{key}.mp4").write_bytes(b"done")  # the other render finishes and caches
-        main._release_avatar_key(key)
+        avatar_routes._release_avatar_key(key)
         out = await asyncio.wait_for(task, 2)
         assert out == {"video_url": f"/media/avatar/{key}.mp4"}
         # the lock must be free again: a fresh acquire does not hang
-        await asyncio.wait_for(main._acquire_avatar_key(key), 1)
-        main._release_avatar_key(key)
+        await asyncio.wait_for(avatar_routes._acquire_avatar_key(key), 1)
+        avatar_routes._release_avatar_key(key)
 
     asyncio.run(scenario())
-    assert main._avatar_locks == {}
+    assert avatar_routes._avatar_locks == {}
 
 
 class _FakeRequest:
@@ -141,13 +142,13 @@ def test_three_concurrent_requests_cause_one_boson_render(tmp_path, monkeypatch)
     rs = asyncio.run(hammer())
     assert [r.status_code for r in rs] == [200, 200, 200]
     assert calls.count("/v1/videos/stream") == 1
-    assert main._avatar_locks == {}
+    assert avatar_routes._avatar_locks == {}
 
 
 def test_stalled_upstream_is_cut_off_by_the_overall_deadline(tmp_path, monkeypatch):
     import asyncio
     client, _, d = stream_env(tmp_path, monkeypatch)
-    monkeypatch.setattr(main, "STREAM_MAX_SECONDS", 0.3)
+    monkeypatch.setattr(avatar_routes, "STREAM_MAX_SECONDS", 0.3)
 
     async def stalling():
         yield CHUNKS[0]
@@ -157,10 +158,10 @@ def test_stalled_upstream_is_cut_off_by_the_overall_deadline(tmp_path, monkeypat
     def handler(req):
         return httpx.Response(200, content=stalling(), headers={"X-Video-Id": "v"})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     import time
     t = time.monotonic()
     with pytest.raises(Exception):
         client.post("/api/avatar/stream", json=BODY)
     assert time.monotonic() - t < 5
-    assert not list(d.glob("*.mp4")) and not list(d.glob("*.tmp")) and main._avatar_locks == {}
+    assert not list(d.glob("*.mp4")) and not list(d.glob("*.tmp")) and avatar_routes._avatar_locks == {}

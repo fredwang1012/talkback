@@ -9,6 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .. import booklang
 from ..config import settings
 from . import spend
 from .llm import LLM, SpendLimit, make_llm
@@ -50,17 +51,36 @@ _SAID = re.compile(
 _PRONOUN = re.compile(r"\b(he|she|him|her|they|I|my|me|his|hers)\b")
 _NUMBERED_ITEM = re.compile(r"^\s*\d{1,2}[.)]\s+[A-Z]", re.M)
 CONFIDENT = 0.7  # an LLM answer below this does not override a confident heuristic that disagrees
+# Books in other languages (#117): their quotation marks, dash-led dialogue lines, and the commonest textbook words of
+# Spanish, French, German, Italian, Portuguese and Chinese / Japanese. Said-verbs and pronouns stay English-only (they
+# then count nothing), so the dialogue marks carry the novel side.
+_QUOTED_FOREIGN = re.compile(r'["“«»„「『][^"”«»“「」『』\n]{2,400}["”»«“」』]|^[ \t]*[—―–][^\n]{2,400}', re.M)
+_MARKERS_FOREIGN = re.compile(
+    r"\b(figuras?|tablas?|ejercicios?|ejemplos?|definición|teorema|resumen|bibliografía|tableaux?|exercices?|"
+    r"exemples?|définition|théorème|résumé|abbildung|tabelle|übungen|übung|beispiel|zusammenfassung|"
+    r"tabella|esercizi|esempio|definizione|teorema|riassunto|tabela|exercícios|exemplo|definição)\s*\d*", re.I)
+_MARKERS_CJK = re.compile(r"[图圖表]\s*\d|例\s*\d|定义|定義|定理|习题|習題|练习|練習|本章小结|演習|例題")
+_CAPTION_FOREIGN = re.compile(r"^\s*(?:figura|fig\.|tabla|tableau|abbildung|abb\.|tabelle|tabella|tabela|[图圖表])\s*"
+                              r"\d{1,2}(?:[.-]\d{1,2})?", re.I | re.M)
 
 
-def heuristic(text: str) -> tuple[str, float]:
-    """(kind, confidence) from dialogue density, said-verbs, textbook markers, captions and numbered headings."""
+def heuristic(text: str, language: str | None = None) -> tuple[str, float]:
+    """(kind, confidence) from dialogue density, said-verbs, textbook markers, captions and numbered headings.
+    `language` (ISO 639-3; detected when not given): another language also counts its own dialogue marks, textbook
+    words and captions. English counts exactly what it always did."""
     s = sample(text, 30_000)
     n = max(len(s), 1)
-    quoted = sum(len(m.group(0)) for m in _QUOTED.finditer(s)) / n
+    if language is None:
+        language = booklang.detect(s)
+    english = booklang.is_english(language)
+    quoted = sum(len(m.group(0)) for m in (_QUOTED if english else _QUOTED_FOREIGN).finditer(s)) / n
     per_k = 1000 / n
     markers = len(_MARKERS.findall(s)) * per_k
     headings = len(_NUMBERED_HEADING.findall(s)) * per_k
     captions = len(_CAPTION.findall(s)) * per_k
+    if not english:
+        markers += (len(_MARKERS_FOREIGN.findall(s)) + len(_MARKERS_CJK.findall(s))) * per_k
+        captions += len(_CAPTION_FOREIGN.findall(s)) * per_k
     items = len(_NUMBERED_ITEM.findall(s)) * per_k
     said = len(_SAID.findall(s)) * per_k
     pronouns = len(_PRONOUN.findall(s)) * per_k

@@ -81,9 +81,16 @@ CURLY = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
 BLANK_LINE = re.compile(r"\n\s*\n")
 
 
+# Chinese / Japanese characters and full-width punctuation: a line break between two of them is no word break (#117)
+_CJK = "　-〿぀-ヿ㐀-䶿一-鿿豈-﫿＀-￯"
+_CJK_BREAK = re.compile(f"(?<=[{_CJK}])[^\\S\\n]*\\n\\s*(?=[{_CJK}])")
+
+
 def normalize(text: str) -> str:
     text = text.translate(CURLY).replace("﻿", "")
     text = re.sub(r"_([^_\n]+)_", r"\1", text)  # Gutenberg italics markers
+    if "\n" in text:
+        text = _CJK_BREAK.sub("", text)
     return re.sub(r"\s+", " ", text).strip()
 
 

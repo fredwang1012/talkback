@@ -7,7 +7,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from app import main
+from app import deps
 from app.boson import BosonClient
 from app.config import Settings, settings
 from tests.test_faces import KEY, lipsync_env
@@ -57,7 +57,7 @@ def test_request_carries_the_size_and_the_cache_key_separates_sizes(tmp_path, mo
             return httpx.Response(200, content=b"MP4DATA")
         return httpx.Response(404, json={"error": {"type": "invalid_request_error", "message": "no"}})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     clips = lambda: sorted(p.name for p in (tmp_path / "cache" / "avatar" / "talk").glob("*.mp4"))  # noqa: E731
 
     assert client.post(path, json=BODY).status_code == 200

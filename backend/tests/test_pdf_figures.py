@@ -3,7 +3,7 @@ import pymupdf as fitz
 import pytest
 from fastapi.testclient import TestClient
 
-from app import ingest_upload, main
+from app import deps, indexes, ingest_upload, main, processing
 from app.config import settings
 from app.ingest_upload import build_book, pdf_to_text
 from app.parsing import FIGURE_MARK, parse
@@ -148,10 +148,10 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "access_token", "")
     monkeypatch.setattr(settings, "retrieval_backend", "local")
-    main._upload_status.clear()
-    monkeypatch.setattr(main, "_ingest_guard", main.IngestGuard())
-    monkeypatch.setattr(main, "upload_bucket", TokenBucket(1000, 60))
-    main._index_for.cache_clear()
+    processing._upload_status.clear()
+    monkeypatch.setattr(processing, "_ingest_guard", processing.IngestGuard())
+    monkeypatch.setattr(deps, "upload_bucket", TokenBucket(1000, 60))
+    indexes._index_for.cache_clear()
     return TestClient(main.app)
 
 

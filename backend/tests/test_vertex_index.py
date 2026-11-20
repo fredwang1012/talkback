@@ -3,7 +3,7 @@ import asyncio
 import numpy as np
 import pytest
 
-from app import main, retrieval
+from app import indexes, retrieval
 from app.config import settings
 from app.gcp.vertex_index import VertexIndex
 from app.retrieval import Index, aretrieve, make_chunks, retrieve
@@ -96,7 +96,7 @@ def test_index_for_returns_vertex_index_without_network(tmp_path, monkeypatch):
     d = tmp_path / "books" / "b"
     d.mkdir(parents=True)
     (d / "book.json").write_text(make_book().model_dump_json(), encoding="utf-8")
-    main._index_for.cache_clear()
-    idx = main._index_for("b")
+    indexes._index_for.cache_clear()
+    idx = indexes._index_for("b")
     assert isinstance(idx, VertexIndex) and idx.mode == "vertex"
-    main._index_for.cache_clear()
+    indexes._index_for.cache_clear()

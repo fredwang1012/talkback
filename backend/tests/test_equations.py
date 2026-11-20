@@ -7,7 +7,7 @@ import pymupdf as fitz
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main
+from app import main, processing
 from app.config import settings
 from app.enrich import equations
 from app.enrich.llm import LLM, Raw
@@ -291,7 +291,7 @@ def test_equations_job_crops_then_reads(data_dir, monkeypatch):
         return {"e1": {"latex": "y=x", "spoken": "y equals x"}}
     monkeypatch.setattr(equations, "transcribe", fake_transcribe)
     monkeypatch.setattr(equations, "make_llm", lambda provider: None)
-    asyncio.run(main._equations_job(book_id, data))
+    asyncio.run(processing._equations_job(book_id, data))
     [m] = [p.math for p in load(book_id).paragraphs if p.math]
     assert m.image and m.latex == "y=x" and m.spoken == "y equals x"
-    assert book_id not in main._equation_jobs
+    assert book_id not in processing._equation_jobs

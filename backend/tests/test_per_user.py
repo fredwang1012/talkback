@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 from google.auth import crypt, jwt
 
-from app import faces, main, users, voices
+from app import deps, faces, indexes, main, users, voices
 from app.config import settings
 from app.ratelimit import TokenBucket
 from tests.test_api import env  # noqa: F401  (fixture)
@@ -66,8 +66,8 @@ def pu(env, monkeypatch):  # noqa: F811
     (d / "u-alice-1" / "owner.txt").write_text(users.ns_for(ALICE))
     (d / "u-bob-1" / "owner.txt").write_text(users.ns_for(BOB))
     for b in ("upload_bucket", "face_bucket", "answer_bucket", "clone_bucket"):
-        monkeypatch.setattr(main, b, TokenBucket(1000, 60))
-    main._index_for.cache_clear()
+        monkeypatch.setattr(deps, b, TokenBucket(1000, 60))
+    indexes._index_for.cache_clear()
     return client, fetched
 
 
@@ -213,9 +213,9 @@ def test_per_user_rate_key(pu):
     from starlette.requests import Request
     req = Request({"type": "http", "headers": [(users.IAP_HEADER.encode(), token(ALICE).encode())],
                    "client": ("1.2.3.4", 1)})
-    assert main.rate_key(req) == f"user:{users.ns_for(ALICE)}"
+    assert deps.rate_key(req) == f"user:{users.ns_for(ALICE)}"
     anon = Request({"type": "http", "headers": [], "client": ("1.2.3.4", 1)})
-    assert main.rate_key(anon) == "1.2.3.4"
+    assert deps.rate_key(anon) == "1.2.3.4"
 
 
 # ---- voices and faces ----

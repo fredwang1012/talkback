@@ -287,19 +287,19 @@ describe("TalkClient turns", () => {
   });
 });
 
-describe("TalkClient typed questions (#97)", () => {
-  it("a typed question goes to the model as a user input_text item before response.create; a spoken one sends none", async () => {
+describe("TalkClient questions reach the model (#97)", () => {
+  it("the question goes inside response.create as input (live: a separate item is not seen under per-response instructions)", async () => {
     const h = setup();
     const p = h.client.ensureOpen("marcus");
     await flush(); h.sockets[0].open(); await p;
     const s = h.sockets[0];
     h.client.respond("Be the Tutor.", "What is a monad?");
-    expect(s.sent.slice(-2)).toEqual([
-      { type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "What is a monad?" }] } },
-      { type: "response.create", response: { instructions: "Be the Tutor.", max_output_tokens: 600 } },
-    ]);
-    h.client.respond("Be the Tutor."); // spoken: the committed audio is the user item
-    expect(s.types().slice(-2)).toEqual(["response.create", "response.create"]);
+    expect(s.sent.at(-1)).toEqual({ type: "response.create", response: {
+      instructions: "Be the Tutor.", max_output_tokens: 600,
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "What is a monad?" }] }] } });
+    expect(s.types().filter((t) => t === "conversation.item.create")).toEqual([]);
+    h.client.respond("Be the Tutor."); // no question text at all: a bare request
+    expect(s.sent.at(-1)).toEqual({ type: "response.create", response: { instructions: "Be the Tutor.", max_output_tokens: 600 } });
   });
 });
 

@@ -5,7 +5,8 @@ import json
 
 import pytest
 
-from app import emotion, main, multilingual, public_api, public_client, tts_cache
+from app import deps, emotion, multilingual, public_api, public_client, tts_cache
+from app.routes import talk as talk_routes
 from app.personas import (ANSWER_EMOTION_RULE, LANGUAGE_RULE, REALTIME_EMOTION_RULE, READER_TONE_RULE,
                           build_answer_prompt, build_instructions)
 from app.ratelimit import TokenBucket
@@ -161,7 +162,7 @@ def test_realtime_instructions_ask_for_feeling_in_the_voice_after_the_language_r
 
 def test_local_answer_strips_markers_and_reports_the_emotion(env, monkeypatch):  # noqa: F811
     client, _ = env
-    monkeypatch.setattr(main, "get_answerer", lambda: FakeAnswerer(["[sadness] I miss him.", "[bogus] Still.",
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: FakeAnswerer(["[sadness] I miss him.", "[bogus] Still.",
                                                                     "[relief]", "Fine."]))
     out = lines(post(client))
     assert [o["type"] for o in out] == ["sentence", "sentence", "sentence", "done"]
@@ -198,7 +199,7 @@ def test_proxy_of_the_public_service_revalidates_its_emotion_and_strips_old_mark
     monkeypatch.setattr(settings, "gcp_project", "")
     monkeypatch.setattr(settings, "anthropic_api_key", "")
     monkeypatch.setattr(settings, "public_api_url", "https://pub.example")
-    monkeypatch.setattr(main, "answer_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(deps, "answer_bucket", TokenBucket(1000, 60))
 
     async def fake_stream(payload, client=None):
         yield {"type": "sentence", "text": "He smiled.", "emotion": "elation"}

@@ -14,7 +14,7 @@ from typing import Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict
 
-from .. import retrying
+from .. import booklang, retrying
 from ..config import settings
 from ..schema import Book, Paragraph, Summary
 from .llm import SpendLimit, effective_provider, estimate_usd
@@ -166,6 +166,7 @@ async def build(book: Book, call: CallFn, on_progress: Callable[[float], None] |
     out = out if out is not None else []
     notes: dict[str, str] = {}
     done = 0
+    lang_note = booklang.prompt_note(book.language, write_in_language=True)   # "" for English (#117)
 
     def tick() -> None:
         nonlocal done
@@ -179,7 +180,7 @@ async def build(book: Book, call: CallFn, on_progress: Callable[[float], None] |
         else:  # no subsections (or none of their notes landed): read the chapter itself
             system, user = SECTION_SYSTEM, section_user(book, t)
         try:
-            r = await call(TIER, system, user, SectionSummary, max_tokens=1000, effort="low")
+            r = await call(TIER, system + lang_note, user, SectionSummary, max_tokens=1000, effort="low")
             text = " ".join(r.summary.split())
             if text:
                 notes[t.section_id] = text

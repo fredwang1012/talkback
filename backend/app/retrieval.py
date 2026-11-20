@@ -28,10 +28,30 @@ W_EMBED, W_BM25 = 0.6, 0.4
 RECENT_PARAS = 2
 
 _WORD = re.compile(r"\w+", re.UNICODE)
+# Chinese / Japanese are written without spaces (#117): a run of such characters is one \w+ "word" (a whole clause),
+# so it is indexed as overlapping character pairs instead, the usual BM25 tokens for CJK text (a lone character stays).
+_CJK_RUN = re.compile(r"[぀-ヿ㐀-䶿一-鿿豈-﫿]+")
+
+
+def _cjk_tokens(word: str) -> list[str]:
+    out: list[str] = []
+    pos = 0
+    for m in _CJK_RUN.finditer(word):
+        if m.start() > pos:
+            out.append(word[pos:m.start()])
+        run = m.group()
+        out += [run] if len(run) == 1 else [run[i:i + 2] for i in range(len(run) - 1)]
+        pos = m.end()
+    if pos < len(word):
+        out.append(word[pos:])
+    return out
 
 
 def tokenize(text: str) -> list[str]:
-    return _WORD.findall(text.lower())
+    words = _WORD.findall(text.lower())
+    if not _CJK_RUN.search(text):   # no CJK: the tokens are what they always were
+        return words
+    return [t for w in words for t in (_cjk_tokens(w) if _CJK_RUN.search(w) else [w])]
 
 
 class Embedder(Protocol):

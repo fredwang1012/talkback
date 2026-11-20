@@ -266,12 +266,12 @@ def test_startup_skips_books_being_enriched(lib):
 
 
 def test_warm_up_loads_indexes_before_the_series_pass(lib, monkeypatch):
-    from app import main
+    from app import indexes, main
     order = []
     monkeypatch.setattr(settings, "auto_rechunk", False)
     monkeypatch.setattr(settings, "retrieval_backend", "local", raising=False)
     monkeypatch.setattr(books, "list_books", lambda: [{"id": "a"}, {"id": "b"}])
-    monkeypatch.setattr(main, "_index_for", lambda bid: order.append(("index", bid)))
+    monkeypatch.setattr(indexes, "_index_for", lambda bid: order.append(("index", bid)))
 
     async def series():
         order.append(("series",))

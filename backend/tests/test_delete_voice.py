@@ -4,7 +4,7 @@ import json
 import httpx
 import pytest
 
-from app import faces, main, users, voices
+from app import deps, faces, users, voices
 from app.boson import BosonClient
 from app.config import settings
 from tests.test_api import env, silent_wav  # noqa: F401  (env is a fixture)
@@ -28,7 +28,7 @@ def boson(monkeypatch):
             return httpx.Response(200, json={"voice": "voice_abc", "ref_text": "t"})
         return httpx.Response(500, json={"error": {"type": "api_error", "message": "unexpected"}})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     return state
 
 

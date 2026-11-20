@@ -2,7 +2,7 @@
 Fake providers only: no network, no credit."""
 import asyncio
 
-from app import ingest_upload, main
+from app import ingest_upload, processing
 from app.config import settings
 from app.enrich import pipeline
 from tests.test_novel_pipeline import client, data_dir, make_book_on_disk, run_pipeline  # noqa: F401
@@ -17,8 +17,8 @@ def test_resume_counts_as_an_attempt_before_running(rig, monkeypatch):
 
     async def fake_run(book_id, resume=False):
         seen.append(ingest_upload.read_status(book_id).get("enrich_retries"))   # bumped BEFORE the job runs
-    monkeypatch.setattr(main, "_run_enrichment", fake_run)
-    asyncio.run(main._resume_enrichments())
+    monkeypatch.setattr(processing, "_run_enrichment", fake_run)
+    asyncio.run(processing._resume_enrichments())
     assert seen == [1]
 
 
@@ -28,11 +28,11 @@ def test_resume_stops_after_max_attempts(rig, monkeypatch):
 
     async def crash(book_id, resume=False):   # the process "dies" mid-job: status stays running
         started.append(book_id)
-    monkeypatch.setattr(main, "_run_enrichment", crash)
-    for _ in range(main.MAX_ENRICH_RETRIES + 2):   # restart after restart
-        main._upload_status.clear()
-        asyncio.run(main._resume_enrichments())
-    assert len(started) == main.MAX_ENRICH_RETRIES
+    monkeypatch.setattr(processing, "_run_enrichment", crash)
+    for _ in range(processing.MAX_ENRICH_RETRIES + 2):   # restart after restart
+        processing._upload_status.clear()
+        asyncio.run(processing._resume_enrichments())
+    assert len(started) == processing.MAX_ENRICH_RETRIES
     e = st(BID)
     assert e["status"] == "error" and "several times" in e["message"]
     assert rig.post(f"/api/books/{BID}/enrich").status_code == 409   # and no user retry past the limit either

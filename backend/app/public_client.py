@@ -133,7 +133,8 @@ def _payload(book: Book) -> dict:
                     for s in book.sections]
     else:
         sections = [{"id": s.id, "title": s.title, "start_para": s.start_para} for s in book.sections]
-    return {"title": book.title, "author": book.author, "kind": book.kind, "sections": sections,
+    lang = {} if book.language == "eng" else {"language": book.language}   # #117; English sends what it always did
+    return {"title": book.title, "author": book.author, "kind": book.kind, **lang, "sections": sections,
             "paragraphs": [{"idx": p.idx, "section_id": p.section_id, "text": p.text} for p in book.paragraphs]}
 
 
@@ -356,6 +357,8 @@ def answer_payload(book: Book, speaker, speaker_id: str, out: dict, query: str, 
     extra = {"history": [{"role": t.role, "text": t.text} for t in history]} if history else {}
     if not settings.web_search:
         extra["web_search"] = False   # this app turned web search off; the service decides the rest (textbook/spoilers)
+    if book.language != "eng":
+        extra["language"] = book.language   # #117: answers default to the book's language
     return {**extra, "title": book.title, "kind": book.kind, "speaker_id": speaker_id,
             "speaker_name": speaker.name if speaker else "", "persona": speaker.persona if speaker else "",
             "story_so_far": out["story_so_far"], "query": query, "spoilers": spoilers,

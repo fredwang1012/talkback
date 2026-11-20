@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from app import main, tts_cache
+from app import deps, indexes, tts_cache
+from app.routes import talk as talk_routes
 from app.personas import build_answer_prompt
 
 from .test_api import book_with_chunk, env  # noqa: F401  (env fixture)
@@ -33,7 +34,7 @@ def post(client, **kw):
 def test_answer_streams_sentences_then_done(env, monkeypatch):
     client, _ = env
     fake = FakeAnswerer(["He smiled.", "Then he left."])
-    monkeypatch.setattr(main, "get_answerer", lambda: fake)
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: fake)
     r = post(client)
     assert r.status_code == 200 and r.headers["content-type"].startswith("application/x-ndjson")
     out = lines(r)
@@ -55,8 +56,8 @@ class LeakyIndex:
 def test_answer_prompt_never_contains_future_paragraphs(env, monkeypatch):
     client, _ = env
     fake = FakeAnswerer(["Ok."])
-    monkeypatch.setattr(main, "get_answerer", lambda: fake)
-    monkeypatch.setattr(main, "_index_for", lambda book_id: LeakyIndex())
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: fake)
+    monkeypatch.setattr(indexes, "_index_for", lambda book_id: LeakyIndex())
     out = lines(post(client, query="King arrived", reader_para=1))
     system, _ = fake.prompts[0]
     assert "ELIGIBLE-TEXT-ALPHA" in system
@@ -68,13 +69,13 @@ def test_answer_requires_access_token_and_is_rate_limited(env, monkeypatch):
     from app.config import settings
     from app.ratelimit import TokenBucket
     client, _ = env
-    monkeypatch.setattr(main, "get_answerer", lambda: FakeAnswerer(["x."]))
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: FakeAnswerer(["x."]))
     monkeypatch.setattr(settings, "access_token", "letmein")
     assert post(client).status_code == 401
     assert client.post("/api/answer", headers={"x-talkback-token": "letmein"},
                        json={"book_id": "demo", "query": "q", "reader_para": 1}).status_code == 200
     monkeypatch.setattr(settings, "access_token", "")
-    monkeypatch.setattr(main, "answer_bucket", TokenBucket(1, 60))
+    monkeypatch.setattr(deps, "answer_bucket", TokenBucket(1, 60))
     assert post(client).status_code == 200
     r = post(client)
     assert r.status_code == 429 and "Too many questions" in r.json()["detail"]
@@ -89,7 +90,7 @@ def test_speak_requires_access_token(env, monkeypatch):
 
 def test_answer_checks_match_retrieve(env, monkeypatch):
     client, _ = env
-    monkeypatch.setattr(main, "get_answerer", lambda: FakeAnswerer(["x."]))
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: FakeAnswerer(["x."]))
     assert post(client, speaker_id="king", reader_para=1).status_code == 403
     assert post(client, speaker_id="ghost").status_code == 404
     assert post(client, book_id="nope").status_code == 404
@@ -98,7 +99,7 @@ def test_answer_checks_match_retrieve(env, monkeypatch):
 
 def test_answer_error_mid_stream_is_a_clean_error_line(env, monkeypatch):
     client, _ = env
-    monkeypatch.setattr(main, "get_answerer", lambda: FakeAnswerer(["One.", "Two."], fail_after=1))
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: FakeAnswerer(["One.", "Two."], fail_after=1))
     out = lines(post(client))
     assert [o["type"] for o in out] == ["sentence", "error"]
     assert "secret" not in out[1]["message"] and "boom" not in out[1]["message"]
@@ -106,7 +107,7 @@ def test_answer_error_mid_stream_is_a_clean_error_line(env, monkeypatch):
 
 def test_answer_error_before_first_sentence(env, monkeypatch):
     client, _ = env
-    monkeypatch.setattr(main, "get_answerer", lambda: FakeAnswerer(["One."], fail_after=0))
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: FakeAnswerer(["One."], fail_after=0))
     out = lines(post(client))
     assert [o["type"] for o in out] == ["error"]
     assert out[0]["message"] == "The answer could not be generated; please try again."
@@ -140,7 +141,7 @@ def test_speak_cached_path_does_not_call_boson(env, monkeypatch):
         return {"audio_url": "/media/x.mp3", "timestamps": None, "cached": True}
 
     monkeypatch.setattr(tts_cache, "get_or_create", fake)
-    monkeypatch.setattr(main, "tts_bucket", type("B", (), {"allow": lambda s, k: pytest.fail("bucket used")})())
+    monkeypatch.setattr(deps, "tts_bucket", type("B", (), {"allow": lambda s, k: pytest.fail("bucket used")})())
     r = client.post("/api/speak", json={"text": "Hi.", "voice": "marcus"})
     assert r.status_code == 200 and r.json()["cached"] is True
 
@@ -148,7 +149,7 @@ def test_speak_cached_path_does_not_call_boson(env, monkeypatch):
 def test_speak_is_rate_limited_on_misses(env, monkeypatch):
     from app.ratelimit import TokenBucket
     client, _ = env
-    monkeypatch.setattr(main, "tts_bucket", TokenBucket(1, 60))
+    monkeypatch.setattr(deps, "tts_bucket", TokenBucket(1, 60))
     assert client.post("/api/speak", json={"text": "One.", "voice": "marcus"}).status_code == 200
     assert client.post("/api/speak", json={"text": "Two.", "voice": "marcus"}).status_code == 429
 
@@ -164,7 +165,7 @@ def test_build_answer_prompt_with_history_keeps_system_prompt_and_adds_turns():
 def test_answer_endpoint_passes_history_to_the_model(env, monkeypatch):
     client, _ = env
     fake = FakeAnswerer(["One."])
-    monkeypatch.setattr(main, "get_answerer", lambda: fake)
+    monkeypatch.setattr(talk_routes, "get_answerer", lambda: fake)
     r = post(client, history=[{"role": "user", "text": "Earlier question"}])
     assert r.status_code == 200
     assert "Reader: Earlier question" in fake.prompts[0][1]
@@ -202,7 +203,7 @@ def _capture(monkeypatch, audio=b"RAWMP3"):
             return httpx.Response(200, json={"audio": base64.b64encode(audio).decode(), "timestamps": None})
         return httpx.Response(200, content=audio, headers={"content-type": "audio/mpeg"})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     return bodies
 
 

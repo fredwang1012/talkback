@@ -7,7 +7,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main, mp3dur, translate, users
+from app import deps, main, mp3dur, translate, users
 from app.boson import BosonClient
 from app.config import settings
 from app.ratelimit import TokenBucket
@@ -218,8 +218,8 @@ def env(data, monkeypatch):
     d = data / "books" / "demo"
     d.mkdir(parents=True)
     (d / "book.json").write_text(_book().model_dump_json(), encoding="utf-8")
-    monkeypatch.setattr(main, "tts_bucket", TokenBucket(1000, 60))
-    monkeypatch.setattr(main, "translate_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(deps, "tts_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(deps, "translate_bucket", TokenBucket(1000, 60))
     fake = FakeTranslator()
     monkeypatch.setattr(translate, "default_translator", lambda: fake)
     bodies = []
@@ -231,7 +231,7 @@ def env(data, monkeypatch):
             return httpx.Response(200, json={"audio": "QUFB", "timestamps": None})
         return httpx.Response(200, content=b"AUDIO" + str(len(bodies)).encode(), headers={"content-type": "audio/mpeg"})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     return TestClient(main.app), fake, bodies
 
 

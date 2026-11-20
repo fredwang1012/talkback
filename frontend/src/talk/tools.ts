@@ -6,7 +6,8 @@
  * Spoiler invariant: with spoilers off no tool may move the reader past the paragraph they have reached
  * (`resolveJump` refuses, and the chunk it picks is re-checked), whatever the model asked for.
  *
- * Boson's server-side `{"type": "web_search"}` tool is never declared: a web search about a novel is a spoiler machine.
+ * Boson's server-side `{"type": "web_search"}` tool is not part of these sets: webSearch.ts adds it for a textbook, or a
+ * novel with spoilers on; a web search about a spoiler-safe novel is a spoiler machine.
  */
 
 import type { RecapScope } from "../api";

@@ -79,7 +79,7 @@ def pick_positions(book: Book, fractions=FRACTIONS) -> list[dict]:
 
 
 def available_characters(book: Book, reader_para: int) -> list:
-    """Cast unlock rule (main._resolve_talk): a character is askable once first_para <= reader_para."""
+    """Cast unlock rule (routes/talk.py _resolve_talk): a character is askable once first_para <= reader_para."""
     return [c for c in book.characters if c.first_para <= reader_para]
 
 

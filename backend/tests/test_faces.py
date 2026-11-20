@@ -2,7 +2,7 @@
 import httpx
 from fastapi.testclient import TestClient
 
-from app import faces, main, voices
+from app import deps, faces, main, voices
 from app.boson import BosonClient
 from app.config import settings
 from app.ratelimit import TokenBucket
@@ -41,7 +41,7 @@ def test_clone_rejects_a_non_image_face_before_calling_boson(env):  # noqa: F811
 def lipsync_env(tmp_path, monkeypatch, video_status="completed"):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "access_token", "")
-    monkeypatch.setattr(main, "avatar_bucket", TokenBucket(1000, 60))
+    monkeypatch.setattr(deps, "avatar_bucket", TokenBucket(1000, 60))
     voices.save_voice("me", "voice_abc")
     faces.create_face(PNG, "me", voice="voice_abc")
     (tmp_path / "cache" / "tts").mkdir(parents=True)
@@ -58,7 +58,7 @@ def lipsync_env(tmp_path, monkeypatch, video_status="completed"):
             return httpx.Response(200, content=b"MP4DATA")
         return httpx.Response(404, json={"error": {"type": "invalid_request_error", "message": "no"}})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     return TestClient(main.app), calls
 
 

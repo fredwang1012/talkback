@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { cloneVoice, uploadFace, type Face } from "../api";
+import { cloneVoice, fetchAccountVoices, importVoice, previewVoice, uploadFace, type AccountVoice, type Face } from "../api";
 import { micErrorMessage } from "../audio/mediaErrors";
 import { toCloneAudio } from "../audio/toWav";
 import CameraCapture from "./CameraCapture";
@@ -99,6 +99,47 @@ export function AddVoiceForm({ faces, audioAvailable, onDone, onCancel }: {
   const [msg, setMsg] = useState<Msg>(null);
   const recorder = useRef<MediaRecorder | null>(null);
   useEffect(() => () => { if (recorder.current?.state === "recording") recorder.current.stop(); }, []); // closed mid-take
+  const [previewing, setPreviewing] = useState(false);
+  const previewAudio = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => () => { previewAudio.current?.pause(); }, []);
+  // voices already on the Boson account (owner or local run only: null = not shown)
+  const [account, setAccount] = useState<AccountVoice[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetchAccountVoices().then((v) => { if (live) setAccount(v); }).catch(() => { if (live) setAccount(null); });
+    return () => { live = false; };
+  }, []);
+
+  async function preview() {
+    if (!clip || !transcript.trim() || previewing) return;
+    setPreviewing(true);
+    setMsg(null);
+    try {
+      const audio = await toCloneAudio(clip.blob, clip.filename);
+      const mp3 = await previewVoice(audio.blob, audio.filename, transcript);
+      previewAudio.current?.pause();
+      const el = new Audio(URL.createObjectURL(mp3));
+      el.onended = () => URL.revokeObjectURL(el.src);
+      previewAudio.current = el;
+      await el.play();
+    } catch (e) {
+      setMsg({ kind: "error", text: errText(e) });
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  async function importOne(v: AccountVoice) {
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      onDone(await importVoice(v.id, (name.trim() || v.title).slice(0, 60)));
+    } catch (e) {
+      setMsg({ kind: "error", text: errText(e) });
+      setBusy(false);
+    }
+  }
 
   async function startRecording() {
     setMsg(null);
@@ -157,7 +198,14 @@ export function AddVoiceForm({ faces, audioAvailable, onDone, onCancel }: {
                  onChange={(e) => { const f = e.target.files?.[0]; if (f) setClip({ blob: f, filename: f.name }); e.target.value = ""; }} />
         </label>
       </div>
-      {clip && <p className="empty-note">Ready: {clip.filename} ({Math.round(clip.blob.size / 1024)} KB)</p>}
+      {clip && (
+        <div className="lab-row">
+          <p className="empty-note">Ready: {clip.filename} ({Math.round(clip.blob.size / 1024)} KB)</p>
+          <button type="button" disabled={previewing || !transcript.trim()} onClick={() => void preview()}>
+            {previewing ? "Making a sample…" : "Hear it first"}
+          </button>
+        </div>
+      )}
       <label htmlFor="lab-name">Name this voice</label>
       <input id="lab-name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} />
       <label htmlFor="lab-voice-face">Face shown when this voice speaks</label>
@@ -173,6 +221,20 @@ export function AddVoiceForm({ faces, audioAvailable, onDone, onCancel }: {
       </div>
       {missing && <p className="lab-missing" aria-live="polite">{missing}</p>}
       {msg && <p role="alert" className="lab-error">{msg.text}</p>}
+      {account && account.length > 0 && (
+        <>
+          <h3 className="lab-subhead">Already on your Boson account</h3>
+          <p className="empty-note">Voices made earlier with this key. Add one without recording again{name.trim() ? `, named "${name.trim()}"` : ""}.</p>
+          <ul className="lab-account-voices">
+            {account.map((v) => (
+              <li key={v.id}>
+                <span>{v.title}</span>
+                <button type="button" disabled={busy} onClick={() => void importOne(v)}>Add</button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </>
   );
 }

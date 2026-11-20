@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from app import cast, main, voice_bake, voices
+from app import cast, deps, indexes, voice_bake, voices
 from app.boson import BosonClient
 from app.config import settings
 from app.schema import Book, Character, Narrator, Paragraph, Section, Segment
@@ -115,14 +115,14 @@ def test_tts_applies_the_cast_pitch_tag_override(env, monkeypatch):  # noqa: F81
         sent.append(json.loads(req.content)["input"])
         return httpx.Response(200, json={"audio": base64.b64encode(b"x").decode(), "response_format": "mp3", "input": "x"})
 
-    monkeypatch.setattr(main, "boson", BosonClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(deps, "boson", BosonClient(transport=httpx.MockTransport(handler)))
     p = settings.data_dir / "books" / "demo" / "book.json"
     book = json.loads(p.read_text(encoding="utf-8"))
     book["characters"][0]["voice_tags"] = TAG
     book["paragraphs"][1]["tts_chunks"] = [{"id": "p1c0", "speaker": "harry", "voice": "oliver", "tts_text": TAG + "He smiled.",
                                            "char_start": 0, "char_end": 9}]
     p.write_text(json.dumps(book), encoding="utf-8")
-    main._index_for.cache_clear()
+    indexes._index_for.cache_clear()
     # full cast is gone (#93): an old client's "cast" is two voices, where per-character pitch tags are dropped
     assert client.put("/api/books/demo/cast", json={"mode": "cast", "characters": {"harry": {"tags": "<|prosody:speed_slow|>"}}}).status_code == 200
     assert client.get("/api/books/demo/cast").json()["characters"]["harry"]["tags"] == "<|prosody:speed_slow|>"

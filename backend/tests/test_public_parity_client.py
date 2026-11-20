@@ -8,7 +8,7 @@ import time
 import httpx
 import pytest
 
-from app import face_detect, main, multilingual, public_api, public_client
+from app import face_detect, multilingual, processing, public_api, public_client
 from app.config import settings
 from app.enrich import cast as cast_mod
 from app.enrich import describe, detect, equations, spend
@@ -241,7 +241,7 @@ def test_equations_job_uses_the_service_when_active(clone, data_dir, monkeypatch
         return {"e1": {"latex": "y=x", "spoken": "y equals x"}}, {}, None
     monkeypatch.setattr(public_client, "transcribe_equations", fake)
     monkeypatch.setattr(equations, "transcribe", lambda *a, **k: pytest.fail("no local Gemini"))
-    asyncio.run(main._equations_job(book_id, data))
+    asyncio.run(processing._equations_job(book_id, data))
     [m] = [p.math for p in load(book_id).paragraphs if p.math]
     assert seen == [(["e1"], [])] and m.latex == "y=x" and m.spoken == "y equals x"
 
@@ -253,7 +253,7 @@ def test_equations_job_without_any_llm_keeps_pictures(data_dir, monkeypatch):  #
     data = pdf(display)
     book_id = published(data)
     monkeypatch.setattr(public_client, "transcribe_equations", lambda *a, **k: pytest.fail("not active"))
-    asyncio.run(main._equations_job(book_id, data))
+    asyncio.run(processing._equations_job(book_id, data))
     [m] = [p.math for p in load(book_id).paragraphs if p.math]
     assert m.image and not m.latex
 

@@ -367,11 +367,11 @@ def app_client():
     if _client is None:
         from fastapi.testclient import TestClient
 
-        from app import main
+        from app import deps, main
         from app.ratelimit import TokenBucket
 
         for name in ("answer_bucket", "retrieve_bucket", "tts_bucket"):
-            setattr(main, name, TokenBucket(capacity=100_000, per_seconds=60))
+            setattr(deps, name, TokenBucket(capacity=100_000, per_seconds=60))
         _client = TestClient(main.app)
         _client.__enter__()  # keeps the portal (and its loop) open until the process exits
     return _client

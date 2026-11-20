@@ -8,6 +8,7 @@ from typing import Awaitable, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .. import booklang
 from ..schema import Book, Character, Narrator
 from .llm import SpendLimit
 from .tasks import gather_or_cancel
@@ -159,8 +160,13 @@ def numbered_sample(book: Book, max_chars: int = CAST_MAX_CHARS, block: int = 12
     return "\n\n[...]\n\n".join(parts)
 
 
+_CJK_NAME = re.compile(r"[぀-ヿ㐀-䶿一-鿿]")
+
+
 def locate_first_para(book: Book, aliases: list[str], fallback: int) -> int:
-    pats = [re.compile(rf"\b{re.escape(a)}\b") for a in aliases if len(a) > 2]
+    # Chinese / Japanese names sit between other word characters (no spaces): no word boundaries for them (#117)
+    pats = [re.compile(re.escape(a) if _CJK_NAME.search(a) else rf"\b{re.escape(a)}\b") for a in aliases
+            if len(a) > 2 or (len(a) == 2 and _CJK_NAME.search(a))]
     for p in book.paragraphs:
         if any(pat.search(p.text) for pat in pats):
             return p.idx
@@ -191,13 +197,14 @@ async def cast_novel(book: Book, call: Callable[..., Awaitable], tier: str = "sm
                      persona_tier: str = "fast") -> None:
     """Cast call (who, voices, first_para), then one cheap persona call per character from their earliest text only."""
     user = f'Title: "{book.title}" by {book.author}\n\n{numbered_sample(book)}'
-    result = await call(tier, UPLOAD_SYSTEM, user, MainCast, max_tokens=8000, effort="medium")   # Flash-Lite is wordier
+    note = booklang.prompt_note(book.language)   # "" for English (#117)
+    result = await call(tier, UPLOAD_SYSTEM + note, user, MainCast, max_tokens=8000, effort="medium")   # Flash-Lite is wordier
     apply_cast(book, result, MAIN_MAX, mark_main=True)
     apply_series(book, result)
 
     async def persona(c: Character) -> None:
         try:
-            r = await call(persona_tier, PERSONA_SYSTEM, persona_user(book, c.name, c.aliases, c.first_para),
+            r = await call(persona_tier, PERSONA_SYSTEM + note, persona_user(book, c.name, c.aliases, c.first_para),
                            PersonaResult, max_tokens=600, effort="low")
             c.persona = r.persona.strip()
         except SpendLimit:

@@ -2,11 +2,13 @@
 import logging
 import re
 
+from . import booklang
 from .delivery import SONG_MAX_PARAS, apply_styles, detect_expressive, is_scene_break, speech_tag, sung_from, with_sfx
 from .schema import Book, Paragraph, Segment, TtsChunk
 from .textnorm import may_change, normalize_for_tts
 
 MAX_CHARS = 280
+CJK_MAX_CHARS = 120   # Chinese / Japanese say far more per character: a chunk of the same length would run ~4x as long
 # Bump whenever chunk_paragraph's output can change (tags, pauses, sfx, splitting, normalisation): every book built
 # with a lower Book.chunk_rules is re-chunked once by the server (books.load_book). History:
 #   1: expressive delivery (#73: lead pauses, sfx, expressive_*) and singing (#74). Books without the field are 0.
@@ -29,6 +31,21 @@ _LAST_WORD = re.compile(r"[A-Za-z]+\.?$")
 _INITIAL = re.compile(r"(?:^|\s)[A-Z]\.$")
 _TAIL = 40  # abbreviation / initial checks only need the last few characters before the period
 _OPENERS = "\"'([{“‘"
+# Books in other languages (#117, Book.language): their own abbreviations, closing quotes after the sentence end
+# (French sets a space before "!" and "»"), a dash before a lowercase word continuing the sentence (Spanish
+# "—¿Vienes? —preguntó él."), and full-width sentence ends in Chinese / Japanese (no space follows them).
+FOREIGN_ABBREVIATIONS = {
+    "spa": {"sr", "sra", "srta", "dr", "dra", "ud", "uds", "etc", "pág", "núm", "av", "lic", "ing", "prof"},
+    "fra": {"m", "mme", "mlle", "mm", "dr", "etc", "p", "cf", "st", "ste", "prof"},
+    "deu": {"hr", "fr", "dr", "nr", "bzw", "usw", "z.b", "d.h", "ca", "prof", "st"},
+    "ita": {"sig", "sig.ra", "dott", "prof", "ecc", "pag"},
+    "por": {"sr", "sra", "dr", "dra", "etc", "pág", "prof"},
+    "nld": {"dhr", "mevr", "dr", "bijv", "enz", "prof", "st"},
+}
+_SENT_END_FOREIGN = re.compile(r"""(?<![.!?…])[.!?…]++(?:\s?[»"'”’)\]])*+(?=\s)""")
+_SENT_END_CJK = re.compile(r"[。！？!?…]+[」』”’\"'）)]*")
+_DASH_LETTER = re.compile(r"[—―–]\s*([^\W\d_])")
+_CLAUSE_CJK = ("，", "；", "：", "、")   # Chinese / Japanese clause marks (no space after them)
 
 
 def ends_with_abbreviation(before: str) -> bool:
@@ -43,8 +60,11 @@ def ends_with_abbreviation(before: str) -> bool:
     return token in ABBREVIATIONS
 
 
-def sentence_spans(text: str) -> list[tuple[int, int]]:
-    """Return (start, end) offsets of sentences; spans cover all non-whitespace text. Linear in len(text)."""
+def sentence_spans(text: str, language: str | None = None) -> list[tuple[int, int]]:
+    """Return (start, end) offsets of sentences; spans cover all non-whitespace text. Linear in len(text).
+    `language` (ISO 639-3, Book.language): None or "eng" keeps the English rules."""
+    if not booklang.is_english(language):
+        return _foreign_sentence_spans(text, language)
     spans: list[tuple[int, int]] = []
     start = 0
     for m in _SENT_END.finditer(text):
@@ -66,14 +86,50 @@ def sentence_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+def _foreign_sentence_spans(text: str, language: str | None) -> list[tuple[int, int]]:
+    """sentence_spans for a book that is not in English: CJK sentence ends need no space after them; elsewhere a
+    lowercase word, or a dash before one, continues the sentence, and the language's own abbreviations apply."""
+    cjk = booklang.is_cjk(language)
+    abbreviations = FOREIGN_ABBREVIATIONS.get(language or "", set())
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for m in (_SENT_END_CJK if cjk else _SENT_END_FOREIGN).finditer(text):
+        if m.start() < start:
+            continue
+        end = m.end()
+        nxt = _WS.match(text, end).end()
+        if not cjk:
+            if m.group().rstrip("\"'”’)]» ") == ".":  # a lone period, not "?!" or an ellipsis
+                before = text[max(start, m.start() + 1 - _TAIL):m.start() + 1]
+                word = before.split()[-1].lstrip(_OPENERS + "«¿¡—").rstrip(".").lower() if before.strip() else ""
+                if word in abbreviations or _INITIAL.search(before):
+                    continue
+            dash = _DASH_LETTER.match(text, nxt)
+            if text[nxt:nxt + 1].islower() or (dash and dash.group(1).islower()):
+                continue
+        spans.append((start, end))
+        start = nxt
+    first = _NONWS.search(text, start)
+    if first:
+        spans.append((start, len(text.rstrip())))
+    return spans
+
+
+def max_chars(language: str | None = None) -> int:
+    """Longest spoken text of one TTS chunk for a book in `language`."""
+    return CJK_MAX_CHARS if booklang.is_cjk(language) else MAX_CHARS
+
+
 def split_long(text: str, base: int, limit: int = MAX_CHARS) -> list[tuple[int, int]]:
-    """Split an over-long sentence at the last comma/semicolon/colon/dash (else space) before `limit`."""
+    """Split an over-long sentence at the last comma/semicolon/colon/dash (else space) before `limit`. Chinese and
+    Japanese clause marks count too (they have no space after them)."""
     out: list[tuple[int, int]] = []
     pos = 0
     n = len(text)
     while n - pos > limit:
         window = text[pos:pos + limit]
-        cut = max(window.rfind(", "), window.rfind("; "), window.rfind(": "), window.rfind("—"))
+        cut = max(window.rfind(", "), window.rfind("; "), window.rfind(": "), window.rfind("—"),
+                  *(window.rfind(c) for c in _CLAUSE_CJK))
         cut = cut + 1 if cut > limit // 3 else window.rfind(" ")
         if cut <= 0:
             cut = limit
@@ -87,17 +143,19 @@ def split_long(text: str, base: int, limit: int = MAX_CHARS) -> list[tuple[int, 
 
 
 def build_tts_text(spoken: str, voice_tags: str, emotion: str | None, style: str | None = None,
-                   sfx: bool = False, *, tag: str = "", expressive: str | None = None, pause: str | None = None) -> str:
+                   sfx: bool = False, *, tag: str = "", expressive: str | None = None, pause: str | None = None,
+                   language: str | None = None) -> str:
     """[voice prosody tags][style][emotion][expressiveness][pause][spoken text, with an sfx before onomatopoeia if sfx].
 
     Delivery tags (style, emotion, expressive_*) go at the start; `pause` ('pause' / 'long_pause') is positional and sits
     right before the text. `tag` is the adjacent speech tag, which some sound effects need (see delivery.sfx_at).
-    An expressive_* already in the voice tags is not repeated."""
+    An expressive_* already in the voice tags is not repeated. A book in another `language` is sent as written: its
+    chunks are requested without word timestamps, so Boson normalizes numbers and symbols in that language."""
     if expressive and "expressive_" in voice_tags:
         expressive = None
     tags = (voice_tags + (f"<|style:{style}|>" if style else "") + (f"<|emotion:{emotion}|>" if emotion else "")
             + (f"<|prosody:{expressive}|>" if expressive else "") + (f"<|prosody:{pause}|>" if pause else ""))
-    text = normalize_for_tts(spoken)
+    text = normalize_for_tts(spoken) if booklang.is_english(language) else spoken
     return tags + (with_sfx(text, tag) if sfx else text)
 
 
@@ -156,24 +214,27 @@ def lead_pause(p: Paragraph, book: Book, index: BookIndex | None = None) -> str 
     if first is None or first.speaker not in chars:
         return None
     prev_segs = [s for s in prev.segments if s.text.strip()]
-    if prev_segs and all(s.speaker not in chars for s in prev_segs) and prev.text.rstrip().rstrip("\"'”’)").endswith((".", "!", "?")):
+    if prev_segs and all(s.speaker not in chars for s in prev_segs) \
+            and prev.text.rstrip().rstrip("\"'”’)»」』").endswith((".", "!", "?", "。", "！", "？")):
         return "pause"
     return None
 
 
-def _groups(p: Paragraph, text: str, base: int) -> list[tuple[int, int]]:
+def _groups(p: Paragraph, text: str, base: int, language: str | None = None) -> list[tuple[int, int]]:
     """Whole sentences packed greedily up to MAX_CHARS (over-long sentences split first), as paragraph offsets.
-    Measured by what is actually read (spoken_len): inline math (#41) read out, numbers and simple math spelled out."""
+    Measured by what is actually read (spoken_len): inline math (#41) read out, numbers and simple math spelled out.
+    `language`: the book's (its sentence rules and, for Chinese / Japanese, the smaller CJK_MAX_CHARS)."""
+    limit = max_chars(language)
     pieces: list[tuple[int, int]] = []
-    for s, e in sentence_spans(text):
-        if e - s > MAX_CHARS:
-            pieces += split_long(text[s:e], base + s)
+    for s, e in sentence_spans(text, language):
+        if e - s > limit:
+            pieces += split_long(text[s:e], base + s, limit)
         else:
             pieces.append((base + s, base + e))
-    pieces = [q for s, e in pieces for q in _fit_pieces(p, s, e)]
+    pieces = [q for s, e in pieces for q in _fit_pieces(p, s, e, language)]
     groups: list[tuple[int, int]] = []
     for s, e in pieces:
-        if groups and spoken_len(p, groups[-1][0], e) <= MAX_CHARS:
+        if groups and spoken_len(p, groups[-1][0], e, language) <= limit:
             groups[-1] = (groups[-1][0], e)
         else:
             groups.append((s, e))
@@ -197,6 +258,12 @@ def sing_offset(p: Paragraph, book: Book, index: BookIndex | None = None) -> int
 
 CODE_SPOKEN = "Code listing skipped."
 EQUATION_SPOKEN = "Equation."
+# the same notes in the languages textbooks are most often uploaded in (#117); any other language hears the English
+FOREIGN_CODE_SPOKEN = {"spa": "Se omite un listado de código.", "fra": "Listing de code omis.",
+                       "deu": "Codeauflistung übersprungen.", "ita": "Listato di codice omesso.",
+                       "por": "Listagem de código omitida.", "zho": "此处略过一段代码。", "jpn": "ここでコードは省略します。"}
+FOREIGN_EQUATION = {"spa": "Ecuación", "fra": "Équation", "deu": "Gleichung", "ita": "Equazione", "por": "Equação",
+                    "zho": "公式", "jpn": "数式"}
 
 
 def _fit(text: str, limit: int = MAX_CHARS) -> str:
@@ -209,12 +276,21 @@ def _fit(text: str, limit: int = MAX_CHARS) -> str:
     return (head[:cut] if cut > 0 else head).rstrip(" ,;") + "."
 
 
-def equation_tts_text(p: Paragraph) -> str:
+def equation_tts_text(p: Paragraph, language: str | None = None) -> str:
     """What is said for a display equation: the model's reading, else the extracted text when it reads faithfully,
-    else just "Equation 3.4." One chunk (<= MAX_CHARS after normalization)."""
+    else just "Equation 3.4." One chunk (<= MAX_CHARS after normalization). In another `language` the label is
+    translated where known, the model's reading (plain English, enrich/equations.py) is not used, and the text is left
+    to Boson's normalization."""
     from .parsing import split_equation_number
     m = p.math
     number = m.number if m else None
+    if not booklang.is_english(language):
+        label = FOREIGN_EQUATION.get(language or "", "Equation") + (f" {number}" if number else "")
+        if m is not None and not m.garbled:
+            spoken = split_equation_number(p.text)[0] or f"{label}."
+        else:
+            spoken = f"{label}."
+        return _fit(spoken, max_chars(language))
     head, *rest = number.split(".") if number else [""]
     label = " point ".join(["Equation " + head] + [" ".join(r) for r in rest]) if number else "Equation"
     if m is not None and m.spoken:
@@ -244,9 +320,12 @@ def spoken_text(p: Paragraph, s: int, e: int) -> str:
     return text
 
 
-def spoken_len(p: Paragraph, s: int, e: int) -> int:
+def spoken_len(p: Paragraph, s: int, e: int, language: str | None = None) -> int:
     """Length of the text Boson reads for p.text[s:e] (before delivery tags): inline formulas replaced by their
-    reading, then normalize_for_tts (numbers, years, simple math spelled out). This is what MAX_CHARS bounds."""
+    reading, then normalize_for_tts (numbers, years, simple math spelled out). This is what MAX_CHARS bounds.
+    A book in another `language` is read as written (see build_tts_text; the inline readings are English)."""
+    if not booklang.is_english(language):
+        return e - s
     text = spoken_text(p, s, e)
     return len(normalize_for_tts(text)) if may_change(text) else len(text)
 
@@ -254,37 +333,46 @@ def spoken_len(p: Paragraph, s: int, e: int) -> int:
 _MIN_SPLIT = 12   # never cut a piece into raw windows shorter than this (one long spelled-out number still fits)
 
 
-def _fit_pieces(p: Paragraph, s: int, e: int) -> list[tuple[int, int]]:
+def _fit_pieces(p: Paragraph, s: int, e: int, language: str | None = None) -> list[tuple[int, int]]:
     """Split [s, e) (at clause, else word boundaries) until each piece's spoken length fits in MAX_CHARS. The raw
     window shrinks in proportion to how much the text grows when spoken ("777,777" -> 41 chars)."""
-    n = spoken_len(p, s, e)
-    if n <= MAX_CHARS or e - s <= _MIN_SPLIT:
+    n = spoken_len(p, s, e, language)
+    most = max_chars(language)
+    if n <= most or e - s <= _MIN_SPLIT:
         return [(s, e)]
-    limit = max(_MIN_SPLIT, min(e - s - 1, (e - s) * MAX_CHARS // n))
+    limit = max(_MIN_SPLIT, min(e - s - 1, (e - s) * most // n))
     pieces = split_long(p.text[s:e], s, limit)
     if len(pieces) <= 1:
         return [(s, e)]
-    return [q for a, b in pieces for q in _fit_pieces(p, a, b)]
+    return [q for a, b in pieces for q in _fit_pieces(p, a, b, language)]
 
 
 def chunk_paragraph(p: Paragraph, book: Book, *, expressive: bool = True, index: BookIndex | None = None) -> list[TtsChunk]:
     """TTS chunks for one paragraph. expressive=False leaves out the #73 additions (pauses, expressive_*, sfx other
     than laughter context), which scripts/estimate_expressive.py uses to measure what they change. `index` (from
-    book_index) saves the per-book lookups when chunking many paragraphs."""
+    book_index) saves the per-book lookups when chunking many paragraphs.
+
+    A book in another language (#117) keeps the pauses and the styles / emotions the enrich LLM set, but none of the
+    English-only rules: rule-based whisper / shout, speech-tag sound effects and expressiveness, singing, and number
+    spelling (Boson normalizes the text in its own language)."""
     narrator_voice = book.narrator.voice if book.narrator else DEFAULT_VOICE
+    lang = book.language
+    english = booklang.is_english(lang)
     if p.kind == "code":  # a listing is displayed whole but spoken as one short note
+        note = CODE_SPOKEN if english else FOREIGN_CODE_SPOKEN.get(lang, CODE_SPOKEN)
         return [TtsChunk(id=f"p{p.idx}c0", speaker="narrator", voice=narrator_voice,
-                         tts_text=build_tts_text(CODE_SPOKEN, "", None), char_start=0, char_end=len(p.text))]
+                         tts_text=build_tts_text(note, "", None), char_start=0, char_end=len(p.text))]
     if p.kind == "math":
         return [TtsChunk(id=f"p{p.idx}c0", speaker="narrator", voice=narrator_voice,
-                         tts_text=equation_tts_text(p), char_start=0, char_end=len(p.text))]
+                         tts_text=equation_tts_text(p, lang), char_start=0, char_end=len(p.text))]
     chars = {c.id: c for c in book.characters}
     segments = p.segments or [Segment(speaker="narrator", text=p.text)]
-    apply_styles(segments)  # rule-based whispering/shouting; keeps a style the enrich LLM already set
+    if english:
+        apply_styles(segments)  # rule-based whispering/shouting; keeps a style the enrich LLM already set
     chunks: list[TtsChunk] = []
     cursor = 0
     pause = lead_pause(p, book, index) if expressive else None
-    sing_at = sing_offset(p, book, index) if expressive else None
+    sing_at = sing_offset(p, book, index) if expressive and english else None
     for si, seg in enumerate(segments):
         seg_text = seg.text.strip()
         if not seg_text:
@@ -299,20 +387,21 @@ def chunk_paragraph(p: Paragraph, book: Book, *, expressive: bool = True, index:
             voice, tags = narrator_voice, ""
         is_char = seg.speaker in chars
         extra = ({"tag": speech_tag(segments, si), "expressive": detect_expressive(segments, si)}
-                 if expressive and is_char else {})
+                 if expressive and is_char and english else {})
         parts = [(base, seg_text)]
         if sing_at is not None and base < sing_at < cursor:  # the song starts inside this segment (after 'sing:')
             parts = [(base, p.text[base:sing_at].rstrip()), (sing_at, p.text[sing_at:cursor])]
         for part_base, part_text in parts:
             sung = sing_at is not None and part_base >= sing_at
-            for s, e in _groups(p, part_text, part_base):
-                spoken = spoken_text(p, s, e)
+            for s, e in _groups(p, part_text, part_base, lang):
+                spoken = spoken_text(p, s, e) if english else p.text[s:e]  # inline readings are English
                 if not expressive:
                     text = _legacy_tts_text(spoken, tags, seg.emotion, seg.style, is_char)
                 elif sung:  # singing replaces whisper/shout; no sfx or expressive_* inside a song
                     text = build_tts_text(spoken, tags, seg.emotion, "singing", pause=pause)
                 else:
-                    text = build_tts_text(spoken, tags, seg.emotion, seg.style, sfx=is_char, pause=pause, **extra)
+                    text = build_tts_text(spoken, tags, seg.emotion, seg.style, sfx=is_char and english, pause=pause,
+                                          language=lang, **extra)
                 pause = None  # only the paragraph's first chunk
                 chunks.append(TtsChunk(
                     id=f"p{p.idx}c{len(chunks)}", speaker=seg.speaker if is_char else "narrator",

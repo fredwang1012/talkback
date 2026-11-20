@@ -134,6 +134,7 @@ class EnrichRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     author: str = Field(default="", max_length=200)
     kind: Literal["novel", "textbook"] = "novel"
+    language: str = Field(default="eng", max_length=3)   # ISO 639-3 (#117); an unknown code is English (Book)
     sections: list[PSection] = Field(max_length=MAX_SECTIONS)
     paragraphs: list[PParagraph] = Field(min_length=1, max_length=MAX_PARAGRAPHS)
 
@@ -149,7 +150,7 @@ class EnrichRequest(BaseModel):
 
     def to_book(self) -> Book:
         return Book(id="public", title=self.title, author=self.author, kind=self.kind, license="n/a",
-                    sections=[Section(id=s.id, title=s.title, start_para=s.start_para, level=s.level)
+                    language=self.language, sections=[Section(id=s.id, title=s.title, start_para=s.start_para, level=s.level)
                               for s in self.sections],
                     paragraphs=[Paragraph(idx=p.idx, section_id=p.section_id, text=p.text) for p in self.paragraphs])
 
@@ -164,6 +165,7 @@ class Passage(BaseModel):
 class AnswerRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     kind: Literal["novel", "textbook"] = "novel"
+    language: str = Field(default="eng", max_length=3)   # the book's (#117): answers default to it
     speaker_id: str = Field(default="narrator", pattern=ID_PATTERN)
     speaker_name: str = Field(default="", max_length=120)
     persona: str = Field(default="", max_length=2000)
@@ -188,7 +190,7 @@ class AnswerRequest(BaseModel):
             chars = [Character(id=self.speaker_id, name=self.speaker_name or self.speaker_id, first_para=0, voice="",
                                persona=self.persona)]
         book = Book(id="public", title=self.title, author="", kind=self.kind, license="n/a", sections=[],
-                    paragraphs=[], characters=chars)
+                    paragraphs=[], characters=chars, language=self.language)
         return build_answer_prompt(book, self.speaker_id, self.story_so_far, [p.model_dump() for p in self.passages],
                                    self.query, spoilers=self.spoilers, history=self.history, web_search=web_search)
 

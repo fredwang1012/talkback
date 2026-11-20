@@ -74,3 +74,13 @@ def remove_voice(voice_id: str) -> bool:
 def is_known_voice(voice: str) -> bool:
     """Presets or voices this server registered. Anything else would let a caller mint unlimited cache entries."""
     return voice in PRESET_VOICES or voice in load_voices().values()
+
+
+PREVIEW_TEXT = "Hello! This is how I sound reading your book. Does this voice feel right?"
+
+
+def can_see_account_voices(ident: users.Identity | None = None) -> bool:
+    """The Boson account behind this server is shared by every visitor of a PER_USER deploy: only the owner (or a
+    local run, where there is one user) may list or import its voices."""
+    ident = ident or users.current()
+    return not ident.ns or ident.is_owner
